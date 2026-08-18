@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
+    Any,
     Callable,
     Collection,
     Generator,
@@ -61,6 +62,7 @@ from core.inference.llama_server_args import (
     memory_state_satisfies_settings,
     fit_is_effectively_on,
     resolve_effective_memory_state,
+    scrub_denied_env,
     scrub_memory_env,
     parse_cache_override,
     parse_cache_override_per_axis,
@@ -68,6 +70,7 @@ from core.inference.llama_server_args import (
     parse_gpu_layers_override,
     parse_split_mode_override,
     resolve_requested_ctx,
+    strip_context_only,
     strip_shadowing_flags,
     strip_split_mode_only,
 )
@@ -96,7 +99,9 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
+from utils.process_lifetime import is_signalable_pid as _is_signalable_pid
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
@@ -109,6 +114,7 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
+    deferred_nudge_text,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -147,6 +153,8 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # A cached file and every shard's byte count, already verified for this repo and variant.
+    verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
@@ -483,6 +491,15 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
+# How far back the classifier looks for llama.cpp's argument-parsing error. It
+# prints one and exits, so it is always at the end; generous enough to survive a
+# usage hint printed after it, small enough that a 10 MB unterminated line (which
+# _drain_stdout keeps whole) stays cheap to scan.
+_FAILURE_SCAN_TAIL_CHARS = 64 * 1024
+# How much of a quoted fragment from the child's own output an error message carries.
+# Long enough for any real flag or reason, short enough that a wrapper printing
+# megabytes cannot make the API error unreadable.
+_FAILURE_QUOTE_CHARS = 200
 # Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired with
 # an action verb. Sentence-anchored: mid-sentence the same words are prose that names
 # a tool ("The API I should invoke is foo() because ..."), and suppressing that loses
@@ -1487,6 +1504,31 @@ def _cached_variant_candidates(
         logger.debug(f"Cache lookup for variant failed: {e}")
 
 
+def _cached_variant_sizes(
+    repo_id: str, hf_variant: str, main_path: str
+) -> Optional[tuple[tuple[str, int], ...]]:
+    """Sorted ``(filename, size)`` pairs for the cached variant copy at ``main_path``.
+
+    None when no complete cached copy resolves to that path. ``_cached_variant_candidates``
+    owns the shard set and every read is local, so recording this and comparing it later
+    catches a truncated, resized or dropped file without a Hub lookup.
+    """
+    target = os.path.abspath(main_path)
+    for cached_main, main, shards, snap in _cached_variant_candidates(repo_id, hf_variant):
+        if os.path.abspath(cached_main) != target:
+            continue
+        try:
+            return tuple(
+                sorted(
+                    (name, os.path.getsize(snap.joinpath(*name.replace("\\", "/").split("/"))))
+                    for name in (main, *shards)
+                )
+            )
+        except OSError:
+            return None
+    return None
+
+
 def _cached_candidate_matches_revision_size(
     repo_id: str, candidate: tuple[str, str, list[str], Path], hf_token: Optional[str]
 ) -> bool:
@@ -1945,6 +1987,12 @@ _CTX_FIT_VRAM_FRACTION = 0.97
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
+# How far amd-smi's total VRAM may sit from HIP's before the two are reporting
+# different memory scopes rather than one pool (an APU carve-out against the GTT
+# pool, a partition against the whole card). Same 10% margin
+# utils/hardware/hardware.py::_rocm_system_wide_vram_by_index gates its overlay on.
+_AMD_SMI_TOTAL_TOLERANCE = 0.10
+
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
@@ -2281,6 +2329,19 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
+
+    llama.cpp resolves the variable through -c's own handler, so 0 pins the
+    native length here exactly as on the command line. Anything unparseable is
+    left to llama.cpp to reject."""
+    value = (os.environ if env is None else env).get("LLAMA_ARG_CTX_SIZE")
+    try:
+        return int(str(value).strip()) == 0
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def _kv_offload_from_args(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -2481,6 +2542,53 @@ def _child_spec_env(
     if not _extra_args_set_spec_type(extra_args):
         return {}
     return os.environ if env is None else env
+
+
+# The speculative types llama.cpp gives the TARGET context recurrent-state rollback
+# snapshots for -- n_rs_seq = --spec-draft-n-max, per
+# common_params_speculative::need_n_rs_seq. Every draft-model type but draft-simple,
+# and both MTP spellings, since which one a build advertises varies.
+_TARGET_ROLLBACK_SPEC_TYPES = frozenset(
+    {"mtp", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark"}
+)
+
+
+# Architectures whose TARGET context leaves the embedded MTP/NextN blocks out of
+# its KV cache, so block_count must lose them before the target is priced.
+#
+# This is NOT every architecture that carries {arch}.nextn_predict_layers.
+# llama_hparams::n_layer() subtracts nextn everywhere (llama-hparams.cpp:297),
+# but llama_kv_cache walks hparams.n_layer_all (llama-kv-cache.cpp:100) and drops
+# blocks only through an optional per-arch filter (:169). That filter is installed
+# for the hybrids at llama-model.cpp:2289 (Qwen3-Next/Qwen3.5/MiniMax-01 and, via
+# is_recr, Nemotron-H), for GLM-DSA and DeepSeek3.2 at :2129, and for the
+# STEP35/HY_V3/MIMO2 group at :2356. Everywhere else -- deepseek2, glm4, glm4moe,
+# bailingmoe2, cohere2moe, exaone4 -- filter is nullptr and the trailing MTP block
+# DOES get target KV, so subtracting it under-reserves.
+#
+# Fail closed: an arch not named here keeps every block, because over-reserving
+# costs context while under-reserving OOMs the load. Recurrent state is the one
+# thing that always excludes nextn, llama_memory_recurrent sizing on n_layer()
+# directly (llama-memory-recurrent.cpp:29), which is why
+# _mamba_recurrent_state_bytes subtracts unconditionally.
+_TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
+    {
+        # Hybrid attention + recurrent, llama-model.cpp:2289
+        "qwen3next",
+        "qwen35",
+        "qwen35moe",
+        "minimax-01",
+        "nemotron_h",
+        "nemotron_h_moe",
+        # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
+        "glm-dsa",
+        "deepseek32",
+        # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
+        "step35",
+        "hy_v3",
+        "mimo2",
+    }
+)
 
 
 def _accumulated_spec_types(
@@ -3250,10 +3358,42 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _report_live_llama_timings(callback, chunk) -> None:
+    """Report request-scoped llama.cpp progress without altering the public stream."""
+    if callback is None or not isinstance(chunk, dict):
+        return
+    timings = chunk.get("timings")
+    sample = dict(timings) if isinstance(timings, dict) else {}
+    # Live samples are not TTFT; terminal metadata retains prompt_ms for the fallback.
+    sample.pop("prompt_ms", None)
+    progress = chunk.get("prompt_progress")
+    if isinstance(progress, dict):
+        try:
+            processed = max(0.0, float(progress.get("processed", 0)))
+            cached = max(0.0, float(progress.get("cache", 0)))
+            elapsed_ms = float(progress.get("time_ms", 0))
+            prompt_n = max(0.0, processed - cached)
+            if math.isfinite(elapsed_ms) and elapsed_ms > 0 and math.isfinite(prompt_n):
+                sample.update(
+                    prompt_n = prompt_n,
+                    prompt_per_second = prompt_n / (elapsed_ms / 1000.0),
+                )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not sample:
+        return
+    try:
+        callback(sample)
+    except Exception:
+        logger.debug("Ignoring API monitor throughput callback failure", exc_info = True)
+
+
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
+_CGROUP_ROOT = "/sys/fs/cgroup"
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
 
 
 def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
@@ -3663,6 +3803,7 @@ class LlamaCppBackend:
         self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
         self._ssm_state_size: Optional[int] = None
+        self._ssm_group_count: Optional[int] = None
         self._ssm_conv_kernel: Optional[int] = None
         self._kda_head_dim: Optional[int] = None
         # Last N layers reuse earlier layers' KV and don't allocate their own
@@ -3755,6 +3896,8 @@ class LlamaCppBackend:
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
+        # clip.has_vision_encoder, set at load; True keeps an undeclared projector capable.
+        self._mmproj_accepts_image: bool = True
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
@@ -3793,7 +3936,9 @@ class LlamaCppBackend:
 
     @property
     def is_vision(self) -> bool:
-        return self._is_vision
+        """Whether this model takes image input; ``_is_vision`` only records that a
+        projector was attached, which happens for audio input too."""
+        return self._is_vision and self._mmproj_accepts_image
 
     @property
     def is_diffusion(self) -> bool:
@@ -4484,7 +4629,10 @@ class LlamaCppBackend:
         if (
             (
                 self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
-                or self._spec_fallback_reason == "runtime_error"
+                # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
+                # types above cannot see it -- yet the depth is what priced the rollback
+                # copies that made the placement partial, so a change can re-enable MTP.
+                or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
             )
             and intent.spec_draft_n_max is not None
             and intent.spec_draft_n_max != (compared_draft_n_max or 0)
@@ -4804,6 +4952,27 @@ class LlamaCppBackend:
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
 
+    # The value form of the flash-attention flag. Newer llama.cpp declares it
+    # with an enum, "-fa, --flash-attn [on|off|auto]"; older builds take a bare
+    # boolean and reject a following "on" as a stray positional, which is an
+    # immediate "invalid argument" exit rather than a degraded launch.
+    _FLASH_ATTN_ENUM_RE = re.compile(
+        r"(?im)^[^\n]*--flash-attn[^\n]*\bon\b[ \t]*\|[ \t]*\boff\b[^\n]*$"
+    )
+
+    @classmethod
+    def _flash_attn_takes_value(cls, help_text: str) -> bool:
+        """Whether this build's --flash-attn accepts on/off/auto.
+
+        Fails open: a build whose help never mentions the flag at all keeps
+        today's behaviour, because the pinned prebuilt is the value form and a
+        wrong answer there would break the supported path for a hypothetical
+        one.
+        """
+        if not help_text or "--flash-attn" not in help_text:
+            return True
+        return bool(cls._FLASH_ATTN_ENUM_RE.search(help_text))
+
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
@@ -4839,7 +5008,15 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "spec_draft_n_max_default": None,
                 "supports_kv_unified": False,
+                # Fail OPEN, unlike every key above. These three are emitted on
+                # every launch today, so a failed probe must keep emitting them;
+                # only a build whose --help positively lacks one drops it.
+                "supports_no_context_shift": True,
+                "supports_jinja": True,
+                "supports_flash_attn": True,
+                "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
                 "supports_cache_ram": False,
@@ -4850,6 +5027,8 @@ class LlamaCppBackend:
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
+                "flags": {},
+                "help_probe_ok": False,
             }
         try:
             binary_stat = Path(bin_path).stat()
@@ -4875,7 +5054,13 @@ class LlamaCppBackend:
         supports_dflash = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        spec_draft_n_max_default: Optional[int] = None
         supports_kv_unified = False
+        # See the fallback dict: these fail open.
+        supports_no_context_shift = True
+        supports_jinja = True
+        supports_flash_attn = True
+        flash_attn_takes_value = True
         supports_fit_ctx = False
         supports_fit_target = False
         supports_cache_ram = False
@@ -4889,6 +5074,23 @@ class LlamaCppBackend:
         saw_spec_type = False
         probe_ok = False
         help_text = ""
+        # Every flag this build documents, with its help text. Pre-initialised for
+        # the same reason as the booleans above: a failed probe must fall back to
+        # "nothing known", not raise.
+        blocks: dict[str, str] = {}
+        # Same reason, and the reason it lives out here rather than beside the parse
+        # loop: a probe that times out leaves the loop unrun, and the catalogue below
+        # is still built. Reading an unset local there turned a slow binary into an
+        # UnboundLocalError instead of "nothing known about this build".
+        takes_value: dict[str, bool] = {}
+
+        def _is_real(flag: str) -> bool:
+            """True if the flag exists AND is not a removal stub."""
+            desc = blocks.get(flag)
+            if desc is None:
+                return False
+            return "argument has been removed" not in desc
+
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             # Capability detection describes the binary, independently of the
@@ -4918,9 +5120,10 @@ class LlamaCppBackend:
             # Split into per-flag blocks (each --flag line + its indented
             # continuation), so the "argument has been removed" description
             # sits with its flag.
-            blocks: dict[str, str] = {}
             current_flags: list[str] = []
             current_desc: list[str] = []
+            # Flag -> whether its declaration shows a value placeholder.
+            current_takes_value = False
             for line in help_text.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("-") and not line.startswith(" "):
@@ -4929,8 +5132,32 @@ class LlamaCppBackend:
                         desc = " ".join(current_desc)
                         for f in current_flags:
                             blocks[f] = desc
+                            takes_value[f] = current_takes_value
                     current_flags = []
                     current_desc = [stripped]
+                    # Whether the flag takes a value at all, which is what tells
+                    # "--verbose foo" (a typo llama-server refuses) from "--numa
+                    # distribute". A placeholder follows its flag by a SINGLE space
+                    # ("--threads N"); the description sits in an aligned column two
+                    # or more spaces away. Only the yes/no is taken from this: how
+                    # many values, and of what shape, is not worth guessing at from
+                    # help text that wraps.
+                    current_takes_value = False
+                    _previous_end = None
+                    for _match in re.finditer(r"\S+", stripped):
+                        _token = _match.group()
+                        _flag_shaped = _token.startswith("-") and re.match(
+                            r"-{1,2}[A-Za-z][A-Za-z0-9_-]*,?$", _token
+                        )
+                        if _flag_shaped:
+                            _previous_end = _match.end()
+                            continue
+                        # The first token that is not an alias: a placeholder when it
+                        # is one space away, the description when it is further.
+                        current_takes_value = (
+                            _previous_end is not None and _match.start() - _previous_end == 1
+                        )
+                        break
                     # Extract long-form flag tokens from the DECLARATION
                     # prefix only (comma-separated aliases). Stop at the
                     # first non-flag token so flag references inside
@@ -4938,8 +5165,14 @@ class LlamaCppBackend:
                     for tok in re.split(r"[,\s]+", stripped):
                         if tok.startswith("--") and re.match(r"--[A-Za-z][A-Za-z0-9_-]*$", tok):
                             current_flags.append(tok)
+                        elif tok.startswith("-") and re.match(r"-[A-Za-z][A-Za-z0-9_-]*$", tok):
+                            # A short alias (-fa, -t, -ngl). Kept, not just skipped:
+                            # the catalogue is what the editor checks a typed flag
+                            # against, and -t is as valid as --threads, so dropping
+                            # it warned that a correct flag was unknown.
+                            current_flags.append(tok)
                         elif tok.startswith("-") and len(tok) > 1:
-                            # short alias like -fa; keep scanning aliases.
+                            # A value placeholder like -1; keep scanning aliases.
                             continue
                         else:
                             # First non-flag token marks end of decl.
@@ -4950,13 +5183,7 @@ class LlamaCppBackend:
                 desc = " ".join(current_desc)
                 for f in current_flags:
                     blocks[f] = desc
-
-            def _is_real(flag: str) -> bool:
-                """True if the flag exists AND is not a removal stub."""
-                desc = blocks.get(flag)
-                if desc is None:
-                    return False
-                return "argument has been removed" not in desc
+                    takes_value[f] = current_takes_value
 
             # MTP token from the full --spec-type help block (decl + indented
             # continuation). First-line-only probing missed builds putting the
@@ -5010,8 +5237,31 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+            # And the build's OWN default for it, off the same help line. Needed
+            # where the extras own --spec-type: Studio emits no depth then, so the
+            # child runs on this number and the Hybrid Mamba rollback reserve
+            # scales by it. None when the line carries no default.
+            if spec_draft_n_max_flag:
+                _n_max_default = re.search(
+                    r"default:\s*(\d+)", blocks.get(spec_draft_n_max_flag) or ""
+                )
+                if _n_max_default:
+                    spec_draft_n_max_default = int(_n_max_default.group(1))
 
             supports_kv_unified = _is_real("--kv-unified")
+            # Only once the help actually parsed AND `--help` succeeded. Empty
+            # `blocks` means the probe told us nothing, and a nonzero exit means
+            # the listing may be a fragment; neither may read as "absent" for a
+            # flag we would otherwise always send. A real llama-server prints
+            # usage and exits 0, so this costs no supported build anything.
+            if probe_ok and blocks:
+                supports_no_context_shift = _is_real("--no-context-shift")
+                supports_jinja = _is_real("--jinja")
+                # Two answers, not one: whether the flag exists, and whether its
+                # declaration takes a value. A build predating flash attention
+                # has neither, and emitting the flag there is an immediate exit.
+                supports_flash_attn = _is_real("--flash-attn")
+                flash_attn_takes_value = cls._flash_attn_takes_value(help_text)
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
@@ -5076,7 +5326,12 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "spec_draft_n_max_default": spec_draft_n_max_default,
             "supports_kv_unified": supports_kv_unified,
+            "supports_no_context_shift": supports_no_context_shift,
+            "supports_jinja": supports_jinja,
+            "supports_flash_attn": supports_flash_attn,
+            "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
             "supports_cache_ram": supports_cache_ram,
@@ -5087,6 +5342,24 @@ class LlamaCppBackend:
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
+            # The whole parsed catalogue, not just the booleans above. The UI
+            # validates pass-through args against THIS build rather than a list
+            # bundled with Unsloth, since a custom or newer llama.cpp is exactly
+            # the case where a bundled list would be wrong. Removal stubs are
+            # excluded: a build that still lists --draft-max only to say the
+            # argument has been removed would otherwise read as supporting it,
+            # and the editor would stay quiet about a flag the load then refuses.
+            "flags": {flag: desc for flag, desc in blocks.items() if _is_real(flag)},
+            # The flags that take no value, so the editor can tell "--verbose foo"
+            # (a typo llama-server refuses) from "--numa distribute".
+            "switch_flags": sorted(
+                flag for flag, takes in takes_value.items() if not takes and _is_real(flag)
+            ),
+            # Whether --help actually succeeded. A run that exits nonzero after
+            # printing part of its help still leaves a non-empty catalogue, and a
+            # caller that equated "parsed something" with "read the whole thing"
+            # would call every flag past the failure point unknown.
+            "help_probe_ok": bool(probe_ok),
         }
         with cls._capability_cache_lock:
             published = cls._capability_cache.get(cache_key)
@@ -5463,6 +5736,51 @@ class LlamaCppBackend:
         if requested == -1:
             return not fit_active
         return requested > n_layers
+
+    def _partially_offloads_layers(
+        self,
+        args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+        fit_implies_partial: bool = True,
+    ) -> bool:
+        """Whether the effective main-model layer policy is partial GPU offload.
+
+        A concrete layer count owns placement even when ``--fit on`` is present.
+        Otherwise ``-1`` (or an omitted count) is partial only while the fitter may
+        lower it. Zero is CPU-only rather than partial offload, and keeps CPU MTP,
+        and so is a ``--device`` selection naming no GPU: llama.cpp then runs the
+        model on the CPU whatever the layer count and the fitter say.
+
+        ``fit_implies_partial`` is what an active fitter is allowed to mean. In Auto
+        it is evidence: the planner ran and could not prove the model fits, which is
+        why the fitter is on. In Manual mode the planner is skipped by design, so
+        ``--fit on`` is a default rather than a verdict and says nothing about
+        placement -- pass False there and let a concrete count answer instead.
+        """
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
+        try:
+            requested = parse_gpu_layers_override(args)
+        except ValueError:
+            return False
+        source_env = os.environ if env is None else env
+        if _device_selection_is_cpu(args, source_env):
+            return False
+        if requested is None:
+            raw = source_env.get("LLAMA_ARG_N_GPU_LAYERS")
+            if raw is not None and raw.strip():
+                try:
+                    requested = int(raw)
+                except ValueError:
+                    requested = None
+        if requested == 0:
+            return False
+        if requested is not None and requested > 0:
+            # llama.cpp needs a count above block_count to include the output
+            # layer, matching _offloads_every_layer.
+            return requested <= n_layers
+        return fit_implies_partial and fit_is_effectively_on(args, source_env)
 
     @staticmethod
     def _torch_is_rocm(torch) -> bool:
@@ -5862,6 +6180,66 @@ class LlamaCppBackend:
         ]
 
     @staticmethod
+    def _metal_zero_ctx_floor(
+        effective_ctx: int,
+        auto_fit: bool,
+        caller_owns_budget: bool,
+        native_ctx: Optional[int],
+        max_available_ctx: Optional[int] = None,
+    ) -> int:
+        """Context to start at when Metal would otherwise be sent "-c 0", else 0.
+
+        llama.cpp reads "-c 0" as fit_params_min_ctx = UINT32_MAX, pinning the
+        model's full native length and disabling --fit's reduction. Two paths
+        reach the command builder with a zero context after the Apple cap has
+        been skipped or thrown away:
+
+          * the cap is guarded on ``effective_ctx > 0``, so a GGUF whose
+            metadata carries no context length is never capped;
+          * the ``except Exception`` around GPU selection restores the original
+            request, 0 when context is on Auto, discarding a context the cap had
+            already computed.
+
+        Either way the child over-commits unified memory, surfacing as
+        llama-server's "Compute error." at decode (#5118, #6529). Floor to the
+        same 4096 the cap falls back to without a KV estimate.
+
+        Exemptions: no Metal budget (0 off Apple Silicon, so this is inert
+        there); ``auto_fit``, which omits -c so --fit sizes it, and which the
+        caller passes only while --fit will actually run; and
+        ``caller_owns_budget``, a manual mode with a fixed layer count where the
+        user owns memory management. That last is read off the REQUEST, because
+        the paravirtual CPU pin rewrites every placement to manual/0 first and
+        would make a plain Auto request look caller-owned.
+        """
+        if effective_ctx > 0 or auto_fit or caller_owns_budget:
+            return 0
+        if not LlamaCppBackend._apple_metal_memory_budget_bytes():
+            return 0
+        # Never above a ceiling the cap already worked out: on the exception path
+        # max_available_ctx survives the reset, and its KV-based answer can sit
+        # below 4096. Floating back up would re-create the over-commit.
+        return min(4096, native_ctx or 4096, max_available_ctx or 4096)
+
+    @staticmethod
+    def _metal_drops_zero_ctx_override(
+        ctx_override: Optional[int], caller_owns_budget: bool
+    ) -> bool:
+        """Whether a pass-through "-c 0" must be dropped before it reaches Metal.
+
+        User extras are appended after Studio's own -c and llama.cpp is
+        last-wins, so a zero override outlives both the Apple cap and the floor
+        above and re-pins the native length. Only a zero; a positive -c stays
+        honored. Inert off Apple Silicon like the floor, but unlike the floor it
+        also fires in Auto-layers, where the command omits -c precisely so --fit
+        sizes the context. ``caller_owns_budget`` is exempt, read off the request
+        for the reason the floor documents.
+        """
+        if ctx_override != 0 or caller_owns_budget:
+            return False
+        return bool(LlamaCppBackend._apple_metal_memory_budget_bytes())
+
+    @staticmethod
     def _apple_metal_memory_budget_bytes() -> int:
         """Unified-memory budget for GGUF context fitting on Apple Silicon.
 
@@ -5869,6 +6247,24 @@ class LlamaCppBackend:
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
         fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
+
+        Both of those inputs describe the MACHINE, not the moment. MLX's
+        max_recommended_working_set_size is a static device property, and
+        virtual_memory().total obviously is, so on a 16 GB Mac the budget came
+        out around 9 GB whether the machine was idle or already holding several
+        gigabytes. Studio's own idle footprint alone is over a gigabyte once the
+        warm thread has imported torch and, on Apple Silicon, MLX. The fit then
+        sized a context against headroom that was not there, and llama-server
+        died in KV or compute allocation.
+
+        So take whichever is smaller: the device ceiling, or what is actually
+        available right now. The ceiling still applies on a machine with plenty
+        free, which is the case the working-set number was chosen for.
+
+        _APPLE_UNIFIED_MEMORY_FRACTION then earns a second job it did not have
+        over a static ceiling: available is a snapshot, and llama-server spends
+        seconds loading weights, so another app can take memory inside that
+        window. Budgeting all of it would re-create the failure this avoids.
         """
         from utils.hardware import is_apple_silicon
 
@@ -5881,13 +6277,394 @@ class LlamaCppBackend:
                 rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
         except Exception:
             rec_bytes = 0
+        vm = None
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:
+            vm = None
         if rec_bytes <= 0:
+            if vm is None:
+                return 0
             try:
-                import psutil
-                rec_bytes = int(psutil.virtual_memory().total)
+                rec_bytes = int(vm.total)
             except Exception:
                 return 0
+        # available, not free: psutil's macOS free subtracts speculative pages and
+        # leaves out the inactive queue, so it reads far below what a new allocation
+        # can get. available is inactive + free (psutil arch/osx/mem.c), which adds
+        # that reclaimable cache back. An estimate either way, since it counts dirty
+        # inactive pages that cost a compression to reclaim and ignores the
+        # compressor entirely. Only ever lowers the budget.
+        try:
+            available = int(getattr(vm, "available", 0) or 0) if vm is not None else 0
+        except Exception:
+            available = 0
+        if available > 0:
+            rec_bytes = min(rec_bytes, available)
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
+
+    @staticmethod
+    def _rocm_arch_gate_keep(
+        binary: Optional[str], torch_mod, for_llama_server: bool
+    ) -> Callable[[int], bool]:
+        """Predicate over PHYSICAL ids: False for a device the installed ROCm
+        prebuilt has no kernels for.
+
+        llama-server placement only, so the free-memory rank cannot pick a GPU that
+        binary cannot run (#7624: an iGPU reporting shared RAM outranks the dGPU and
+        the child dies with "device kernel image is invalid"). Keeps every device off
+        that path, off ROCm, on unknown coverage, and for a device with no reported
+        arch. Shared by both branches of ``_get_gpu_memory`` so the amd-smi and torch
+        paths cannot gate differently.
+        """
+        if not for_llama_server or not LlamaCppBackend._torch_is_rocm(torch_mod):
+            return lambda _idx: True
+        supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
+        if supported_archs is None:
+            return lambda _idx: True
+        arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+
+        def _keep(idx: int) -> bool:
+            _base = arch_by_id.get(idx, "")
+            if _base and _base not in supported_archs:
+                logger.warning(
+                    f"Skipping GPU {idx} ({_base}): installed llama.cpp "
+                    f"prebuilt only covers {sorted(supported_archs)}"
+                )
+                return False
+            return True
+
+        return _keep
+
+    @staticmethod
+    def _rocm_hip_is_reachable() -> bool:
+        """Whether HIP can actually open a device on this ROCm host.
+
+        amd-smi reads the driver over sysfs and libdrm, HIP needs ``/dev/kfd`` and a
+        matching HSA runtime, so the two disagree on a container given only
+        ``/dev/dri`` and on a torch built against another ROCm: amd-smi lists the
+        card and ``hipGetDeviceCount`` returns 0. The llama-server child is a HIP
+        process too, so answering there places a model on a device nothing can open.
+
+        ``is_available()`` is that ``hipGetDeviceCount``, not ``_lazy_init``, so it
+        creates no primary context; ``_rocm_unified_memory_gpu_ids`` already calls it
+        further down the same probe. False when torch is missing or unreadable.
+        """
+        try:
+            import torch
+            return bool(hasattr(torch, "cuda") and torch.cuda.is_available())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _rocm_hip_device_count() -> int:
+        """How many devices HIP can open here, or 0 when torch cannot say.
+
+        ``hipGetDeviceCount``, the same call ``_rocm_hip_is_reachable`` asks for a
+        yes/no, so it costs no primary context either. This is the size of the
+        inventory the llama-server child will see; amd-smi reads sysfs and answers
+        for the whole host regardless, so the two disagree wherever something
+        outside the visibility variables filters the device set (a device-cgroup
+        container given one ``/dev/dri/renderD*`` node, ``GPU_DEVICE_ORDINAL``, a
+        card amd-smi could not size).
+        """
+        try:
+            import torch
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return 0
+            return int(torch.cuda.device_count())
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _gpu_device_ordinal_active() -> bool:
+        """Whether ``GPU_DEVICE_ORDINAL`` is filtering this process's devices.
+
+        ROCm's fourth visibility variable, and the one nothing here reads:
+        ``_active_gpu_visibility_mask`` knows the HIP, ROCR and CUDA names only, so
+        ``_resolve_visible_physical_ids`` answers None ("no mask") under it. AMD
+        documents it at the ROCclr layer as "devices indices exposed to OpenCL and
+        HIP applications", while clr itself reads it only on the non-HIP branch
+        (``rocclr/device/rocm/rocdevice.cpp`` picks HIP_VISIBLE_DEVICES /
+        CUDA_VISIBLE_DEVICES when ``amd::IS_HIP``), so the two disagree on whether
+        HIP honours it. Treat it as a mask either way: being wrong here costs the
+        host nothing but this branch's context saving, and being wrong the other way
+        offers a hidden card for placement. ``utils/hardware/hardware.py::
+        _rocm_visibility_mask_active`` gates the system-wide VRAM overlay on the same
+        four names. Whitespace is not a filter, matching that helper."""
+        return bool(os.environ.get("GPU_DEVICE_ORDINAL", "").strip())
+
+    @staticmethod
+    def _rocm_visibility_masks_are_stacked() -> bool:
+        """Whether a ROCr mask AND a HIP-layer mask are both filtering this process.
+
+        The two sit at different layers and therefore COMPOSE: ROCR_VISIBLE_DEVICES
+        filters and renumbers the agent list inside the ROCr runtime
+        (``ROCR-Runtime/core/inc/amd_filter_device.h::RvdFilter``), and clr's
+        ``Device::init`` then indexes ``HIP_VISIBLE_DEVICES`` (or its
+        ``CUDA_VISIBLE_DEVICES`` twin) into ``gpu_agents_``, the vector
+        ``hsa_iterate_agents`` just returned -- so the HIP ordinals count positions in
+        what ROCr left, not physical devices. ``ROCR_VISIBLE_DEVICES=1,2`` with
+        ``HIP_VISIBLE_DEVICES=0`` opens physical GPU 1.
+
+        ``_active_gpu_visibility_mask`` returns the single highest-precedence value,
+        which is the right answer for one layer and cannot express two: it reads
+        ``[0]`` for that example, and on a host whose cards have the same total the
+        inventory and total-memory cross-checks agree with it. Callers that would map
+        those ids onto amd-smi's host-wide device list must decline instead. Composing
+        the masks here is not an option: the physical->ROCr mapping is exactly what
+        ROCr renumbered away, and guessing it wrong offers a hidden card.
+
+        HIP and CUDA together are ONE layer, not two -- clr reads whichever is set
+        first and never both -- so they do not stack. Windows has no ROCr layer at
+        all, so a stray ROCR variable filters nothing there, matching
+        ``_active_gpu_visibility_mask`` and ``_emit_child_gpu_visibility``. Set is
+        set: an empty ROCr mask hides every agent rather than nothing."""
+        if sys.platform == "win32":
+            return False
+        if os.environ.get("ROCR_VISIBLE_DEVICES") is None:
+            return False
+        return (
+            os.environ.get("HIP_VISIBLE_DEVICES") is not None
+            or os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+        )
+
+    @staticmethod
+    def _rocm_total_memory_mib_by_physical_id() -> dict[int, int]:
+        """Total memory HIP reports per PHYSICAL device id, honoring the active ROCm
+        mask, for cross-checking amd-smi's totals.
+
+        Read through ``get_device_properties`` like ``_rocm_arch_by_physical_id``, so
+        it costs no primary context (``mem_get_info`` is the call that does).
+        Devices torch cannot describe are omitted and callers fail open on them;
+        empty off ROCm and on any error."""
+        totals: dict[int, int] = {}
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return totals
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return totals
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    total_bytes = int(
+                        getattr(torch.cuda.get_device_properties(ordinal), "total_memory", 0) or 0
+                    )
+                except Exception:
+                    continue
+                if total_bytes <= 0:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                totals[pid] = total_bytes // (1024 * 1024)
+        except Exception:
+            return totals
+        return totals
+
+    @staticmethod
+    def _amd_smi_hip_id_map(
+        enumerated: list[int], mask: Optional[list[int]]
+    ) -> Optional[dict[int, int]]:
+        """{amd-smi gpu id: HIP id} for every enumerated device, else None.
+
+        amd-smi numbers its devices in discovery order and HIP numbers them by KFD
+        node id, so the two agree on most hosts and not on all of them (MI350X in
+        SPX/NPS1 among others). Every id this probe returns is fed back as a HIP
+        ordinal -- matched against the visibility mask, then written into the child's
+        HIP_VISIBLE_DEVICES -- so an untranslated amd-smi id pins the wrong card.
+
+        None means "not provable", and the branch then defers to torch, which
+        enumerates in HIP's space by construction.
+        """
+        if len(enumerated) == 1 and mask in (None, [0]):
+            # One card on the host, so HIP can only be looking at that card and its
+            # id can only be 0. Keeps the single-GPU ROCm desktop, which is most of
+            # them, on amd-smi even where the CLI predates the mapping below.
+            return {enumerated[0]: 0}
+        from utils.hardware.amd import get_hip_id_by_gpu_index
+
+        mapping = get_hip_id_by_gpu_index()
+        if mapping is None or not all(_g in mapping for _g in enumerated):
+            logger.debug(
+                "amd-smi VRAM probe deferring to torch: no amd-smi to HIP id mapping "
+                "for this host (amd-smi list -e needs ROCm 6.4.0+)"
+            )
+            return None
+        return mapping
+
+    @staticmethod
+    def _get_gpu_memory_amd_smi(
+        binary: Optional[str] = None, *, for_llama_server: bool = False
+    ) -> list[tuple[int, int, int]]:
+        """ROCm free/total VRAM per PHYSICAL (HIP) gpu id via amd-smi, else ``[]``.
+
+        Same index space and arch gate as the torch branch of ``_get_gpu_memory``,
+        read from a child process instead. Reading VRAM through
+        ``torch.cuda.mem_get_info`` creates a HIP primary context that the backend
+        never gives back (~700 MiB measured), and the GGUF models this sizes run in a
+        llama-server CHILD, so that VRAM is lost for the life of the process to
+        answer a question a subprocess can answer.
+
+        ``[]`` off ROCm and whenever amd-smi cannot answer, so the caller falls
+        through to torch exactly as before. A gate that drops every card answers
+        ``[]`` too, and torch then gates identically to the same empty list, so the
+        one context this still costs is on the arm already headed for the CPU.
+        A visible unified-memory APU answers ``[]`` as well: amd-smi sees only its
+        dedicated VRAM carve-out, not the GTT pool the torch branch measures. So does
+        anything it can only half answer: a subset is a non-empty list the caller
+        takes as the whole host, which would drop a device from the count tensor
+        parallelism is decided on.
+
+        The inventory has to be HIP's, since the child is a HIP process: the answer
+        is declined when the device set is filtered by something the mask cannot see
+        (``GPU_DEVICE_ORDINAL``, a device-cgroup container), when amd-smi and HIP
+        count different numbers of devices, and when they report totals far enough
+        apart to be describing different memory scopes.
+        """
+        try:
+            import torch
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return []
+        except Exception:
+            return []
+        if not LlamaCppBackend._rocm_hip_is_reachable():
+            # amd-smi would still list the hardware, but HIP cannot open it and
+            # neither can the llama-server child. Torch answers [] here, as it did
+            # before this branch existed, and the load goes to CPU.
+            logger.debug(
+                "amd-smi VRAM probe deferring to torch: this ROCm torch cannot open "
+                "a device, so amd-smi's inventory is not usable by llama-server"
+            )
+            return []
+        try:
+            from utils.hardware.amd import get_gpu_vram_report
+
+            if LlamaCppBackend._visibility_mask_is_unmappable():
+                # A mask IS set but names devices by UUID, so it cannot be applied
+                # here. amd-smi ignores the mask itself (it reads KFD directly), so
+                # answering would offer cards the parent deliberately hid. Torch sees
+                # only the masked set, so let it answer.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: the GPU visibility mask "
+                    "is not index based, so amd-smi's device list cannot be filtered"
+                )
+                return []
+            if LlamaCppBackend._gpu_device_ordinal_active():
+                # _resolve_visible_physical_ids does not read this one, so "no mask"
+                # below would be a lie wherever it does filter, and every hidden card
+                # would be offered for ranking.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: GPU_DEVICE_ORDINAL is "
+                    "set, so amd-smi's device list cannot be filtered"
+                )
+                return []
+            if LlamaCppBackend._rocm_visibility_masks_are_stacked():
+                # A ROCr mask under a HIP mask re-indexes it, and the resolved value
+                # is the HIP one alone -- ordinals into the set ROCr left, not the
+                # physical ids amd-smi answers for. Every later check agrees with the
+                # wrong ids on a host whose cards match, so this is the only place it
+                # can be caught.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: ROCR_VISIBLE_DEVICES is "
+                    "stacked under a HIP-layer mask, so the visible ids are positions "
+                    "in the ROCr-filtered set rather than physical devices"
+                )
+                return []
+            mask = LlamaCppBackend._resolve_visible_physical_ids()
+            if mask is not None and not mask:
+                return []  # every device hidden
+            vram, enumerated = get_gpu_vram_report()
+            if not enumerated:
+                return []
+            # amd-smi ids are not HIP ids; translate before anything compares them
+            # against the mask or hands them to the child.
+            hip_by_gpu = LlamaCppBackend._amd_smi_hip_id_map(enumerated, mask)
+            if hip_by_gpu is None:
+                return []
+            vram = {hip_by_gpu[_g]: _v for _g, _v in vram.items()}
+            # amd-smi enumerates every card regardless of the mask, so drop the ones
+            # this process cannot see. No mask means all of them.
+            visible = set(mask) if mask is not None else set(hip_by_gpu.values())
+            if not visible.issubset(vram):
+                # A device that is visible and unmeasured: all or nothing.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: no usable VRAM reading "
+                    f"for visible GPU(s) {sorted(visible - set(vram))}"
+                )
+                return []
+            hip_count = LlamaCppBackend._rocm_hip_device_count()
+            if len(visible) != hip_count:
+                # This inventory has to BE the child's. amd-smi answers for the whole
+                # host off sysfs, so anything filtering devices outside the
+                # visibility variables leaves it larger than HIP's: a device-cgroup
+                # container given one /dev/dri/renderD* node and no env var (see
+                # test_overlay_skips_device_cgroup_filtered_container) is the usual
+                # one. Smaller means amd-smi omitted a card HIP can open, which the
+                # single-GPU shortcut in _amd_smi_hip_id_map would otherwise read as
+                # a one-card host. Either way the numbers are not comparable.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: amd-smi reports "
+                    f"{len(visible)} visible GPU(s) and HIP opens {hip_count}"
+                )
+                return []
+            hip_totals = LlamaCppBackend._rocm_total_memory_mib_by_physical_id()
+            disagreeing = sorted(
+                _idx
+                for _idx in visible
+                if _idx in hip_totals
+                and abs(vram[_idx][1] - hip_totals[_idx])
+                > _AMD_SMI_TOTAL_TOLERANCE * hip_totals[_idx]
+            )
+            if disagreeing:
+                # Two memory scopes, not two readings of one pool. The case that
+                # matters is an APU _rocm_classify_unified_memory does not name (a
+                # gfx1103 Phoenix wheel with no is_integrated flag): amd-smi sees the
+                # BIOS carve-out and HIP the GTT pool, so accepting amd-smi's figure
+                # would cut context or push the model to CPU. A partitioned MI300
+                # reads the other way round. hardware.py::
+                # _rocm_system_wide_vram_by_index gates its own overlay on the same
+                # comparison. Devices torch cannot describe are absent from
+                # hip_totals and fail open, so an unreadable properties call cannot
+                # disable this branch wholesale.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: amd-smi and HIP report "
+                    f"different total memory for GPU(s) {disagreeing}"
+                )
+                return []
+            unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            if unified_ids:
+                # amd-smi reports only the dedicated VRAM carve-out on a
+                # unified-memory APU, while HIP reports the far larger GTT pool the
+                # models actually run in: on a 128GiB Strix Halo with an 8GiB BIOS
+                # carve-out amd-smi says 8GiB and torch says ~100GiB. Handing the
+                # GGUF fitter the slice would cut context or push the model to CPU.
+                # utils/hardware/hardware.py::_apply_unified_memory_correction
+                # adopts torch's total over amd-smi's for the System tab for the
+                # same reason. Defer the WHOLE host rather than mix two memory
+                # scopes: dropping only the APU would remove it from placement, and
+                # the two branches of _get_gpu_memory must not disagree.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: unified-memory APU(s) "
+                    f"{sorted(unified_ids)} report only their dedicated VRAM slice"
+                )
+                return []
+            arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
+            gpus: list[tuple[int, int, int]] = []
+            for idx in sorted(visible):
+                if not arch_keeps(idx):
+                    continue
+                free_mib, total_mib = vram[idx]
+                gpus.append((idx, free_mib, total_mib))
+            return gpus
+        except Exception as e:
+            logger.debug(f"amd-smi GPU probe failed: {e}")
+            return []
 
     @staticmethod
     def _get_gpu_memory(
@@ -5896,9 +6673,12 @@ class LlamaCppBackend:
         """Query free AND total memory per GPU.
 
         Order: ``nvidia-smi`` (NVIDIA, respects ``CUDA_VISIBLE_DEVICES``), then
+        ``amd-smi`` (ROCm, the same answer without a HIP context), then
         ``torch.cuda.mem_get_info``, a universal fallback that works on ROCm too
         (HIP reuses the ``torch.cuda.*`` namespace). The fallback covers #5106
-        (nvidia-smi returned [] on AMD) and NVIDIA hosts without nvidia-smi on PATH.
+        (nvidia-smi returned [] on AMD) and hosts with no smi tool on PATH; it is
+        last because it costs this process a permanent CUDA/HIP context, and kept
+        because callers read ``[]`` as "no GPU" and would silently drop to CPU.
 
         On a Vulkan build the ggml Vulkan probe is authoritative, so the indices are
         ggml's compact Vulkan ordinals (what ``--device Vulkan<i>`` selects). It
@@ -5968,6 +6748,13 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
 
+        # ── AMD ROCm via amd-smi ─────────────────────────────────────
+        rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
+            binary, for_llama_server = for_llama_server
+        )
+        if rocm_gpus:
+            return rocm_gpus
+
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         try:
             import torch
@@ -5989,17 +6776,8 @@ class LlamaCppBackend:
             # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
-            # llama-server placement only: gate on the prebuilt's built-arch list so
-            # the free-memory rank cannot pick a GPU the binary has no kernels for
-            # (#7624: an iGPU reporting shared RAM outranks the dGPU and the child
-            # dies with "device kernel image is invalid"). Unknown coverage, or a
-            # device with no reported arch, keeps every device.
-            supported_archs = None
-            arch_by_id: dict[int, str] = {}
-            if for_llama_server and LlamaCppBackend._torch_is_rocm(torch):
-                supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
-                if supported_archs is not None:
-                    arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+            # Same #7624 arch gate the amd-smi branch applies, from the one helper.
+            arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
             gpus = []
             # Windows ROCm's free reading is an over-report on discrete cards too,
             # not only on the shared pool handled below (#8403). It is capped
@@ -6014,14 +6792,8 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if supported_archs is not None:
-                    _base = arch_by_id.get(idx, "")
-                    if _base and _base not in supported_archs:
-                        logger.warning(
-                            f"Skipping GPU {idx} ({_base}): installed llama.cpp "
-                            f"prebuilt only covers {sorted(supported_archs)}"
-                        )
-                        continue
+                if not arch_keeps(idx):
+                    continue
                 shared = idx in unified_ids
                 raw_mib = free_bytes // (1024 * 1024)
                 if shared:
@@ -6170,23 +6942,263 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _cgroup_available_memory_mib() -> Optional[int]:
+        """Memory this process can still charge to an enforcing cgroup.
+
+        ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
+        containers. Walk the process's cgroup plus its ancestors and pair each
+        limit with that same directory's usage; an ancestor slice can be the
+        binding limit and includes sibling usage that a leaf does not see.
+        Supports cgroup v2 and the legacy v1 memory controller. ``None`` means
+        no finite readable limit, so callers retain their host reading.
+        """
+
+        def _first_line(path: str) -> Optional[str]:
+            try:
+                with open(path, "r", encoding = "utf-8") as f:
+                    return f.readline().strip()
+            except OSError:
+                return None
+
+        def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
+            if not raw or raw == "max":
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                return None
+            # cgroup v1 spells unlimited as a near-2^63 sentinel.
+            if value < 0 or (limit and value >= 1 << 60):
+                return None
+            return value
+
+        def _stat_integer(path: str, *keys: str) -> int:
+            """Read the first requested byte counter present in memory.stat."""
+            try:
+                with open(path, "r", encoding = "utf-8") as f:
+                    values = {}
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) == 2 and parts[0] in keys:
+                            value = _integer(parts[1])
+                            if value is not None:
+                                values[parts[0]] = value
+            except OSError:
+                return 0
+            return next((values[key] for key in keys if key in values), 0)
+
+        def _directories(root: str, relative: Optional[str]) -> list[str]:
+            root = os.path.abspath(root)
+            current = os.path.normpath(os.path.join(root, (relative or "/").lstrip("/")))
+            try:
+                if os.path.commonpath((root, current)) != root:
+                    return [root]
+            except ValueError:
+                return [root]
+            out = []
+            while True:
+                out.append(current)
+                if current == root:
+                    return out
+                current = os.path.dirname(current)
+
+        try:
+            with open(_PROC_SELF_CGROUP, "r", encoding = "utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+        except OSError:
+            lines = []
+
+        remaining: list[int] = []
+        v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
+        for directory in _directories(_CGROUP_ROOT, v2_relative):
+            limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
+            if limit is None:
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.current")))
+            if used is not None:
+                # memory.current includes file-backed cache. Inactive file pages
+                # are reclaimable under pressure, so price the launch against the
+                # cgroup working set rather than charging cached GGUF pages twice.
+                used = max(
+                    0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
+                )
+            remaining.append(limit if used is None else limit - used)
+
+        v1_root = os.path.join(_CGROUP_ROOT, "memory")
+        v1_relative = None
+        for line in lines:
+            parts = line.split(":", 2)
+            if len(parts) == 3 and "memory" in parts[1].split(","):
+                v1_relative = parts[2]
+                break
+        for directory in _directories(v1_root, v1_relative):
+            limit = _integer(
+                _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
+            )
+            if limit is None:
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            if used is not None:
+                # v1 usage is hierarchical when use_hierarchy is enabled, so its
+                # matching counter is total_inactive_file. Fall back to the local
+                # counter for non-hierarchical controllers.
+                used = max(
+                    0,
+                    used
+                    - _stat_integer(
+                        os.path.join(directory, "memory.stat"),
+                        "total_inactive_file",
+                        "inactive_file",
+                    ),
+                )
+            remaining.append(limit if used is None else limit - used)
+
+        return max(min(remaining), 0) // (1024 * 1024) if remaining else None
+
+    @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
-        neither is readable. On a unified-memory APU this, not the ROCm-reported
-        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        neither is readable, capped by this process's cgroup remainder. On a
+        unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling:
+        the weights load into shared system RAM."""
+        available = None
         try:
             import psutil
-            return int(psutil.virtual_memory().available // (1024 * 1024))
+            available = int(psutil.virtual_memory().available // (1024 * 1024))
+        except Exception:
+            pass
+        if available is None:
+            try:
+                with open("/proc/meminfo", encoding = "utf-8") as f:
+                    for line in f:
+                        if line.startswith("MemAvailable:"):
+                            available = int(line.split()[1]) // 1024  # kB -> MiB
+                            break
+            except Exception:
+                pass
+        cgroup_available = LlamaCppBackend._cgroup_available_memory_mib()
+        if available is None:
+            return cgroup_available
+        return min(available, cgroup_available) if cgroup_available is not None else available
+
+    @staticmethod
+    def _total_system_memory_mib() -> Optional[int]:
+        """Total system RAM in MiB (psutil, then /proc/meminfo), or None if neither is
+        readable. The ceiling on what ``MemAvailable`` can ever become, so a preflight that
+        runs before the resident model and pipeline are torn down can price against it
+        without charging for host memory that is about to come back."""
+        try:
+            import psutil
+            return int(psutil.virtual_memory().total // (1024 * 1024))
         except Exception:
             pass
         try:
             with open("/proc/meminfo", encoding = "utf-8") as f:
                 for line in f:
-                    if line.startswith("MemAvailable:"):
+                    if line.startswith("MemTotal:"):
                         return int(line.split()[1]) // 1024  # kB -> MiB
         except Exception:
             pass
         return None
+
+    _ARGV_MODEL = frozenset({"-m", "--model"})
+    _ARGV_RPC = frozenset({"--rpc"})
+
+    @staticmethod
+    def _binary_ships_no_gpu_backend(
+        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> bool:
+        """Whether a split-library build beside ``binary`` carries no GPU backend at all.
+
+        Stricter than ``_backend_lacks_gpu_lib``, which reads cuda, hip and vulkan only:
+        a SYCL, MUSA, CANN or OpenCL build offloads too, and pricing its weights against
+        host RAM would refuse a load the accelerator can hold. A static or unrecognised
+        layout, a directory this cannot read, and a GGML_BACKEND_PATH pointing the child
+        at plugins elsewhere all answer False so a GPU build keeps its VRAM credit.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        source = os.environ if env is None else env
+        if str(source.get("GGML_BACKEND_PATH", "") or "").strip():
+            return False
+        try:
+            files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
+        except OSError:
+            return False
+        cpu_stem = "ggml-cpu" if sys.platform == "win32" else "libggml-cpu"
+        base_stem = "ggml-base" if sys.platform == "win32" else "libggml-base"
+        split_library = any(name.startswith((cpu_stem, base_stem)) for name in files)
+        return split_library and not any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
+
+    def _launch_host_shortfall_message(
+        self,
+        cmd: Iterable[str],
+        detected_gpus: Iterable[tuple],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        child_has_no_gpu: bool = False,
+        avail_mib: Optional[int] = None,
+        shared_gpu_ids: Iterable[int] = (),
+    ) -> Optional[str]:
+        """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
+
+        Weights only, against the whole free pool, is a strict lower bound on what the
+        launch must hold: the KV cache, projector, drafter and compute buffers all add
+        to it, and a layer or device pin only narrows the VRAM actually reachable. So
+        every term this leaves out moves the estimate down, never up, and no missing
+        term can turn an allowed load into a refused one. That is what keeps the check
+        a floor with no placement modelling to keep in step with llama.cpp.
+
+        Read from the finished argv, so the model path is the one the child opens. An
+        unsized model abstains rather than guessing, and so does an empty GPU pool,
+        which means the probe threw. ``child_has_no_gpu`` is the launch reporting a
+        placement it already knows reaches no card, rather than one it could not read:
+        there the whole model is host-resident and takes no VRAM credit.
+
+        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright, so a user who accepts the
+        paging can still load a variant the picker offers.
+
+        ``avail_mib`` overrides the host figure for a caller that runs before the resident
+        owners are released; the launch reads what is available now. ``shared_gpu_ids``
+        names Vulkan iGPUs whose reported free memory is the same host pool, so it must
+        not also be credited as dedicated VRAM.
+        """
+        argv = [str(a) for a in cmd or ()]
+        if not argv:
+            return None
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
+            return None
+        # the user's own opt-out, so read the real environment, not the curated child env
+        if os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
+            return None
+        # rpc places layers on remote devices this cannot size, in either spelling
+        _env = os.environ if env is None else env
+        if (_extra_args_device(argv, self._ARGV_RPC) or "").strip() or str(
+            _env.get("LLAMA_ARG_RPC", "") or ""
+        ).strip():
+            return None
+        try:
+            model_bytes = self._get_gguf_size_bytes(model_path)
+        except Exception:
+            return None
+        gpus = [] if child_has_no_gpu else list(detected_gpus or ())
+        # _get_gpu_memory swallows a failed probe as [], so an empty pool it did not
+        # vouch for cannot be told from a host that has no gpu at all
+        if not model_bytes or (not gpus and not child_has_no_gpu):
+            return None
+        shared = set(shared_gpu_ids or ())
+        free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
+        return self._host_offload_shortfall_message(
+            model_bytes - free_vram_mib * 1024 * 1024,
+            self._available_system_memory_mib() if avail_mib is None else avail_mib,
+        )
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -6209,6 +7221,36 @@ class LlamaCppBackend:
             "APU the weights load into system RAM, so a larger model is stopped by "
             "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
             "(on WSL, raise the memory limit in .wslconfig)."
+        )
+
+    @staticmethod
+    def _host_offload_shortfall_message(
+        offload_bytes: int,
+        avail_mib: Optional[int],
+        headroom_mib: int = 2048,
+    ) -> Optional[str]:
+        """On a discrete GPU, return a user-facing refusal when the part of a load
+        that misses VRAM cannot fit in available system RAM (else None). The spill is
+        mmap'd, so an oversized one thrashes the mapping instead of failing, until the
+        OS kills the app. Priced against free VRAM with no margin subtracted, so it
+        under-states the spill and only an unambiguous shortfall refuses. None avail
+        (unknown RAM), and anything VRAM-resident, never refuse."""
+        if offload_bytes <= 0 or avail_mib is None:
+            return None
+        need_mib = offload_bytes / (1024 * 1024)
+        if need_mib <= avail_mib - headroom_mib:
+            return None
+        # need up, usable down, so the printed pair cannot round into a tie
+        need_gb = math.ceil(need_mib / 1024)
+        usable_gb = math.floor(max(0, avail_mib - headroom_mib) / 1024)
+        return (
+            f"About {need_gb} GB of this model does not fit in GPU memory and would run "
+            f"from system RAM. Only about {avail_mib / 1024:.0f} GB is available and "
+            f"{headroom_mib / 1024:.0f} GB of that is kept free for the rest of the "
+            f"system, leaving about {usable_gb} GB usable. The weights are memory-mapped, "
+            "so the machine pages them in and out until it stops responding and the OS "
+            "kills the app. Use a smaller or more quantized GGUF, free memory, or set "
+            "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
         )
 
     # Skip the wait when the last kill is older than this; the driver has
@@ -6737,9 +7779,9 @@ class LlamaCppBackend:
         is the whole reservation at short contexts and the bisection in
         _fit_context_to_vram cannot shrink it away.
 
-        Sizes follow llama_hparams::n_embd_r/n_embd_s. Kimi KDA only: Mamba
-        needs ssm.group_count, which is not parsed, so those models keep the
-        previous behaviour rather than get a wrong number.
+        Sizes follow llama_hparams::n_embd_r/n_embd_s. This helper covers the
+        per-layer KDA layout; Hybrid Mamba uses its architecture-level interval
+        and group count in _mamba_recurrent_state_bytes.
         """
         if not self._n_kv_heads_by_layer or not self._n_layers or not self._kda_head_dim:
             return 0
@@ -6751,6 +7793,79 @@ class LlamaCppBackend:
         n_embd_r = 3 * max(0, d_conv - 1) * n_head * head_dim
         n_embd_s = head_dim * head_dim * n_head
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
+
+    def _target_kv_excludes_nextn(self) -> bool:
+        """Whether this model's TARGET KV cache skips the embedded MTP blocks.
+
+        See _TARGET_KV_EXCLUDES_NEXTN_ARCHS for why this is per-architecture
+        rather than a property of the nextn key.
+
+        A hybrid recurrent header answers yes without consulting that list. Every
+        hybrid Mamba architecture llama.cpp accepts a nextn key from -- Qwen3-Next,
+        Qwen3.5, Qwen3.5-MoE, Nemotron-H -- is filtered at llama-model.cpp:2289,
+        and the recurrent half is sized on n_layer() regardless
+        (llama-memory-recurrent.cpp:29), so the ssm dims are sufficient evidence
+        and a GGUF whose header names an arch this build has never heard of still
+        gets the right answer. Everything else must be named, so an unreadable or
+        unknown architecture keeps every block.
+        """
+        if not self._nextn_predict_layers:
+            return False
+        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
+            return True
+        arch = getattr(self, "_architecture", None)
+        return bool(arch) and str(arch).strip().lower() in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
+
+    def _mamba_recurrent_state_bytes(
+        self,
+        n_parallel: int = 1,
+        n_rs_seq: int = 0,
+    ) -> int:
+        """VRAM for Hybrid Mamba conv/SSM state, including rollback copies.
+
+        llama.cpp allocates one f32 recurrent state per parallel sequence. MTP
+        additionally keeps ``--spec-draft-n-max`` rollback states per sequence
+        while verifying draft tokens, so its allocation is ``1 + n_rs_seq``
+        times the base state.
+        """
+        n_layers_raw = getattr(self, "_n_layers", None)
+        d_inner_raw = getattr(self, "_ssm_inner_size", None)
+        d_state_raw = getattr(self, "_ssm_state_size", None)
+        n_group_raw = getattr(self, "_ssm_group_count", None)
+        d_conv_raw = getattr(self, "_ssm_conv_kernel", None)
+        fai_raw = getattr(self, "_full_attention_interval", None)
+        if not all(
+            value is not None
+            for value in (
+                n_layers_raw,
+                d_inner_raw,
+                d_state_raw,
+                n_group_raw,
+                d_conv_raw,
+                fai_raw,
+            )
+        ):
+            return 0
+        # Excludes the embedded MTP blocks, as _estimate_kv_cache_bytes does and
+        # for the same reason: llama.cpp keeps them out of the target's n_layer.
+        n_layers = max(
+            0,
+            int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
+        )
+        fai = int(fai_raw or 0)
+        n_attn = -(-n_layers // fai) if fai > 0 else n_layers
+        n_recurrent = max(0, n_layers - n_attn)
+        if n_recurrent == 0:
+            return 0
+        d_inner = int(d_inner_raw or 0)
+        d_state = int(d_state_raw or 0)
+        n_group = int(n_group_raw or 0)
+        d_conv = int(d_conv_raw or 0)
+        n_embd_r = max(0, d_conv - 1) * (d_inner + 2 * n_group * d_state)
+        n_embd_s = d_state * d_inner
+        return int(
+            n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel) * max(1, 1 + n_rs_seq)
+        )
 
     def _legacy_head_dim(self) -> int:
         """Head-dim fallback for GGUFs without explicit key/value dims. Reached
@@ -6818,7 +7933,15 @@ class LlamaCppBackend:
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
+        # GGUF block_count includes embedded MTP blocks, and llama.cpp keeps
+        # those out of the target context for SOME architectures only -- see
+        # _TARGET_KV_EXCLUDES_NEXTN_ARCHS. Where it does, their KV lives in the
+        # draft context and _mtp_draft_kv_bytes prices it separately; where it
+        # does not, the target cache still allocates them and subtracting here
+        # would under-reserve.
         n_layers = self._n_layers  # type: ignore[assignment]
+        if self._target_kv_excludes_nextn():
+            n_layers = max(1, n_layers - (self._nextn_predict_layers or 0))
         # Gemma 3n / Gemma 4 reuse earlier KV in the last ``shared_kv_layers``
         # blocks (no cache). Floor at 1 so a bad GGUF can't zero out KV.
         shared = self._shared_kv_layers or 0
@@ -6871,11 +7994,15 @@ class LlamaCppBackend:
         if self._ssm_inner_size is not None and self._full_attention_interval is not None:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
+            recurrent = self._mamba_recurrent_state_bytes(n_parallel)
             if key_len is not None and val_len is not None:
                 v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
-                return int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
+                return (
+                    int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
+                    + recurrent
+                )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
+            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -6977,6 +8104,9 @@ class LlamaCppBackend:
                 "_sliding_window",
                 "_sliding_window_pattern",
                 "_ssm_inner_size",
+                "_ssm_state_size",
+                "_ssm_group_count",
+                "_ssm_conv_kernel",
                 "_full_attention_interval",
                 "_key_length_mla",
                 "_n_kv_heads_by_layer",
@@ -7069,19 +8199,24 @@ class LlamaCppBackend:
         draft_weights_bytes: int = 0,
         n_parallel: int = 1,
         mtp_keeps_target_ctx: bool = True,
+        target_rollback: bool = True,
         swa_full: bool = False,
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
         flash_attn: bool = True,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
-        drafter weights + (MTP + MLA only) a duplicated target KV context. The
-        verify buffer rides in the ctx-fit headroom (no tuned constant). None when
+        drafter weights + target verification state. MLA duplicates the target
+        KV context, while Hybrid Mamba adds recurrent rollback copies. The other
+        verify buffers ride in the ctx-fit headroom (no tuned constant). None when
         the draft KV can't be sized (caller keeps the flat fallback).
         ``draft_weights_bytes`` is the drafter file size (0 for embedded).
         ``mtp_keeps_target_ctx`` is True for MTP draft modes (which keep the
         duplicated target context) and False for separate-drafter spec modes
-        (draft-simple/draft-eagle3), which do not."""
+        (draft-simple/draft-eagle3), which do not. ``target_rollback`` is the
+        wider set: every draft-model type llama.cpp gives the target n_rs_seq for
+        (draft-mtp/eagle3/dflash/dspark), which is all of them but draft-simple.
+        Both default to charging, so an unsure caller over-reserves."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx,
             drafter_path = drafter_path,
@@ -7116,14 +8251,24 @@ class LlamaCppBackend:
                 n_ubatch = n_ubatch,
                 flash_attn = flash_attn,
             )
+        # Hybrid Mamba targets keep one recurrent state in the normal target
+        # context, counted by _estimate_kv_cache_bytes. Verification adds one
+        # rollback copy per drafted token, in the TARGET context, so a separate
+        # drafter file pays it exactly like the embedded head: ``target_rollback``
+        # decides, not ``drafter_path`` (see _TARGET_ROLLBACK_SPEC_TYPES). The
+        # dominant hidden cost on Qwen3.5/3.8 at multiple parallel slots.
+        target_recurrent_copies = 0
+        if target_rollback and spec_draft_n_max > 0:
+            base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
+            target_recurrent_copies = base_recurrent * spec_draft_n_max
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
             # unsized draft KV rides in the cushion). Nothing known -> None, so the
             # caller keeps the flat fallback.
-            total = weights + target_ctx_copy
+            total = weights + target_ctx_copy + target_recurrent_copies
             return total if total > 0 else None
-        return draft_kv + weights + target_ctx_copy
+        return draft_kv + weights + target_ctx_copy + target_recurrent_copies
 
     _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
@@ -7131,6 +8276,13 @@ class LlamaCppBackend:
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
     _MMPROJ_VRAM_SAFETY = 1.4  # mmproj worst-case buffer vs file size (runtime ~1.3x)
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
+    # Draft depth to budget when the extras own the spec block and the probe cannot
+    # read the build's own default off its --help. Shipped values are 3
+    # (common_params_speculative_draft::n_max) and 16; take the deeper, since the
+    # Hybrid Mamba rollback copies scale by this and under-reserving them OOMs the
+    # load while over-reserving only costs context. Zero cost on any other model,
+    # where the recurrent state is nil.
+    _UNKNOWN_SPEC_DRAFT_N_MAX = 16
     # The flash-attn KQ mask + attention scratch grow ~linearly with context; the flat
     # _estimate_compute_buffer_bytes term only covers ctx -> 0. The per-token rate
     # depends on the KV cache type: a QUANTIZED cache (q8_0/q5/q4/iq4) needs a
@@ -7689,6 +8841,44 @@ class LlamaCppBackend:
         return probe._non_chat_gguf_refusal(gguf_path)
 
     @classmethod
+    def _verified_cached_gguf(cls, intent, hf_repo, hf_variant) -> Optional[str]:
+        """Return a carried file only if it still matches the load and active cache."""
+        verified = getattr(intent, "verified_gguf", None)
+        if not verified:
+            return None
+        try:
+            repo, variant, path, sizes = verified
+        except (TypeError, ValueError):
+            return None
+        if (repo or "").lower() != (hf_repo or "").lower():
+            return None
+        if (variant or "").lower() != (hf_variant or "").lower():
+            return None
+        if not path:
+            return None
+        try:
+            if not Path(path).is_file():
+                return None
+            from utils.hf_cache_settings import get_hf_cache_paths
+            hub_cache = Path(os.path.abspath(get_hf_cache_paths().hub_cache))
+        except Exception:  # noqa: BLE001 -- an unreadable cache setting is not a reusable path
+            return None
+        # Cache settings can change while a load is in flight.
+        try:
+            if not Path(os.path.abspath(path)).is_relative_to(hub_cache):
+                return None
+        except (OSError, ValueError):
+            return None
+        # Recheck the recorded byte count of every shard against the set this
+        # snapshot still holds. Both are local, so reuse still avoids Hub calls.
+        try:
+            if _cached_variant_sizes(_resolve_repo_id_casing(repo), variant, path) != sizes:
+                return None
+        except OSError:
+            return None
+        return path
+
+    @classmethod
     def non_chat_gguf_refusal_for_intent(cls, intent) -> Optional[str]:
         """The header verdict for a resolved load intent, or None.
 
@@ -7704,6 +8894,11 @@ class LlamaCppBackend:
                 return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
             if hf_repo:
                 hf_variant = getattr(intent, "hf_variant", None)
+                verified = cls._verified_cached_gguf(intent, hf_repo, hf_variant)
+                if verified:
+                    verdict = cls._non_chat_gguf_refusal_for_path(verified, identifier)
+                    cls._hand_over_route_verdict(hf_repo, hf_variant, verdict)
+                    return verdict
                 # Same offline window as the download: the probe asks the Hub before reading
                 # any local header, and those calls would otherwise wait out their retry
                 # backoff on an unreachable Hub.
@@ -7718,6 +8913,60 @@ class LlamaCppBackend:
                 return verdict
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
+        return None
+
+    def host_offload_refusal_for_intent(self, intent) -> Optional[str]:
+        """The host-RAM verdict for a resolved load intent, or None.
+
+        ``_launch_host_shortfall_message`` stays authoritative, since it reads the finished
+        argv, but it runs after the ROUTE has evicted a resident Images/Video pipeline via
+        ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
+        both, exactly as the non-chat header check above does.
+
+        Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
+        resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
+        a host KV cache, CPU-offloaded weights and locked mappings, host RAM as well, and the
+        route and ``load_model`` reclaim all of it after this runs. Pricing against the free
+        readings would refuse a switch to a model the reclaimed machine holds easily. Each
+        total is the ceiling on what the launch can ever see, and every narrowing the launch
+        applies to the pool (the ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids``
+        pin) only shrinks it further, so this charges no more than the launch copy and can
+        refuse nothing the launch would allow. What survives is the pick no reclaim can
+        rescue, which is the one worth catching before the teardown.
+
+        Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
+        here would start a download the route has not committed to.
+        """
+        try:
+            gguf_path = getattr(intent, "gguf_path", None)
+            if not gguf_path or getattr(intent, "hf_repo", None):
+                return None
+            if not Path(gguf_path).is_file():
+                return None
+            binary = self._find_llama_server_binary()
+            if not binary:
+                return None
+            # extras are appended after -m at launch and llama.cpp is last-wins, so read them
+            argv = [
+                binary,
+                "-m",
+                str(gguf_path),
+                *(str(arg) for arg in getattr(intent, "extra_args", None) or ()),
+            ]
+            total_ram_mib = self._total_system_memory_mib()
+            if total_ram_mib is None:
+                return None
+            probed = self._get_gpu_memory(binary)
+            # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
+            if any(total <= 0 for _idx, _free, total in probed):
+                return None
+            return self._launch_host_shortfall_message(
+                argv,
+                [(idx, total) for idx, _free, total in probed],
+                avail_mib = total_ram_mib,
+            )
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
 
     # Each ask is a repo listing, a cache verification and a range request, every one bounded
@@ -7887,6 +9136,7 @@ class LlamaCppBackend:
         self._kv_value_length_swa = None
         self._ssm_inner_size = None
         self._ssm_state_size = None
+        self._ssm_group_count = None
         self._ssm_conv_kernel = None
         self._kda_head_dim = None
         self._shared_kv_layers = None
@@ -7999,6 +9249,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
+                                        f"{arch}.ssm.group_count": "ssm_group_count",
                                         f"{arch}.ssm.conv_kernel": "ssm_conv_kernel",
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
@@ -10221,6 +11472,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
         secrets: Sequence[Optional[str]] = (),
+        extra_args: Optional[Sequence[str]] = None,
     ) -> str:
         """Classify, then redact, whatever the classification quoted.
 
@@ -10244,6 +11496,7 @@ class LlamaCppBackend:
                 binary,
                 log_path,
                 secrets,
+                extra_args,
             ),
             secrets,
         )
@@ -10257,6 +11510,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
         secrets: Sequence[Optional[str]] = (),
+        extra_args: Optional[Sequence[str]] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -10337,6 +11591,85 @@ class LlamaCppBackend:
                 "llama-server could not start: the executable was built for a "
                 "different CPU architecture than this Mac, so "
                 f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
+
+        # Argument parsing runs before the model is touched, so a rejected flag is
+        # never about the GGUF or memory. llama.cpp prints two shapes, and the
+        # difference matters to the reader: an unknown flag is a typo or a flag
+        # this build does not have, while a rejected VALUE is the right flag used
+        # wrongly. Both are otherwise diagnosed as an invalid GGUF or an OOM.
+        # Bounded, unlike the branches above, which have to see a dyld line whose
+        # library name can itself be the pathological part. llama.cpp prints an
+        # argument error and exits, so it is always at the end of the capture.
+        scan_tail = (output or "")[-_FAILURE_SCAN_TAIL_CHARS:]
+
+        def _short(value: str) -> str:
+            """A quoted fragment of the child's output, kept to a readable length.
+
+            The capture is a run of non-whitespace, and nothing stops a wrapper on
+            LLAMA_SERVER_PATH from printing 64 KiB of it, so this is the bound that
+            keeps an API error the size of an error rather than the size of the
+            capture. _STARTUP_TAIL_CHARS bounds the surrounding diagnostics; this
+            bounds the one piece interpolated straight from the child.
+            """
+            value = value.strip()
+            return (
+                value
+                if len(value) <= _FAILURE_QUOTE_CHARS
+                else (value[:_FAILURE_QUOTE_CHARS] + "...")
+            )
+
+        unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", scan_tail, re.IGNORECASE)
+        if unknown_arg:
+            # Both owners in one sentence, because nothing reaching here says which
+            # one it was: Unsloth emits its own flags conditionally on the capability
+            # probe, and a binary swapped underneath a cached probe rejects one of
+            # those just as readily as it rejects a typo from the box. Sending every
+            # reader to the extra arguments would point most of them at a box they
+            # never opened.
+            return (
+                f"llama-server does not recognise the argument "
+                f"'{_short(unknown_arg.group(1))}'. Check it in this model's extra "
+                f"arguments, or reinstall llama.cpp if you did not set it."
+            )
+
+        bad_arg_value = re.search(
+            r'error while handling argument "([^"]+)":\s*([^\r\n]*)',
+            scan_tail,
+            re.IGNORECASE,
+        )
+        if bad_arg_value:
+            _arg = _short(bad_arg_value.group(1))
+            _why = _short(bad_arg_value.group(2) or "")
+            # "stoi" is what llama.cpp surfaces when std::stoi throws on a value
+            # that is not a number; nobody outside the C++ standard library reads
+            # that as an error message.
+            if _why.lower() in {"stoi", "stof", "stod", "stoul", "stoll"}:
+                _why = "the value is not a number"
+            _tail = f": {_why}" if _why else ""
+            # Whose flag it is decides the advice. Studio emits its own options
+            # conditionally on the capability probe, so a build that reads
+            # "--flash-attn on" differently rejects a value the box never held, and
+            # sending that reader to edit their extra arguments points them at a
+            # setting they cannot use to fix it. Named here only when the extras
+            # really do carry the flag; an alias spelling falls back to the neutral
+            # wording rather than guessing.
+            _owned_by_user = False
+            if extra_args:
+                from core.inference.llama_server_args import _flag_name
+                _failed_flag = _flag_name(_arg)
+                _owned_by_user = _failed_flag is not None and any(
+                    _flag_name(str(token)) == _failed_flag for token in extra_args
+                )
+            if _owned_by_user:
+                return (
+                    f"llama-server rejected the value for '{_arg}'{_tail}. Fix it in "
+                    f"the extra arguments for this model."
+                )
+            return (
+                f"llama-server rejected the value for '{_arg}'{_tail}. Check it in "
+                f"this model's extra arguments, or reinstall llama.cpp if you did "
+                f"not set it."
             )
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
@@ -11133,52 +12466,108 @@ class LlamaCppBackend:
         return out if found else None
 
     @staticmethod
-    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
-        """Return cmd with flash attention forced off, or None when its effective
-        (last-wins) value is already off/absent so there is nothing to retry. FA
-        kernels hard-crash at startup on some ROCm builds; disabling FA keeps
-        vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
-        as on, so it counts toward the effective value and is neutralised too;
-        every form is flipped in place (length preserved for downstream slices)."""
-        out = list(cmd)
+    def _requires_symmetric_kv(kv_lora_rank, architecture) -> bool:
+        """Whether llama.cpp rejects K != V for a model with this metadata.
 
-        def explicit(i):
-            nxt = out[i + 1] if i + 1 < len(out) else None
-            return nxt if nxt in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES else None
+        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4``: kv_lora_rank stands in
+        for is_mla() (the MLA archs' converter writes it alongside the MLA head
+        dims), and deepseek4 is checked by name because it sets neither.
+        """
+        if kv_lora_rank is not None:
+            return True
+        return (architecture or "").strip().lower() == "deepseek4"
 
-        effective = None
-        for i, tok in enumerate(out):
-            name = _flag_name(tok)
-            if name in ("--flash-attn", "-fa") and "=" in tok:
-                effective = tok.partition("=")[2]
-            elif name in ("--flash-attn", "-fa"):
-                effective = explicit(i) or "on"
-        if effective not in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+    def _target_kv_symmetry(self) -> bool:
+        """Whether the TARGET model requires K == V."""
+        return self._requires_symmetric_kv(self._kv_lora_rank, getattr(self, "_architecture", None))
+
+    def _draft_kv_symmetry(
+        self,
+        cmd: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> Optional[bool]:
+        """Whether the DRAFTER requires K == V; None when it cannot be determined.
+
+        Derived from the drafter the launch actually resolves to, which is the one
+        named on the command being launched. The stored ``_mtp_draft_path`` is the
+        wrong source twice over: it only ever holds the managed sidecar, so an
+        ``extra_args`` ``--model-draft``/``--hf-repo-draft`` (the drafter llama.cpp
+        would really load) is invisible to it, and it is not assigned until after
+        the launch-site reset has already run, so it is stale there anyway. The
+        managed path emits ``--model-draft <sidecar>`` into the same command, so
+        reading the command covers both.
+
+        None only when no drafter is named at all, in which case there are no draft
+        flags to reset and the value cannot matter. A drafter that IS named but
+        whose metadata cannot be read (a Hugging Face repo id rather than a local
+        file, or an unreadable GGUF) resolves to True rather than to the target's
+        answer: the two mistakes are not symmetric. Resetting a non-MLA drafter's K
+        needlessly costs memory, whereas failing to reset an MLA drafter's K leaves
+        it quantized against an f16 draft V and aborts the draft context outright,
+        which is the failure this whole path exists to avoid.
+        """
+        path, is_remote = _extra_args_mtp_draft_source(list(cmd or []), env)
+        if not path:
             return None
-        for i, tok in enumerate(out):
-            name = _flag_name(tok)
-            if name in ("--flash-attn", "-fa") and "=" in tok:
-                flag, _, value = tok.partition("=")
-                if value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
-                    out[i] = f"{flag}=off"
-            elif name in ("--flash-attn", "-fa"):
-                if explicit(i) in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
-                    out[i + 1] = "off"
-                elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
-                    out[i] = f"{tok}=off"
+        if is_remote:  # a repo id is not a local file whose metadata can be read
+            return True
+        try:
+            db = self._draft_backend_for(path)
+        except Exception:
+            db = None
+        if db is None:  # named but unreadable -> conservative, not the target
+            return True
+        return self._requires_symmetric_kv(
+            getattr(db, "_kv_lora_rank", None), getattr(db, "_architecture", None)
+        )
 
-        # A quantized V cache requires flash attention in llama.cpp: the init
-        # aborts with "V cache quantization requires flash_attn". A quantized K
-        # cache has no such requirement and runs fine without FA, so it is left
-        # untouched -- resetting it would needlessly enlarge the K cache and can
-        # OOM a memory-constrained config. Studio launches with FA on, so a
-        # quantized --cache-type-v is legal at launch but would make THIS FA-off
-        # retry crash on init instead of recovering. Reset a quantized V cache --
-        # main and draft (the draft context shares the global --flash-attn flag,
-        # so its V cache aborts too) -- to f16 (the llama.cpp default);
-        # non-quantized types -- f16/bf16/f32 -- run fine without FA and are left
-        # untouched. The value is rewritten in place so the list length is
-        # preserved for downstream slices, matching the flash-attn flip above.
+    @staticmethod
+    def _reset_quantized_v_cache(
+        cmd: list[str],
+        reason: str,
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
+    ) -> list[str]:
+        """Return cmd with any quantized V cache reset to f16, for a launch that
+        runs without flash attention.
+
+        A quantized V cache requires flash attention in llama.cpp: the init aborts
+        with "V cache quantization requires flash_attn". A quantized K cache has no
+        such requirement and runs fine without FA, so it is left untouched --
+        resetting it would needlessly enlarge the K cache and can OOM a
+        memory-constrained config.
+
+        ``mla`` overrides that on the models where leaving K alone is now itself
+        fatal. llama-context.cpp gained this in #25871, and it sits ABOVE the
+        V-quantization check, so it decides first:
+
+            if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4)
+                    && params.type_k != params.type_v) {
+                LLAMA_LOG_ERROR("model does not support different K (%s) and V
+                                 (%s) cache types");
+                return nullptr;
+            }
+
+        is_mla() is n_embd_head_k_mla_impl and n_embd_head_v_mla_impl both being
+        set, which covers DeepSeek V2/V3/R1, Kimi K2 and GLM-4.7/5.x. DeepSeek4 is
+        the separate arch term in that condition rather than a second is_mla()
+        model: it has its own KV cache (llama-kv-cache-dsv4.cpp), never sets the
+        MLA head dims, and its converter writes q_lora_rank but no kv_lora_rank, so
+        a kv_lora_rank probe alone does not see it. Resetting V
+        alone on one of those turns a quantized KV into K=q8_0 V=f16, which is a
+        hard abort for a DIFFERENT reason than the one being avoided: the retry
+        that exists to recover from a flash-attention crash fails on the K/V
+        mismatch instead. Both axes go to f16 together there, since equal is what
+        the rule asks for and f16 is the only value guaranteed to satisfy the V
+        rule as well. Main and draft V are both reset (the draft context shares the
+        global --flash-attn flag, so its V cache aborts too) to f16 (the llama.cpp
+        default); K follows per model, ``mla`` for the target flags and
+        ``draft_mla`` for the draft pair. Non-quantized types -- f16/bf16/f32 --
+        run fine without FA and are left untouched. The value is rewritten in place
+        so the list length is preserved for downstream slices.
+        """
+        out = list(cmd)
         _v_cache_flags = (
             "--cache-type-v",
             "-ctv",
@@ -11206,16 +12595,124 @@ class LlamaCppBackend:
                 if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i + 1] = "f16"
                     _cache_reset = True
-        if _cache_reset:
+        # Symmetry, not size: an MLA model rejects K != V outright, so the K cache
+        # has to follow V down rather than stay quantized. This is not conditional
+        # on having just reset V here: on this flash-attn-off path V always ends up
+        # f16 anyway (reset above when it was quantized on argv, dropped by
+        # _drop_env_quantized_v_cache when it was quantized in the environment,
+        # otherwise already f16/bf16/f32), so a quantized K left on argv is a
+        # guaranteed K != V abort. The asymmetric case that motivates this is
+        # -ctk q8_0 on argv with LLAMA_ARG_CACHE_TYPE_V in the environment: nothing
+        # quantized appears on argv for V, so a V-triggered reset would never fire.
+        #
+        # The target and the drafter are separate models with separate contexts, and
+        # llama.cpp applies the restriction per context, so each side is gated on its
+        # OWN model. Mixing them is wrong in both directions: an MLA target with a
+        # non-MLA drafter would needlessly double the drafter's K cache (the very OOM
+        # the size argument above warns about), and a non-MLA target with an MLA
+        # drafter would leave the draft K quantized against an f16 draft V and abort
+        # the draft context. ``draft_mla`` defaults to ``mla`` when the caller cannot
+        # read the drafter's metadata, which is the safe direction: an unnecessary
+        # reset only costs memory, a missing one aborts.
+        _main_k_flags = ("--cache-type-k", "-ctk")
+        _draft_k_flags = ("--cache-type-k-draft", "--spec-draft-type-k", "-ctkd")
+        if draft_mla is None:
+            draft_mla = mla
+        _k_cache_flags = (_main_k_flags if mla else ()) + (_draft_k_flags if draft_mla else ())
+        _k_reset = False
+        for i, tok in enumerate(out):
+            if _flag_name(tok) not in _k_cache_flags:
+                continue
+            if "=" in tok:
+                flag, _, value = tok.partition("=")
+                if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i] = f"{flag}=f16"
+                    _k_reset = True
+            elif i + 1 < len(out):
+                if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i + 1] = "f16"
+                    _k_reset = True
+        if _cache_reset or _k_reset:
             logger.info(
-                "V cache dtype reset to f16 because flash attention was disabled "
-                "by the crash-recovery fallback (quantized V cache requires flash "
-                "attention in llama.cpp; the K cache is left untouched)."
+                "KV cache dtype reset to f16 because flash attention is off (%s): a "
+                "quantized V cache requires flash attention in llama.cpp. %s",
+                reason,
+                (
+                    "The K cache went down with it: this model uses MLA, which "
+                    "rejects different K and V cache types."
+                    if _k_reset
+                    else "The K cache is left untouched."
+                ),
             )
         return out
 
     @staticmethod
-    def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
+    def _with_flash_attn_off(
+        cmd: list[str],
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
+    ) -> Optional[list[str]]:
+        """Return cmd with flash attention forced off, or None when its effective
+        (last-wins) value is already off/absent so there is nothing to retry. FA
+        kernels hard-crash at startup on some ROCm builds; disabling FA keeps
+        vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
+        as on, so it counts toward the effective value and is neutralised too --
+        by dropping it, since only the older boolean builds accept the bare form
+        and they take no value. Valued forms are flipped in place."""
+        out = list(cmd)
+
+        def explicit(i):
+            nxt = out[i + 1] if i + 1 < len(out) else None
+            return nxt if nxt in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES else None
+
+        effective = None
+        for i, tok in enumerate(out):
+            name = _flag_name(tok)
+            if name in ("--flash-attn", "-fa") and "=" in tok:
+                effective = tok.partition("=")[2]
+            elif name in ("--flash-attn", "-fa"):
+                effective = explicit(i) or "on"
+        if effective not in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+            return None
+        # A bare flag cannot be turned off in place: llama.cpp looks each argv
+        # token up verbatim (only '_' -> '-'), so --flash-attn=off is "invalid
+        # argument" everywhere, and the boolean builds that are the only ones
+        # accepting the bare form take no value at all. Dropping the token is
+        # what disables FA there. Collected first, removed back to front, so the
+        # indices stay valid.
+        bare_at: list[int] = []
+        for i, tok in enumerate(out):
+            name = _flag_name(tok)
+            if name in ("--flash-attn", "-fa") and "=" in tok:
+                flag, _, value = tok.partition("=")
+                if value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+                    out[i] = f"{flag}=off"
+            elif name in ("--flash-attn", "-fa"):
+                if explicit(i) in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+                    out[i + 1] = "off"
+                elif explicit(i) is None:  # bare flag (reads as on) -> drop it
+                    bare_at.append(i)
+        for i in reversed(bare_at):
+            del out[i]
+
+        # Studio launches with FA on, so a quantized --cache-type-v is legal at
+        # launch but would make THIS FA-off retry crash on init instead of
+        # recovering.
+        return LlamaCppBackend._reset_quantized_v_cache(
+            out,
+            "disabled by the crash-recovery fallback",
+            mla = mla,
+            draft_mla = draft_mla,
+        )
+
+    @staticmethod
+    def _drop_env_quantized_v_cache(
+        env: MutableMapping[str, str],
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
+    ) -> bool:
         """Drop an inherited quantized V-cache env var (main or draft) in place
         before a flash-attn-off retry, returning True if anything was removed.
 
@@ -11225,16 +12722,46 @@ class LlamaCppBackend:
         cache set purely through ``LLAMA_ARG_CACHE_TYPE_V`` (or the draft
         ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V``) would still abort the FA-off retry
         with "V cache quantization requires flash_attn". Dropping it lets
-        llama.cpp fall back to the f16 default. Only V is dropped: a quantized K
-        cache runs fine without flash attention, so its env var is preserved.
+        llama.cpp fall back to the f16 default.
+
+        On a non-MLA model only V is dropped: a quantized K cache runs fine
+        without flash attention, so its env var is preserved. On an MLA model
+        (DeepSeek V2/V3/R1, Kimi K2, GLM-4.7/5.x) llama.cpp rejects K != V
+        outright, and it checks that *before* the V/flash-attn rule, so the
+        quantized K env vars have to go too, each gated on its own model
+        (``mla`` for the target var, ``draft_mla`` for the draft one, since the
+        drafter is a separate model with its own context). Every caller runs this after the
+        argv reset has already forced V to f16, so a surviving quantized K env
+        is a guaranteed "model does not support different K and V cache types"
+        abort rather than the recovery the retry is trying to perform.
         """
         dropped = False
-        for var in ("LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"):
+        variables = ["LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"]
+        if draft_mla is None:
+            draft_mla = mla
+        if mla:
+            variables.append("LLAMA_ARG_CACHE_TYPE_K")
+        if draft_mla:
+            variables.append("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K")
+        for var in variables:
             value = (env.get(var) or "").strip().lower()
             if value and value not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                 env.pop(var, None)
                 dropped = True
         return dropped
+
+    @staticmethod
+    def _drop_env_flash_attn(env: MutableMapping[str, str]) -> bool:
+        """Drop an inherited LLAMA_ARG_FLASH_ATTN in place before a flash-attn-off
+        retry, returning True if anything was removed.
+
+        On the older builds whose --flash-attn takes no value the argv rewrite can
+        only drop the flag, never negate it, and llama.cpp reads the env var before
+        parsing argv, so LLAMA_ARG_FLASH_ATTN=1 would turn the kernel that just
+        crashed straight back on. Newer builds get an explicit --flash-attn off,
+        which already beats the env, so dropping it changes nothing there.
+        """
+        return env.pop("LLAMA_ARG_FLASH_ATTN", None) is not None
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -11815,6 +13342,11 @@ class LlamaCppBackend:
             tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
             gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
 
+            # Read before the pin below rewrites every placement, Auto included, to
+            # manual/0. Owning the memory budget is a property of what was asked for,
+            # and the two Metal context guards further down skip themselves on it.
+            _caller_owns_budget = gpu_memory_mode == "manual" and gpu_layers >= 0
+
             # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
             # inference to CPU there; physical Apple Silicon is untouched. Settled
             # ABOVE the duplicate-load check (and the KV estimates) so the compared
@@ -11977,6 +13509,11 @@ class LlamaCppBackend:
             # clamp before an HF download, command build after), and with a 30s window a
             # later success would otherwise erase an earlier one that already degraded it.
             _launch_probe_inconclusive = False
+            # Set where flash attention ends up off with the argv unable to say
+            # so: a build that has no --flash-attn at all, and the crash-recovery
+            # retry on a build whose flag takes no value, which disables FA by
+            # dropping it. Either way the default below has to carry the answer.
+            _flash_attn_known_off = False
 
             def _launch_caps(bin_path):
                 nonlocal _launch_probe_inconclusive
@@ -12192,11 +13729,18 @@ class LlamaCppBackend:
                     )
                     hf_repo = _resolved_repo
                 with _hf_offline_if_unreachable():
-                    model_path = _preflight_model_path or self._download_gguf(
-                        hf_repo = hf_repo,
-                        hf_variant = hf_variant,
-                        hf_token = hf_token,
-                    )
+                    model_path = _preflight_model_path
+                    if model_path is None:
+                        # Revalidate the carried file before skipping download resolution.
+                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
+                        if model_path:
+                            logger.info("Reusing verified cached GGUF: %s", model_path)
+                    if model_path is None:
+                        model_path = self._download_gguf(
+                            hf_repo = hf_repo,
+                            hf_variant = hf_variant,
+                            hf_token = hf_token,
+                        )
                     # Auto-download mmproj for vision models unless opted out.
                     if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
@@ -12657,11 +14201,19 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                _shared_gpu_ids: set[int] = set()
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
                 # through to the launch, which reads it.
                 _arch_gate_forced_cpu = False
+                # Whether Studio's placement planner actually RAN and came back
+                # unable to fit the model. `use_fit` alone cannot answer that: it
+                # starts True at its declaration below and is also what the except
+                # path restores, so an unfitted `--fit on` is indistinguishable
+                # from the default unless the verdict is recorded on its own.
+                # Bound before the try for the same reason as _detected_gpus.
+                _placement_verdict_partial = False
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -12773,6 +14325,13 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
+                    # Vulkan reports total 0 only for integrated GPUs. Their
+                    # free "VRAM" is the same host pool the RAM guard prices.
+                    _shared_gpu_ids = (
+                        {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
+                        if is_vulkan_backend
+                        else set()
+                    )
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -12953,11 +14512,67 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
+                    # The recurrent rollback copies are a WIDER set than that copy
+                    # (_TARGET_ROLLBACK_SPEC_TYPES): DSpark and DFlash pay them too,
+                    # and draft-simple is the one engaged draft mode that does not,
+                    # which is why the pass-through arm reads the types rather than
+                    # assuming every extras-owned drafter qualifies.
+                    _target_rollback = bool(
+                        _auto_studio_mtp
+                        or _user_mtp_via_extras
+                        or (
+                            _user_draft_via_extras
+                            and _accumulated_spec_types(extra_args, env = _spec_env)
+                            & _TARGET_ROLLBACK_SPEC_TYPES
+                        )
+                    )
 
-                    # Effective draft depth: extras win (last-wins at launch), else
-                    # the field, else the platform default (2 GPU / 3 CPU).
+                    # Effective draft depth, by what the CHILD will run on rather than
+                    # what was asked for: an extras depth wins (last-wins at launch),
+                    # else the field, else the platform default (2 GPU / 3 CPU).
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
-                    _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
+                    _mtp_eff_n_max = _extra_n_max
+                    if _mtp_eff_n_max is None and _extra_args_set_spec_type(extra_args):
+                        # The extras own the spec block, so _build_speculative_flags
+                        # returns without emitting a depth at all: neither the request
+                        # field nor the platform default below reaches the child. What
+                        # does: the inherited env, which survives exactly this case,
+                        # then the build's own default. The rollback reserve scales by
+                        # this number, so carrying a request field of 2 into a build
+                        # that drafts 16 under-reserves by a factor of eight.
+                        try:
+                            _depth_caps = _launch_caps(binary) or {}
+                        except Exception:
+                            _depth_caps = {}
+                        # The env twin of whichever depth flag this build carries, and
+                        # only that one: a legacy build spells the pair --draft-max /
+                        # LLAMA_ARG_DRAFT_MAX, and a post-rename build ignores the
+                        # legacy name, so a stale value there must not price its
+                        # rollback. Both names only where the probe named no flag.
+                        _depth_flag = _depth_caps.get("spec_draft_n_max_flag")
+                        if _depth_flag == "--draft-max":
+                            _env_names = ("LLAMA_ARG_DRAFT_MAX",)
+                        elif _depth_flag:
+                            _env_names = ("LLAMA_ARG_SPEC_DRAFT_N_MAX",)
+                        else:
+                            _env_names = ("LLAMA_ARG_SPEC_DRAFT_N_MAX", "LLAMA_ARG_DRAFT_MAX")
+                        _env_n_max = next(
+                            (v for v in map(_spec_env.get, _env_names) if _is_positive_int(v)),
+                            None,
+                        )
+                        if _env_n_max is not None:
+                            _mtp_eff_n_max = int(str(_env_n_max).strip())
+                        else:
+                            # Never fall through to Studio's platform default here:
+                            # the child is drafting at the build's number, and a
+                            # probe that timed out or printed no default still leaves
+                            # it drafting. Assume the deepest llama.cpp has shipped.
+                            _mtp_eff_n_max = (
+                                _depth_caps.get("spec_draft_n_max_default")
+                                or self._UNKNOWN_SPEC_DRAFT_N_MAX
+                            )
+                    elif _mtp_eff_n_max is None:
+                        _mtp_eff_n_max = spec_draft_n_max
                     if _mtp_eff_n_max is None:
                         # _detected_gpus (not gpus) so manual -- which empty
                         # gpus to bypass the planner -- keep the GPU draft depth the
@@ -13038,6 +14653,7 @@ class LlamaCppBackend:
                                 draft_weights_bytes = _mtp_draft_weights,
                                 n_parallel = n_parallel,
                                 mtp_keeps_target_ctx = _engaged_is_mtp,
+                                target_rollback = _target_rollback,
                                 swa_full = swa_full,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
@@ -13058,6 +14674,7 @@ class LlamaCppBackend:
                                 _w: int = _mtp_draft_weights,
                                 _np: int = n_parallel,
                                 _mtp: bool = _engaged_is_mtp,
+                                _rollback: bool = _target_rollback,
                                 _swa_full: bool = swa_full,
                                 _kv_unified: bool = planned_kv_unified,
                                 _n_ubatch: Optional[int] = _effective_ubatch,
@@ -13072,6 +14689,7 @@ class LlamaCppBackend:
                                     draft_weights_bytes = _w,
                                     n_parallel = _np,
                                     mtp_keeps_target_ctx = _mtp,
+                                    target_rollback = _rollback,
                                     swa_full = _swa_full,
                                     kv_unified = _kv_unified,
                                     n_ubatch = _n_ubatch,
@@ -13507,7 +15125,29 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        mtp_overhead_fn = None
+                        # One term survives: a Hybrid Mamba target keeps its own
+                        # recurrent rollback snapshots for verification, and those sit
+                        # in the TARGET context, so pinning the drafter to the CPU does
+                        # not move them. Charge those alone rather than nothing. Flat in
+                        # ctx, the state being per-slot rather than per-token -- hence
+                        # the same _np/_n_ubatch keywords the replaced callback takes,
+                        # so _mtp_bytes can still re-price each slot candidate.
+                        def _cpu_draft_target_state(
+                            _ctx: int,
+                            _np: int = n_parallel,
+                            _n_ubatch: Optional[int] = _effective_ubatch,
+                            _n: int = _mtp_eff_n_max,
+                            _rollback: bool = _target_rollback,
+                        ) -> int:
+                            if not _rollback or _n <= 0:
+                                return 0
+                            return self._mamba_recurrent_state_bytes(_np) * _n
+
+                        mtp_overhead_fn = (
+                            _cpu_draft_target_state
+                            if _cpu_draft_target_state(effective_ctx) > 0
+                            else None
+                        )
                         _mtp_kv_unsized = False
 
                     # Flat MTP reserve fraction: used only as the fallback when the
@@ -13522,6 +15162,14 @@ class LlamaCppBackend:
                     # CPU-offloaded one (an embedded head stays on GPU). The tensor
                     # path reserves like the layer path; gate both on this.
                     _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                    # Narrower than that: whether ANY byte reserve survives on the GPU.
+                    # A CPU-pinned drafter leaves the target's own rollback state behind
+                    # (the block above keeps it), and the tensor floor has to hold it,
+                    # tensor mode having no --fit valve and no amount of context
+                    # shrinking freeing a per-slot allocation. It stays out of
+                    # _mtp_reserves_gpu because that also charges the draft decode
+                    # graph, which follows the drafter onto the CPU.
+                    _mtp_gpu_bytes_remain = _mtp_reserves_gpu or mtp_overhead_fn is not None
                     _flat_mtp_reserve = (
                         _MTP_VRAM_RESERVE_FRAC
                         if (_flat_mtp_engages and not _draft_cpu_no_embedded)
@@ -13554,8 +15202,9 @@ class LlamaCppBackend:
                             sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
                         _tp_flat_mtp = 2 * 1024**3  # flat reserve when dims unavailable
-                        if not _mtp_reserves_gpu:
-                            # No MTP, or its only drafter is CPU-offloaded (no GPU).
+                        if not _mtp_gpu_bytes_remain:
+                            # No MTP, or its only drafter is CPU-offloaded and the
+                            # target keeps no state of its own (no GPU bytes at all).
                             _tp_mtp_floor = 0
                         elif mtp_overhead_fn is not None and not _mtp_kv_unsized:
                             _tp_mtp_floor = _mtp_bytes(
@@ -13984,9 +15633,17 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
+                    # The planner ran to completion over a real device list and
+                    # left --fit on, i.e. it could not prove the model fits. THAT
+                    # is a partial-placement verdict. Set last, so any early
+                    # return or raise above leaves it False.
+                    _placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
+                    # Not a verdict: this arm never priced anything. Explicit, so
+                    # the flag cannot survive from a previous load.
+                    _placement_verdict_partial = False
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
@@ -14066,18 +15723,67 @@ class LlamaCppBackend:
                 # LLAMA_ARG_MMPROJ misses launch_mmproj_path, so probe that too,
                 # but never one the unpinnable guard just dropped.
                 self._mmproj_has_audio = False
-                _audio_probe = launch_mmproj_path or (
+                self._mmproj_accepts_image = True
+                _mmproj_probe = launch_mmproj_path or (
                     "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
-                if launch_mmproj_path or os.path.isfile(_audio_probe):
+                if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
-                        from utils.models.gguf_metadata import (
-                            read_mmproj_audio_capability,
-                        )
-                        self._mmproj_has_audio = bool(read_mmproj_audio_capability(_audio_probe))
-                    except Exception as e:
-                        logger.debug(f"mmproj audio-capability read failed: {e}")
+                        from utils.models.gguf_metadata import mmproj_capabilities
 
+                        has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)
+                        self._mmproj_has_audio = has_audio
+                        self._mmproj_accepts_image = accepts_image
+                    except Exception as e:
+                        logger.debug(f"mmproj capability read failed: {e}")
+
+                auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                # What the user asked for, kept whole. The strip below is a launch
+                # decision, but _requested_extra_args is the comparator a later Apply
+                # is matched against: storing the stripped list there made an
+                # unchanged request compare unequal and reload the model.
+                _extra_args_as_requested = list(extra_args) if extra_args is not None else None
+                if self._metal_drops_zero_ctx_override(ctx_override, _caller_owns_budget):
+                    extra_args = strip_context_only(extra_args)
+                    logger.warning(
+                        "Dropping the pass-through zero context: on Metal it pins the "
+                        "model's native length and disables --fit."
+                    )
+                _metal_floor = self._metal_zero_ctx_floor(
+                    effective_ctx,
+                    # Auto-layers earns its exemption by leaving the context to --fit,
+                    # so it only holds while --fit actually runs. Extras land after
+                    # Studio's own "--fit on" and win, and a "--fit off" there would
+                    # otherwise leave a command with no -c and no fitter, which is
+                    # llama.cpp's native context.
+                    auto_fit and fit_is_effectively_on(extra_args),
+                    _caller_owns_budget,
+                    self._context_length,
+                    max_available_ctx,
+                )
+                if _metal_floor:
+                    effective_ctx = _metal_floor
+                    # Replace, do not max(). On the exception path max_available_ctx
+                    # still holds the native length its initialiser put there, which
+                    # no cap ever said fits. Keeping the larger publishes native as
+                    # max_context_length, which the UI reads as the largest context
+                    # that fits, advertising this very failure as safe. The floor is
+                    # already bounded by any real ceiling the cap did compute.
+                    max_available_ctx = _metal_floor
+                    logger.warning(
+                        "No GPU is enumerated on Metal and the context cap did not "
+                        f"run, so starting at {effective_ctx} rather than the model's "
+                        "native length."
+                    )
+
+                # Gated like every other optional flag, but failing OPEN: these
+                # are emitted on every launch, so an unreadable --help keeps
+                # today's command and only a build that positively lacks one
+                # drops it. Harmless for the pinned prebuilt, which has all
+                # three; the case this covers is a stale or user-supplied
+                # LLAMA_SERVER_PATH, where an unknown argument is an immediate
+                # exit rather than a degraded launch.
+                _caps = _launch_caps(binary)
                 cmd = [
                     binary,
                     "-m",
@@ -14086,18 +15792,29 @@ class LlamaCppBackend:
                     str(self._port),
                     "--parallel",
                     str(n_parallel),
-                    "--flash-attn",
-                    "on",  # Force flash attention for speed
-                    # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
-                    "--no-context-shift",
                 ]
+                # Force flash attention for speed. Two separate answers: whether
+                # the build has the flag at all (predates flash attention, or a
+                # wrapper that never exposed it), and whether its declaration
+                # takes a value -- older builds take -fa as a bare boolean and
+                # read a following "on" as a stray positional.
+                if _caps.get("supports_flash_attn", True):
+                    cmd.append("--flash-attn")
+                    if _caps.get("flash_attn_takes_value", True):
+                        cmd.append("on")
+                else:
+                    # Only ever reached on an authoritative --help that has no
+                    # flash attention to lose, so there is no speed to give up.
+                    _flash_attn_known_off = True
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                if _caps.get("supports_no_context_shift", True):
+                    cmd.append("--no-context-shift")
                 # A positive context is always passed (in auto-fit, --fit then
                 # optimizes the gpu-layer offload around it). When auto-fit has
                 # no explicit context, omit -c so --fit sizes it to fit VRAM:
                 # "-c 0" would instead pin the FULL native context (llama.cpp's
                 # -c handler sets fit_params_min_ctx = UINT32_MAX on value 0,
                 # disabling --fit's reduction). See gpu_memory_mode.
-                auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
                 if effective_ctx > 0:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
@@ -14275,7 +15992,8 @@ class LlamaCppBackend:
                     cmd.extend(["--threads", str(n_threads)])
 
                 # Enable Jinja chat template rendering
-                cmd.extend(["--jinja"])
+                if _caps.get("supports_jinja", True):
+                    cmd.extend(["--jinja"])
 
                 # KV cache data type
                 _valid_cache_types = {
@@ -14415,6 +16133,27 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
+                # The same view of argv and env the child will get, built with the
+                # helpers the launch itself uses so the two cannot drift: manual mode
+                # drops the placement vars, and a gpu_ids pin drops the device flags
+                # from both. Classifying on the raw extras would read a stale
+                # --device none as CPU-only for a load that does offload.
+                _spec_placement_env = dict(os.environ)
+                if gpu_memory_mode == "manual":
+                    self._clear_manual_placement_env(_spec_placement_env)
+                _spec_placement_extras = extra_args
+                if gpu_ids is not None:
+                    _spec_placement_extras = self._strip_device_extra_args(extra_args)
+                    self._clear_device_placement_env(_spec_placement_env)
+                # A device the launch really carries, and not the CPU spelling of it.
+                # Only consulted where the probe found nothing: it is the one remaining
+                # way the child can still be pointed at a GPU.
+                _spec_device_pick = _extra_args_main_device(
+                    [*cmd, *(_spec_placement_extras or [])]
+                ) or _spec_placement_env.get("LLAMA_ARG_DEVICE")
+                _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
+                    [*cmd, *(_spec_placement_extras or [])], _spec_placement_env
+                )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -14431,6 +16170,46 @@ class LlamaCppBackend:
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
                     drafter_no_vram = _spec_dropped_no_vram,
+                    embedded_mtp_partial_offload = bool(
+                        _spec_canon == "auto"
+                        and self._nextn_predict_layers
+                        and self._ssm_inner_size is not None
+                        and self._full_attention_interval is not None
+                        and not launch_mtp_draft_path
+                        and not _extra_args_set_spec_type(extra_args)
+                        # No GPU, nothing to partially offload TO. `--fit on` is also
+                        # what a CPU-only box and a Metal Mac emit (use_fit starts True
+                        # and only the planner lowers it), and there the rollback copies
+                        # cost no VRAM at all -- same reason the helper treats -ngl 0 as
+                        # CPU-only rather than partial. Those keep the CPU MTP policy.
+                        # gpu_indices counts too: an explicit pick the VRAM probe could
+                        # not enumerate still pins the child to those devices, so the
+                        # launch offloads to them whatever the probe returned. So does
+                        # a device named in the extras, which is the same flag
+                        # _device_selection_is_cpu reads for the CPU answer: a failed
+                        # probe is not evidence of no GPU when the child is pointed at
+                        # one by hand.
+                        and (_detected_gpus or gpu_indices or _spec_extras_pick_a_gpu)
+                        and self._partially_offloads_layers(
+                            [*cmd, *(_spec_placement_extras or [])],
+                            _spec_placement_env,
+                            # Manual mode skips Studio's placement planner (gpus is
+                            # emptied above), so its --fit on is the default this
+                            # function starts at, not a finding that the model does
+                            # not fit. Only Auto's fitter carries that evidence --
+                            # and only when it actually ran and actually failed to
+                            # fit, which is what _placement_verdict_partial records.
+                            # Auto alone is not enough: an empty VRAM probe with a
+                            # hand-pinned device (Metal0, Vulkan0) satisfies the GPU
+                            # guard above while every planner branch stayed gated on
+                            # the empty `gpus`, and the except path restores --fit on
+                            # having priced nothing. A concrete --gpu-layers count is
+                            # unaffected; it is independent evidence inside the helper.
+                            fit_implies_partial = (
+                                gpu_memory_mode != "manual" and _placement_verdict_partial
+                            ),
+                        )
+                    ),
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -14772,6 +16551,27 @@ class LlamaCppBackend:
                 if _pv_device_pin:
                     cmd.extend(_pv_device_pin)
 
+                # A build with no --flash-attn cannot run a quantized V cache
+                # either: llama.cpp aborts init with "V cache quantization
+                # requires flash_attn", and the KV type is emitted from the
+                # user's setting with no flash-attn coupling. The crash-recovery
+                # rung resets V for exactly that abort, but it only fires when
+                # the argv had a flag to turn off, so on a build that never had
+                # one nothing would catch it. Before the log below, so what is
+                # logged is what launches; length is preserved, so _spec_start
+                # still indexes the same tokens.
+                if _flash_attn_known_off:
+                    cmd = self._reset_quantized_v_cache(
+                        cmd,
+                        "this build has no --flash-attn",
+                        mla = self._target_kv_symmetry(),
+                        # No env argument: the child environment is not built until
+                        # below, and reading it here is an UnboundLocalError. The
+                        # inherited os.environ is the right source anyway, since
+                        # Studio never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
+                        draft_mla = self._draft_kv_symmetry(cmd),
+                    )
+
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
@@ -14795,6 +16595,15 @@ class LlamaCppBackend:
                     logger.info(
                         "Model Memory owns placement; dropped inherited %s",
                         ", ".join(_mem_scrubbed),
+                    )
+                # Same reasoning one level up: a flag validate_extra_args refuses has
+                # an env twin llama.cpp reads before argv, so denying the token alone
+                # would leave the capability reachable and unrecorded.
+                _denied_scrubbed = scrub_denied_env(env)
+                if _denied_scrubbed:
+                    logger.info(
+                        "dropped inherited %s: managed by Unsloth Studio",
+                        ", ".join(_denied_scrubbed),
                     )
                 # Record what the child will ACTUALLY run with (env defaults plus
                 # last-wins argv), not just what Unsloth emitted, so the reload
@@ -14827,6 +16636,41 @@ class LlamaCppBackend:
                 # arg handler and silently force hardware_concurrency(). #5692
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
+                # Same shape, for the context. Auto-layers omits -c so --fit can size
+                # it, and with no -c to win the env-then-argv race an inherited
+                # LLAMA_ARG_CTX_SIZE=0 pins the native length and the fit never runs.
+                # Only a zero, and only where a pass-through zero would go too, so a
+                # positive inherited context stays the legitimate way to set one.
+                if (
+                    not any(token in cmd for token in ("-c", "--ctx-size"))
+                    and _env_asks_for_the_native_context(env)
+                    and self._metal_drops_zero_ctx_override(0, _caller_owns_budget)
+                ):
+                    env.pop("LLAMA_ARG_CTX_SIZE", None)
+                    logger.warning(
+                        "Dropping the inherited LLAMA_ARG_CTX_SIZE=0: on Metal it pins "
+                        "the model's native length and disables --fit."
+                    )
+                # A build whose help has no --flash-attn never registers the option,
+                # so it never reads LLAMA_ARG_FLASH_ATTN either (llama.cpp resolves
+                # each env var through the arg that declares it). Leaving an
+                # inherited one in place would only fool the accounting below, which
+                # reads env plus argv and would then record flash attention as on for
+                # a server running without it, under-sizing the padded V cache.
+                if _flash_attn_known_off and self._drop_env_flash_attn(env):
+                    logger.info(
+                        "Dropped inherited LLAMA_ARG_FLASH_ATTN: this build has no --flash-attn."
+                    )
+                # Same for an env-only quantized V cache, which the argv reset
+                # above cannot reach.
+                if _flash_attn_known_off and self._drop_env_quantized_v_cache(
+                    env,
+                    mla = self._target_kv_symmetry(),
+                    draft_mla = self._draft_kv_symmetry(cmd, env),
+                ):
+                    logger.info(
+                        "Dropped inherited quantized V-cache env: this build has no --flash-attn."
+                    )
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
@@ -15081,6 +16925,29 @@ class LlamaCppBackend:
                         # physical/PCI order, so pin the child's enumeration to match.
                         # The whole visible set stays in use, only its order is fixed.
                         self._pin_visible_gpu_order_for_split(env)
+
+                # reads the argv the child gets, not the mid-fit state that produced it
+                _offload_msg = self._launch_host_shortfall_message(
+                    cmd,
+                    _detected_gpus,
+                    env,
+                    child_has_no_gpu = (
+                        # each names a device present but unusable, so it owns the empty pool
+                        _arch_gate_forced_cpu
+                        or _paravirtual_cpu_forced
+                        # neither says a device exists, so an empty pool stays unreadable
+                        or (
+                            bool(_detected_gpus)
+                            and (
+                                _cpu_only_zero_offload
+                                or self._binary_ships_no_gpu_backend(binary, env)
+                            )
+                        )
+                    ),
+                    shared_gpu_ids = _shared_gpu_ids,
+                )
+                if _offload_msg:
+                    raise RuntimeError(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
@@ -15347,6 +17214,7 @@ class LlamaCppBackend:
                             binary,
                             self._llama_log_path,
                             (self._api_key,),
+                            self._extra_args,
                         )
                         self._cleanup_failed_cpu_fallback()
                         self._vram_fraction_pending = None
@@ -15511,6 +17379,15 @@ class LlamaCppBackend:
                             if _retry_ram_msg:
                                 self._kill_process()
                                 raise RuntimeError(_retry_ram_msg)
+                        # host guard credited the whole pool; the respawn reaches only _remaining
+                        _retry_offload_msg = self._launch_host_shortfall_message(
+                            cmd,
+                            [row for row in _detected_gpus if row[0] in set(_remaining)],
+                            env,
+                        )
+                        if _retry_offload_msg:
+                            self._kill_process()
+                            raise RuntimeError(_retry_offload_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
                             f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
@@ -15656,7 +17533,11 @@ class LlamaCppBackend:
                 if not healthy and not _load_cancelled():
                     _fa_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
-                        self._with_flash_attn_off(_last_spawn_cmd)
+                        self._with_flash_attn_off(
+                            _last_spawn_cmd,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        )
                         if self._is_signal_crash(_fa_rc)
                         else None
                     )
@@ -15670,11 +17551,24 @@ class LlamaCppBackend:
                         self._kill_process()
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
-                        if self._drop_env_quantized_v_cache(env):
+                        if self._drop_env_quantized_v_cache(
+                            env,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
                             )
+                        # Same reach problem for the flag itself: where the rewrite
+                        # could only drop a bare --flash-attn, the env var alone
+                        # still enables it.
+                        if self._drop_env_flash_attn(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
+                                "--flash-attn off retry."
+                            )
+                        _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
@@ -15711,7 +17605,11 @@ class LlamaCppBackend:
                     # FA-off (keeps MTP) before dropping speculative decoding below.
                     _probe_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
-                        self._with_flash_attn_off(_last_spawn_cmd)
+                        self._with_flash_attn_off(
+                            _last_spawn_cmd,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        )
                         if self._is_signal_crash(_probe_rc)
                         else None
                     )
@@ -15725,11 +17623,24 @@ class LlamaCppBackend:
                         self._kill_process()
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
-                        if self._drop_env_quantized_v_cache(env):
+                        if self._drop_env_quantized_v_cache(
+                            env,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
                             )
+                        # Same reach problem for the flag itself: where the rewrite
+                        # could only drop a bare --flash-attn, the env var alone
+                        # still enables it.
+                        if self._drop_env_flash_attn(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
+                                "--flash-attn off retry."
+                            )
+                        _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (
                             _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
@@ -15921,6 +17832,7 @@ class LlamaCppBackend:
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
+                                    self._extra_args,
                                 )
                                 _raise_terminal_load_failure(
                                     self._mmproj_retry_failure_message(
@@ -15957,6 +17869,7 @@ class LlamaCppBackend:
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
+                                    self._extra_args,
                                 )
                             )
 
@@ -15976,7 +17889,9 @@ class LlamaCppBackend:
                     int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
                 self._flash_attn_enabled = (
-                    _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
+                    _flash_attn_enabled_from_args(
+                        _last_spawn_cmd, default = not _flash_attn_known_off, env = env
+                    )
                     and self._architecture != "grok"
                 )
                 self._effective_cache_types = _effective_main_cache_types(
@@ -16011,10 +17926,20 @@ class LlamaCppBackend:
                         else list(extra_args)
                     )
                     # Device-stripped the same way, so both comparator sides share a rule.
+                    # _extra_args_as_requested first: it predates the Metal
+                    # zero-context strip, whereas the drafter-drop snapshot is taken
+                    # after it and would put that strip back into the comparator. The
+                    # two never disagree otherwise, since the snapshot is only set
+                    # alongside a non-None _extra_args_as_requested and the spec strip
+                    # it guards runs later still.
                     _pv_requested = (
-                        _pv_suppressed_spec_extra_args
-                        if _pv_suppressed_spec_extra_args is not None
-                        else extra_args
+                        _extra_args_as_requested
+                        if _extra_args_as_requested is not None
+                        else (
+                            _pv_suppressed_spec_extra_args
+                            if _pv_suppressed_spec_extra_args is not None
+                            else extra_args
+                        )
                     )
                     self._requested_extra_args = (
                         self._strip_device_extra_args(_pv_requested)
@@ -16039,8 +17964,10 @@ class LlamaCppBackend:
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
-                # watch this load for a mid-generation crash.
-                self._last_load_intent = intent
+                # watch this load for a mid-generation crash. The verified-cache hint is
+                # dropped: a respawn replays this snapshot arbitrarily later, so recovery
+                # re-resolves the file instead of trusting a path this request verified.
+                self._last_load_intent = replace(intent, verified_gguf = None)
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -16145,6 +18072,7 @@ class LlamaCppBackend:
         dflash_draft_path: Optional[str] = None,
         dflash_fit_sized: bool = True,
         drafter_no_vram: bool = False,
+        embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -16518,6 +18446,35 @@ class LlamaCppBackend:
             _emit_mtp(chain_ngram = chain_ngram)
             return flags
 
+        # Embedded Hybrid Mamba MTP shares the target model's device placement.
+        # Under an automatic fit, its rollback states push more target layers to CPU;
+        # at a fixed partial layer count, the draft and rollback work still regresses
+        # decode. Auto therefore preserves ordinary llama-server performance by
+        # disabling speculation. Forced MTP remains available as the explicit override.
+        # Only where MTP is the thing being stood down. On a build whose --spec-type
+        # has no MTP spelling the emit path below already loads without speculation
+        # and names the real cause (binary_no_mtp, with the update affordance), so
+        # claiming a placement policy would send the user to force a mode this build
+        # cannot run, and "none" is not a value every such build's enum carries.
+        if embedded_mtp_partial_offload and caps.get("mtp_token"):
+            logger.info(
+                "Auto: embedded MTP is disabled because the Hybrid Mamba target "
+                "requires partial CPU offload; ordinary decoding is faster at this "
+                "placement. Choose MTP explicitly to force it."
+            )
+            flags.extend(["--spec-type", "none"])
+            self._speculative_type = "none"
+            self._spec_fallback_reason = "mtp_partial_offload"
+            # Record the depth this decision was made at (user override only, as
+            # everywhere else). The rollback copies priced into the fit are
+            # base_recurrent * spec_draft_n_max, so a changed depth can move the
+            # placement and must reload -- and without a recorded value the
+            # comparison in _runtime_matches_intent would see 0 forever and reload
+            # on every Apply instead of once.
+            if spec_draft_n_max is not None:
+                self._spec_draft_n_max = int(spec_draft_n_max)
+            return flags
+
         # effective_mode == "auto": the promotion path. No vision gate on any drafter
         # kind. MTP's mmproj compatibility is llama.cpp #22673; DFlash is a different
         # --spec-type and #22105 says nothing, so it was measured: Muse-Glimmer-30B
@@ -16844,6 +18801,7 @@ class LlamaCppBackend:
             self._audio_probed = False
             self._has_audio_input = False
             self._mmproj_has_audio = False
+            self._mmproj_accepts_image = True
             self._port = None
             self._healthy = False
             self._context_length = None
@@ -16911,6 +18869,7 @@ class LlamaCppBackend:
             self._kv_value_length_swa = None
             self._ssm_inner_size = None
             self._ssm_state_size = None
+            self._ssm_group_count = None
             self._ssm_conv_kernel = None
             self._kda_head_dim = None
             self._shared_kv_layers = None
@@ -16934,8 +18893,17 @@ class LlamaCppBackend:
 
     @staticmethod
     def _leading_process_group(pid):
-        """The pid's own process group, when it leads one. None otherwise."""
-        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+        """The pid's own process group, when it leads one. None otherwise.
+
+        `not pid` rejects 0 and None but not 1, and `getpgid(1) == 1`, so init
+        reads as a group leader here and the caller below would then broadcast
+        SIGKILL to every process the user owns. The pid comes from a live Popen
+        today so it cannot be 1, but the floor is a line and the consequence of
+        losing that property later is not recoverable.
+        """
+        if not _is_signalable_pid(pid):
+            return None
+        if os.name != "posix" or not hasattr(os, "getpgid"):
             return None
         try:
             pgid = os.getpgid(pid)
@@ -16946,7 +18914,9 @@ class LlamaCppBackend:
     @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
-        if pgid is None or not hasattr(os, "killpg"):
+        if not _is_signalable_pid(pgid):
+            return  # killpg(1) is kill(-1); killpg(0) is our own group
+        if not hasattr(os, "killpg"):
             return
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -17233,7 +19203,12 @@ class LlamaCppBackend:
         except Exception:
             pid = -1
 
-        if pid <= 0:
+        # `pid <= 0` let pid 1 through. The cmdline check further down is what
+        # actually keeps this honest and init cannot pass it, but the reaper in
+        # process_lifetime had a start-time identity check that was just as
+        # convincing and a record naming pid 1 still went through it, so the
+        # cheap bound goes in front of the clever one here too.
+        if not _is_signalable_pid(pid):
             cls._unlink_pidfile(path)  # garbage record
             return 0
         if pid == os.getpid():
@@ -17495,6 +19470,14 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
+                # Floored here rather than in each enumerator: both the /proc scan
+                # and the psutil scan feed this loop, and a third one added later
+                # would too. Not hypothetical for pid 1 either, since #7894
+                # established Studio can run as a container entrypoint, and a
+                # container whose entrypoint is llama-server puts a process this
+                # sweep recognises at pid 1. Killing it takes the container down.
+                if not _is_signalable_pid(pid):
+                    continue
                 # Ownership: exact match OR binary under a known root.
                 is_ours = binary in exact_binaries or any(
                     binary.is_relative_to(root) for root in resolved_roots
@@ -18215,6 +20198,37 @@ class LlamaCppBackend:
                 yield response, first_token_deadline
 
     @staticmethod
+    def _sse_event_has_generated_output(event: str) -> bool:
+        """Return true when a complete SSE event carries model-generated output."""
+        payload_lines = [
+            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
+        ]
+        if not payload_lines:
+            return False
+        try:
+            data = json.loads("\n".join(payload_lines))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("type") == "diffusion_frame":
+            return True
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            return False
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict) and any(
+                value not in (None, "", []) for key, value in delta.items() if key != "role"
+            ):
+                return True
+            if choice.get("text") not in (None, ""):
+                return True
+        return False
+
+    @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
         cancel_event: Optional[threading.Event] = None,
@@ -18227,6 +20241,7 @@ class LlamaCppBackend:
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
+        prefill_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
@@ -18238,7 +20253,17 @@ class LlamaCppBackend:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
                     LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
-                if chunk:
+                starts_output = last_chunk_at is not None
+                if chunk and last_chunk_at is None:
+                    prefill_sse_buffer += chunk
+                    while match := re.search(r"(?:\r\n|\r|\n){2}", prefill_sse_buffer):
+                        event = prefill_sse_buffer[: match.start()]
+                        prefill_sse_buffer = prefill_sse_buffer[match.end() :]
+                        if LlamaCppBackend._sse_event_has_generated_output(event):
+                            starts_output = True
+                            prefill_sse_buffer = ""
+                            break
+                if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
@@ -18590,6 +20615,7 @@ class LlamaCppBackend:
         continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -18626,6 +20652,9 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
+        if perf_callback is not None:
+            payload["return_progress"] = True
+            payload["timings_per_token"] = True
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
         _reasoning_kw = self._request_reasoning_kwargs(
             enable_thinking, reasoning_effort, preserve_thinking
@@ -18701,6 +20730,7 @@ class LlamaCppBackend:
 
                         try:
                             data = json.loads(line[6:])
+                            _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame (per-step canvas) from the shim: forward untouched so
                             # the frontend renders it in place. No assistant text, so it never enters
                             # the cumulative content.
@@ -18791,6 +20821,7 @@ class LlamaCppBackend:
                     continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
+                    perf_callback = perf_callback,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -18834,6 +20865,7 @@ class LlamaCppBackend:
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -18875,6 +20907,19 @@ class LlamaCppBackend:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+
+        def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
+            """Keep controller instructions inside the current tool exchange."""
+            if not conversation or conversation[-1].get("role") != "tool":
+                return False
+            content = conversation[-1].get("content")
+            if not isinstance(content, str):
+                return False
+            # Replaced, not mutated: ``conversation`` copies the list, not the dicts, and
+            # /v1/messages passes a caller's own history through, which may end on a tool
+            # result. An in-place edit would leave the nudge there and re-send it next turn.
+            conversation[-1] = {**conversation[-1], "content": f"{content}\n\n{feedback}"}
+            return True
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
         # the same tool card + citations a real call would. Skip it only when a
@@ -19096,6 +21141,7 @@ class LlamaCppBackend:
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
                 append_assistant_turn,
+                neutralize_control_markup,
                 neutralize_control_markup_in_messages,
             )
 
@@ -19114,6 +21160,10 @@ class LlamaCppBackend:
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
             }
+
+            if perf_callback is not None:
+                payload["return_progress"] = True
+                payload["timings_per_token"] = True
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
@@ -19162,6 +21212,9 @@ class LlamaCppBackend:
                 in_thinking = False
                 has_content_tokens = False
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments
+                # accumulator key each index maps to now, (index, call_id) after a fork
+                tool_calls_open_key: dict[Any, Any] = {}
+                tool_calls_synthetic_ids: set[Any] = set()  # slots still on a placeholder id
                 has_structured_tc = False
                 _iter_usage = None
                 _iter_timings = None
@@ -19233,6 +21286,8 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+
+                                _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
                                 if _ct:
                                     _iter_timings = _ct
@@ -19262,31 +21317,53 @@ class LlamaCppBackend:
                                         yield {"type": "content", "text": cumulative_display}
                                     for tc_d in tc_deltas:
                                         idx = tc_d.get("index", 0)
-                                        if idx not in tool_calls_acc:
-                                            tool_calls_acc[idx] = {
-                                                "id": tc_d.get("id", f"call_{idx}"),
+                                        tc_id = tc_d.get("id")
+                                        # a second call at a reused index forks its own slot; bare fragments follow whichever call owns the index now
+                                        acc_key = tool_calls_open_key.get(idx, idx)
+                                        if isinstance(tc_id, str) and tc_id:
+                                            open_id = tool_calls_acc.get(acc_key, {}).get("id")
+                                            # a synthetic placeholder is not a rival call, so a first real id still lands on the slot that is open
+                                            if (
+                                                open_id
+                                                and acc_key not in tool_calls_synthetic_ids
+                                                and open_id != tc_id
+                                            ):
+                                                first_id = tool_calls_acc.get(idx, {}).get("id")
+                                                acc_key = idx if first_id == tc_id else (idx, tc_id)
+                                        tool_calls_open_key[idx] = acc_key
+                                        if acc_key not in tool_calls_acc:
+                                            tool_calls_acc[acc_key] = {
+                                                "id": tc_id or f"call_{idx}",
                                                 "type": "function",
                                                 "function": {
                                                     "name": "",
                                                     "arguments": "",
                                                 },
                                             }
-                                        elif tc_d.get("id"):
+                                            if not tc_id:
+                                                tool_calls_synthetic_ids.add(acc_key)
+                                        elif tc_id:
                                             # Update ID if a real one
                                             # arrives on a later delta.
-                                            tool_calls_acc[idx]["id"] = tc_d["id"]
+                                            tool_calls_acc[acc_key]["id"] = tc_id
+                                            tool_calls_synthetic_ids.discard(acc_key)
                                         func = tc_d.get("function", {})
                                         if func.get("name"):
-                                            tool_calls_acc[idx]["function"]["name"] += func["name"]
-                                        if func.get("arguments"):
-                                            tool_calls_acc[idx]["function"]["arguments"] += func[
-                                                "arguments"
+                                            tool_calls_acc[acc_key]["function"]["name"] += func[
+                                                "name"
                                             ]
-                                        current_name = tool_calls_acc[idx]["function"].get(
+                                        if func.get("arguments"):
+                                            tool_calls_acc[acc_key]["function"]["arguments"] += (
+                                                func["arguments"]
+                                            )
+                                        current_name = tool_calls_acc[acc_key]["function"].get(
                                             "name", ""
                                         )
                                         fallback_id = f"call_{idx}"
-                                        current_id = tool_calls_acc[idx].get("id", fallback_id)
+                                        current_id = tool_calls_acc[acc_key].get("id", fallback_id)
+                                        is_first_accumulated_call = (
+                                            next(iter(tool_calls_acc)) == acc_key
+                                        )
                                         already_started = (
                                             current_id in provisional_started_tool_calls
                                         )
@@ -19320,7 +21397,7 @@ class LlamaCppBackend:
                                         )
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(
-                                            tool_calls_acc[idx]["function"].get("arguments", "")
+                                            tool_calls_acc[acc_key]["function"].get("arguments", "")
                                         )
                                         _payload_is_large = (
                                             current_name == "render_html"
@@ -19328,7 +21405,10 @@ class LlamaCppBackend:
                                         )
                                         if (
                                             current_name
-                                            and (idx == 0 or not disable_parallel_tool_use)
+                                            and (
+                                                is_first_accumulated_call
+                                                or not disable_parallel_tool_use
+                                            )
                                             and has_real_id
                                             and not already_started
                                             and not _is_completed_one_shot
@@ -19359,9 +21439,9 @@ class LlamaCppBackend:
                                         if current_id in provisional_started_tool_calls:
                                             if current_id not in arg_streamed_tool_call_ids:
                                                 arg_streamed_tool_call_ids.add(current_id)
-                                                _args_backlog = tool_calls_acc[idx]["function"].get(
-                                                    "arguments", ""
-                                                )
+                                                _args_backlog = tool_calls_acc[acc_key][
+                                                    "function"
+                                                ].get("arguments", "")
                                                 if _args_backlog:
                                                     yield {
                                                         "type": "tool_args",
@@ -19870,10 +21950,11 @@ class LlamaCppBackend:
                     if has_structured_tc:
                         # Drop incomplete fragments (e.g. from max_tokens
                         # truncation or disconnect).
+                        # first-seen order: a call forked onto a reused index arrived after every call already open, so it must execute and replay last
                         tool_calls = [
-                            tool_calls_acc[i]
-                            for i in sorted(tool_calls_acc)
-                            if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
+                            call
+                            for call in tool_calls_acc.values()
+                            if (call.get("function", {}).get("name", "").strip())
                         ] or None
                     if not tool_calls:
                         # Unconditional re-parse: we only reach DRAINING when the buffer looked like a
@@ -19972,10 +22053,15 @@ class LlamaCppBackend:
                     tool_calls = tool_calls[:1]
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
+                if reasoning_accum.strip():
+                    assistant_msg["reasoning_content"] = reasoning_accum
                 assistant_appended = False
-                # Collect no-op nudges and flush them after the batch, so a no-op
-                # doesn't abort it and drop the parallel calls that follow.
+                # Collect no-op feedback and flush it after the batch, so a
+                # suppressed call never drops a later parallel call.
                 deferred_noop_msgs: list = []
+                # Which tools those no-ops were about, so the flush below can tell
+                # whether the trailing result belongs to the same tool.
+                deferred_noop_tools: set = set()
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -20001,13 +22087,6 @@ class LlamaCppBackend:
                     )
 
                     if not decision.should_execute:
-                        if content_text and not assistant_appended:
-                            append_assistant_turn(
-                                conversation,
-                                assistant_msg,
-                                continue_final_message = continue_final_message,
-                            )
-                            assistant_appended = True
                         if provisional_match:
                             # A provisional tool card is already on screen for this
                             # id; close it so it never dangles when the controller
@@ -20023,6 +22102,7 @@ class LlamaCppBackend:
                             }
                         completion = tool_controller.record_noop(decision)
                         deferred_noop_msgs.append(completion.model_message())
+                        deferred_noop_tools.add(decision.tool_name)
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
                         logger.info(
@@ -20169,7 +22249,55 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
-                append_deferred_nudges(conversation, deferred_noop_msgs)
+                # A mixed execute/no-op batch already has a real tool result, so keeping the
+                # feedback with that result beats appending a newer user turn, which makes
+                # templates hide this turn's structured reasoning. Only when the result is
+                # the SAME tool the feedback is about: templates label the whole block with
+                # the result's own tool name (gemma-4.jinja resolves tool_call_id -> name and
+                # wraps the body), so folding a note about tool A into tool B's result reads
+                # as B's own output. Then the user turn is the lesser loss.
+                _fold_target_matches = (
+                    len(deferred_noop_tools) == 1
+                    and bool(conversation)
+                    and conversation[-1].get("role") == "tool"
+                    and conversation[-1].get("name") in deferred_noop_tools
+                )
+                if deferred_noop_msgs and assistant_appended and _fold_target_matches:
+                    if not _attach_internal_feedback_to_tool_result(
+                        deferred_nudge_text(deferred_noop_msgs)
+                    ):
+                        append_deferred_nudges(conversation, deferred_noop_msgs)
+                elif deferred_noop_msgs and assistant_appended:
+                    append_deferred_nudges(conversation, deferred_noop_msgs)
+                else:
+                    # A blank trace is not a turn: reuse the same emptiness test as
+                    # the field above so a whitespace-only split never appends an
+                    # empty assistant message.
+                    if not assistant_appended and (
+                        content_text or assistant_msg.get("reasoning_content")
+                    ):
+                        if assistant_msg.get("reasoning_content"):
+                            assistant_msg["content"] = neutralize_control_markup(
+                                reasoning_accum,
+                                self.markup_profile,
+                            )
+                            _continued_partial = (
+                                trailing_assistant_text(conversation)
+                                if continue_final_message
+                                else None
+                            )
+                            if _continued_partial and not _continued_partial.endswith("\n"):
+                                assistant_msg["content"] = f"\n{assistant_msg['content']}"
+                            if content_text:
+                                assistant_msg["content"] += f"\n{content_text}"
+                            del assistant_msg["reasoning_content"]
+                        append_assistant_turn(
+                            conversation,
+                            assistant_msg,
+                            continue_final_message = continue_final_message,
+                        )
+                        assistant_appended = True
+                    append_deferred_nudges(conversation, deferred_noop_msgs)
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -20232,16 +22360,8 @@ class LlamaCppBackend:
         # the final streaming pass to produce a useful answer instead of
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "You have used all available tool calls. Based on "
-                        "everything you have found so far, provide your final "
-                        "answer now. Do not call any more tools."
-                    ),
-                }
-            )
+            if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
+                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
         # Clear status.
         yield {"type": "status", "text": ""}
@@ -20276,6 +22396,10 @@ class LlamaCppBackend:
         if seed is not None:
             stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
+
+        if perf_callback is not None:
+            stream_payload["return_progress"] = True
+            stream_payload["timings_per_token"] = True
 
         cumulative = ""
         _last_emitted = ""
@@ -20336,6 +22460,8 @@ class LlamaCppBackend:
 
                         try:
                             chunk_data = json.loads(line[6:])
+
+                            _report_live_llama_timings(perf_callback, chunk_data)
                             # Capture server timings/usage from final chunks.
                             _chunk_timings = chunk_data.get("timings")
                             if _chunk_timings:

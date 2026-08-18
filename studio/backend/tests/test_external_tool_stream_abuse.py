@@ -19,8 +19,10 @@ failure names a defect rather than a preference.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
+import time
 
 import pytest
 
@@ -879,19 +881,29 @@ def test_an_endless_content_stream_is_closed_on_cancellation(executed):
 
 
 def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, monkeypatch):
-    """Closing the stream while a tool runs must leave no pending task behind."""
+    """Closing the stream while a tool runs must leave no pending task behind.
+
+    The step worker is only ever pending across a suspension when the consumer is cancelled
+    inside ``__anext__``: the loop drops its handle before every yield, so a consumer that
+    merely breaks out of the ``async for`` and closes hands the drain nothing to join. The
+    cancellation here is therefore what puts a live ``to_thread`` task into the drain, which
+    is the shape the request task takes when a client disconnects mid tool call.
+    """
     started = threading.Event()
     release = threading.Event()
+    cancel_event = threading.Event()
 
     def _slow_execute(name, arguments, **kwargs):
         started.set()
-        release.wait(timeout = 10.0)
+        # Returns on the cancel flag, which is what the drain sets to let a pending worker
+        # finish. ``release`` is only the harness's escape hatch if it never does.
+        while not (release.is_set() or cancel_event.is_set()):
+            time.sleep(0.01)
         return "late"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _slow_execute)
 
     transport = FakeTransport([_call_turn(), _answer_turn()])
-    cancel_event = threading.Event()
 
     async def _drive():
         # Tasks already running belong to this harness, not the tool loop, so the census is taken
@@ -906,22 +918,31 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
             policy = _policy(),
             cancel_event = cancel_event,
         )
-        seen = 0
-        async for _line in agen:
-            seen += 1
-            if started.is_set():
-                break
-        release.set()
+
+        async def _pump():
+            async for _line in agen:
+                pass
+
+        pump = asyncio.create_task(_pump())
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        # A tick for the loop to re-enter the step await it is cancelled out of.
+        await asyncio.sleep(0.05)
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
         await agen.aclose()
-        # Give the drain a tick to join its worker before the task census.
-        await asyncio.sleep(0)
-        # ``not task.done()``, not "no tasks exist": a finished task was joined and is no leak,
-        # what must not survive is one still running with nobody left to await it.
-        return [
+        # Census BEFORE the escape hatch, so a worker that only the harness could free still
+        # counts as pending. ``not task.done()``, not "no tasks exist": a finished task was
+        # joined and is no leak, what must not survive is one still running with nobody left
+        # to await it.
+        pending = [
             task
             for task in asyncio.all_tasks()
             if task not in harness and task is not asyncio.current_task() and not task.done()
         ]
+        release.set()
+        return pending
 
     pending = asyncio.run(asyncio.wait_for(_drive(), timeout = 30.0))
 
