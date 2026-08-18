@@ -14,6 +14,8 @@ CDP counter and the Long Tasks API are Chromium-only, and the failure mode is si
 as "no measurement". So no growth axis and no pass/fail decision may rest on one.
 """
 
+import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -177,24 +179,41 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
     assert "stop_process(vite)" in text
 
 
-def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
-    # `getForkCount` returns `data.count`, and the badge's guard is `count <= 0`. `undefined <= 0`
-    # is false, so a `{}` body renders a badge reading "undefined forks from this message" on every
-    # assistant message. Measured at 25000 chars: 10 badges and 4031 DOM nodes with `{}`, 0 badges
-    # and 3981 with `{"count":0}`. That is DOM in proportion to thread size, on the axis this
-    # harness measures.
+def test_the_fork_count_stub_matches_the_url_the_app_actually_requests() -> None:
+    # Pinning the BODY alone is what let this rot. The entry used to name the per-message endpoint
+    # `/threads/{id}/messages/{mid}/forks`, and when fork counts were batched into one whole-thread
+    # GET the pattern stopped matching anything: the stub still looked present and correct, the new
+    # URL went to the network, and the harness failed with two stray requests inside its measured
+    # actions instead of failing here, in a browserless test that costs a second.
+    #
+    # So the check is the one that catches a rename: build the URL the app builds and require the
+    # allowlist pattern to match it. The JS regex source is reused verbatim -- `\/` is a valid
+    # escape for `/` in Python's `re` too.
+    api = (FRONTEND / "src/features/chat/api/chat-api.ts").read_text(encoding = "utf-8")
+    assert (
+        "`/api/chat/threads/${encodeURIComponent(threadId)}/forks`" in api
+    ), "getThreadForkCounts no longer requests /api/chat/threads/{id}/forks; update the stub too"
+    requested = "/api/chat/threads/__LOCALID_AbC123/forks"
+
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     # Pin the fork-count entry to its own body rather than scanning the whole file: other
     # endpoints in the allowlist legitimately answer "{}", so a bare file-wide check for it
     # would fail on them and tell us nothing about this one.
-    forks = next(
-        (line for line in page.splitlines() if "forks$/" in line),
-        "",
+    entry = next((line for line in page.splitlines() if "/forks" in line and "[/" in line), "")
+    assert entry, "the fork-count endpoint is no longer in the stub allowlist"
+    pattern, body = re.fullmatch(r"\s*\[/(.+)/,\s*'(.+)'\],\s*", entry).groups()
+    assert re.search(pattern, requested), (
+        f"the fork-count stub pattern /{pattern}/ does not match {requested}, the URL "
+        "getThreadForkCounts requests, so that GET reaches the network inside a measured action"
     )
-    assert forks, "the fork-count endpoint is no longer in the stub allowlist"
-    assert '{"count":0}' in forks, (
-        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
-        f"count undefined and renders a badge on every assistant message. Got: {forks.strip()!r}"
+    # `undefined <= 0` is false, so a body the store cannot parse renders a badge reading
+    # "undefined forks from this message" on every assistant message. Measured at 25000 chars when
+    # the badge was per-message: 10 badges and 4031 DOM nodes with `{}`, 0 badges and 3981 with a
+    # parseable zero. That is DOM in proportion to thread size, on the axis this harness measures.
+    # getThreadForkCounts reads `data.counts`, so that is the key that has to be there.
+    assert isinstance(json.loads(body).get("counts"), dict), (
+        'the fork-count stub must answer with the {"counts": {...}} body getThreadForkCounts '
+        f"parses, so every badge reads a real zero. Got: {body!r}"
     )
 
 

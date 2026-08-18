@@ -63,10 +63,9 @@ import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
 // The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is
-// truthy, so the fork-count badge really does fire one GET per assistant message. Answering them
-// here, before anything mounts, keeps that off the wire entirely; answering them from the
-// Playwright side instead would put a round trip to another process inside a timed region, once
-// per assistant message.
+// truthy, so the fork-count subscription really does fire a GET for the thread. Answering it
+// here, before anything mounts, keeps that off the wire entirely; answering it from the
+// Playwright side instead would put a round trip to another process inside a timed region.
 // An explicit allowlist, never a blanket `/api/` match. A blanket match resolves EVERY request the
 // measured interactions make before Playwright emits it, so `stray_api_requests` stays at zero and
 // the fan-out this harness exists to detect becomes invisible to it. Narrowing it is what made the
@@ -76,11 +75,19 @@ import "./src/index.css";
 // returns, so no round trip lands inside a timed region. Anything NOT listed here goes to the
 // network and trips the stray counter, which is the point.
 const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [
-  // One GET per assistant message: the synthetic `__LOCALID_...` remoteId is truthy, so the badge
-  // really does ask. `{ count: 0 }`, not `{}`: getForkCount returns `data.count`, and
-  // `undefined <= 0` is false, so an empty body renders a badge reading "undefined forks" on every
-  // assistant message and adds DOM in proportion to thread size, the axis being measured.
-  [/\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/, '{"count":0}'],
+  // One GET per thread, not per message: fork-count-store.ts holds a single subscription for the
+  // rendered thread and every badge reads from it, so the whole-thread endpoint is what fires.
+  // The synthetic `__LOCALID_...` remoteId is truthy, so it really does ask -- once while seeding,
+  // once after the delete's `notifyChatHistoryUpdated`, and once when the reopened thread
+  // resubscribes. This entry used to name the OLD per-message endpoint
+  // (`/threads/{id}/messages/{mid}/forks`), which nothing has called since fork counts were
+  // batched; the per-thread GET it was replaced by matched nothing here and went to the network,
+  // putting two round trips inside the measured actions.
+  //
+  // `{"counts":{}}`, not `{}`: that is the body the endpoint really returns, and the shape
+  // getThreadForkCounts parses. Every badge then reads 0 and renders nothing, so the fixture does
+  // not grow DOM in proportion to thread size, the axis being measured.
+  [/\/api\/chat\/threads\/[^/]+\/forks$/, '{"counts":{}}'],
   // The delete action's own persistence. deleteThreadMessage syncs the exported repository
   // whenever remoteId is truthy, which the synthetic id always is, so this is the fixture
   // maintaining itself rather than app fan-out. Left on the wire it is 3 round trips inside the
