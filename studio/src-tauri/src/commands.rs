@@ -126,6 +126,25 @@ fn watchdog_should_confirm_before_death(
     consecutive_failures >= budget && probe_timed_out
 }
 
+/// Whether the watchdog may still act on the backend it set out to watch.
+///
+/// Every probe is an await, and the last-chance one is 30s wide on top of the 10s cycle
+/// probe, so up to 40s of wall clock passes between reading the state at the top of the
+/// loop and spending the verdict on it. A stop or a restart lands in that window as a
+/// swapped handle: `start_backend` bumps the generation and stores a new child, and
+/// `stop_backend` has no generation guard of its own, so a watchdog acting on its
+/// pre-await snapshot kills the replacement and reports the healthy new backend as
+/// crashed. The generation is the identity the probe never carried, and the shutdown flag
+/// covers the stop that has not been followed by a start yet.
+fn watchdog_may_still_act(
+    current_generation: u64,
+    watched_generation: u64,
+    has_owned: bool,
+    shutting_down: bool,
+) -> bool {
+    current_generation == watched_generation && has_owned && !shutting_down
+}
+
 /// Consecutive failures tolerated before the backend is declared dead.
 fn watchdog_failure_budget(inference_active: bool, probe_timed_out: bool) -> u32 {
     if inference_active && probe_timed_out {
@@ -1949,6 +1968,56 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_restart_during_the_last_chance_probe_is_not_declared_dead() {
+        // The watched generation is the only identity this task has: `check_health_inner`
+        // matches on a service name, so a probe answer says "an Unsloth backend is on this
+        // port", never "the one I was started for". Anything that is not still generation
+        // G with a handle stored and no stop in flight has to end the loop rather than
+        // reach `stop_backend`, which takes whatever handle is stored *now*.
+        assert!(super::watchdog_may_still_act(7, 7, true, false));
+        // Restarted under the probe: start_backend bumped the generation and stored a new
+        // child, so the kill below would land on the replacement.
+        assert!(!super::watchdog_may_still_act(8, 7, true, false));
+        // Stopped and not started again: the handle is gone, so there is nothing to kill
+        // and "server stopped unexpectedly" would contradict the stop the user asked for.
+        assert!(!super::watchdog_may_still_act(7, 7, false, false));
+        // A stop in flight: stop_backend sets the flag before it takes the handle, so this
+        // is the same restart caught one instant earlier.
+        assert!(!super::watchdog_may_still_act(7, 7, true, true));
+    }
+
+    #[test]
+    fn the_watchdog_rereads_the_generation_after_the_confirm_probe() {
+        // HEALTH_CONFIRM_PROBE_TIMEOUT is 30s on top of the 10s cycle probe, so up to 40s
+        // of wall clock separates the generation check at the top of the loop from the
+        // kill at the bottom, and both stop_server and start_server are async commands
+        // that run while this task is parked on the await. Losing the re-read reinstates a
+        // 40s window in which a user restarting a hung backend has the new one killed.
+        // Normalised line endings for the same reason as the guard above: include_str!
+        // embeds CRLF on the Windows runner.
+        let src = include_str!("commands.rs").replace("\r\n", "\n");
+        let start = src
+            .find("async fn health_watchdog")
+            .expect("health_watchdog moved; update this guard");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("could not find the function end")];
+
+        let confirm = body
+            .find("HEALTH_CONFIRM_PROBE_TIMEOUT")
+            .expect("the last-chance probe is gone; update this guard");
+        let guard = body
+            .find("watchdog_may_still_act")
+            .expect("the post-probe generation re-read is gone");
+        let kill = body
+            .rfind("stop_backend")
+            .expect("the unresponsive-backend kill moved");
+        assert!(
+            confirm < guard && guard < kill,
+            "the generation re-read must sit between the last-chance probe and the kill"
+        );
+    }
 }
 
 /// Periodic health check that detects deadlocked or hung backends.
@@ -2122,6 +2191,28 @@ async fn health_watchdog(
                     consecutive_failures = 0;
                     continue;
                 }
+            }
+            // The verdict below is about the backend that was current when this cycle read
+            // the state, and both probes above have awaited since. Re-read before spending
+            // it: `stop_backend` acts on whatever handle is stored now, so a restart during
+            // the last-chance probe would have this task kill the replacement instead.
+            let (current_generation, still_owned) = {
+                let proc = match state.lock() {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                (proc.generation, proc.has_owned_backend())
+            };
+            if !watchdog_may_still_act(
+                current_generation,
+                generation,
+                still_owned,
+                shutdown.load(Ordering::SeqCst),
+            ) {
+                info!(
+                    "Health watchdog: backend changed while the health probe was in flight, exiting without declaring it dead"
+                );
+                break;
             }
             if consecutive_failures >= budget {
                 diagnostics::record_backend_watchdog(
