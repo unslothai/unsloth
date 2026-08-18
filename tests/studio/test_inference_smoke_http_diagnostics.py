@@ -68,10 +68,7 @@ def _python_blocks(path: Path) -> list[tuple[int, str]]:
 
 def _handler_reraises_only(handler: ast.ExceptHandler) -> bool:
     """A handler whose entire body is `raise`, i.e. one that adds nothing."""
-    return all(
-        isinstance(node, ast.Raise) and node.exc is None
-        for node in handler.body
-    )
+    return all(isinstance(node, ast.Raise) and node.exc is None for node in handler.body)
 
 
 def _catches_http_error(handler: ast.ExceptHandler) -> bool:
@@ -79,10 +76,7 @@ def _catches_http_error(handler: ast.ExceptHandler) -> bool:
     if types is None:
         return False
     candidates = types.elts if isinstance(types, ast.Tuple) else [types]
-    return any(
-        isinstance(node, ast.Attribute) and node.attr == "HTTPError"
-        for node in candidates
-    )
+    return any(isinstance(node, ast.Attribute) and node.attr == "HTTPError" for node in candidates)
 
 
 def _calls(tree: ast.AST) -> list[ast.Call]:
@@ -128,11 +122,7 @@ def test_every_request_helper_has_an_http_error_handler(name: str) -> None:
     whole timeout budget re-asking a question the server already refused.
     """
     path = WORKFLOWS / name
-    helpers = [
-        helper
-        for _, source in _python_blocks(path)
-        for helper in _request_helpers(source)
-    ]
+    helpers = [helper for _, source in _python_blocks(path) for helper in _request_helpers(source)]
     assert helpers, f"{name}: no request helper found"
     for helper in helpers:
         handlers = [
@@ -199,16 +189,12 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
                 # it, and the status code alongside it names which request.
                 printed = "\n".join(ast.dump(call) for call in prints)
                 assert "code" in printed, (
-                    f"{name}: {helper.name}() prints on HTTPError without the "
-                    f"status code"
+                    f"{name}: {helper.name}() prints on HTTPError without the " f"status code"
                 )
 
                 # A read can raise (a truncated or already-consumed body), and
                 # that must not replace the real HTTPError with a confusing one.
-                guarded = any(
-                    isinstance(node, ast.Try)
-                    for node in ast.walk(handler)
-                )
+                guarded = any(isinstance(node, ast.Try) for node in ast.walk(handler))
                 assert guarded, (
                     f"{name}: {helper.name}() reads the HTTPError body "
                     f"unguarded, so a failed read masks the real status"
@@ -216,9 +202,7 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
 
                 # And the original error must still propagate: reporting is not
                 # the same as tolerating.
-                assert any(
-                    isinstance(node, ast.Raise) for node in handler.body
-                ), (
+                assert any(isinstance(node, ast.Raise) for node in handler.body), (
                     f"{name}: {helper.name}() reports the HTTPError but does "
                     f"not re-raise it, so a 4xx would pass as success"
                 )
