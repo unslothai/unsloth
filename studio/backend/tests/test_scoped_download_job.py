@@ -189,6 +189,13 @@ def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
         # not name, so the flag has to survive that too or it never ships.
         assert DownloadStartResponse(**attached).model_dump()["attached"] is True
         assert DownloadStartResponse(**started).model_dump()["attached"] is False
+
+        # A rejection that is not adoptable (cross-variant conflict, delete in
+        # progress) joined nothing, so it must not claim it attached.
+        monkeypatch.setattr(dl._registry, "claim", lambda *a, **k: (False, "repository_owned"))
+        monkeypatch.setattr(dl._registry, "adoptable", lambda *a, **k: False)
+        refused = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
+        assert refused["accepted"] is False and refused["attached"] is False
     finally:
         dl._registry.set_job(key, "complete")
 

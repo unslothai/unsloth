@@ -303,15 +303,15 @@ async def download_model_response(
                     "this one."
                 ),
             )
-        # claim_state is the blocking job's state. The client can attach only
-        # when the blocker is this key's own in-flight job (adoptable); a
-        # cross-variant conflict or in-progress delete is not accepted.
+        # claim_state is the blocking job's state. Attaching and accepting are
+        # one verdict: only this key's own in-flight job can be joined, and a
+        # cross-variant conflict or in-progress delete joined nothing.
+        adoptable = _registry.adoptable(key)
         return {
             "job_key": key,
             "state": claim_state,
-            "accepted": _registry.adoptable(key),
-            # Accepted, but this client did not start the transfer.
-            "attached": True,
+            "accepted": adoptable,
+            "attached": adoptable,
             "generation": generation,
             # An adopted job keeps the transport it started on, so report it
             # rather than let the caller assume the one it asked for.
