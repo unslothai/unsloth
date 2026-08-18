@@ -1,13 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_MARK_KEY,
+  getAuthSessionEpoch,
+} from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
-import { batchListChatMessages, CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import {
+  batchListChatMessages,
+  CHAT_HISTORY_REVISION_KEY,
+  CHAT_HISTORY_UPDATED_EVENT,
+} from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "../utils/chat-history-storage";
+import { isCoalescedHistoryEvent } from "../utils/chat-history-revision";
+import {
+  chatSearchHadRows,
+  forgetChatSearchHasRows,
+  rememberChatSearchHasRows,
+} from "../utils/chat-search-history-hint";
 import { attachmentsPastedText } from "../utils/pasted-text.ts";
 
 export interface ChatSearchItem {
@@ -25,6 +40,8 @@ export interface ChatSearchItem {
 
 const THREAD_LIMIT = 200;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
+// Past the dialog's 180ms exit, so releasing uncached rows never lands mid-animation.
+const ROW_RELEASE_DELAY_MS = 300;
 
 // Keys whose values are base64 image/audio payloads, not searchable text.
 const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
@@ -215,36 +232,171 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   return results;
 }
 
+// THREAD_LIMIT bounds rows, not bytes: a tool-heavy history would otherwise hold tens of
+// megabytes behind a closed dialog. Past this the index is rebuilt on each open.
+const MAX_CACHED_SEARCH_TEXT_CHARS = 4_000_000;
+
+// Last built index, kept across opens so reopening paints the previous rows at
+// once and revalidates in place instead of collapsing back to the empty state.
+let cachedIndex: ChatSearchItem[] | null = null;
+let cachedIndexEpoch = -1;
+
+// Scoped to the auth session: a web logout only navigates, and a second account must never
+// open onto the previous user's chats.
+function readCachedIndex(): ChatSearchItem[] | null {
+  if (cachedIndexEpoch !== getAuthSessionEpoch()) {
+    // The next account's history is unknown, so the previous one's hint cannot size it
+    // either. -1 is "nothing cached yet", every page load, and leaves this account's alone.
+    if (cachedIndexEpoch !== -1) forgetChatSearchHasRows();
+    cachedIndex = null;
+    cachedIndexEpoch = getAuthSessionEpoch();
+  }
+  return cachedIndex;
+}
+
+function cachedSearchTextChars(items: ChatSearchItem[]): number {
+  let total = 0;
+  for (const item of items) total += item.searchText.length;
+  return total;
+}
+
+// Exported for tests, which drive the real bookkeeping rather than a stand-in.
+export function writeCachedIndex(next: ChatSearchItem[] | null): void {
+  cachedIndexEpoch = getAuthSessionEpoch();
+  cachedIndex =
+    next !== null && cachedSearchTextChars(next) > MAX_CACHED_SEARCH_TEXT_CHARS
+      ? null
+      : next;
+  // A build answers outright. An invalidation only says the history changed: a remembered
+  // ROWS answer still holds, an EMPTY one may be about to gain its first chat.
+  if (next !== null) rememberChatSearchHasRows(next.length > 0);
+  else if (chatSearchHadRows() === false) forgetChatSearchHasRows();
+}
+
+// An account change made elsewhere. Private: it reaches an open dialog's request sequence,
+// which nothing outside can see.
+const SEARCH_SESSION_CHANGED_EVENT = "unsloth-chat-search-session-changed";
+
+// A history change in another tab or from an API client never reaches this document, so the
+// cache would otherwise open onto rows that no longer exist and navigate to a dead thread.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    // An account switch elsewhere arrives as a storage write alone: the epoch and its events
+    // are both this document's. The mark moves on a session boundary and not on an hourly
+    // refresh, which must not cost a warm cache.
+    if (event.key === AUTH_SESSION_MARK_KEY) {
+      writeCachedIndex(null);
+      // Shared by every account on the origin, so it cannot answer for the new one.
+      forgetChatSearchHasRows();
+      // History first, for the sidebar. Then the account change, which the epoch check
+      // cannot see: an open dialog restarts at once, superseding the rebuild just queued.
+      window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+      window.dispatchEvent(new Event(SEARCH_SESSION_CHANGED_EVENT));
+      return;
+    }
+    if (event.key !== CHAT_HISTORY_REVISION_KEY) return;
+    writeCachedIndex(null);
+    // Dropping the cache alone leaves an open dialog on pre-change rows with nothing
+    // scheduled. Re-raised locally so every in-tab listener treats it as a local change.
+    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+  });
+  // The hint outlives the page, so a logout takes it: otherwise the next account to sign in
+  // after a reload is sized by the previous one's history.
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    forgetChatSearchHasRows();
+  });
+}
+
+// Whether to size for rows, readable during render so the dialog picks a height before its
+// opening paint. A built cache answers exactly; otherwise the last build's hint does, which
+// is all the first open of a page load has. null means genuinely unknown.
+export function chatSearchIndexHasRows(): boolean | null {
+  const cached = readCachedIndex();
+  if (cached !== null) return cached.length > 0;
+  return chatSearchHadRows();
+}
+
 export function useChatSearchIndex(enabled: boolean): {
   items: ChatSearchItem[];
   loading: boolean;
 } {
-  const [items, setItems] = useState<ChatSearchItem[]>([]);
+  const [items, setItems] = useState<ChatSearchItem[]>(() => readCachedIndex() ?? []);
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
 
+  // Discarded in the opening render, not in the effect that rebuilds: that runs after the
+  // commit, so the invalidated rows would paint first.
+  const [wasEnabled, setWasEnabled] = useState(enabled);
+  if (enabled !== wasEnabled) {
+    setWasEnabled(enabled);
+    if (enabled && readCachedIndex() === null) {
+      if (items.length > 0) setItems([]);
+      if (!loading) setLoading(true);
+    }
+  }
+
   useEffect(() => {
     if (!enabled) {
-      // Clear stale results so the next open doesn't flash old items.
-      setItems([]);
       setLoading(false);
-      return;
+      // With nothing cached these rows are the last thing holding the conversation text.
+      // Released after the exit, not during the closing render: the portal stays mounted for
+      // the animation, and emptying it there is the teardown this dialog exists to avoid.
+      let release: ReturnType<typeof setTimeout> | null = null;
+      const scheduleRelease = () => {
+        // Never postponed: a stream invalidates per chunk, and restarting would hold the
+        // index for the whole generation.
+        if (release !== null) return;
+        release = setTimeout(() => {
+          release = null;
+          if (readCachedIndex() !== null) return;
+          // Same reference when there is nothing to release, so no needless re-render.
+          setItems((prev) => (prev.length > 0 ? [] : prev));
+        }, ROW_RELEASE_DELAY_MS);
+      };
+      scheduleRelease();
+      // History can change while closed, so drop the cache rather than reopening onto chats
+      // that no longer exist. Only the cache: clearing state re-renders per streaming chunk.
+      const invalidate = () => {
+        writeCachedIndex(null);
+        // The release above may already have run while the cache was still there.
+        scheduleRelease();
+      };
+      window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
+      return () => {
+        if (release !== null) clearTimeout(release);
+        window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
+      };
     }
     let cancelled = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Set by a history event, cleared once its rebuild lands, so a close in between knows
+    // the cached snapshot is stale.
+    let rebuildPending = false;
 
     const run = () => {
       const seq = ++requestSeqRef.current;
-      setLoading(true);
+      // A build straddling a logout describes the account it started under.
+      const epoch = getAuthSessionEpoch();
+      // Only the first build has nothing to show; later ones refresh silently.
+      if (readCachedIndex() === null) setLoading(true);
       buildIndex()
         .then((result) => {
-          // Drop out-of-order responses so a slower rebuild can't clobber a fresher one.
+          // Drop out-of-order responses, and never repopulate a cache already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
+          if (epoch !== getAuthSessionEpoch()) return;
+          writeCachedIndex(result);
+          // A build older than the history event does not satisfy it, so the flag only
+          // clears once nothing is queued.
+          if (debounceTimer === null) rebuildPending = false;
           setItems(result);
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
-          setItems([]);
+          // A rebuild that failed leaves nothing fresher, and what is cached is the snapshot
+          // it was called to replace: keeping it would offer a deleted chat as a live result
+          // for as long as the dialog stays open.
+          if (rebuildPending) writeCachedIndex(null);
+          setItems(readCachedIndex() ?? []);
         })
         .finally(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
@@ -252,7 +404,10 @@ export function useChatSearchIndex(enabled: boolean): {
         });
     };
 
-    const scheduleRebuild = () => {
+    const scheduleRebuild = (event: Event) => {
+      rebuildPending = true;
+      // retires a build that read the history before this change, which would else republish it
+      if (!isCoalescedHistoryEvent(event)) requestSeqRef.current += 1;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
@@ -260,12 +415,34 @@ export function useChatSearchIndex(enabled: boolean): {
       }, SEARCH_REBUILD_DEBOUNCE_MS);
     };
 
+    // Not a history change: the rows on screen belong to whoever was signed in a moment ago,
+    // so they go now. Rebuilding at once also advances the request sequence, retiring a build
+    // still in flight for that account.
+    const onSessionChanged = () => {
+      if (cancelled) return;
+      if (debounceTimer !== null) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      setItems([]);
+      run();
+    };
+
     run();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
+    window.addEventListener(SEARCH_SESSION_CHANGED_EVENT, onSessionChanged);
     return () => {
       cancelled = true;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
+      // Closing cancels a queued rebuild, so the snapshot left behind is stale and must not
+      // survive the next open. The rendered rows stay: clearing them here tears the list down
+      // inside the exit animation.
+      if (rebuildPending) writeCachedIndex(null);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
+      window.removeEventListener(
+        SEARCH_SESSION_CHANGED_EVENT,
+        onSessionChanged,
+      );
     };
   }, [enabled]);
 
