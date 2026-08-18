@@ -24,6 +24,11 @@ interface PlatformBackendEnv {
   VITE_RAG_PLATFORM_CONNECTORS_ENABLED?: string;
   VITE_RAG_PLATFORM_MEMORY_ENABLED?: string;
   VITE_RAG_PLATFORM_SEARCH_ENABLED?: string;
+  VITE_RAG_PLATFORM_ADMIN_ENABLED?: string;
+  VITE_RAG_PLATFORM_ADMIN_OPERATIONS_ENABLED?: string;
+  VITE_RAG_PLATFORM_TENANTS_ENABLED?: string;
+  VITE_RAG_PLATFORM_BOTS_ENABLED?: string;
+  VITE_RAG_PLATFORM_CHANNELS_ENABLED?: string;
 }
 
 export interface PlatformAuthConfig {
@@ -32,6 +37,14 @@ export interface PlatformAuthConfig {
   passwordRecoveryEnabled: boolean;
   publicKeyPem: string;
   registrationEnabled: boolean;
+}
+
+export interface PlatformManagementConfig {
+  adminEnabled: boolean;
+  adminOperationsEnabled: boolean;
+  botsEnabled: boolean;
+  channelsEnabled: boolean;
+  tenantsEnabled: boolean;
 }
 
 const DEFAULT_API_PREFIX = "/api/v1";
@@ -143,6 +156,28 @@ export function isPlatformSearchEnabled(
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED) &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_SEARCH_ENABLED)
   );
+}
+
+export function getPlatformManagementConfig(
+  env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
+): PlatformManagementConfig {
+  const baseEnabled =
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED);
+  const adminEnabled =
+    baseEnabled && enabledUnlessFalse(env.VITE_RAG_PLATFORM_ADMIN_ENABLED);
+  return {
+    adminEnabled,
+    adminOperationsEnabled:
+      adminEnabled &&
+      enabledUnlessFalse(env.VITE_RAG_PLATFORM_ADMIN_OPERATIONS_ENABLED),
+    tenantsEnabled:
+      baseEnabled && enabledUnlessFalse(env.VITE_RAG_PLATFORM_TENANTS_ENABLED),
+    botsEnabled:
+      baseEnabled && enabledUnlessFalse(env.VITE_RAG_PLATFORM_BOTS_ENABLED),
+    channelsEnabled:
+      baseEnabled && enabledUnlessFalse(env.VITE_RAG_PLATFORM_CHANNELS_ENABLED),
+  };
 }
 
 /**

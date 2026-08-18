@@ -22,6 +22,7 @@ import { Route as agentsRoute } from "./routes/agents";
 import { Route as filesRoute } from "./routes/files";
 import { Route as memoryRoute } from "./routes/memory";
 import { Route as searchRoute } from "./routes/search";
+import { Route as managementRoute } from "./routes/management";
 import { Route as connectorOAuthCallbackRoute } from "./routes/connector-oauth.$source.callback";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
@@ -41,6 +42,7 @@ const routeTree = rootRoute.addChildren([
   filesRoute,
   memoryRoute,
   searchRoute,
+  managementRoute,
   connectorOAuthCallbackRoute,
   exportRoute,
   imagesRoute,

@@ -230,6 +230,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "POST ~ ^/api/v1/tenant/dev_insert_metadata_from_file/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "PUT ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/metadata/config/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -258,6 +262,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "GET ~ ^/api/v1/compilation-templates/wiki-presets/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -267,6 +275,10 @@
       },
       {
         "match": "POST ~ ^/api/v1/connectors/google/oauth/web/result/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/tenant/dev_insert_chunks_from_file/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -290,10 +302,6 @@
         "upstream": "127.0.0.1:9384"
       },
       {
-        "match": "POST ~ ^/api/v1/tenant/insert_metadata_from_file/?$",
-        "upstream": "127.0.0.1:9384"
-      },
-      {
         "match": "GET ~ ^/api/v1/admin/sandbox/providers/[^/]+/schema/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -306,6 +314,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/compilation-templates/builtins/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/alteration/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -315,10 +327,6 @@
       },
       {
         "match": "POST ~ ^/api/v1/connectors/box/oauth/web/start/?$",
-        "upstream": "127.0.0.1:9384"
-      },
-      {
-        "match": "POST ~ ^/api/v1/tenant/insert_chunks_from_file/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -346,11 +354,19 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "DELETE ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "DELETE ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
         "match": "GET ~ ^/api/v1/agents/attachments/[^/]+/download/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -386,6 +402,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "PUT ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "DELETE ~ ^/api/v1/admin/roles/[^/]+/default-models/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -410,6 +430,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/compilation-template-groups/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -428,6 +452,10 @@
       {
         "match": "POST ~ ^/api/v1/admin/providers/[^/]+/connection/?$",
         "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "POST ~ ^/api/v1/compilation-template-groups/?$",
+        "upstream": "127.0.0.1:9384"
       },
       {
         "match": "POST ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$",
@@ -594,6 +622,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "GET ~ ^/api/v1/chat-channels/[^/]+/runtime/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/diff/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -603,6 +635,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/skills/space/by-folder/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/agentbots/[^/]+/completions/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -655,6 +691,10 @@
       },
       {
         "match": "POST ~ ^/api/v1/auth/register/captcha/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/chatbots/[^/]+/completions/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -815,6 +855,10 @@
       },
       {
         "match": "PUT ~ ^/api/v1/agents/[^/]+/webhook/test/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "PUT ~ ^/api/v1/tenants/[^/]+/users/[^/]+/role/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -1026,6 +1070,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "GET ~ ^/api/v1/agentbots/[^/]+/inputs/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/agents/[^/]+/sessions/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -1128,6 +1176,10 @@
       {
         "match": "GET ~ ^/api/v1/admin/variables/[^/]+/?$",
         "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "GET ~ ^/api/v1/agentbots/[^/]+/logs/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
       },
       {
         "match": "GET ~ ^/api/v1/agents/[^/]+/sessions/?$",
@@ -1358,6 +1410,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/chatbots/[^/]+/info/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/tags/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -1490,6 +1546,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/admin/engine/?$",
+        "upstream": "127.0.0.1:9383"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/roles/[^/]+/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -1546,7 +1606,15 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/admin/cache/?$",
+        "upstream": "127.0.0.1:9383"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/queue/?$",
+        "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "GET ~ ^/api/v1/admin/store/?$",
         "upstream": "127.0.0.1:9383"
       },
       {
@@ -1714,6 +1782,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/tenants/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "PATCH ~ ^/api/v1/tenants/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -1723,6 +1795,10 @@
       },
       {
         "match": "POST ~ ^/v1/user/setting/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "PUT ~ ^/api/v1/tenants/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -1827,23 +1903,25 @@
     }
   },
   "totals": {
-    "routes": 746,
+    "routes": 781,
     "by_service": {
-      "go-admin": 114,
-      "python-admin": 34,
-      "python-api": 314,
-      "go-api": 279,
+      "go-admin": 121,
+      "python-admin": 35,
+      "go-api": 297,
+      "python-api": 323,
       "mcp": 5
     },
-    "runtime_enabled": 509,
-    "runtime_disabled": 232,
-    "source_only_runtime_disabled": 46,
+    "runtime_enabled": 528,
+    "runtime_disabled": 248,
+    "source_only_runtime_disabled": 54,
     "phase10_source_only_runtime_disabled": 34,
+    "phase14_source_only_runtime_disabled": 8,
+    "phase14_runtime_overlay": 27,
     "not_proxied": 5,
     "with_alternates": 110,
     "runtime_disabled_breakdown": {
-      "with_reachable_equivalent": 182,
-      "no_reachable_equivalent": 50
+      "with_reachable_equivalent": 196,
+      "no_reachable_equivalent": 52
     }
   },
   "routes": [
@@ -1914,6 +1992,25 @@
           "proxy_match": "location ~ ^/api/v1/admin/auth/?$"
         }
       ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/cache",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:109",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/cache/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
     },
     {
       "method": "GET",
@@ -2066,6 +2163,25 @@
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/admin/data/summary/?$",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/engine",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:110",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/engine/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": []
     },
     {
@@ -2373,6 +2489,30 @@
       "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/admin/logout/?$",
       "alternates": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/logout",
+      "service": "python-admin",
+      "auth": "admin-session",
+      "source": "admin/server/routes.py:55",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9381,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/admin/logout/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/admin/logout",
+        "service": "go-admin"
+      }
     },
     {
       "method": "GET",
@@ -3465,6 +3605,82 @@
     },
     {
       "method": "DELETE",
+      "path": "/api/v1/admin/services/:service_name",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:79",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/services/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/services/:service_name",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:78",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/services/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/services/:service_name",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:81",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/services/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/services/:service_name",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:80",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/services/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "DELETE",
       "path": "/api/v1/admin/services/<service_id>",
       "service": "python-admin",
       "auth": "admin-session",
@@ -3528,6 +3744,25 @@
         "path": "/api/v1/admin/services/:service_id",
         "service": "go-admin"
       }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/store",
+      "service": "go-admin",
+      "auth": "admin-session",
+      "source": "internal/admin/router.go:108",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9383,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9383",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/admin/store/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
     },
     {
       "method": "GET",
@@ -4769,6 +5004,63 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/agentbots/:agent_id/completions",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:216",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/agentbots/[^/]+/completions/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agentbots/:agent_id/inputs",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:217",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/agentbots/[^/]+/inputs/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/agentbots/:agent_id/logs/:message_id",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:218",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/agentbots/[^/]+/logs/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/agentbots/<agent_id>/completions",
       "service": "python-api",
       "auth": "login_required",
@@ -4777,12 +5069,17 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/agentbots/[^/]+/completions/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/agentbots/:agent_id/completions",
+        "service": "go-api"
+      }
     },
     {
       "method": "GET",
@@ -4794,12 +5091,17 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/agentbots/[^/]+/inputs/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/agentbots/:agent_id/inputs",
+        "service": "go-api"
+      }
     },
     {
       "method": "GET",
@@ -4811,12 +5113,17 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/agentbots/[^/]+/logs/[^/]+/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/agentbots/:agent_id/logs/:message_id",
+        "service": "go-api"
+      }
     },
     {
       "method": "GET",
@@ -7127,6 +7434,25 @@
       "alternates": []
     },
     {
+      "method": "GET",
+      "path": "/api/v1/chat-channels/:channel_id/runtime",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:720",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/chat-channels/[^/]+/runtime/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
       "method": "DELETE",
       "path": "/api/v1/chat-channels/<channel_id>",
       "service": "python-api",
@@ -7202,12 +7528,17 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/chat-channels/[^/]+/runtime/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/chat-channels/:channel_id/runtime",
+        "service": "go-api"
+      }
     },
     {
       "method": "POST",
@@ -7364,6 +7695,44 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/chatbots/:dialog_id/completions",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:212",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/chatbots/[^/]+/completions/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/chatbots/:dialog_id/info",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:213",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/chatbots/[^/]+/info/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/chatbots/<dialog_id>/completions",
       "service": "python-api",
       "auth": "login_required",
@@ -7372,12 +7741,17 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/chatbots/[^/]+/completions/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/chatbots/:dialog_id/completions",
+        "service": "go-api"
+      }
     },
     {
       "method": "GET",
@@ -7389,12 +7763,17 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/chatbots/[^/]+/info/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/chatbots/:dialog_id/info",
+        "service": "go-api"
+      }
     },
     {
       "method": "DELETE",
@@ -8133,6 +8512,307 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/compilation-template-groups",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_group_api.py:69",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/compilation-template-groups",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-template-groups",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:622",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/compilation-template-groups",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_group_api.py:101",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/compilation-template-groups",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/compilation-template-groups",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:623",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/compilation-template-groups/:group_id",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:626",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-template-groups/:group_id",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:624",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/compilation-template-groups/:group_id",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:625",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/compilation-template-groups/<group_id>",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_group_api.py:163",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "DELETE",
+        "path": "/api/v1/compilation-template-groups/:group_id",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-template-groups/<group_id>",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_group_api.py:89",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/compilation-template-groups/:group_id",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/compilation-template-groups/<group_id>",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_group_api.py:128",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-template-groups/[^/]+/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "PUT",
+        "path": "/api/v1/compilation-template-groups/:group_id",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-templates/builtins",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_api.py:28",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-templates/builtins/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/compilation-templates/builtins",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-templates/builtins",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:618",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-templates/builtins/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-templates/wiki-presets",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/compilation_template_api.py:57",
+      "notes": "Phase 14 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c)",
+      "proxy_match": "location ~ ^/api/v1/compilation-templates/wiki-presets/?$",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/compilation-templates/wiki-presets",
+        "service": "go-api"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/compilation-templates/wiki-presets",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:619",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/compilation-templates/wiki-presets/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/components",
       "service": "go-api",
       "auth": "session",
@@ -8846,7 +9526,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:361",
+      "source": "internal/router/router.go:364",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8870,7 +9550,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:360",
+      "source": "internal/router/router.go:363",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8890,7 +9570,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:359",
+      "source": "internal/router/router.go:362",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8910,7 +9590,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:365",
+      "source": "internal/router/router.go:368",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8930,7 +9610,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:366",
+      "source": "internal/router/router.go:369",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8950,7 +9630,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/alteration",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:363",
+      "source": "internal/router/router.go:366",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8970,7 +9650,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/graph",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:364",
+      "source": "internal/router/router.go:367",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -8990,7 +9670,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/structure",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:368",
+      "source": "internal/router/router.go:371",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9010,7 +9690,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/structure",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:367",
+      "source": "internal/router/router.go:370",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9030,7 +9710,7 @@
       "path": "/api/v1/datasets/:dataset_id/artifacts/topics",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:362",
+      "source": "internal/router/router.go:365",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9265,7 +9945,7 @@
       "path": "/api/v1/datasets/:dataset_id/compilation/status",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:356",
+      "source": "internal/router/router.go:359",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9791,7 +10471,7 @@
       "path": "/api/v1/datasets/:dataset_id/navigation",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:372",
+      "source": "internal/router/router.go:375",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9811,7 +10491,7 @@
       "path": "/api/v1/datasets/:dataset_id/navigation",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:371",
+      "source": "internal/router/router.go:374",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9831,7 +10511,7 @@
       "path": "/api/v1/datasets/:dataset_id/navigation/:name",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:373",
+      "source": "internal/router/router.go:376",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9851,7 +10531,7 @@
       "path": "/api/v1/datasets/:dataset_id/navigation/:name/children",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:374",
+      "source": "internal/router/router.go:377",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9888,7 +10568,7 @@
       "path": "/api/v1/datasets/:dataset_id/skills",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:379",
+      "source": "internal/router/router.go:382",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9908,7 +10588,7 @@
       "path": "/api/v1/datasets/:dataset_id/skills",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:378",
+      "source": "internal/router/router.go:381",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9928,7 +10608,7 @@
       "path": "/api/v1/datasets/:dataset_id/skills",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:377",
+      "source": "internal/router/router.go:380",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9948,7 +10628,7 @@
       "path": "/api/v1/datasets/:dataset_id/skills/:skill_kwd",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:381",
+      "source": "internal/router/router.go:384",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -9968,7 +10648,7 @@
       "path": "/api/v1/datasets/:dataset_id/skills/:skill_kwd",
       "service": "go-api",
       "auth": "session",
-      "source": "internal/router/router.go:380",
+      "source": "internal/router/router.go:383",
       "notes": "Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4",
       "service_port": 9384,
       "service_started": true,
@@ -13255,6 +13935,44 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/llm/aimlapi/authorize/poll",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/aimlapi_api.py:148",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/llm/aimlapi/authorize/start",
+      "service": "python-api",
+      "auth": "login_required",
+      "source": "api/apps/restful_apis/aimlapi_api.py:74",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9380,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/mcp",
       "service": "go-api",
       "auth": "beta-token",
@@ -16186,6 +16904,44 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/tenant/dev_insert_chunks_from_file",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:299",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/tenant/dev_insert_chunks_from_file/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tenant/dev_insert_metadata_from_file",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:300",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/tenant/dev_insert_metadata_from_file/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/tenant/insert_chunks_from_file",
       "service": "go-api",
       "auth": "session",
@@ -16194,12 +16950,14 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/api/v1/tenant/insert_chunks_from_file/?$",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "removed from the normative backend router and absent from the owned Phase 14 Go binary; live hybrid/direct smoke returns HTTP 404; use the internal dev_ spelling",
+      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "source_scope": "pinned-source-removed-by-phase14-overlay",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "POST",
@@ -16211,12 +16969,14 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/api/v1/tenant/insert_metadata_from_file/?$",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "removed from the normative backend router and absent from the owned Phase 14 Go binary; live hybrid/direct smoke returns HTTP 404; use the internal dev_ spelling",
+      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "source_scope": "pinned-source-removed-by-phase14-overlay",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "GET",
@@ -16304,6 +17064,25 @@
       ]
     },
     {
+      "method": "GET",
+      "path": "/api/v1/tenants/:tenant_id",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:282",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/tenants/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": []
+    },
+    {
       "method": "PATCH",
       "path": "/api/v1/tenants/:tenant_id",
       "service": "go-api",
@@ -16318,6 +17097,25 @@
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/tenants/[^/]+/?$",
+      "alternates": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/tenants/:tenant_id",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:283",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/tenants/[^/]+/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": []
     },
     {
@@ -16369,6 +17167,25 @@
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/tenants/[^/]+/users/?$",
+      "alternates": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/tenants/:tenant_id/users/:user_id/role",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:288",
+      "notes": "Phase 14 runtime overlay built from backend authority a0e091e75051",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/tenants/[^/]+/users/[^/]+/role/?$",
+      "source_scope": "phase14-runtime-overlay",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": []
     },
     {

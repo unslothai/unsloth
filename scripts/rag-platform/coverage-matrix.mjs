@@ -169,6 +169,8 @@ const FAMILY_PHASE = {
 
 /** Ordered; first match wins. Tested against the canonical path. */
 const PHASE_OVERRIDES = [
+  // The beta-token MCP protocol is re-audited in Phase 14's public surface.
+  [/^\/api\/v1\/mcp$/, 14],
   // Provider/model first-run flows explicitly owned by phase 3.
   [/^\/api\/v1\/users\/me\/models$/, 3],
   [/^\/api\/v1\/chat\/to_model$/, 3],
@@ -217,6 +219,12 @@ const PHASE_OVERRIDES = [
 ];
 
 function phaseOf(route, canonical) {
+  if (
+    (route.source_scope === "backend-worktree-only" ||
+      route.source_scope === "phase14-runtime-overlay") &&
+    route.notes?.startsWith("Phase 14")
+  )
+    return 14;
   for (const [pattern, phase] of PHASE_OVERRIDES) {
     if (pattern.test(canonical)) return phase;
   }
@@ -834,6 +842,39 @@ function matches(rule, route, canonical) {
 }
 
 function classifyRecord(route, canonical) {
+  if (
+    route.method === "GET" &&
+    (canonical === "/api/v1/admin/ping" ||
+      canonical === "/api/v1/admin/logout")
+  ) {
+    return {
+      class: "api-only",
+      rule: "admin-health-or-legacy-logout",
+      consumer: "admin-protocol-client",
+      justification:
+        canonical.endsWith("/ping")
+          ? "Admin service health protocol used by deployment smoke; it is not a user action."
+          : "Python-admin legacy GET logout alias; the product uses the mutating Go POST logout contract.",
+    };
+  }
+  if (route.method === "GET" && canonical === "/v1/tenant/list") {
+    return {
+      class: "api-only",
+      rule: "go-v1-tenant-list-alias",
+      consumer: "compatibility-client",
+      justification:
+        "Go compatibility mount of the same TenantList handler served to the browser at /api/v1/tenant/list; it needs no second UI action.",
+    };
+  }
+  if (GO_INTERNAL_ONLY.has(`${route.method} ${canonical}`)) {
+    return {
+      class: "internal",
+      rule: "go-source-internal-only",
+      consumer: "backend-internal",
+      justification:
+        "The Go router explicitly marks this contract Internal API only for GO; it is not a browser product surface.",
+    };
+  }
   for (const rule of CLASS_RULES) {
     if (matches(rule, route, canonical)) {
       return {
@@ -1117,6 +1158,10 @@ const GO_INTERNAL_ONLY = new Set([
   "DELETE /api/v1/tenant/chunk_store",
   "POST /api/v1/tenant/metadata_store",
   "DELETE /api/v1/tenant/metadata_store",
+  "POST /api/v1/tenant/insert_chunks_from_file",
+  "POST /api/v1/tenant/insert_metadata_from_file",
+  "POST /api/v1/tenant/dev_insert_chunks_from_file",
+  "POST /api/v1/tenant/dev_insert_metadata_from_file",
   "POST /api/v1/document/delete_meta",
   "POST /api/v1/chunk/update",
 ]);
@@ -2622,11 +2667,156 @@ for (const inventoryRoute of inventory.routes.flatMap((route) => [
   }
 }
 
+const PHASE14_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/phase-14-management-api.test.ts",
+  "src/features/management/management-page.test.tsx",
+  "src/features/management/management-page.tsx (role gate, separate admin reauthentication, loading/empty/error/permission/abort cleanup, destructive confirmation, audit reason and redacted result states)",
+  "docs/rag-platform/fixtures/phase-14-management-contract.json",
+  "docs/adr/0016-phase-14-management-runtime-boundary.md",
+  "docs/adr/0017-phase-14-management-runtime-overlay.md",
+  "scripts/rag-platform/phase-14-runtime-smoke.mjs (hybrid/direct auth boundary and runtime-overlay probes)",
+];
+
+const PHASE14_IMPLEMENTED = new Set([
+  "POST /api/v1/admin/login",
+  "POST /api/v1/admin/logout",
+  "GET /api/v1/admin/auth",
+  "GET /api/v1/admin/version",
+  "GET /api/v1/admin/reports",
+  "GET /api/v1/admin/users",
+  "POST /api/v1/admin/users",
+  "DELETE /api/v1/admin/users/{p}",
+  "PUT /api/v1/admin/users/{p}/password",
+  "PUT /api/v1/admin/users/{p}/activate",
+  "PUT /api/v1/admin/users/{p}/admin",
+  "DELETE /api/v1/admin/users/{p}/admin",
+  "GET /api/v1/admin/users/{p}/tokens",
+  "POST /api/v1/admin/users/{p}/tokens",
+  "DELETE /api/v1/admin/users/{p}/tokens/{p}",
+  "GET /api/v1/admin/services",
+  "POST /api/v1/admin/services/{p}",
+  "PUT /api/v1/admin/services/{p}",
+  "DELETE /api/v1/admin/services/{p}",
+  "GET /api/v1/admin/variables",
+  "PUT /api/v1/admin/variables",
+  "GET /api/v1/admin/configs",
+  "GET /api/v1/admin/config/log",
+  "PUT /api/v1/admin/config/log",
+  "GET /api/v1/admin/environments",
+  "GET /api/v1/admin/queue",
+  "GET /api/v1/admin/queue/messages",
+  "POST /api/v1/admin/queue/messages",
+  "PUT /api/v1/admin/queue/messages",
+  "GET /api/v1/admin/ingestors",
+  "DELETE /api/v1/admin/ingestors",
+  "GET /api/v1/admin/ingestion/tasks",
+  "PUT /api/v1/admin/ingestion/tasks",
+  "DELETE /api/v1/admin/ingestion/tasks",
+  "GET /api/v1/admin/ingestion/tasks/summary",
+  "GET /api/v1/admin/sandbox/providers",
+  "GET /api/v1/admin/sandbox/config",
+  "POST /api/v1/admin/sandbox/config",
+  "POST /api/v1/admin/sandbox/test",
+  "GET /api/v1/admin/all-models",
+  "GET /api/v1/admin/roles",
+  "GET /api/v1/admin/roles/resource",
+  "GET /api/v1/admin/data/summary",
+  "GET /api/v1/admin/data/storage",
+  "GET /api/v1/admin/data/index",
+  "GET /api/v1/admin/data/orphan",
+  "DELETE /api/v1/admin/data/orphan",
+  "GET /api/v1/tenants",
+  "GET /api/v1/tenants/{p}",
+  "PUT /api/v1/tenants/{p}",
+  "PATCH /api/v1/tenants/{p}",
+  "GET /api/v1/tenants/{p}/users",
+  "POST /api/v1/tenants/{p}/users",
+  "DELETE /api/v1/tenants/{p}/users",
+  "PUT /api/v1/tenants/{p}/users/{p}/role",
+  "POST /api/v1/llm/aimlapi/authorize/start",
+  "POST /api/v1/llm/aimlapi/authorize/poll",
+  "GET /api/v1/chat-channels",
+  "POST /api/v1/chat-channels",
+  "GET /api/v1/chat-channels/{p}",
+  "PATCH /api/v1/chat-channels/{p}",
+  "DELETE /api/v1/chat-channels/{p}",
+  "GET /api/v1/chat-channels/{p}/runtime",
+  "GET /api/v1/compilation_template_groups",
+  "POST /api/v1/compilation_template_groups",
+  "GET /api/v1/compilation_template_groups/{p}",
+  "PUT /api/v1/compilation_template_groups/{p}",
+  "DELETE /api/v1/compilation_template_groups/{p}",
+  "GET /api/v1/compilation_templates/builtins",
+  "GET /api/v1/compilation_templates/wiki_presets",
+  "GET /api/v1/chatbots/{p}/info",
+  "POST /api/v1/chatbots/{p}/completions",
+  "GET /api/v1/agentbots/{p}/inputs",
+  "GET /api/v1/agentbots/{p}/logs/{p}",
+  "POST /api/v1/agentbots/{p}/completions",
+  "GET /api/v1/searchbots/detail",
+  "POST /api/v1/searchbots/ask",
+  "POST /api/v1/searchbots/retrieval_test",
+  "POST /api/v1/searchbots/related_questions",
+  "POST /api/v1/searchbots/mindmap",
+]);
+
+function phase14UiPath(canonical) {
+  if (canonical.includes("/admin/")) return "Yönetim → Sistem ve admin";
+  if (canonical.includes("/tenants")) return "Yönetim → Tenant ve ekip";
+  if (canonical.includes("chat-channels")) return "Yönetim → Bot, kanal ve template";
+  if (canonical.includes("compilation_")) return "Yönetim → Bot, kanal ve template";
+  if (/\/(chatbots|agentbots|searchbots)\//.test(canonical)) return "Yönetim → Bot, kanal ve template";
+  return "Yönetim → Uyumluluk";
+}
+
+for (const inventoryRoute of inventory.routes.flatMap((route) => [
+  route,
+  ...(route.alternates ?? []),
+])) {
+  if (inventoryRoute.runtime_enabled !== true) continue;
+  const canonical = canonicalPath(inventoryRoute.path);
+  if (phaseOf(inventoryRoute, canonical) !== 14) continue;
+  const classification = classifyRecord(inventoryRoute, canonical);
+  const routeKey = `${inventoryRoute.method} ${canonical}`;
+  const key = `${inventoryRoute.service}|${routeKey}`;
+  if (
+    PHASE14_IMPLEMENTED.has(routeKey) ||
+    classification.class === "frontend-action" ||
+    classification.class === "frontend-screen"
+  ) {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "implemented",
+      uiPath: phase14UiPath(canonical),
+      typedService: "src/integrations/platform-backend/management-api.ts (typed management adapter)",
+      evidence: PHASE14_TEST_EVIDENCE,
+    };
+  } else if (
+    classification.class === "api-only" ||
+    classification.class === "internal"
+  ) {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath:
+        classification.class === "api-only"
+          ? "Yönetim → Uyumluluk (protocol kaydı; browser credential tutulmaz)"
+          : "— (backend-internal contract)",
+      typedService: null,
+      evidence: PHASE14_TEST_EVIDENCE,
+    };
+  }
+}
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.
  */
 const ROUTE_FINDINGS = {
+  "GET /api/v1/thumbnails":
+    "Phase 14 public-surface re-audit: the selected Python handler accepts AUTH_JWT, AUTH_API and AUTH_BETA; anonymous hybrid smoke is denied. The Go beta-token alternate remains runtime-disabled behind the Python 9380 target.",
+  "GET /api/v1/documents/{p}/preview":
+    "Phase 14 public-surface re-audit: the selected ownership-checked Python preview accepts AUTH_JWT, AUTH_API and AUTH_BETA; anonymous hybrid smoke is denied. No unauthenticated preview URL is fabricated.",
+  "DELETE /api/v1/admin/ingestors":
+    "Phase 14 runtime verified: the handler validates a fresh exact ingestor heartbeat, publishes a target-scoped NATS shutdown command, returns HTTP 202, and the owned entrypoint restarts the exited ingestor process. The management operation requires audit reason and ONAYLA confirmation.",
   // Recorded as a finding rather than a replacement because the protocol is
   // still served while the *route* is not: the MCP service listens on 9382 and
   // nginx never proxies it under any scheme, so the endpoint is unreachable
@@ -2789,8 +2979,7 @@ function buildRecord(route, parent) {
       : undefined;
   const renamed =
     route.runtime_enabled === false ? VERIFIED_REPLACEMENTS[key] : undefined;
-  const goInternalOnly =
-    route.runtime_enabled === false && GO_INTERNAL_ONLY.has(key);
+  const goInternalOnly = GO_INTERNAL_ONLY.has(key);
   const notImplemented =
     route.runtime_enabled === false ? GO_NOT_IMPLEMENTED.get(key) : undefined;
   const equivalent =

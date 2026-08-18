@@ -22,3 +22,5 @@ export const FEATURE_MEMORY_NAV =
   getProductCapability("memory").visibleInNavigation;
 export const FEATURE_SEARCH_NAV =
   getProductCapability("search").visibleInNavigation;
+export const FEATURE_MANAGEMENT_NAV =
+  getProductCapability("management").visibleInNavigation;

@@ -19,6 +19,8 @@ import {
 export interface PlatformRequestOptions {
   method?: string;
   token?: string | null;
+  /** Admin API tokens are opaque and must be sent without the user API Bearer prefix. */
+  authorizationScheme?: "bearer" | "raw";
   query?: PlatformQuery;
   json?: unknown;
   body?: BodyInit | null;
@@ -271,7 +273,12 @@ export async function platformRequest<TData>(
 
   const token =
     options.token === undefined ? getPlatformSessionToken() : options.token;
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (token) {
+    headers.set(
+      "Authorization",
+      options.authorizationScheme === "raw" ? token : `Bearer ${token}`,
+    );
+  }
   if (options.json !== undefined) {
     headers.set("Content-Type", "application/json");
     body = JSON.stringify(options.json);

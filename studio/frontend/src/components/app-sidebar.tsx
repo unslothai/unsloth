@@ -57,6 +57,7 @@ import {
   FEATURE_EXPORT,
   FEATURE_FILES_NAV,
   FEATURE_MEMORY_NAV,
+  FEATURE_MANAGEMENT_NAV,
   FEATURE_SEARCH_NAV,
   FEATURE_IMAGES,
   FEATURE_PROJECTS,
@@ -1176,6 +1177,21 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/search" }));
       },
     },
+    management: {
+      icon: Settings02Icon,
+      label: t("shell.navigation.management"),
+      active:
+        pathname === "/management" || pathname.startsWith("/management/"),
+      disabled: !getProductCapability("management").available,
+      tooltip: getProductCapability("management").reason ?? undefined,
+      onClick: () => {
+        navigate({ to: "/management" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/management" }));
+      },
+    },
     images: {
       icon: Image03Icon,
       label: t("shell.navigation.images"),
@@ -1282,6 +1298,7 @@ export function AppSidebar() {
       (item.id !== "files" || FEATURE_FILES_NAV) &&
       (item.id !== "memory" || FEATURE_MEMORY_NAV) &&
       (item.id !== "search" || FEATURE_SEARCH_NAV) &&
+      (item.id !== "management" || FEATURE_MANAGEMENT_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&

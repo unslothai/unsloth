@@ -141,6 +141,7 @@ export const tr = {
       files: "Dosyalar",
       memory: "Hafıza",
       searchApps: "Arama",
+      management: "Yönetim",
       agentsUnavailable: "Agents alanı henüz bu sürümde kullanıma açık değil.",
       train: "Eğitim",
       recipes: "Tarifler",

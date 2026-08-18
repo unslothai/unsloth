@@ -40,4 +40,6 @@ export * from "./memory-types";
 export * from "./memory-consent";
 export * from "./search-api";
 export * from "./search-types";
+export * from "./management-api";
+export * from "./management-types";
 export * from "./connector-oauth-state";

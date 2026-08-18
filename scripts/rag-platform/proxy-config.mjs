@@ -49,8 +49,17 @@ function probePath(path) {
 
 const inventory = JSON.parse(readFileSync(INVENTORY, "utf8"));
 const goRoutes = new Map();
+const removedPhase14PinnedRoutes = new Set([
+  "POST /api/v1/tenant/insert_chunks_from_file",
+  "POST /api/v1/tenant/insert_metadata_from_file",
+]);
 for (const route of inventory.routes) {
   if (route.service !== "go-api" && route.service !== "go-admin") continue;
+  if (removedPhase14PinnedRoutes.has(`${route.method} ${route.path}`)) continue;
+  // The owned Phase 14 image builds the normative Go authority and overlays the
+  // reviewed worktree handlers, so Phase 14 forward declarations are real
+  // runtime routes. The two explicitly removed pinned spellings remain in the
+  // inventory for auditability but must not become nginx forwards.
   const regex = routeRegex(route.path);
   goRoutes.set(`${route.method}:${regex}`, {
     method: route.method,

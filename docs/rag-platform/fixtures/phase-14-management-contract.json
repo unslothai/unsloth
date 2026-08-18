@@ -1,0 +1,43 @@
+{
+  "phase": 14,
+  "source_authority": "/Users/baran/Desktop/rag-backend",
+  "runtime_overlay_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+  "proxy_mode": "hybrid",
+  "security": {
+    "admin_authorization": "signed opaque header token; verified and never persisted",
+    "tenant_authorization": "signed session plus membership/ownership checks; superuser is not a cross-tenant bypass",
+    "public_token_storage": "generated token/beta pair is shown once in memory; lists are redacted",
+    "rate_limit_identity": "SHA-256 credential digest only",
+    "secrets": "never logged or persisted by the frontend"
+  },
+  "contracts": [
+    { "method": "GET", "path": "/api/v1/admin/auth", "role": "platform-admin" },
+    { "method": "GET", "path": "/api/v1/admin/users?page=1&page_size=50", "role": "platform-admin" },
+    { "method": "GET|POST|DELETE", "path": "/api/v1/admin/users/{base64_email}/tokens[/{token}]", "role": "platform-admin" },
+    { "method": "GET", "path": "/api/v1/admin/services", "role": "platform-admin" },
+    { "method": "GET", "path": "/api/v1/admin/variables", "role": "platform-admin" },
+    { "method": "GET", "path": "/api/v1/admin/queue", "role": "platform-admin" },
+    { "method": "DELETE", "path": "/api/v1/admin/ingestors", "role": "platform-admin" },
+    { "method": "GET", "path": "/api/v1/tenants", "role": "tenant-user" },
+    { "method": "GET|PUT", "path": "/api/v1/tenants/{tenant_id}", "role": "tenant-member|tenant-owner" },
+    { "method": "GET|POST|DELETE", "path": "/api/v1/tenants/{tenant_id}/users", "role": "tenant-owner" },
+    { "method": "PUT", "path": "/api/v1/tenants/{tenant_id}/users/{user_id}/role", "role": "tenant-owner" },
+    { "method": "GET", "path": "/api/v1/chat-channels", "role": "tenant-user" },
+    { "method": "GET", "path": "/api/v1/compilation_template_groups", "role": "tenant-user" },
+    { "method": "POST", "path": "/api/v1/llm/aimlapi/authorize/{start|poll}", "role": "tenant-user" },
+    { "method": "GET", "path": "/api/v1/dify/retrieval/health", "role": "anonymous", "classification": "api-only" },
+    { "method": "POST", "path": "/api/v1/mcp", "role": "beta-token", "classification": "api-only" }
+  ],
+  "runtime_evidence": [
+    { "name": "admin-signed-auth", "result": "HTTP 200, code 0, elevated account present" },
+    { "name": "tenant-update-rollback", "result": "name changed and restored with code 0" },
+    { "name": "tenant-idor", "result": "cross-tenant code 109, no data" },
+    { "name": "owner-role-guard", "result": "owner mutation rejected with code 101" },
+    { "name": "public-token-revoke", "result": "valid beta accepted; revoked beta denied" },
+    { "name": "public-token-rotate", "result": "old beta denied; replacement valid; replacement cleaned" },
+    { "name": "beta-rate-limit", "result": "HTTP 429 on request 61" },
+    { "name": "aimlapi-scoped-poll", "result": "authenticated route is active and not 404" },
+    { "name": "targeted-ingestor-shutdown", "result": "HTTP 202/code 0; addressed process exited and restarted" }
+  ],
+  "runtime_blockers": []
+}

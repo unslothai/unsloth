@@ -144,6 +144,7 @@ export const en = {
       files: "Files",
       memory: "Memory",
       searchApps: "Search",
+      management: "Management",
       agentsUnavailable: "Agents are not available in this version yet.",
       train: "Train",
       recipes: "Recipes",

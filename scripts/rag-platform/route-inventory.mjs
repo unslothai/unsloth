@@ -1030,11 +1030,85 @@ function scanForwardPhase11SourceOnly() {
 }
 
 const forwardPhase11Source = scanForwardPhase11SourceOnly();
+
+/**
+ * The normative backend worktree renamed the two developer-only tenant import
+ * routes and explicitly marks them internal to the Go CLI. Keep the declarations
+ * visible even though the pinned runtime and its nginx map still contain the old
+ * non-`dev_` spellings. Neither spelling is a browser/product capability.
+ */
+function scanForwardPhase14SourceOnly() {
+  if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
+  const commit = execFileSync(
+    "git",
+    ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
+  const known = new Set(
+    rawRoutes.map((route) => `${route.service} ${route.method} ${route.path}`),
+  );
+  const deployedRoot = BACKEND_ROOT;
+  let currentRoutes;
+  try {
+    BACKEND_ROOT = BACKEND_REPO_ROOT;
+    currentRoutes = [
+      ...scanPythonRestfulApis(),
+      ...scanPythonBackwardCompat(),
+      ...scanPythonAdmin(),
+      ...scanGoApi(),
+      ...scanGoAdmin(),
+    ];
+  } finally {
+    BACKEND_ROOT = deployedRoot;
+  }
+  return {
+    commit,
+    routes: currentRoutes
+      .filter((route) => {
+        const phase14Path = /^\/(?:api\/)?v1\/(?:admin(?:\/|$)|tenants?(?:\/|$)|chatbots?(?:\/|$)|agentbots?(?:\/|$)|searchbots?(?:\/|$)|chat[-_]channels?(?:\/|$)|compilation[-_]templates?(?:\/|$)|compilation[-_]template[-_]groups?(?:\/|$)|dify(?:\/|$)|openai(?:\/|$)|chats_openai(?:\/|$)|agents_openai(?:\/|$)|all-models(?:\/|$)|system\/(?:configs|variables|environments|config\/log|oceanbase)|tenant(?:\/|$)|llm\/aimlapi(?:\/|$)|documents\/(?:[^/]+\/preview|images\/[^/]+)$|thumbnails$|mcp$)/;
+        return (
+          phase14Path.test(route.path) &&
+          !known.has(`${route.service} ${route.method} ${route.path}`)
+        );
+      })
+      .map((route) => {
+        const runtimeOverlay =
+          route.service === "go-api" ||
+          route.service === "go-admin" ||
+          /^\/api\/v1\/llm\/aimlapi\/authorize\/(?:start|poll)$/.test(route.path);
+        return {
+          ...route,
+          notes: runtimeOverlay
+            ? `Phase 14 runtime overlay built from backend authority ${commit.slice(0, 12)}`
+            : `Phase 14 backend worktree-only contract at ${commit.slice(0, 12)}; absent from deployed ${BACKEND_REF}`,
+          service_port: SERVICES[route.service].port,
+          service_started: serviceStarted(route.service),
+          ...resolveProxy(route),
+          runtime_enabled: runtimeOverlay,
+          runtime_disabled_reason: runtimeOverlay
+            ? null
+            : `declared only in backend worktree ${commit.slice(0, 12)}; absent from deployed ${BACKEND_REF} (${BACKEND_COMMIT.slice(0, 12)})`,
+          source_scope: runtimeOverlay
+            ? "phase14-runtime-overlay"
+            : "backend-worktree-only",
+          source_commit: commit,
+          alternates: [],
+        };
+      }),
+  };
+}
+
+const forwardPhase14Source = scanForwardPhase14SourceOnly();
+const phase14RemovedPinnedRoutes = new Set([
+  "POST /api/v1/tenant/insert_chunks_from_file",
+  "POST /api/v1/tenant/insert_metadata_from_file",
+]);
 const forwardSourceRoutes = [
   ...forwardAuthSource.routes,
   ...forwardPipelineSource.routes,
   ...forwardPhase10Source.routes,
   ...forwardPhase11Source.routes,
+  ...forwardPhase14Source.routes,
 ];
 
 /**
@@ -1045,12 +1119,26 @@ const forwardSourceRoutes = [
 const byKey = new Map();
 for (const route of rawRoutes) {
   const key = `${route.method} ${route.path}`;
-  const entry = {
+  let entry = {
     ...route,
     service_port: SERVICES[route.service].port,
     service_started: serviceStarted(route.service),
     ...resolveProxy(route),
   };
+  // The owned Phase 14 binary compiles the normative worktree router. That
+  // router replaced these pinned v0.26.4 spellings with explicit `dev_`
+  // internal routes, so forwarding the historical paths only produces a live
+  // 404. Retain them as auditable pinned-source declarations, but never report
+  // them as runtime-enabled capabilities.
+  if (phase14RemovedPinnedRoutes.has(key)) {
+    entry = {
+      ...entry,
+      runtime_enabled: false,
+      runtime_disabled_reason:
+        "removed from the normative backend router and absent from the owned Phase 14 Go binary; live hybrid/direct smoke returns HTTP 404; use the internal dev_ spelling",
+      source_scope: "pinned-source-removed-by-phase14-overlay",
+    };
+  }
   if (!byKey.has(key)) {
     byKey.set(key, { ...entry, alternates: [] });
     continue;
@@ -1178,8 +1266,16 @@ const inventory = {
     by_service: byService,
     runtime_enabled: routes.filter((r) => r.runtime_enabled === true).length,
     runtime_disabled: disabledRoutes.length,
-    source_only_runtime_disabled: forwardSourceRoutes.length,
+    source_only_runtime_disabled: forwardSourceRoutes.filter(
+      (route) => route.runtime_enabled === false,
+    ).length,
     phase10_source_only_runtime_disabled: forwardPhase10Source.routes.length,
+    phase14_source_only_runtime_disabled: forwardPhase14Source.routes.filter(
+      (route) => route.runtime_enabled === false,
+    ).length,
+    phase14_runtime_overlay: forwardPhase14Source.routes.filter(
+      (route) => route.runtime_enabled === true,
+    ).length,
     not_proxied: routes.filter((r) => r.runtime_enabled === null).length,
     with_alternates: routes.filter((r) => r.alternates.length > 0).length,
     runtime_disabled_breakdown: {
@@ -1365,11 +1461,23 @@ function renderRuntimeDisabled(data) {
         `they are declared only at backend worktree \`${data.backend.forward_source_commit}\`, ` +
         `and are absent from deployed \`${data.backend.source_ref}\`. Nine auth handlers return ` +
         "`CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. " +
+        `${data.totals.phase14_source_only_runtime_disabled} Phase 14 Python alternate declarations remain worktree-only; ${data.totals.phase14_runtime_overlay} Phase 14 Go/AIMLAPI declarations are deployed through the owned runtime overlay. ` +
         "Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; " +
         "GitHub and Lark callback URLs return 302 through the active parameterised callback. " +
         `The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and ${data.totals.phase10_source_only_runtime_disabled} Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.`,
     );
   }
+  lines.push("");
+  lines.push("## Phase 14 runtime overlay");
+  lines.push("");
+  lines.push(
+    `The owned image deploys ${data.totals.phase14_runtime_overlay} Phase 14 declarations from backend authority ${data.backend.forward_source_commit}. ` +
+      "The hybrid proxy selects their Go routes and the two Python AIMLAPI authorization routes. Go-internal developer import routes remain classified internal even when reachable; they are not browser actions.",
+  );
+  lines.push("");
+  lines.push(
+    "`DELETE /api/v1/admin/ingestors` validates a fresh exact heartbeat, publishes a target-scoped NATS shutdown command and returns HTTP 202. Runtime smoke observed the addressed ingestor process exit and restart; the UI exposes it only behind audit reason and destructive confirmation.",
+  );
   lines.push("");
   lines.push(
     "## Phase 5 functional runtime gaps (reachable route, unusable browser contract)",

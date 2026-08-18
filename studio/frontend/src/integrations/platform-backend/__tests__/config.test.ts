@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getPlatformAuthConfig,
   getPlatformBackendConfig,
+  getPlatformManagementConfig,
   isPlatformModelToolsEnabled,
   resolvePlatformUrl,
 } from "../config";
@@ -80,5 +81,30 @@ describe("Rag Platform config", () => {
         VITE_RAG_PLATFORM_MODEL_TOOLS_ENABLED: "false",
       }),
     ).toBe(false);
+  });
+
+  it("defaults every Phase 14 rollout area on and prevents disabled-area calls", () => {
+    expect(getPlatformManagementConfig({})).toEqual({
+      adminEnabled: true,
+      adminOperationsEnabled: true,
+      botsEnabled: true,
+      channelsEnabled: true,
+      tenantsEnabled: true,
+    });
+    expect(
+      getPlatformManagementConfig({
+        VITE_RAG_PLATFORM_ADMIN_ENABLED: "false",
+        VITE_RAG_PLATFORM_ADMIN_OPERATIONS_ENABLED: "true",
+        VITE_RAG_PLATFORM_TENANTS_ENABLED: "false",
+        VITE_RAG_PLATFORM_BOTS_ENABLED: "false",
+        VITE_RAG_PLATFORM_CHANNELS_ENABLED: "false",
+      }),
+    ).toEqual({
+      adminEnabled: false,
+      adminOperationsEnabled: false,
+      botsEnabled: false,
+      channelsEnabled: false,
+      tenantsEnabled: false,
+    });
   });
 });

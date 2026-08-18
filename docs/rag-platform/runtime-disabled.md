@@ -17,11 +17,11 @@ running in the active scheme.
 
 | Metric | Count |
 | --- | --- |
-| routes discovered | 746 |
-| reachable | 509 |
-| runtime-disabled | 232 |
-| — no reachable equivalent (capability lost) | 50 |
-| — same concrete request served elsewhere (no capability lost) | 182 |
+| routes discovered | 781 |
+| reachable | 528 |
+| runtime-disabled | 248 |
+| — no reachable equivalent (capability lost) | 52 |
+| — same concrete request served elsewhere (no capability lost) | 196 |
 | not proxied by nginx | 5 |
 
 ## Why these routes are closed
@@ -34,7 +34,13 @@ deduplication, not a lost capability. The Go executable provenance and the
 four direct service smoke probes are recorded in ADR 0005 and the Faz 0
 result report.
 
-46 route(s) are separate forward-source cases: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, and are absent from deployed `v0.26.4`. Nine auth handlers return `CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and 34 Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.
+54 route(s) are separate forward-source cases: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, and are absent from deployed `v0.26.4`. Nine auth handlers return `CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. 8 Phase 14 Python alternate declarations remain worktree-only; 27 Phase 14 Go/AIMLAPI declarations are deployed through the owned runtime overlay. Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and 34 Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.
+
+## Phase 14 runtime overlay
+
+The owned image deploys 27 Phase 14 declarations from backend authority a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2. The hybrid proxy selects their Go routes and the two Python AIMLAPI authorization routes. Go-internal developer import routes remain classified internal even when reachable; they are not browser actions.
+
+`DELETE /api/v1/admin/ingestors` validates a fresh exact heartbeat, publishes a target-scoped NATS shutdown command and returns HTTP 202. Runtime smoke observed the addressed ingestor process exit and restart; the UI exposes it only behind audit reason and destructive confirmation.
 
 ## Phase 5 functional runtime gaps (reachable route, unusable browser contract)
 
@@ -73,25 +79,25 @@ provides the same method and path shape.
 
 | Method | Path | Service | Source | Proxy result |
 | --- | --- | --- | --- | --- |
-| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | `internal/router/router.go:360` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| HEAD | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | `internal/router/router.go:359` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | `internal/router/router.go:365` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | `internal/router/router.go:366` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/alteration` | go-api@9384 | `internal/router/router.go:363` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api@9384 | `internal/router/router.go:364` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| DELETE | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api@9384 | `internal/router/router.go:368` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api@9384 | `internal/router/router.go:367` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/topics` | go-api@9384 | `internal/router/router.go:362` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/compilation/status` | go-api@9384 | `internal/router/router.go:356` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| DELETE | `/api/v1/datasets/:dataset_id/navigation` | go-api@9384 | `internal/router/router.go:372` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/navigation` | go-api@9384 | `internal/router/router.go:371` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| DELETE | `/api/v1/datasets/:dataset_id/navigation/:name` | go-api@9384 | `internal/router/router.go:373` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/navigation/:name/children` | go-api@9384 | `internal/router/router.go:374` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| DELETE | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:379` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:378` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| HEAD | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:377` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| DELETE | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | `internal/router/router.go:381` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
-| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | `internal/router/router.go:380` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | `internal/router/router.go:363` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| HEAD | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | `internal/router/router.go:362` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | `internal/router/router.go:368` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | `internal/router/router.go:369` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/alteration` | go-api@9384 | `internal/router/router.go:366` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api@9384 | `internal/router/router.go:367` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| DELETE | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api@9384 | `internal/router/router.go:371` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api@9384 | `internal/router/router.go:370` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/topics` | go-api@9384 | `internal/router/router.go:365` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/compilation/status` | go-api@9384 | `internal/router/router.go:359` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| DELETE | `/api/v1/datasets/:dataset_id/navigation` | go-api@9384 | `internal/router/router.go:375` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/navigation` | go-api@9384 | `internal/router/router.go:374` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| DELETE | `/api/v1/datasets/:dataset_id/navigation/:name` | go-api@9384 | `internal/router/router.go:376` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/navigation/:name/children` | go-api@9384 | `internal/router/router.go:377` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| DELETE | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:382` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:381` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| HEAD | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:380` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| DELETE | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | `internal/router/router.go:384` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | `internal/router/router.go:383` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:580` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 | HEAD | `/api/v1/datasets/<dataset_id>/artifacts` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:584` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:667` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
@@ -139,6 +145,13 @@ provides the same method and path shape.
 | POST | `/api/v1/tasks/:session_id/cancel` | go-api@9384 | `internal/router/agent_routes.go:110` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke verifies the deployed route boundary |
 | POST | `/api/v1/tasks/<task_id>/cancel` | python-api@9380 | `api/apps/restful_apis/task_api.py:30` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 
+### `tenant` (2)
+
+| Method | Path | Service | Source | Proxy result |
+| --- | --- | --- | --- | --- |
+| POST | `/api/v1/tenant/insert_chunks_from_file` | go-api@9384 | `internal/router/router.go:282` | removed from the normative backend router and absent from the owned Phase 14 Go binary; live hybrid/direct smoke returns HTTP 404; use the internal dev_ spelling |
+| POST | `/api/v1/tenant/insert_metadata_from_file` | go-api@9384 | `internal/router/router.go:283` | removed from the normative backend router and absent from the owned Phase 14 Go binary; live hybrid/direct smoke returns HTTP 404; use the internal dev_ spelling |
+
 ## No capability lost — same method and path is served by a reachable route
 
 Duplicate implementations of one contract, or a static source-only route
@@ -147,6 +160,7 @@ serving implementation shown below keeps the surface available.
 
 | Method | Path | Unreachable | Serving instead | Source |
 | --- | --- | --- | --- | --- |
+| POST | `/api/v1/admin/logout` | python-admin@9381 | go-admin (`/api/v1/admin/logout`) | `admin/server/routes.py:55` |
 | DELETE | `/api/v1/admin/roles/<role_name>` | python-admin@9381 | go-admin (`/api/v1/admin/roles/:role_name`) | `admin/server/routes.py:327` |
 | PUT | `/api/v1/admin/roles/<role_name>` | python-admin@9381 | go-admin (`/api/v1/admin/roles/:role_name`) | `admin/server/routes.py:312` |
 | DELETE | `/api/v1/admin/roles/<role_name>/permission` | python-admin@9381 | go-admin (`/api/v1/admin/roles/:role_name/permission`) | `admin/server/routes.py:376` |
@@ -170,6 +184,9 @@ serving implementation shown below keeps the surface available.
 | POST | `/api/v1/admin/users/<username>/keys` | python-admin@9381 | go-admin (`/api/v1/admin/users/:username/keys`) | `admin/server/routes.py:489` |
 | DELETE | `/api/v1/admin/users/<username>/keys/<key>` | python-admin@9381 | go-admin (`/api/v1/admin/users/:username/keys/:key`) | `admin/server/routes.py:534` |
 | PUT | `/api/v1/admin/users/<username>/password` | python-admin@9381 | go-admin (`/api/v1/admin/users/:username/password`) | `admin/server/routes.py:131` |
+| POST | `/api/v1/agentbots/<agent_id>/completions` | python-api@9380 | go-api (`/api/v1/agentbots/:agent_id/completions`) | `api/apps/restful_apis/bot_api.py:162` |
+| GET | `/api/v1/agentbots/<agent_id>/inputs` | python-api@9380 | go-api (`/api/v1/agentbots/:agent_id/inputs`) | `api/apps/restful_apis/bot_api.py:257` |
+| GET | `/api/v1/agentbots/<shared_id>/logs/<message_id>` | python-api@9380 | go-api (`/api/v1/agentbots/:agent_id/logs/:message_id`) | `api/apps/restful_apis/bot_api.py:277` |
 | DELETE | `/api/v1/agents/<agent_id>` | python-api@9380 | go-api (`/api/v1/agents/:canvas_id`) | `api/apps/restful_apis/agent_api.py:1021` |
 | GET | `/api/v1/agents/<agent_id>` | python-api@9380 | go-api (`/api/v1/agents/:canvas_id`) | `api/apps/restful_apis/agent_api.py:930` |
 | PUT | `/api/v1/agents/<agent_id>` | python-api@9380 | go-api (`/api/v1/agents/:canvas_id`) | `api/apps/restful_apis/agent_api.py:1030` |
@@ -208,6 +225,9 @@ serving implementation shown below keeps the surface available.
 | DELETE | `/api/v1/chat-channels/<channel_id>` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id`) | `api/apps/restful_apis/chat_channel_api.py:102` |
 | GET | `/api/v1/chat-channels/<channel_id>` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id`) | `api/apps/restful_apis/chat_channel_api.py:56` |
 | PATCH | `/api/v1/chat-channels/<channel_id>` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id`) | `api/apps/restful_apis/chat_channel_api.py:69` |
+| GET | `/api/v1/chat-channels/<channel_id>/runtime` | python-api@9380 | go-api (`/api/v1/chat-channels/:channel_id/runtime`) | `api/apps/restful_apis/chat_channel_api.py:113` |
+| POST | `/api/v1/chatbots/<dialog_id>/completions` | python-api@9380 | go-api (`/api/v1/chatbots/:dialog_id/completions`) | `api/apps/restful_apis/bot_api.py:63` |
+| GET | `/api/v1/chatbots/<dialog_id>/info` | python-api@9380 | go-api (`/api/v1/chatbots/:dialog_id/info`) | `api/apps/restful_apis/bot_api.py:133` |
 | DELETE | `/api/v1/chats/<chat_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id`) | `api/apps/restful_apis/chat_api.py:692` |
 | GET | `/api/v1/chats/<chat_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id`) | `api/apps/restful_apis/chat_api.py:494` |
 | PATCH | `/api/v1/chats/<chat_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id`) | `api/apps/restful_apis/chat_api.py:604` |
@@ -219,13 +239,20 @@ serving implementation shown below keeps the surface available.
 | PATCH | `/api/v1/chats/<chat_id>/sessions/<session_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id/sessions/:session_id`) | `api/apps/restful_apis/chat_api.py:834` |
 | DELETE | `/api/v1/chats/<chat_id>/sessions/<session_id>/messages/<msg_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id/sessions/:session_id/messages/:msg_id`) | `api/apps/restful_apis/chat_api.py:914` |
 | PUT | `/api/v1/chats/<chat_id>/sessions/<session_id>/messages/<msg_id>/feedback` | python-api@9380 | go-api (`/api/v1/chats/:chat_id/sessions/:session_id/messages/:msg_id/feedback`) | `api/apps/restful_apis/chat_api.py:939` |
+| GET | `/api/v1/compilation-template-groups` | python-api@9380 | go-api (`/api/v1/compilation-template-groups`) | `api/apps/restful_apis/compilation_template_group_api.py:69` |
+| POST | `/api/v1/compilation-template-groups` | python-api@9380 | go-api (`/api/v1/compilation-template-groups`) | `api/apps/restful_apis/compilation_template_group_api.py:101` |
+| DELETE | `/api/v1/compilation-template-groups/<group_id>` | python-api@9380 | go-api (`/api/v1/compilation-template-groups/:group_id`) | `api/apps/restful_apis/compilation_template_group_api.py:163` |
+| GET | `/api/v1/compilation-template-groups/<group_id>` | python-api@9380 | go-api (`/api/v1/compilation-template-groups/:group_id`) | `api/apps/restful_apis/compilation_template_group_api.py:89` |
+| PUT | `/api/v1/compilation-template-groups/<group_id>` | python-api@9380 | go-api (`/api/v1/compilation-template-groups/:group_id`) | `api/apps/restful_apis/compilation_template_group_api.py:128` |
+| GET | `/api/v1/compilation-templates/builtins` | python-api@9380 | go-api (`/api/v1/compilation-templates/builtins`) | `api/apps/restful_apis/compilation_template_api.py:28` |
+| GET | `/api/v1/compilation-templates/wiki-presets` | python-api@9380 | go-api (`/api/v1/compilation-templates/wiki-presets`) | `api/apps/restful_apis/compilation_template_api.py:57` |
 | POST | `/api/v1/connectors/:connector_id/rebuild` | go-api@9384 | python-api (`/api/v1/connectors/<connector_id>/rebuild`) | `internal/router/router.go:591` |
 | POST | `/api/v1/connectors/:connector_id/test` | go-api@9384 | python-api (`/api/v1/connectors/<connector_id>/test`) | `internal/router/router.go:592` |
 | DELETE | `/api/v1/connectors/<connector_id>` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id`) | `api/apps/restful_apis/connector_api.py:169` |
 | GET | `/api/v1/connectors/<connector_id>` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id`) | `api/apps/restful_apis/connector_api.py:123` |
 | PATCH | `/api/v1/connectors/<connector_id>` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id`) | `api/apps/restful_apis/connector_api.py:49` |
 | GET | `/api/v1/connectors/<connector_id>/logs` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id/logs`) | `api/apps/restful_apis/connector_api.py:136` |
-| DELETE | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts`) | `internal/router/router.go:361` |
+| DELETE | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts`) | `internal/router/router.go:364` |
 | GET | `/api/v1/datasets/:dataset_id/changes` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/changes`) | `internal/router/router.go:458` |
 | DELETE | `/api/v1/datasets/:dataset_id/chunks` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/chunks`) | `internal/router/router.go:381` |
 | GET | `/api/v1/datasets/:dataset_id/commits` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits`) | `internal/router/router.go:452` |
