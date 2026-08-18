@@ -779,10 +779,11 @@ def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
 def test_fork_detachment_detects_non_id_research_content_keys():
     content_json, metadata_json = studio_db._detach_research_message_json(
         '[{"type":"text","text":"Report","serverManaged":true}]',
-        '{"model":"local-model"}',
+        '{"model":"local-model","generationRunId":"run-1","generationSeq":3}',
     )
 
     assert "serverManaged" not in content_json
+    assert "generationRunId" not in metadata_json
     assert metadata_json == '{"model": "local-model"}'
 
 

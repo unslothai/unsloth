@@ -2752,6 +2752,104 @@ def _research_message_would_change(
     )
 
 
+_GENERATION_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+_GENERATION_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
+_GENERATION_STATUS_RANK = {"queued": 0, "running": 1, "cancelling": 2}
+
+
+def _safe_generation_assistant_update(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    message: dict,
+) -> bool:
+    """Allow only monotonic writes to the assistant row owned by one run."""
+    row = conn.execute(
+        """SELECT r.id AS run_id, r.status AS run_status, r.last_event_seq,
+                  m.parent_id, m.role, m.content_json, m.metadata_json,
+                  m.attachments_json, m.created_at
+           FROM chat_generation_runs r
+           JOIN chat_messages m ON m.id = r.assistant_message_id
+           WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None or str(message.get("role")) != "assistant":
+        return False
+    if (message.get("parentId") or None) != (row["parent_id"] or None):
+        return False
+    if int(message.get("createdAt", row["created_at"])) != int(row["created_at"]):
+        return False
+
+    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
+    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
+        stored_attachments, sort_keys = True
+    ):
+        return False
+
+    incoming = message.get("metadata")
+    stored = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    if not isinstance(incoming, dict) or not isinstance(stored, dict):
+        return False
+    if incoming.get("serverManaged") is not True:
+        return False
+    if incoming.get("generationRunId") != row["run_id"]:
+        return False
+
+    incoming_seq = incoming.get("generationSeq")
+    stored_seq = stored.get("generationSeq", 0)
+    if (
+        isinstance(incoming_seq, bool)
+        or not isinstance(incoming_seq, int)
+        or isinstance(stored_seq, bool)
+        or not isinstance(stored_seq, int)
+        or incoming_seq < stored_seq
+        or incoming_seq > int(row["last_event_seq"])
+    ):
+        return False
+    if incoming_seq == stored_seq and json.dumps(
+        message.get("content", []), sort_keys = True
+    ) != json.dumps(json.loads(row["content_json"] or "[]"), sort_keys = True):
+        return False
+
+    # A settled terminal row is immutable. Repeated repository syncs may send
+    # the exact row again, but an old tab must not erase authoritative finish
+    # metadata or replace it with an earlier view at the same cursor.
+    if stored.get("generationSettled") is True:
+        return incoming == stored
+
+    incoming_status = incoming.get("generationStatus")
+    stored_status = stored.get("generationStatus")
+    run_status = str(row["run_status"])
+    if incoming_status not in _GENERATION_ACTIVE_STATUSES | _GENERATION_TERMINAL_STATUSES:
+        return False
+    if run_status in _GENERATION_TERMINAL_STATUSES and incoming_status != run_status:
+        return False
+    if run_status in _GENERATION_TERMINAL_STATUSES:
+        # Terminal settlement may add client timing/details, but it must retain
+        # every field already persisted by the producer (especially incomplete).
+        for key in stored:
+            if key not in incoming:
+                return False
+        if incoming.get("incomplete") != stored.get("incomplete"):
+            return False
+    if run_status in _GENERATION_ACTIVE_STATUSES and incoming_status in _GENERATION_TERMINAL_STATUSES:
+        return False
+    if incoming.get("generationSettled") is True and run_status not in _GENERATION_TERMINAL_STATUSES:
+        return False
+    if incoming.get("generationSettled") is True and incoming_seq != int(row["last_event_seq"]):
+        return False
+    if stored_status in _GENERATION_TERMINAL_STATUSES and incoming_status != stored_status:
+        return False
+    if stored.get("generationSettled") is True and incoming.get("generationSettled") is not True:
+        return False
+    if (
+        stored_status in _GENERATION_ACTIVE_STATUSES
+        and incoming_status in _GENERATION_ACTIVE_STATUSES
+        and _GENERATION_STATUS_RANK[incoming_status] < _GENERATION_STATUS_RANK[stored_status]
+    ):
+        return False
+    return True
+
+
 def _guard_server_managed_messages(
     conn: sqlite3.Connection,
     thread_id: str,
@@ -2760,14 +2858,21 @@ def _guard_server_managed_messages(
     *,
     allow_research_update: bool = False,
 ) -> None:
-    protected = _generation_message_ids(conn, thread_id)
+    generation = _generation_message_ids(conn, thread_id)
+    protected = set(generation)
     if not allow_research_update:
         protected.update(_research_message_ids(conn, thread_id))
     if not protected:
         return
     for message in messages:
-        if str(message["id"]) in protected and _research_message_would_change(
-            conn, thread_id, message, pruned
+        message_id = str(message["id"])
+        if (
+            message_id in generation
+            and not _safe_generation_assistant_update(conn, thread_id, message)
+        ) or (
+            message_id in protected
+            and message_id not in generation
+            and _research_message_would_change(conn, thread_id, message, pruned)
         ):
             raise ChatMessageProtectedError(
                 "server-managed generation messages cannot be edited"
@@ -3161,7 +3266,15 @@ def sync_chat_messages(
                 - managed_ids
             )
         protected = generation_ids if allow_research_update else managed_ids
-        messages = [m for m in messages if str(m["id"]) not in protected]
+        messages = [
+            m
+            for m in messages
+            if str(m["id"]) not in protected
+            or (
+                str(m["id"]) in generation_ids
+                and _safe_generation_assistant_update(conn, thread_id, m)
+            )
+        ]
         # Content is dropped, structure is not: the prune below can delete a research
         # message's parent, and a dangling parent makes the whole thread unimportable. The
         # replacement is walked from the stored chain, never taken from the client.
@@ -3307,6 +3420,12 @@ _RESEARCH_LINK_KEYS = {
     "researchPlanRevision",
     "serverManaged",
 }
+_SERVER_MANAGED_LINK_KEYS = _RESEARCH_LINK_KEYS | {
+    "generationRunId",
+    "generationSeq",
+    "generationStatus",
+    "generationSettled",
+}
 
 
 def _detach_research_message_json(
@@ -3317,12 +3436,13 @@ def _detach_research_message_json(
     custom = metadata.get("custom") if isinstance(metadata, dict) else None
     linked = (
         isinstance(metadata, dict)
-        and any(key in metadata for key in _RESEARCH_LINK_KEYS)
+        and any(key in metadata for key in _SERVER_MANAGED_LINK_KEYS)
         or isinstance(custom, dict)
-        and any(key in custom for key in _RESEARCH_LINK_KEYS)
+        and any(key in custom for key in _SERVER_MANAGED_LINK_KEYS)
         or isinstance(content, list)
         and any(
-            isinstance(part, dict) and any(key in part for key in _RESEARCH_LINK_KEYS)
+            isinstance(part, dict)
+            and any(key in part for key in _SERVER_MANAGED_LINK_KEYS)
             for part in content
         )
     )
@@ -3331,17 +3451,27 @@ def _detach_research_message_json(
 
     if isinstance(content, list):
         content = [
-            {key: value for key, value in part.items() if key not in _RESEARCH_LINK_KEYS}
+            {
+                key: value
+                for key, value in part.items()
+                if key not in _SERVER_MANAGED_LINK_KEYS
+            }
             if isinstance(part, dict)
             else part
             for part in content
         ]
     if isinstance(metadata, dict):
-        metadata = {key: value for key, value in metadata.items() if key not in _RESEARCH_LINK_KEYS}
+        metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in _SERVER_MANAGED_LINK_KEYS
+        }
         custom = metadata.get("custom")
         if isinstance(custom, dict):
             metadata["custom"] = {
-                key: value for key, value in custom.items() if key not in _RESEARCH_LINK_KEYS
+                key: value
+                for key, value in custom.items()
+                if key not in _SERVER_MANAGED_LINK_KEYS
             }
     return (
         json.dumps(content, ensure_ascii = False),

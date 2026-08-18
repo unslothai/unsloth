@@ -1103,16 +1103,47 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     )
 
 
-def _stats_finish_reason(stats, default: str = "stop") -> str:
+def _stats_finish_reason(
+    stats,
+    default: str = "stop",
+    *,
+    token_budget: int | None = None,
+) -> str:
     """``"length"`` when the backend reports the turn ran out of token budget.
 
-    Only the in-process backends fill ``truncated``. llama-server and MLX report their
-    own finish reason and never set it, so they keep ``default``, as does a backend
-    shipping no stats at all.
+    In-process backends fill ``truncated``. A caller that knows its backend reports
+    ``stop`` at the cap may also supply the effective token budget; every other path
+    keeps ``default``, as does a backend shipping no stats at all.
     """
-    if isinstance(stats, dict) and stats.get("truncated"):
-        return "length"
+    if isinstance(stats, dict):
+        if stats.get("truncated"):
+            return "length"
+        usage = stats.get("usage")
+        completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        if (
+            token_budget is not None
+            and isinstance(completion_tokens, int)
+            and not isinstance(completion_tokens, bool)
+            and completion_tokens >= token_budget
+        ):
+            return "length"
     return default
+
+
+def _safetensors_finish_reason(
+    stats,
+    payload,
+    *,
+    is_mlx: bool,
+    durable_run: bool,
+) -> str:
+    """Normalize MLX's stop-at-cap only for server-owned Studio runs."""
+    token_budget = (
+        _effective_openai_max_tokens(payload)
+        if is_mlx and durable_run
+        else None
+    )
+    return _stats_finish_reason(stats, token_budget = token_budget)
 
 
 def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
@@ -16211,7 +16242,16 @@ async def produce_openai_chat_completions(
                 _finish = (
                     "tool_calls"
                     if (healer is not None and not _cancelled and healer.healed)
-                    else ("stop" if _cancelled else _stats_finish_reason(_stats))
+                    else (
+                        "stop"
+                        if _cancelled
+                        else _safetensors_finish_reason(
+                            _stats,
+                            payload,
+                            is_mlx = bool(_sf_model_info.get("is_mlx", False)),
+                            durable_run = not cancel_on_disconnect,
+                        )
+                    )
                 )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Reuse the reason already sent to the client. Outside the stats block

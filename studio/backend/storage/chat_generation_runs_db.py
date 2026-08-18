@@ -132,7 +132,7 @@ def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
 
 def _sync_assistant_status_locked(conn: sqlite3.Connection, run_id: str, status: str) -> None:
     row = conn.execute(
-        """SELECT r.assistant_message_id, m.metadata_json
+        """SELECT r.assistant_message_id, r.finish_reason, m.metadata_json
            FROM chat_generation_runs r
            LEFT JOIN chat_messages m ON m.id=r.assistant_message_id
            WHERE r.id=?""",
@@ -155,7 +155,10 @@ def _sync_assistant_status_locked(conn: sqlite3.Connection, run_id: str, status:
     elif status == "failed":
         metadata["incomplete"] = {"reason": "interrupted"}
     elif status == "completed":
-        metadata.pop("incomplete", None)
+        if row["finish_reason"] == "length":
+            metadata["incomplete"] = {"reason": "length"}
+        else:
+            metadata.pop("incomplete", None)
     conn.execute(
         "UPDATE chat_messages SET metadata_json=? WHERE id=?",
         (json.dumps(metadata, ensure_ascii = False), row["assistant_message_id"]),

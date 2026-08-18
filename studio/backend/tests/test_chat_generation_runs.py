@@ -90,6 +90,90 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         _create(request = _request(max_tokens = 9))
 
 
+def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    runs_db.append_events("run-1", token, [("chunk", {"text": "A"})])
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    message["content"] = [{"type": "text", "text": "A"}]
+    message["metadata"].update(
+        {"generationSeq": 3, "generationStatus": "running"}
+    )
+    studio_db.upsert_chat_message(message)
+
+    forged_terminal = {
+        **message,
+        "metadata": {
+            **message["metadata"],
+            "generationStatus": "completed",
+            "generationSettled": True,
+        },
+    }
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(forged_terminal)
+
+    for metadata in (
+        {**message["metadata"], "generationSeq": 2},
+        {**message["metadata"], "generationRunId": "other-run"},
+    ):
+        with pytest.raises(studio_db.ChatMessageProtectedError):
+            studio_db.upsert_chat_message(
+                {
+                    **message,
+                    "content": [{"type": "text", "text": "stale"}],
+                    "metadata": metadata,
+                }
+            )
+
+    runs_db.finish_run(
+        "run-1",
+        worker_token = token,
+        status = "completed",
+        finish_reason = "length",
+    )
+    stale = {
+        **message,
+        "content": [{"type": "text", "text": "downgraded"}],
+        "metadata": {**message["metadata"], "generationStatus": "running"},
+    }
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(stale)
+    studio_db.sync_chat_messages("thread-1", [stale])
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["content"] == [{"type": "text", "text": "A"}]
+    assert stored["metadata"]["generationStatus"] == "completed"
+    stored["metadata"]["generationSettled"] = True
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(stored)
+    stored["metadata"].update(
+        {
+            "generationSeq": 4,
+            "generationSettled": True,
+            "responseDetails": {"durationMs": 1},
+        }
+    )
+    studio_db.upsert_chat_message(stored)
+    stored["metadata"]["generationSettled"] = False
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(stored)
+    authoritative = studio_db.get_chat_message("thread-1", "assistant-1")
+    stale = {
+        **authoritative,
+        "metadata": {
+            key: value
+            for key, value in authoritative["metadata"].items()
+            if key not in {"incomplete", "responseDetails"}
+        },
+    }
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(stale)
+    studio_db.sync_chat_messages("thread-1", [stale])
+    preserved = studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]
+    assert preserved["incomplete"] == {"reason": "length"}
+    assert preserved["responseDetails"] == {"durationMs": 1}
+
+
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     run, _created = _create()
     worker_token = runs_db.get_worker_token("run-1")

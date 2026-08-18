@@ -76,6 +76,35 @@ async def test_public_chat_wrapper_keeps_cancel_on_disconnect(monkeypatch):
     assert observed == [True]
 
 
+@pytest.mark.parametrize(
+    "is_mlx,durable_run,generation_run_id,completion_tokens,expected",
+    [
+        (True, True, "run-1", 8, "length"),
+        (True, True, "run-1", 7, "stop"),
+        (True, False, "run-1", 8, "stop"),
+        (False, True, "run-1", 8, "stop"),
+    ],
+)
+def test_only_durable_mlx_normalizes_stop_at_token_cap(
+    is_mlx, durable_run, generation_run_id, completion_tokens, expected
+):
+    payload = SimpleNamespace(
+        generation_run_id = generation_run_id,
+        max_tokens = 8,
+        max_completion_tokens = None,
+    )
+    stats = {"usage": {"completion_tokens": completion_tokens}}
+    assert (
+        inference._safetensors_finish_reason(
+            stats,
+            payload,
+            is_mlx = is_mlx,
+            durable_run = durable_run,
+        )
+        == expected
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_route_schedules_producer_on_request_loop(monkeypatch):
     started = []
