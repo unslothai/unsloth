@@ -218,9 +218,7 @@ class TestTheRefusalItself:
 
 
 class TestWhatLoadModelDoes:
-    def test_a_context_above_the_ceiling_never_reaches_llama_server(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_context_above_the_ceiling_never_reaches_llama_server(self, tmp_path, monkeypatch):
         with pytest.raises(RuntimeError, match = "unified"):
             _launch(tmp_path, monkeypatch, n_ctx = 32768)
 
