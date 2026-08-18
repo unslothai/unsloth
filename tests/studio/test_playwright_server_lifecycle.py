@@ -29,6 +29,7 @@ HARNESSES = (
     "playwright_chat_autoscroll",
     "playwright_research_freeze",
     "playwright_strip_ansi_smoke",
+    "playwright_stream_pacing",
 )
 
 
@@ -149,7 +150,7 @@ def test_readiness_gives_up_as_soon_as_our_server_dies(monkeypatch, no_signals) 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_ports_do_not_collide_and_are_overridable(harness) -> None:
     import re
-    src = (Path(__file__).resolve().parent / f"{harness}.py").read_text()
+    src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding = "utf-8")
     assert re.search(r'SMOKE_PORT",\s*"\d+"', src), f"{harness} has no SMOKE_PORT default"
 
 
@@ -158,7 +159,7 @@ def test_every_harness_picks_a_different_default_port() -> None:
 
     ports = {}
     for harness in HARNESSES:
-        src = (Path(__file__).resolve().parent / f"{harness}.py").read_text()
+        src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding = "utf-8")
         ports[harness] = re.search(r'SMOKE_PORT",\s*"(\d+)"', src).group(1)
     assert len(set(ports.values())) == len(HARNESSES), f"default ports collide: {ports}"
 

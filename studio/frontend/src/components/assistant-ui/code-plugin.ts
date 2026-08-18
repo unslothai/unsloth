@@ -50,7 +50,7 @@ const normalizeLanguage = (language: string): BundledLanguage => {
 // A streaming fence re-enters highlight() every frame with the whole block, so
 // Shiki re-tokenizes it in full ~60x/sec. Past MIN_INCREMENTAL_CHARS, reuse the
 // cached tokens with an unstyled tail, re-tokenizing at most every REFRESH_MS.
-const MIN_INCREMENTAL_CHARS = 2000;
+export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
 // Wall-clock Date.now() can step backwards (NTP, sleep resume) and make
 // `elapsed` negative; the throttle only needs elapsed time, so stay monotonic.

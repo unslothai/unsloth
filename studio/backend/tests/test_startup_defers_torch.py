@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: ``import main`` must not import torch, and the warm that replaces
-it must be safe.
+"""Invariant: ``import main`` must not import torch or pandas, and the warm that
+replaces torch must be safe.
 
 uvicorn binds the socket only after ``import main`` and the lifespan both finish, so
 anything they import is time the login screen does not exist. torch and what it drags
@@ -13,9 +13,24 @@ in was about 5s of that on a GPU host. Four eager edges caused it:
   core/inference/orchestrator.py  from utils.hf_xet_fallback import DownloadStallError
   utils/datasets/raw_text.py    from datasets import Dataset  (annotation only)
 
-All four are lazy now and detection moved onto utils/torch_warmup.py. A fresh interpreter
-is used for the import invariant, since importing in-process would measure an already-warm
-sys.modules. CPU-only, no network, no GPU, no weights.
+pandas arrived by a fifth, through the data-recipe seed route:
+
+  routes/data_recipe/seed.py    from data_designer_unstructured_seed.chunking import ...
+  ...chunking.py                import pandas as pd  at module scope
+  ...__init__.py                re-exports .config and .impl, which import the data
+                                designer engine, which imports pandas and pyarrow
+
+Importing the submodule runs the package first, so dropping only the chunking-level
+import left the cost in place. The route resolves the plugin on first use now. The
+Startup profile workflow measured this edge at 2.247s of a 7.284s ``import main`` on
+windows-latest, 901ms self on macos-15.
+
+All of them are lazy. A fresh interpreter is used for the import invariant, since
+importing in-process would measure an already-warm sys.modules. CPU-only, no network,
+no GPU, no weights.
+
+The runtime guards only bite where the optional plugin is installed, so a source-level
+guard covers the environments that do not have it.
 """
 
 from __future__ import annotations
@@ -31,7 +46,7 @@ import pytest
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
 
-_HEAVY = ("torch", "transformers", "unsloth_zoo", "scipy", "sklearn", "sympy")
+_HEAVY = ("torch", "transformers", "unsloth_zoo", "scipy", "sklearn", "sympy", "pandas", "pyarrow")
 
 _IMPORT_MAIN_SNIPPET = r"""
 import sys
@@ -81,10 +96,11 @@ def test_import_main_does_not_import_torch():
         "routes.models",
         "utils.hf_xet_fallback",
         "core.rag.embeddings",
+        "routes.data_recipe.seed",
     ],
 )
 def test_module_import_does_not_pull_torch(module_path: str):
-    """Each module that used to force torch must import clean on its own."""
+    """Each module that used to force torch or pandas must import clean on its own."""
     snippet = (
         "import sys, importlib\n"
         f"importlib.import_module({module_path!r})\n"
@@ -97,6 +113,43 @@ def test_module_import_does_not_pull_torch(module_path: str):
     proc = _run(snippet)
     assert proc.returncode == 0, f"{module_path}: {proc.stderr[-3000:]}"
     assert "CLEAN" in proc.stdout
+
+
+def _module_scope_imports(tree: ast.Module) -> list[ast.stmt]:
+    """Imports that run on `import <module>`: module body and nesting like try/if,
+    but nothing inside a function or class."""
+    found: list[ast.stmt] = []
+    stack: list[ast.stmt] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            found.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        else:
+            stack.extend(c for c in ast.iter_child_nodes(node) if isinstance(c, ast.stmt))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "banned"),
+    [("routes/data_recipe/seed.py", "data_designer_unstructured_seed")],
+)
+def test_module_scope_does_not_import_the_seed_plugin(rel_path: str, banned: str):
+    """The runtime guards above pass vacuously wherever the plugin is not installed,
+    which is most CI jobs. This one reads the source, so it holds either way."""
+    tree = ast.parse((_BACKEND_DIR / rel_path).read_text(encoding = "utf-8"))
+    offenders = [
+        node.lineno
+        for node in _module_scope_imports(tree)
+        if (getattr(node, "module", None) or "").startswith(banned)
+        or any(alias.name.startswith(banned) for alias in node.names)
+    ]
+    assert not offenders, (
+        f"{rel_path} imports {banned} at module scope (line(s) {offenders}). The package "
+        "re-exports the data designer engine, so this puts pandas and pyarrow back into "
+        "main's startup graph. Resolve it on first use instead."
+    )
 
 
 def test_detection_sets_still_resolve_under_their_old_names():

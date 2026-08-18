@@ -1096,17 +1096,46 @@ html[data-chat-font] .aui-root {
 		color: #fff !important;
 	}
 
+	/* Multi-select: the same fill a hovered or active row gets, no outline. */
+	.sidebar-nav-btn[data-selected="true"] {
+		background-color: var(--nav-surface-hover) !important;
+		color: #000 !important;
+	}
+	.dark .sidebar-nav-btn[data-selected="true"] {
+		color: #fff !important;
+	}
+
 	.sidebar-row-action {
 		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
 	@media (pointer: coarse) {
-		/* Only chat rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
+		/* Chat and project rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
 		.sidebar-row-action.sidebar-touch-reveal {
 			@apply opacity-100 pointer-events-auto;
 		}
 	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
+	}
+	/* Pinned/Projects/Recents header actions. They sit in the label's flex row,
+	   not over a pill, so they reveal on the header's hover. */
+	.sidebar-header-action {
+		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 pointer-events-none outline-none transition-opacity duration-150;
+		color: inherit;
+	}
+	.group\/sidebar-header:hover .sidebar-header-action,
+	.sidebar-header-action:focus-visible,
+	.sidebar-header-action[data-state="open"] {
+		@apply opacity-100 pointer-events-auto;
+	}
+	.sidebar-header-action:hover {
+		background-color: var(--nav-surface-hover);
+	}
+	@media (pointer: coarse) {
+		/* No hover to reveal them on touch. */
+		.sidebar-header-action {
+			@apply opacity-100 pointer-events-auto;
+		}
 	}
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
