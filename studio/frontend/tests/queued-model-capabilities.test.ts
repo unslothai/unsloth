@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getImageInputUnavailableReason } from "../src/features/chat/utils/image-input-support.ts";
 import { mergeQueuedModelCapabilities } from "../src/features/chat/utils/queued-model-capabilities.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { getImageInputUnavailableReason } = await import(
+  "../src/features/chat/utils/image-input-support.ts"
+);
 
 test("status capabilities synthesize an audio model missing from the catalog", () => {
   assert.deepEqual(
