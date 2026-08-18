@@ -159,6 +159,7 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -350,7 +351,8 @@ export function ChatProvidersSettings({
         syncSucceeded = true;
         // Hidden entries are fetched for their capabilities only; the dropdown
         // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
-        setRegistry(registryRows.filter((entry) => !entry.hidden));
+        const selectableRegistry = registryRows.filter((entry) => !entry.hidden);
+        setRegistry(selectableRegistry);
         setProviderType((current) => {
           if (
             current &&
@@ -365,6 +367,16 @@ export function ChatProvidersSettings({
         // removed (often from another tab); mirror that locally, else stale
         // entries become un-removable here until localStorage is cleared.
         onProvidersChange(syncedProviders);
+        // An empty list never says what this page is for, so open the form
+        // instead. Reads the synced response, not the local snapshot, so a
+        // stale empty list cannot flash the form at an existing user. Once
+        // only, else the focus re-sync would pull the user back here.
+        if (!autoOpenedAddFormRef.current) {
+          autoOpenedAddFormRef.current = true;
+          if (syncedProviders.length === 0 && selectableRegistry.length > 0) {
+            setPage("form");
+          }
+        }
       } catch (error) {
         // Only surface a toast for real failures, not for the silent
         // background re-sync on tab focus.
