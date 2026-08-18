@@ -1511,6 +1511,77 @@ mod tests {
         }
     }
 
+    /// A backend that answers the ownership probe's first request and then goes quiet, the
+    /// way a saturated one does. The later connections are parked, not closed: closing them
+    /// would answer with a reset, which is a different failure entirely.
+    async fn owned_backend_that_stalls_after_the_first_request() -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = format!(
+            r#"{{"status":"alive","service":"Unsloth UI Backend","desktop_protocol_version":{},"desktop_manageability_version":{},"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{}","desktop_owner":{{"kind":"{}","token_sha256":"{}"}},"inference_active":true}}"#,
+            crate::preflight::DESKTOP_PROTOCOL_VERSION,
+            crate::preflight::DESKTOP_MANAGEABILITY_VERSION,
+            ROOT_ID,
+            OWNER_KIND_TAURI,
+            token_sha256(TOKEN),
+        );
+        tokio::spawn(async move {
+            let mut answered = false;
+            let mut parked = Vec::new();
+            while let Ok((mut socket, _)) = listener.accept().await {
+                if answered {
+                    parked.push(socket);
+                    continue;
+                }
+                answered = true;
+                let mut chunk = [0u8; 2048];
+                let _ = socket.read(&mut chunk).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_stall_after_the_first_request_is_indistinguishable_from_a_foreign_port() {
+        // Why the health watchdog cannot ask this probe whether a failure was a stall: the
+        // liveness GET succeeds and verifies ownership, then the desktop-login POST runs out
+        // of budget, and the answer that comes back carries no trace of which it was. The
+        // watchdog has to classify the failure from its own read instead, which is what
+        // `commands::adopted_failure_is_a_stall` does.
+        let port = owned_backend_that_stalls_after_the_first_request().await;
+        // The probe never touches the file, so nothing has to exist on disk for this.
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-stall-after-first-request.json"),
+            metadata(std::process::id(), Some(port)),
+        );
+
+        let probe = probe_owned_backend_state_with_timeout(
+            owner,
+            Some(port),
+            false,
+            Duration::from_millis(400),
+        )
+        .await;
+
+        match probe {
+            OwnedBackendProbe::Unmanageable { reason, .. } => {
+                assert_eq!(reason, "desktop_login_probe_failed");
+            }
+            OwnedBackendProbe::NotVerified { reason } => {
+                assert_eq!(reason, "owned_backend_not_found");
+            }
+            other => panic!("a stalled owned backend should not verify: {other:?}"),
+        }
+    }
+
     #[test]
     fn legacy_manageability_backend_stays_lifecycle_controllable() {
         // A backend from the previous app version reports manageability 1.

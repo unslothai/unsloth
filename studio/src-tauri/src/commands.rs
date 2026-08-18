@@ -12,10 +12,12 @@ const HEALTH_WATCHDOG_MAX_FAILURES: u32 = 3;
 /// Strikes allowed when the last answered probe said the backend was generating and the
 /// ones since then timed out rather than being refused.
 ///
-/// Three strikes is ~45s of silence, which a saturated host clears easily: a model that
-/// does not fit runs at fractions of a token per second, and the loop serving it can miss
-/// several probes in a row while the response is still being produced. Killing there ends
-/// a stream the user is waiting on and reports it as "Server stopped unexpectedly".
+/// Three strikes is ~75s of silence here, not 45s: the loop sleeps HEALTH_WATCHDOG_INTERVAL
+/// and only then probes, so a strike that TIMES OUT costs 15s + 10s, where a refused one
+/// costs only the 15s. A saturated host clears 75s easily -- a model that does not fit runs
+/// at fractions of a token per second, and the loop serving it can miss several probes in a
+/// row while the response is still being produced. Killing there ends a stream the user is
+/// waiting on and reports it as "Server stopped unexpectedly". Twelve strikes is ~300s.
 ///
 /// Only the stalled case gets this. A refused connection still counts against the plain
 /// budget, so a backend that really died is reported just as fast as before.
@@ -34,6 +36,15 @@ const HEALTH_WATCHDOG_MAX_FAILURES_BUSY: u32 = 12;
 /// than retrying, and `backend/tests/test_health_answers_within_probe_budget.py` derives
 /// `_HEALTH_DETECT_BUDGET_S` from that number.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Budget for the single last-chance probe spent before a stalled backend is declared dead.
+///
+/// Deliberately above HEALTH_WATCHDOG_INTERVAL, unlike the per-cycle budget: this one is not
+/// part of the cadence. It runs at most once per backend, and only when the alternative is
+/// killing it, so overlapping the next probe is not a concern -- there is no next probe if
+/// this one does not save the backend. 30s covers a loop running a couple of probe budgets
+/// behind, which is the regime where a generation is still producing tokens but nothing
+/// answers within 10s.
+const HEALTH_CONFIRM_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn should_count_watchdog_failure(has_seen_healthy: bool, elapsed_since_start: Duration) -> bool {
     has_seen_healthy || elapsed_since_start >= BACKEND_STARTUP_GRACE_PERIOD
@@ -75,6 +86,37 @@ fn liveness_from_probe_error(error: &reqwest::Error) -> BackendLiveness {
         probe_timed_out: error.is_timeout(),
         ..BackendLiveness::default()
     }
+}
+
+/// Whether a failed adopted-path check is a stall rather than a dead port.
+///
+/// The ownership probe cannot answer this: every transport error inside it becomes
+/// `NotVerified`, indistinguishable from a port that a different process now owns. The
+/// pre-probe can: it answered, from an Unsloth backend, on this port. Silence from the
+/// requests after that is the same stall the owned path already rides out.
+fn adopted_failure_is_a_stall(verified: bool, served_alive: bool) -> bool {
+    !verified && served_alive
+}
+
+/// Whether to spend one long last-chance probe before declaring a backend dead.
+///
+/// The busy budget can only widen on a marker that some probe actually brought back, and
+/// there is a window where none can: a generation that starts just after an idle answer
+/// and saturates the loop before the next probe leaves the latch false for the rest of its
+/// life, so it dies on the plain three-strike budget with a response in flight -- the exact
+/// loss this change is for. Nothing in the backend can close that window, because a starved
+/// loop cannot answer at all, and the desktop UI cannot either: #8945 is an external
+/// agentic client posting straight to `/v1/messages`, with no frontend in the path.
+///
+/// What can close it is asking once more, with a budget wide enough that a loop running
+/// tens of seconds behind still gets a word in. Only ever spent on a stall: a refused port
+/// is death and is still reported at three strikes, at the same speed, with no extra wait.
+fn watchdog_should_confirm_before_death(
+    consecutive_failures: u32,
+    budget: u32,
+    probe_timed_out: bool,
+) -> bool {
+    consecutive_failures >= budget && probe_timed_out
 }
 
 /// Consecutive failures tolerated before the backend is declared dead.
@@ -366,7 +408,7 @@ struct BackendLiveness {
 /// Expects JSON with status=="alive" (or "healthy") AND service=="Unsloth UI Backend".
 #[tauri::command]
 pub async fn check_health(port: u16) -> Result<bool, String> {
-    match check_health_inner(port).await {
+    match check_health_inner(port, HEALTH_PROBE_TIMEOUT).await {
         Ok(liveness) => Ok(liveness.alive),
         Err(e) => {
             // Network errors are not command errors — just means not healthy
@@ -384,8 +426,16 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
 /// which is the reason it was added. Backends older than that route answer 404, so fall
 /// back to health for them, the same order `process::generic_backend_health_ok` and
 /// `desktop_backend_owner::fetch_liveness` already use.
-async fn check_health_inner(port: u16) -> Result<BackendLiveness, reqwest::Error> {
-    let client = crate::loopback_http::client(HEALTH_PROBE_TIMEOUT)?;
+///
+/// The budget is a parameter rather than the constant, because the last-chance probe the
+/// watchdog spends before declaring a stalled backend dead needs a wider one: a loop that
+/// is starved past 10s is exactly the loop whose answer decides whether a generation is
+/// still running, and abandoning that read at 10s is what leaves the question unanswered.
+async fn check_health_inner(
+    port: u16,
+    budget: Duration,
+) -> Result<BackendLiveness, reqwest::Error> {
+    let client = crate::loopback_http::client(budget)?;
     let mut json = None;
     for path in ["/api/liveness", "/api/health"] {
         let resp = client
@@ -463,9 +513,10 @@ async fn check_watchdog_health(
     generation: u64,
     port: u16,
     has_adopted: bool,
+    budget: Duration,
 ) -> BackendLiveness {
     if !has_adopted {
-        return match check_health_inner(port).await {
+        return match check_health_inner(port, budget).await {
             Ok(liveness) => liveness,
             Err(error) => liveness_from_probe_error(&error),
         };
@@ -491,7 +542,7 @@ async fn check_watchdog_health(
     // Nothing is skipped by returning early: the probe's own first step is this same GET,
     // on the same port with the same budget and the same /api/liveness -> /api/health
     // fallback, so a port that answers nothing here cannot verify ownership either.
-    let served = match check_health_inner(port).await {
+    let served = match check_health_inner(port, budget).await {
         Ok(liveness) => liveness,
         Err(error) => return liveness_from_probe_error(&error),
     };
@@ -504,7 +555,7 @@ async fn check_watchdog_health(
             owner,
             Some(port),
             false,
-            HEALTH_PROBE_TIMEOUT,
+            budget,
         )
         .await,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
@@ -523,9 +574,19 @@ async fn check_watchdog_health(
         alive: verified,
         warming_up: verified && served.warming_up,
         inference_active: verified && served.inference_active,
-        // Something answered, so this failure is not a stall. Silence is what earns the
-        // busy budget, and it returned above.
-        probe_timed_out: false,
+        // The read above answering does not mean the whole check answered. The ownership
+        // probe issues two more loopback requests -- its own `/api/liveness` and the
+        // `/api/auth/desktop-login` compatibility POST -- each with its own budget, and it
+        // folds a timeout on either into "not verified". Hard-coding this false there gave
+        // the three-strike budget to an adopted backend that had just told us it was
+        // generating, which is the kill this whole change exists to prevent. Worse, the
+        // narrower budget is re-read on every failure, so one such cycle could fire the
+        // kill immediately on a count already past three.
+        //
+        // The read is the evidence: an Unsloth backend answered on this port, so silence
+        // from the rest of the check is a stall, not an empty port. A refused port never
+        // reaches here -- it returns above with `probe_timed_out` set from the error.
+        probe_timed_out: adopted_failure_is_a_stall(verified, served.alive),
     }
 }
 
@@ -1078,7 +1139,9 @@ mod tests {
         )
         .await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.alive);
         assert!(!liveness.warming_up);
@@ -1091,7 +1154,9 @@ mod tests {
         // "healthy" from /api/health and 404s liveness.
         let (port, paths) = probe_test_backend(None, ready_health(false)).await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.alive);
         assert_eq!(
@@ -1111,7 +1176,9 @@ mod tests {
         )
         .await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.alive);
         assert!(
@@ -1135,7 +1202,9 @@ mod tests {
         )
         .await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.alive);
         assert!(
@@ -1158,7 +1227,9 @@ mod tests {
         )
         .await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.alive);
         assert!(!liveness.warming_up);
@@ -1177,7 +1248,9 @@ mod tests {
         )
         .await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.warming_up);
     }
@@ -1195,7 +1268,9 @@ mod tests {
         )
         .await;
 
-        let liveness = super::check_health_inner(port).await.unwrap();
+        let liveness = super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+            .await
+            .unwrap();
 
         assert!(liveness.alive);
         assert!(!liveness.warming_up);
@@ -1210,7 +1285,9 @@ mod tests {
         .await;
 
         assert_eq!(
-            super::check_health_inner(port).await.unwrap(),
+            super::check_health_inner(port, super::HEALTH_PROBE_TIMEOUT)
+                .await
+                .unwrap(),
             super::BackendLiveness::default()
         );
     }
@@ -1432,14 +1509,14 @@ mod tests {
         .await;
 
         assert!(
-            super::check_health_inner(busy_port)
+            super::check_health_inner(busy_port, super::HEALTH_PROBE_TIMEOUT)
                 .await
                 .unwrap()
                 .inference_active
         );
         // Absent on an older backend, which reads as idle rather than as busy forever.
         assert!(
-            !super::check_health_inner(idle_port)
+            !super::check_health_inner(idle_port, super::HEALTH_PROBE_TIMEOUT)
                 .await
                 .unwrap()
                 .inference_active
@@ -1475,6 +1552,317 @@ mod tests {
         assert_eq!(
             super::watchdog_failure_budget(generating, true),
             super::HEALTH_WATCHDOG_MAX_FAILURES
+        );
+    }
+
+    #[test]
+    fn an_adopted_backend_that_answers_and_then_stalls_keeps_the_busy_budget() {
+        // The ownership check issues two more loopback requests after the read that already
+        // answered, and folds a timeout on either into "not verified". Reporting that as a
+        // refusal handed a generating adopted backend the three-strike budget.
+        assert!(super::adopted_failure_is_a_stall(false, true));
+        assert_eq!(
+            super::watchdog_failure_budget(true, super::adopted_failure_is_a_stall(false, true)),
+            super::HEALTH_WATCHDOG_MAX_FAILURES_BUSY
+        );
+    }
+
+    #[test]
+    fn an_adopted_port_that_answered_nothing_is_not_called_a_stall() {
+        // The read is the only evidence there is. Without it the failure is a dead port,
+        // and a dead port must still be reported at three strikes.
+        assert!(!super::adopted_failure_is_a_stall(false, false));
+        assert_eq!(
+            super::watchdog_failure_budget(true, super::adopted_failure_is_a_stall(false, false)),
+            super::HEALTH_WATCHDOG_MAX_FAILURES
+        );
+        // And a check that passed is not a failure at all, so it is not a stall either.
+        assert!(!super::adopted_failure_is_a_stall(true, true));
+    }
+
+    #[test]
+    fn a_generation_that_starts_between_probes_still_gets_one_last_chance() {
+        // The latch can only be set by a probe that answered. A generation that starts just
+        // after an idle answer and saturates the loop before the next probe never sets it,
+        // so it dies on three strikes with a response in flight unless something asks again.
+        assert!(super::watchdog_should_confirm_before_death(
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            true,
+        ));
+        // Not before the budget is actually spent: the normal cadence is untouched.
+        assert!(!super::watchdog_should_confirm_before_death(
+            super::HEALTH_WATCHDOG_MAX_FAILURES - 1,
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            true,
+        ));
+        // And never for a refused port, so a backend that really exited is reported at the
+        // same speed as before, with no extra wait bolted on.
+        assert!(!super::watchdog_should_confirm_before_death(
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            false,
+        ));
+    }
+
+    #[test]
+    fn the_last_chance_budget_is_wider_than_the_one_that_gave_up() {
+        // The point of the extra probe is a budget the per-cycle one cannot afford. Equal
+        // budgets would just repeat the read that already failed.
+        assert!(super::HEALTH_CONFIRM_PROBE_TIMEOUT > super::HEALTH_PROBE_TIMEOUT);
+    }
+
+    /// What one watchdog cycle got back from the port.
+    #[derive(Clone, Copy, Debug)]
+    enum Probe {
+        Answered { warming: bool, busy: bool },
+        TimedOut,
+        Refused,
+    }
+
+    fn answered(busy: bool) -> Probe {
+        Probe::Answered {
+            warming: false,
+            busy,
+        }
+    }
+
+    /// Replay a timeline through the watchdog's failure accounting and report the wall
+    /// clock at which the backend was declared dead, or `None` if it survived.
+    ///
+    /// Mirrors the loop in `health_watchdog` rather than calling it: the loop needs an
+    /// `AppHandle` and a real 15s sleep per cycle. Every decision it makes comes from the
+    /// helpers below, so the arithmetic being checked here is the arithmetic it runs.
+    /// `confirms` supplies what the last-chance probe gets back, in order.
+    fn simulate_watchdog(probes: &[Probe], confirms: &[Probe]) -> Option<u64> {
+        let interval = super::HEALTH_WATCHDOG_INTERVAL.as_secs();
+        let probe_budget = super::HEALTH_PROBE_TIMEOUT.as_secs();
+        let confirm_budget = super::HEALTH_CONFIRM_PROBE_TIMEOUT.as_secs();
+
+        let mut failures: u32 = 0;
+        let mut was_generating = false;
+        let mut elapsed: u64 = 0;
+        let mut next_confirm = 0usize;
+
+        for probe in probes {
+            elapsed += interval;
+            let liveness = match *probe {
+                Probe::Answered { warming, busy } => super::BackendLiveness {
+                    alive: true,
+                    warming_up: warming,
+                    inference_active: busy,
+                    probe_timed_out: false,
+                },
+                Probe::TimedOut => {
+                    elapsed += probe_budget;
+                    super::BackendLiveness {
+                        probe_timed_out: true,
+                        ..super::BackendLiveness::default()
+                    }
+                }
+                Probe::Refused => super::BackendLiveness::default(),
+            };
+
+            if liveness.alive {
+                was_generating = super::watchdog_inference_active_after(
+                    was_generating,
+                    liveness.alive,
+                    liveness.inference_active,
+                );
+                failures = 0;
+                continue;
+            }
+
+            let budget = super::watchdog_failure_budget(was_generating, liveness.probe_timed_out);
+            failures += 1;
+            if super::watchdog_should_confirm_before_death(
+                failures,
+                budget,
+                liveness.probe_timed_out,
+            ) {
+                let confirm = confirms
+                    .get(next_confirm)
+                    .copied()
+                    .unwrap_or(Probe::TimedOut);
+                next_confirm += 1;
+                match confirm {
+                    Probe::Answered { busy: true, .. } => {
+                        was_generating = true;
+                        failures = 0;
+                        continue;
+                    }
+                    Probe::Answered { busy: false, .. } => {}
+                    Probe::TimedOut => elapsed += confirm_budget,
+                    Probe::Refused => {}
+                }
+            }
+            if failures >= budget {
+                return Some(elapsed);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn simulated_timelines_kill_only_what_should_be_killed() {
+        let plain = super::HEALTH_WATCHDOG_MAX_FAILURES as usize;
+        let busy = super::HEALTH_WATCHDOG_MAX_FAILURES_BUSY as usize;
+        let interval = super::HEALTH_WATCHDOG_INTERVAL.as_secs();
+        let probe_budget = super::HEALTH_PROBE_TIMEOUT.as_secs();
+        let confirm_budget = super::HEALTH_CONFIRM_PROBE_TIMEOUT.as_secs();
+        let stall_cycle = interval + probe_budget;
+
+        // A healthy idle backend is never touched.
+        assert_eq!(simulate_watchdog(&vec![answered(false); 200], &[]), None);
+        // Neither is one that answers while it generates, which is the #8945 log: liveness
+        // came back every 15s right up to the end.
+        assert_eq!(simulate_watchdog(&vec![answered(true); 200], &[]), None);
+        // A backend still importing the ML stack answers, so it never counts a failure.
+        assert_eq!(
+            simulate_watchdog(
+                &vec![
+                    Probe::Answered {
+                        warming: true,
+                        busy: false
+                    };
+                    200
+                ],
+                &[]
+            ),
+            None
+        );
+
+        // A backend that exited leaves a refused port, and dies at three strikes with no
+        // last-chance wait bolted on: 3 x 15s, exactly what it cost before this change.
+        let mut dead = vec![answered(false)];
+        dead.extend(vec![Probe::Refused; plain]);
+        assert_eq!(simulate_watchdog(&dead, &[]), Some(interval * 4));
+        // Even one that was generating when it went: the busy budget is for silence from a
+        // port that is still accepting, never for a refusal.
+        let mut died_generating = vec![answered(true)];
+        died_generating.extend(vec![Probe::Refused; plain]);
+        assert_eq!(simulate_watchdog(&died_generating, &[]), Some(interval * 4));
+
+        // The regression this PR is for: answered busy, then the loop goes quiet. It has to
+        // survive far past three strikes.
+        let mut stalling = vec![answered(true)];
+        stalling.extend(vec![Probe::TimedOut; busy - 1]);
+        assert_eq!(simulate_watchdog(&stalling, &[]), None);
+
+        // A backend that is genuinely wedged is still killed, just later. Bounded, and the
+        // bound is checked so nobody can widen it by accident.
+        let mut wedged = vec![answered(true)];
+        wedged.extend(vec![Probe::TimedOut; busy + 4]);
+        assert_eq!(
+            simulate_watchdog(&wedged, &[Probe::TimedOut]),
+            Some(interval + busy as u64 * stall_cycle + confirm_budget)
+        );
+
+        // Codex #3: the generation starts between two probes, so no answer ever reports it.
+        // Before the last-chance probe this died at three strikes; now the probe that a
+        // starved loop can still answer within 30s reports the generation and it lives.
+        let mut started_between_probes = vec![answered(false)];
+        started_between_probes.extend(vec![Probe::TimedOut; 40]);
+        assert_eq!(
+            simulate_watchdog(
+                &started_between_probes,
+                &[answered(true); 8] // one per spent budget
+            ),
+            None
+        );
+        // Without an answer to that probe it still dies, one confirm budget later than the
+        // three strikes it used to take. That is the whole cost to a hung idle backend.
+        assert_eq!(
+            simulate_watchdog(&started_between_probes, &[Probe::TimedOut]),
+            Some(interval + plain as u64 * stall_cycle + confirm_budget)
+        );
+        // And an answer that says the backend is idle is not a reprieve: a backend that is
+        // alive but unresponsive and doing nothing dies exactly where it did before.
+        assert_eq!(
+            simulate_watchdog(&started_between_probes, &[answered(false)]),
+            Some(interval + plain as u64 * stall_cycle)
+        );
+
+        // A stream that finishes hands the wide budget straight back.
+        let mut finished = vec![answered(true), answered(false)];
+        finished.extend(vec![Probe::Refused; plain]);
+        assert_eq!(simulate_watchdog(&finished, &[]), Some(interval * 5));
+
+        // Mixed causes: stalling on the busy budget and then the port disappears. The
+        // budget is re-read per failure, so the refusal ends it immediately rather than
+        // waiting out the remaining busy strikes.
+        let mut stalled_then_gone = vec![answered(true)];
+        stalled_then_gone.extend(vec![Probe::TimedOut; 5]);
+        stalled_then_gone.push(Probe::Refused);
+        assert_eq!(
+            simulate_watchdog(&stalled_then_gone, &[]),
+            Some(interval + 5 * stall_cycle + interval)
+        );
+
+        // A backend that answers every other probe never accumulates a budget at all.
+        let flapping: Vec<Probe> = (0..200)
+            .map(|i| {
+                if i % 2 == 0 {
+                    answered(true)
+                } else {
+                    Probe::TimedOut
+                }
+            })
+            .collect();
+        assert_eq!(simulate_watchdog(&flapping, &[]), None);
+    }
+
+    /// A port that answers, but only after `delay`. This is the regime the last-chance
+    /// probe exists for: the loop is running behind, not gone.
+    async fn slow_test_backend(delay: Duration, body: &'static str) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("probe test needs a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buffer = [0; 2048];
+                    if stream.read(&mut buffer).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(delay).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_wider_budget_reaches_a_backend_the_per_cycle_one_gives_up_on() {
+        // Measured, not asserted from the constants: the same port, the same parser, one
+        // budget that expires before the answer and one that does not.
+        let port = slow_test_backend(
+            Duration::from_millis(600),
+            r#"{"status":"alive","service":"Unsloth UI Backend","inference_active":true}"#,
+        )
+        .await;
+
+        let gave_up = super::check_health_inner(port, Duration::from_millis(150))
+            .await
+            .expect_err("a 150ms budget cannot outlast a 600ms answer");
+        assert!(
+            super::liveness_from_probe_error(&gave_up).probe_timed_out,
+            "a slow-but-answering backend must read as a stall, not as a dead port"
+        );
+
+        let confirmed = super::check_health_inner(port, Duration::from_secs(5))
+            .await
+            .expect("a 5s budget outlasts a 600ms answer");
+        assert!(confirmed.alive);
+        assert!(
+            confirmed.inference_active,
+            "the wider probe must still parse the busy marker, or the reprieve never fires"
         );
     }
 
@@ -1616,7 +2004,9 @@ async fn health_watchdog(
             continue;
         };
 
-        let liveness = check_watchdog_health(&state, generation, port, has_adopted).await;
+        let liveness =
+            check_watchdog_health(&state, generation, port, has_adopted, HEALTH_PROBE_TIMEOUT)
+                .await;
         if liveness.alive {
             // One answer is proof of life, not proof that startup is over. The backend
             // imports the ML stack on a warm thread and those C-extension imports hold the
@@ -1656,6 +2046,39 @@ async fn health_watchdog(
                     ""
                 }
             );
+            if watchdog_should_confirm_before_death(
+                consecutive_failures,
+                budget,
+                liveness.probe_timed_out,
+            ) {
+                // The budget is spent and the port is still accepting connections. Before
+                // ending a response that may still be streaming, ask once with a budget the
+                // per-cycle one cannot afford. An answer here is not a reprieve on its own:
+                // only a backend that says it is generating gets the count reset, so one
+                // that is alive but idle and unresponsive still dies, as it did before.
+                let confirmed = check_watchdog_health(
+                    &state,
+                    generation,
+                    port,
+                    has_adopted,
+                    HEALTH_CONFIRM_PROBE_TIMEOUT,
+                )
+                .await;
+                if confirmed.alive && confirmed.inference_active {
+                    warn!(
+                        "Health watchdog: backend on port {} answered the last-chance probe and is still generating, not declaring it dead",
+                        port
+                    );
+                    has_seen_healthy = watchdog_seen_healthy_after(
+                        has_seen_healthy,
+                        confirmed.alive,
+                        confirmed.warming_up,
+                    );
+                    was_generating = true;
+                    consecutive_failures = 0;
+                    continue;
+                }
+            }
             if consecutive_failures >= budget {
                 diagnostics::record_backend_watchdog(
                     &diagnostics,
