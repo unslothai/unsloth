@@ -810,8 +810,6 @@ async def stream_with_studio_tools(
     last_reprompt_text = ""
     provider_turns = 0
     used_call_ids: set[str] = set()
-    # MCP call ids already given a display name on their streamed delta.
-    mcp_stamped_ids: set[str] = set()
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -831,6 +829,10 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Per turn, not per run: providers restart tool ids every turn, and the
+        # client drops its id mapping at tool_end, so the second call_0 is a new
+        # card that still needs naming.
+        mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()

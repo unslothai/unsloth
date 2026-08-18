@@ -6336,6 +6336,7 @@ export function createOpenAIStreamAdapter(
                 const mcpStamps = (
                   chunk as { _mcp_provenance?: Record<string, unknown> }
                 )._mcp_provenance;
+                let stampedProvenance = false;
                 if (mcpStamps && typeof mcpStamps === "object") {
                   for (const [backendId, raw] of Object.entries(mcpStamps)) {
                     const partId = resolveToolPartId(backendId);
@@ -6351,11 +6352,15 @@ export function createOpenAIStreamAdapter(
                         parseToolProvenance(raw),
                       ),
                     };
+                    stampedProvenance = true;
                   }
                 }
                 if (
                   addedToolCall ||
                   replayStateChanged ||
+                  // A name completing on a later fragment adds no card and no
+                  // characters, so the pacing gate would hold the relabel back.
+                  stampedProvenance ||
                   canPublish(streamedChars)
                 ) {
                   yield {
