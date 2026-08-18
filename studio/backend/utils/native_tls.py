@@ -21,12 +21,19 @@ Studio user gains a package for a proxy they do not have; see the README there.
 Every consumer appends that directory to ``sys.path`` and imports the top-level
 name, which keeps a truststore the user installed themselves in front of ours.
 
-Defaults mirror install.sh: on for macOS and Windows, opt-in on Linux via
-``UNSLOTH_STUDIO_NATIVE_TLS=1`` (distro OpenSSL configurations vary), opt-out
-anywhere with ``0``. Explicit ``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` keep
-working, but become additive rather than exclusive, since truststore keeps the
-OS anchors alongside them; ``0`` is the way back to a bundle being the only
-trust root.
+On by default on macOS, Windows and Linux; opt in elsewhere with
+``UNSLOTH_STUDIO_NATIVE_TLS=1``, opt out anywhere with ``0``. Linux was opt-in while the "distro OpenSSL configurations vary" question was
+open; ``vendor/truststore/_openssl.py`` answers it with a per-distro candidate
+list, and the opt-in was unreachable anyway from a ``.deb``/AppImage launch that
+reads no shell profile. Injection is additive there: httpx and requests load
+certifi themselves and gain the OS anchors on top.
+
+``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` are *not* made additive by this on
+Linux. ``_configure_context`` resolves the OS store through
+``ssl.get_default_verify_paths()``, which honours those variables, so a bundle
+named in one of them becomes the only trust root -- certifi and the OS store
+included. On macOS/Windows they are additive, since those backends query the
+Keychain/CryptoAPI independently of OpenSSL's paths.
 
 Client side only: the injected class verifies a peer chain on every handshake,
 so an ``SSLContext`` built after activation cannot serve TLS. Studio serves
@@ -43,7 +50,13 @@ import sys
 from pathlib import Path
 
 _NATIVE_TLS_ENV = "UNSLOTH_STUDIO_NATIVE_TLS"
-_DEFAULT_ON_PLATFORMS = ("darwin", "win32")
+_DEFAULT_ON_PLATFORMS = ("darwin", "win32", "linux")
+# uv's rustls takes its own opt-in, and install.sh sets it on macOS only. Keep the
+# runtime mirror on the platforms that already had it: on a host whose OS store is
+# empty (a slim container without ca-certificates), exporting it moves uv off its
+# bundled webpki roots and turns a working install into a TLS error. Python pays no
+# such cost, which is why injection itself is not restricted this way.
+_UV_SYSTEM_CERTS_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
 
@@ -116,8 +129,9 @@ def activate_native_tls() -> bool:
     # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS,
     # older reads UV_NATIVE_TLS). Mirror one value across both: uv takes either as
     # an opt-in, so an opt-out in one spelling must carry to the other.
-    os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
-    os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
+    if sys.platform in _UV_SYSTEM_CERTS_PLATFORMS:
+        os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
+        os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
     # append, not insert(0): a user-installed truststore must win over the vendored copy.
     if _VENDOR_DIR not in sys.path:
         sys.path.append(_VENDOR_DIR)
@@ -126,7 +140,10 @@ def activate_native_tls() -> bool:
         truststore.inject_into_ssl()
     except Exception as exc:  # noqa: BLE001
         # Warn, no traceback: a silent certifi fallback is what this exists to prevent.
-        _logger.warning("native TLS unavailable (%s); TLS keeps certifi defaults", exc)
+        # Below 3.10 there is nothing to warn about: the vendored truststore evaluates
+        # PEP 604 unions at import, so the failure is the interpreter, not the host.
+        log = _logger.debug if sys.version_info < (3, 10) else _logger.warning
+        log("native TLS unavailable (%s); TLS keeps certifi defaults", exc)
         return False
     _activated = True
     return True

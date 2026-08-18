@@ -46,7 +46,7 @@ def _fake_truststore(monkeypatch):
 
 @pytest.mark.parametrize(
     ("platform", "expected"),
-    [("darwin", True), ("win32", True), ("linux", False)],
+    [("darwin", True), ("win32", True), ("linux", True), ("freebsd14", False)],
 )
 def test_platform_defaults(monkeypatch, platform, expected):
     monkeypatch.setattr(sys, "platform", platform)
@@ -62,7 +62,9 @@ def test_env_opt_out_wins_on_default_on_platform(monkeypatch, value):
 
 @pytest.mark.parametrize("value", ["1", "true", "YES"])
 def test_env_opt_in_wins_on_default_off_platform(monkeypatch, value):
-    monkeypatch.setattr(sys, "platform", "linux")
+    # Every platform Studio ships on is default-on, so the opt-in path needs a
+    # platform that is not, or it stops being covered at all.
+    monkeypatch.setattr(sys, "platform", "freebsd14")
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", value)
     assert native_tls.native_tls_enabled() is True
 
@@ -115,7 +117,7 @@ def test_activate_mirrors_legacy_uv_override(monkeypatch):
 def test_disabled_does_not_touch_uv_env(monkeypatch):
     import os
 
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "freebsd14")
     _fake_truststore(monkeypatch)
 
     assert native_tls.activate_native_tls() is False
@@ -123,8 +125,27 @@ def test_disabled_does_not_touch_uv_env(monkeypatch):
     assert "UV_NATIVE_TLS" not in os.environ
 
 
-def test_activate_noop_when_disabled(monkeypatch):
+def test_linux_injects_without_exporting_uv_env(monkeypatch):
+    """The one thing Linux deliberately does not inherit from the macOS default.
+
+    Python only gains anchors here: httpx and requests load certifi themselves. uv's
+    rustls does not -- UV_SYSTEM_CERTS moves it off its bundled webpki roots, so on a
+    host with no OS store it would break installs that work today. install.sh sets it
+    on macOS only; the runtime mirror stays there too.
+    """
+    import os
+
     monkeypatch.setattr(sys, "platform", "linux")
+    calls = _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert calls == ["inject"]
+    assert "UV_SYSTEM_CERTS" not in os.environ
+    assert "UV_NATIVE_TLS" not in os.environ
+
+
+def test_activate_noop_when_disabled(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "freebsd14")
     calls = _fake_truststore(monkeypatch)
 
     assert native_tls.activate_native_tls() is False

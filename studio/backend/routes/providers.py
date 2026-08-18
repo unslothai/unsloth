@@ -55,7 +55,7 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import credential_secrets, providers_db
-from utils.utils import safe_curated_detail, log_and_http_error
+from utils.utils import is_tls_verification_error, safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -560,6 +560,20 @@ async def test_provider(
             error = str(exc),
             exc_info = True,
         )
+        if is_tls_verification_error(exc):
+            # Constant text: the raw error names neither the cause nor a next step, and
+            # anything host-specific here would leak into the response. Never point at
+            # SSL_CERT_FILE -- it replaces the bundle rather than adding to it, so it
+            # trades this failure for a Hugging Face one.
+            return ProviderTestResult(
+                success = False,
+                message = (
+                    "Connection failed: the endpoint's TLS certificate could not be verified. "
+                    "If it uses a private or self-signed CA, install that CA in the operating "
+                    "system trust store and restart Unsloth."
+                ),
+                models_count = None,
+            )
         return ProviderTestResult(
             success = False,
             message = f"Connection failed: {safe_curated_detail(exc)}",
