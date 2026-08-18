@@ -85,41 +85,49 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         lambda _provider_id, envelope, **_kwargs: plaintext_by_envelope.get(envelope, ""),
     )
 
-    created = providers_route.create_provider_config(
-        ProviderCreate(
-            provider_type = "openai",
-            display_name = "OpenAI",
-            encrypted_api_key = "first",
-        ),
-        credential = ("alice", None),
-        via_api_key = False,
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai",
+                display_name = "OpenAI",
+                encrypted_api_key = "first",
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert created.has_api_key is True
     assert credential_secrets.get_provider_api_key(created.id) == "sk-first"
 
-    metadata_only = providers_route.update_provider_config(
-        created.id,
-        ProviderUpdate(display_name = "Renamed"),
-        credential = ("alice", None),
-        via_api_key = False,
+    metadata_only = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(display_name = "Renamed"),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert metadata_only.display_name == "Renamed"
     assert credential_secrets.get_provider_api_key(created.id) == "sk-first"
 
-    replaced = providers_route.update_provider_config(
-        created.id,
-        ProviderUpdate(encrypted_api_key = "second"),
-        credential = ("alice", None),
-        via_api_key = False,
+    replaced = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(encrypted_api_key = "second"),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert replaced.has_api_key is True
     assert credential_secrets.get_provider_api_key(created.id) == "sk-second"
 
-    cleared = providers_route.update_provider_config(
-        created.id,
-        ProviderUpdate(clear_api_key = True),
-        credential = ("alice", None),
-        via_api_key = False,
+    cleared = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(clear_api_key = True),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert cleared.has_api_key is False
     assert credential_secrets.get_provider_api_key(created.id) is None
@@ -142,42 +150,50 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
 
 def test_custom_max_output_tokens_create_update_and_clear():
-    created = providers_route.create_provider_config(
-        ProviderCreate(
-            provider_type = "custom",
-            display_name = "Custom",
-            base_url = "https://example.com/v1",
-            models = ["vendor/model"],
-            max_output_tokens = 131072,
-        ),
-        credential = ("alice", None),
-        via_api_key = False,
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "custom",
+                display_name = "Custom",
+                base_url = "https://example.com/v1",
+                models = ["vendor/model"],
+                max_output_tokens = 131072,
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert created.max_output_tokens == 131072
     assert providers_db.get_provider(created.id)["max_output_tokens"] == 131072
 
-    updated = providers_route.update_provider_config(
-        created.id,
-        ProviderUpdate(max_output_tokens = 65536),
-        credential = ("alice", None),
-        via_api_key = False,
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(max_output_tokens = 65536),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert updated.max_output_tokens == 65536
 
-    preserved = providers_route.update_provider_config(
-        created.id,
-        ProviderUpdate(display_name = "Renamed Custom"),
-        credential = ("alice", None),
-        via_api_key = False,
+    preserved = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(display_name = "Renamed Custom"),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert preserved.display_name == "Renamed Custom"
     assert preserved.max_output_tokens == 65536
 
-    cleared = providers_route.update_provider_config(
-        created.id,
-        ProviderUpdate(max_output_tokens = None),
-        credential = ("alice", None),
-        via_api_key = False,
+    cleared = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(max_output_tokens = None),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert cleared.max_output_tokens is None
 
@@ -209,15 +225,17 @@ def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override
     """The override replaces the frontend's 32,768-token fallback, which every type
     reaches for a model with no documented cap."""
     for provider_type in ("openai", "openrouter", "vllm", "ollama", "llama_cpp"):
-        created = providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = provider_type,
-                display_name = provider_type,
-                base_url = "https://example.com/v1",
-                max_output_tokens = 65536,
-            ),
-            credential = ("alice", None),
-            via_api_key = False,
+        created = asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = provider_type,
+                    display_name = provider_type,
+                    base_url = "https://example.com/v1",
+                    max_output_tokens = 65536,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
         )
         assert created.max_output_tokens == 65536
         assert providers_db.get_provider(created.id)["max_output_tokens"] == 65536
@@ -227,14 +245,16 @@ def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
     """Codex routing, model list and output cap are fixed, so a stored override would
     never be read."""
     with pytest.raises(HTTPException) as error:
-        providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT",
-                max_output_tokens = 65536,
-            ),
-            credential = ("alice", None),
-            via_api_key = False,
+        asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = "openai_codex",
+                    display_name = "ChatGPT",
+                    max_output_tokens = 65536,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
         )
     assert error.value.status_code == 400
     # on the detail, not the status: a Codex create with no models also 400s on auth
@@ -249,15 +269,17 @@ def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_ov
     along. Only a non-null value on a subscription is refused.
     """
     for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
-        created = providers_route.create_provider_config(
-            ProviderCreate(
-                provider_type = provider_type,
-                display_name = provider_type,
-                base_url = "https://example.com/v1",
-                max_output_tokens = None,
-            ),
-            credential = ("alice", None),
-            via_api_key = False,
+        created = asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = provider_type,
+                    display_name = provider_type,
+                    base_url = "https://example.com/v1",
+                    max_output_tokens = None,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
         )
         assert created.max_output_tokens is None
         assert providers_db.get_provider(created.id)["max_output_tokens"] is None
@@ -271,11 +293,13 @@ def test_known_provider_accepts_max_output_override_update():
         base_url = "https://api.openai.com/v1",
     )
 
-    updated = providers_route.update_provider_config(
-        "openai-1",
-        ProviderUpdate(max_output_tokens = 65536),
-        credential = ("alice", None),
-        via_api_key = False,
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            "openai-1",
+            ProviderUpdate(max_output_tokens = 65536),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert updated.max_output_tokens == 65536
     assert providers_db.get_provider("openai-1")["max_output_tokens"] == 65536
@@ -290,11 +314,13 @@ def test_known_provider_accepts_a_null_max_output_override_update():
         base_url = "https://api.openai.com/v1",
     )
 
-    updated = providers_route.update_provider_config(
-        "openai-1",
-        ProviderUpdate(display_name = "Renamed", max_output_tokens = None),
-        credential = ("alice", None),
-        via_api_key = False,
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            "openai-1",
+            ProviderUpdate(display_name = "Renamed", max_output_tokens = None),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
     )
     assert updated.display_name == "Renamed"
     assert updated.max_output_tokens is None
@@ -315,11 +341,13 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
 
     monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", invalid_envelope)
     with pytest.raises(HTTPException):
-        providers_route.update_provider_config(
-            "provider-1",
-            ProviderUpdate(display_name = "Must not persist", encrypted_api_key = "invalid"),
-            credential = ("alice", None),
-            via_api_key = False,
+        asyncio.run(
+            providers_route.update_provider_config(
+                "provider-1",
+                ProviderUpdate(display_name = "Must not persist", encrypted_api_key = "invalid"),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
         )
     assert providers_db.get_provider("provider-1")["display_name"] == "Original"
 
@@ -337,11 +365,13 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
 
     monkeypatch.setattr(credential_secrets, "save_provider_api_key", fail_replacement)
     with pytest.raises(RuntimeError, match = "credential write failure"):
-        providers_route.update_provider_config(
-            "provider-1",
-            ProviderUpdate(display_name = "Also rolled back", encrypted_api_key = "valid"),
-            credential = ("alice", None),
-            via_api_key = False,
+        asyncio.run(
+            providers_route.update_provider_config(
+                "provider-1",
+                ProviderUpdate(display_name = "Also rolled back", encrypted_api_key = "valid"),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
         )
 
     assert providers_db.get_provider("provider-1")["display_name"] == "Original"
@@ -401,10 +431,12 @@ def test_explicit_provider_key_preserves_the_edited_target():
 
 def test_provider_mutations_reject_api_key_authentication():
     with pytest.raises(HTTPException) as error:
-        providers_route.create_provider_config(
-            ProviderCreate(provider_type = "openai", display_name = "Forbidden"),
-            credential = ("alice", None),
-            via_api_key = True,
+        asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(provider_type = "openai", display_name = "Forbidden"),
+                credential = ("alice", None),
+                via_api_key = True,
+            )
         )
     assert error.value.status_code == 403
     assert providers_db.list_providers() == []
@@ -559,11 +591,13 @@ def test_legacy_migration_never_replaces_newer_credentials(monkeypatch):
         "resolve_provider_api_key_or_400",
         lambda *_args, **_kwargs: "sk-legacy",
     )
-    migrated_provider = providers_route.migrate_provider_api_key(
-        "provider-1",
-        ProviderCredentialMigration(encrypted_api_key = "encrypted-legacy"),
-        credential = credential,
-        via_api_key = False,
+    migrated_provider = asyncio.run(
+        providers_route.migrate_provider_api_key(
+            "provider-1",
+            ProviderCredentialMigration(encrypted_api_key = "encrypted-legacy"),
+            credential = credential,
+            via_api_key = False,
+        )
     )
     assert migrated_provider.has_api_key is True
     assert credential_secrets.get_provider_api_key("provider-1") == "sk-newer"

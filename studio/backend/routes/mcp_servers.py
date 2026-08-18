@@ -128,7 +128,8 @@ def _row_to_response(row: dict) -> McpServerResponse:
     )
 
 
-# Keep SQLite-backed handlers synchronous so FastAPI runs them in its threadpool.
+# Read handlers are sync so FastAPI runs them in its threadpool; the mutating ones stay
+# async so the event loop keeps serializing their read-then-write against each other.
 @router.get("/", response_model = list[McpServerResponse])
 def list_mcp_servers(
     current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
@@ -143,7 +144,7 @@ def list_mcp_servers(
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
-def create_mcp_server(
+async def create_mcp_server(
     payload: McpServerCreate,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
@@ -318,7 +319,7 @@ async def refresh_mcp_server_tools(
 
 
 @router.post("/import", response_model = McpServerImportResult)
-def import_mcp_servers(
+async def import_mcp_servers(
     payload: McpServerImportRequest,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
