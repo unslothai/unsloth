@@ -18,8 +18,14 @@ import { useEffect } from "react";
  * with the cursor on a message produces exactly 20 pointerover events against 20 distinct
  * targets, and costs 1380.9ms with 11 long tasks totalling 1000ms. The same gesture with the
  * cursor over the scroller gutter, where the element underneath never changes, costs 664.4ms with
- * no long tasks at all, which is the gesture's own 20-step floor. So each boundary crossing costs
- * about 90ms of main-thread work on a thread that size.
+ * no long tasks at all, which is the gesture's own 20-step floor. So the 20 boundary crossings
+ * cost 716.5ms of main-thread work between them on a thread that size, about 36ms each, and they
+ * land as 11 long tasks averaging about 91ms.
+ *
+ * Read those two figures as the different things they are. An earlier draft of this comment said
+ * "about 90ms" PER BOUNDARY CROSSING, which is wrong by a factor of two and a half: 90ms is
+ * 1000ms of long tasks over 11 long tasks, so it is milliseconds per long task. The per-crossing
+ * cost is the arm difference over the event count, (1380.9 - 664.4) / 20.
  *
  * THOSE NUMBERS DESCRIBE A CPU ABOUT 4x SLOWER THAN THE HOST THAT MEASURED THEM
  *
