@@ -402,9 +402,7 @@ class TestThirdReviewFindings:
         os.mkfifo(workdir / "pipe")
         done = []
         worker = threading.Thread(
-            target = lambda: done.append(
-                _edit(path = "pipe", old_string = "", new_string = "x\n")
-            ),
+            target = lambda: done.append(_edit(path = "pipe", old_string = "", new_string = "x\n")),
             daemon = True,
         )
         worker.start()
@@ -468,8 +466,7 @@ class TestThirdReviewFindings:
         import json
 
         arguments = json.loads(
-            '{"path": "%s", "old_string": "%s", "new_string": "\\ud83d launch"}'
-            % (path, old)
+            '{"path": "%s", "old_string": "%s", "new_string": "\\ud83d launch"}' % (path, old)
         )
         target = workdir / "app.py"
         target.write_text("x = 1\n# TODO\ny = 2\n")
