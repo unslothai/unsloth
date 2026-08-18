@@ -1663,13 +1663,15 @@ async def health_check(request: Request):
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return base
+    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
     try:
+        from auth.authentication import credentials_for_token
         from auth.authentication import get_current_subject as _gcs
-        from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        # resolved rather than built, so a scope covering this route answers it in full
+        creds = credentials_for_token(request, bearer)
+        if creds is None:
+            return base
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:

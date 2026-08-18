@@ -740,6 +740,35 @@ def test_a_switch_still_happens_when_keyless_is_off(monkeypatch):
 
 # --- routes that read the bearer for themselves ------------------------------
 
+
+def health_fields(headers = None):
+    """/api/health resolves its own bearer, so it needs asking about keyless separately."""
+    import main
+    return asyncio.run(main.health_check(request_for(path = "/api/health", headers = headers)))
+
+
+def test_health_answers_a_keyless_caller_in_full():
+    seed_user()
+    set_keyless_api_access("full")
+    for headers in (None, {"Authorization": "Bearer unsloth-local"}):
+        assert "version" in health_fields(headers), headers
+
+
+def test_health_holds_the_authed_fields_back_when_access_is_off():
+    """They fingerprint how the host is exposed, so nothing but a credential earns them."""
+    seed_user()
+    assert "version" not in health_fields()
+    assert "version" not in health_fields({"Authorization": "Bearer unsloth-local"})
+
+
+def test_health_is_outside_the_inference_scope():
+    seed_user()
+    set_keyless_api_access("inference")
+    assert "version" not in health_fields()
+
+
+# --- routes that read the bearer for themselves ------------------------------
+
 SANDBOX_PATH = "/api/inference/sandbox/abc"
 
 
