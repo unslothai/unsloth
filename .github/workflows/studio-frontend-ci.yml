@@ -56,8 +56,16 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
-    # Two browser smokes (~50s) plus the Chromium install now sit inside this.
-    timeout-minutes: 20
+    # Raised from 20. The heavy-thread smoke used to seed one page per size; giving each action
+    # its own page makes that six isolated pages plus the sequenced one, so at the two sizes this
+    # job runs it is 14 seeds rather than 2, and seeding is the most expensive thing that harness
+    # does. Seven browser smokes and the Chromium install sit inside this too, and they run AFTER
+    # the heavy one, so an overrun takes them with it.
+    #
+    # 40 is headroom, not a measurement. The org queue is cancelling queued runs by concurrency
+    # before they execute, so the real cost of the new step has not been observed on this runner
+    # yet. Tighten it from observed runs here, the way the startup profile was.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: studio/frontend

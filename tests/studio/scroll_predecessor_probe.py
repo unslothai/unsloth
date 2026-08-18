@@ -499,6 +499,36 @@ def fixture_drift(counts: list[int]) -> str | None:
     )
 
 
+def measured_fixture_mismatch(arms: dict) -> list[str]:
+    """Arms whose measured scroll did not run on the same thread the control's did.
+
+    Distinct from `fixture_drift`, which only looks WITHIN an arm and so cannot see this. Here the
+    comparison is across arms, against `nothing`, using the census taken after the predecessor.
+
+    The destructive arms are expected to appear: deleting a message is the predecessor, so they
+    scroll an N-1 thread by construction. The point is that this is now stated in the output
+    rather than hidden behind a pre-predecessor count that made every arm look identical. A
+    predecessor cost read off an arm listed here is part predecessor and part missing content.
+    """
+    control = arms.get("nothing", {}).get("scrolled_messages") or []
+    if not control:
+        return ["the `nothing` control published no measured message count, so nothing can be compared to it"]
+    expected = control[0]
+    out = []
+    for name, arm in arms.items():
+        if name == "nothing":
+            continue
+        counts = arm.get("scrolled_messages") or []
+        if not counts:
+            out.append(f"{name} published no measured message count")
+        elif any(c != expected for c in counts):
+            out.append(
+                f"{name} scrolled {counts} messages against the control's {expected}, so its "
+                f"number is not a like-for-like predecessor cost"
+            )
+    return out
+
+
 def main() -> int:
     results = {"label": LABEL, "chars": CHARS, "reps": REPS, "arms": {}}
     # PROBE_ARMS trims the list without reordering it, so a two-arm A/B against another branch
@@ -581,6 +611,7 @@ def main() -> int:
                         return { over: window.__pb.over, out: window.__pb.out,
                                  distinctTargets: window.__pb.targets.size };
                     }"""
+                    scrolled: list[int] = []
                     for i in range(REPS):
                         # The thread this repetition is about to be measured against, read before
                         # the predecessor runs. Printed and published, because the whole claim of
@@ -592,6 +623,17 @@ def main() -> int:
                         # whose whole meaning is "the pointer is elsewhere" must publish that
                         # verification rather than leave a reader to trust it.
                         applied = before(page)
+                        # The SECOND census, and the one the comparison is actually made from.
+                        # `fixture` above is read BEFORE the predecessor runs, so for the
+                        # destructive arms it records the thread as it was, not as it was
+                        # scrolled: `delete` and `delete_reopen_keystroke` remove a message, so
+                        # those arms scrolled an N-1 thread while `fixture` said N. fixture_drift
+                        # only compares repetitions WITHIN an arm, so it stayed green and the JSON
+                        # claimed these arms scrolled the same fixture as the `nothing` control
+                        # when their DOM and highlighted content differed. That is the confound
+                        # the whole file exists to rule out, so the count is now read again here,
+                        # after the predecessor and before the gesture.
+                        scrolled.append(page.evaluate("() => window.__heavyThread.messageCount()"))
                         # Armed from run_action's after_setup hook, NOT here. ACTION_SETUPS
                         # anchors the viewport to the bottom first, and after the predecessor or
                         # the previous repetition that is a full-height reposition, which fires
@@ -647,6 +689,9 @@ def main() -> int:
                     drift = fixture_drift(fixture)
                     if drift:
                         raise RuntimeError(drift)
+                    # Within-arm drift is fatal: it means the restore failed. Across-arm
+                    # difference is NOT fatal, because the destructive arms differ by design; it
+                    # is reported so the number is read with it rather than without it.
 
                     def med(k):
                         vals = [r[k] for r in rows if isinstance(r.get(k), (int, float))]
@@ -659,6 +704,10 @@ def main() -> int:
                         # fixture drifting under the arm, which makes its later repetitions
                         # incomparable with the `nothing` control.
                         "fixture_messages": fixture,
+                        # What the measured scroll actually ran on, read after the
+                        # predecessor. Compared against the control below; the two lists
+                        # differ by design on the destructive arms.
+                        "scrolled_messages": scrolled,
                         "gesture_ms": med("gestureMs"),
                         "gesture_ms_all": [r.get("gestureMs") for r in rows],
                         "frames_over_33": med("frames_over_33"),
@@ -685,8 +734,13 @@ def main() -> int:
                 finally:
                     ctx.close()
             browser.close()
+        # Computed before the file is written, so the JSON carries it and a reader who never
+        # sees this console output still gets it.
+        results["measured_fixture_mismatch"] = measured_fixture_mismatch(results["arms"])
         out = OUT / f"{LABEL}.json"
         out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
+        for line in results["measured_fixture_mismatch"]:
+            info(f"NOT COMPARABLE: {line}")
         info(f"wrote {out}")
         info("")
         info(

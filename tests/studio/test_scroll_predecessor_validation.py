@@ -391,3 +391,91 @@ def test_no_generated_runtime_database_is_tracked() -> None:
         f"generated runtime database files are tracked: {found}. They are written by test runs, "
         f"so committing one dirties every later checkout and risks capturing local data."
     )
+
+def test_the_measured_census_is_read_after_the_predecessor_runs() -> None:
+    """Read before `before(page)` and the destructive arms record a thread they did not scroll.
+
+    `delete` and `delete_reopen_keystroke` remove a message as their predecessor, so a census
+    taken first records N while the measured gesture runs on N-1. `fixture_drift` compares only
+    repetitions within one arm, so it stays green, and the published JSON then claims these arms
+    scrolled the same fixture as the `nothing` control.
+    """
+    body = SOURCE[SOURCE.index("for i in range(REPS):") : SOURCE.index("drift = fixture_drift(")]
+    pre = body.index("fixture.append(")
+    applied = body.index("applied = before(page)")
+    post = body.index("scrolled.append(")
+    assert pre < applied, "the pre-predecessor census must stay before the predecessor"
+    assert applied < post, (
+        "the measured census is read before the predecessor runs, so destructive arms record a "
+        "message count they did not scroll"
+    )
+
+
+def test_the_destructive_arms_are_reported_as_not_comparable() -> None:
+    """Driven against the real function, not asserted against its source.
+
+    A source-level check would pass on a function that computed the right thing and returned it
+    to nobody. This calls it with an arm that scrolled a shorter thread than the control and
+    requires it to say so, and with a matching arm and requires silence, so it cannot pass by
+    complaining about everything.
+    """
+    flagged = PROBE.measured_fixture_mismatch(
+        {
+            "nothing": {"scrolled_messages": [20, 20, 20]},
+            "delete": {"scrolled_messages": [19, 19, 19]},
+        }
+    )
+    assert any("delete" in f for f in flagged), (
+        f"an arm that scrolled 19 messages against the control's 20 was not reported: {flagged}"
+    )
+
+    # ACCEPTANCE CONTROL. Without this the rule above is satisfied by flagging every arm.
+    quiet = PROBE.measured_fixture_mismatch(
+        {
+            "nothing": {"scrolled_messages": [20, 20, 20]},
+            "menu": {"scrolled_messages": [20, 20, 20]},
+        }
+    )
+    assert quiet == [], f"an arm that scrolled the control's thread was reported anyway: {quiet}"
+
+
+def test_the_mismatch_is_published_in_the_json() -> None:
+    """Computing it and printing it is not enough: the JSON is what gets read later."""
+    assert 'results["measured_fixture_mismatch"] = measured_fixture_mismatch(' in SOURCE, (
+        "the mismatch is never stored on results, so it cannot reach the JSON"
+    )
+    write = SOURCE.index("out.write_text(json.dumps(results")
+    assert SOURCE.index('results["measured_fixture_mismatch"] =') < write, (
+        "the mismatch is computed after the JSON is written, so the file never carries it"
+    )
+
+def test_the_frontend_job_has_room_for_every_page_the_smoke_seeds() -> None:
+    """Seeds went from 2 to 14 in this job without the timeout moving.
+
+    The heavy-thread smoke seeds one page per action per size in the isolated table, plus one
+    sequenced page. CI does not set SMOKE_HEAVY_TABLES, so both tables run. Seeding is the most
+    expensive operation in that harness and six more browser smokes run after it, so an overrun
+    kills those too rather than just this one. The number below is headroom rather than an
+    observed cost, but it has to move when the work in the job grows.
+    """
+    import re
+
+    wf = (WORKDIR / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    build = wf[wf.index("  build:") : wf.index("  windows:")]
+    assert "SMOKE_HEAVY_TABLES" not in build, (
+        "CI now pins the table set, so re-derive the seed count below before trusting this guard"
+    )
+    sizes = re.search(r"SMOKE_HEAVY_CHARS: '([^']+)'", build)
+    assert sizes, "the heavy-thread step no longer pins its sizes"
+    n_sizes = len([c for c in sizes.group(1).split(",") if c.strip()])
+
+    actions = re.search(r"ACTION_SCRIPTS = \{(.*?)\n\}", HARNESS_SOURCE, re.S)
+    assert actions, "ACTION_SCRIPTS is no longer a literal dict, so the seed count cannot be read"
+    n_actions = len(re.findall(r'"(\w+)":', actions.group(1)))
+
+    seeds = (n_actions + 1) * n_sizes
+    timeout = int(re.search(r"timeout-minutes: (\d+)", build).group(1))
+    assert timeout >= 40, (
+        f"the build job seeds {seeds} pages ({n_actions} isolated + 1 sequenced, over {n_sizes} "
+        f"sizes) but allows only {timeout} minutes for that plus six later browser smokes"
+    )
