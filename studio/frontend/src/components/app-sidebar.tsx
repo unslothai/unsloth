@@ -70,6 +70,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
@@ -3173,6 +3174,11 @@ export function AppSidebar() {
                       onPointerEnter={openMorePreview}
                       onPointerLeave={closeMorePreviewSoon}
                     >
+                      {/* The only `modal={false}` menu on the branch that was left without the
+                          guard, and the one mounted on EVERY route: measured on the Images page,
+                          a `ParamSlider` was hittable underneath it with the menu open, so the
+                          dismissing press both closed it and moved a value. */}
+                      <MenuDismissGuard />
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.

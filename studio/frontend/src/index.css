@@ -3210,3 +3210,21 @@ html[data-chat-font] .aui-root {
 		);
 	}
 }
+
+/*
+ * The exception to the pointerdown shield.
+ *
+ * `useShieldedFromDismissingPress` in lib/menu-dismiss.ts takes Slider and Select out of the hit
+ * test while a non-modal menu is open, because both act on `pointerdown` and have therefore
+ * already committed by the time the click swallower runs. The shield is an inline style rather
+ * than a rule on purpose: a rule hung off a root attribute makes the engine walk the tree on
+ * every open and close, and on a 300K-character thread that alone took menu open+close from
+ * 66 ms to 104 ms with no slider on the page at all.
+ *
+ * One of those controls can live INSIDE the open menu, and that one is the user's to press. A
+ * static rule needs no dynamic attribute, so it costs nothing when a menu opens; `!important`
+ * because it is beating an inline style.
+ */
+[data-radix-popper-content-wrapper] .pointerdown-commits {
+	pointer-events: auto !important;
+}

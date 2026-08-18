@@ -4,6 +4,7 @@
 import { Slider as SliderPrimitive } from "radix-ui";
 import * as React from "react";
 
+import { useShieldedFromDismissingPress } from "@/lib/menu-dismiss";
 import { cn } from "@/lib/utils";
 
 const THUMB_SIZE_PX = 16;
@@ -62,9 +63,16 @@ function Slider({
         ? "0%"
         : `calc(${fillPercent}% + ${getThumbInBoundsOffset(THUMB_SIZE_PX, fillPercent)}px)`;
 
+  // Radix Slider COMMITS in onPointerDown -> onSlideStart -> updateValues -> onValueChange, so
+  // the press that dismisses a non-modal menu lands a value before any click swallow can run.
+  // Measured on this branch: Temperature 0.6 -> 1.7 with the composer menu open, persisted to
+  // chat_settings. Out of the hit test for exactly as long as such a menu is open.
+  const shielded = useShieldedFromDismissingPress();
+
   return (
     <SliderPrimitive.Root
       data-slot="slider"
+      style={shielded ? { pointerEvents: "none" } : undefined}
       defaultValue={defaultValue}
       value={value}
       min={min}
@@ -72,6 +80,9 @@ function Slider({
       orientation={orientation}
       onValueChange={handleValueChange}
       className={cn(
+        // Marks the control for the static popper exception in index.css. The shield itself is
+        // the inline style below, not a rule: see menu-dismiss.ts for what a rule costs.
+        "pointerdown-commits",
         "data-vertical:min-h-40 relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:w-auto data-vertical:flex-col",
         className,
       )}

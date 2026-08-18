@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 /**
  * Swallow the single click that dismisses an open non-modal Radix menu.
@@ -298,11 +298,106 @@ const arm = (touch: boolean): void => {
 };
 
 /**
+ * Whether any non-modal menu is open, published so the controls that COMMIT ON POINTERDOWN can
+ * take themselves out of the hit test for exactly that long.
+ *
+ * WHAT THIS IS FOR
+ *
+ * Swallowing the click is enough for every control that acts on `click`, which is all of them
+ * bar two: Radix Slider commits in `onPointerDown` -> `onSlideStart` -> `updateValues` ->
+ * `onValueChange`, and Radix Select opens in `onPointerDown`. Those two have already acted by
+ * the time `swallowClick` runs, so on desktop a single press on a visible `ParamSlider` with a
+ * composer, action-bar or project menu open both dismissed the menu and wrote a new inference
+ * value: measured, temperature 0.6 -> 1.7 on chromium and 0.6 -> 1.69 on firefox and webkit,
+ * reaching `chat_settings` in `studio.db` and surviving a reload. The merge base's modal shield
+ * absorbed the same press (`elementFromPoint` was `HTML`, body `pointer-events: none`), so this
+ * is a regression of this branch rather than something pre-existing.
+ *
+ * WHY A SUBSCRIPTION AND NOT A DOCUMENT-LEVEL FLAG
+ *
+ * The obvious shape is an attribute on `<html>` and a rule that reads it. It was built and
+ * measured and it is not free, because a descendant rule hung off the ROOT makes the engine walk
+ * the tree to find its matches whether or not any exist. Menu open+close on the heavy-thread
+ * page, chromium, medians of 3, 25K -> 300K characters, on a page with no slider on it at all:
+ *
+ *     branch as it stands                    67.3 -> 66.3 ms    recalc style   4.7 ->    4.1 ms
+ *     root attribute + `[data-slot=...]`     56.3 -> 187.5 ms   recalc style  10.6 ->  114.1 ms
+ *     root attribute + a class               67.0 -> 104.5 ms   recalc style   7.2 ->   33.0 ms
+ *     the modal shield this branch removed  782.6 -> 4113.3 ms  recalc style 625.6 -> 3691.2 ms
+ *
+ * The first of those is the `data-slot` trap: nearly every element in this tree carries one, so
+ * a rule ending in `[data-slot="slider"]` pulls all of them into the attribute's invalidation
+ * set. The class is much better and still walks. Publishing the flag instead means the only
+ * elements that do anything are the controls that subscribed, so the cost is the number of
+ * sliders on the page and nothing else.
+ *
+ * Cancelling the `pointerdown` was built and rejected earlier on this branch: it removes the
+ * press from React's delegation entirely, so the settings panel's own resize handle stopped
+ * dragging and another menu's trigger opened nothing. Taking only the committing controls out
+ * of the hit test leaves every other press exactly where it was, the resize handle included.
+ */
+
+/**
+ * Ref-counted: submenus mount a guard of their own inside the parent's content, so the last
+ * one to unmount owns the removal. A plain set/clear pair drops the shield while the parent
+ * menu is still open.
+ */
+let openGuards = 0;
+const menuOpenListeners = new Set<() => void>();
+
+const publishMenuOpen = (): void => {
+  for (const listener of menuOpenListeners) listener();
+};
+
+/** `useSyncExternalStore` pair, so a control re-renders exactly when this flips. */
+export function subscribeNonModalMenuOpen(listener: () => void): () => void {
+  menuOpenListeners.add(listener);
+  return () => {
+    menuOpenListeners.delete(listener);
+  };
+}
+
+export function isNonModalMenuOpen(): boolean {
+  return openGuards > 0;
+}
+
+/**
+ * Publish that a non-modal menu is open, and return the release. Exported so the ref-count can
+ * be tested without a renderer; mount `<MenuDismissGuard />` in application code.
+ */
+export function markNonModalMenuOpen(): () => void {
+  if (openGuards++ === 0) publishMenuOpen();
+  let released = false;
+  return () => {
+    // Idempotent: React can run an effect's cleanup twice under StrictMode, and a second
+    // decrement would drop the shield while another menu is still open.
+    if (released) return;
+    released = true;
+    openGuards = Math.max(0, openGuards - 1);
+    if (openGuards === 0) publishMenuOpen();
+  };
+}
+
+/**
+ * Call from a control that ACTS ON POINTERDOWN. Everything else is covered by the click
+ * swallower and must not use this: taking a control out of the hit test also takes away the
+ * drag that starts on it.
+ */
+export function useShieldedFromDismissingPress(): boolean {
+  return useSyncExternalStore(
+    subscribeNonModalMenuOpen,
+    isNonModalMenuOpen,
+    () => false,
+  );
+}
+
+/**
  * Call from inside an open non-modal menu's content. Mount it via `<MenuDismissGuard />`
  * rather than calling it directly, so the guard's lifetime is exactly the content's.
  */
 export function useDismissingClickGuard(): void {
   useEffect(() => {
+    const releaseMenuMark = markNonModalMenuOpen();
     const onPointerDown = (event: PointerEvent): void => {
       // A new gesture always supersedes the last one, so a press that never produced a click
       // cannot leave the swallower armed.
@@ -327,6 +422,7 @@ export function useDismissingClickGuard(): void {
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
+      releaseMenuMark();
     };
   }, []);
 }

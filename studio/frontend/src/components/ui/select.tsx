@@ -12,6 +12,7 @@ import {
   ChevronDownStandardIcon,
   ChevronUpStandardIcon,
 } from "@/lib/chevron-icons";
+import { useShieldedFromDismissingPress } from "@/lib/menu-dismiss";
 import { cn } from "@/lib/utils";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -73,13 +74,18 @@ function SelectTrigger({
   animateRadius?: boolean;
 }) {
   const isOpen = useContext(SelectOpenContext);
+  // Radix Select OPENS in onPointerDown, so the press that dismisses a non-modal menu opens
+  // this one on the way past. Same shield as Slider; see lib/menu-dismiss.ts.
+  const shielded = useShieldedFromDismissingPress();
 
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       data-size={size}
       style={
-        animateRadius
+        shielded
+          ? { pointerEvents: "none" }
+          : animateRadius
           ? {
               borderRadius: isOpen ? "12px" : undefined,
               transition: isOpen
@@ -89,6 +95,8 @@ function SelectTrigger({
           : undefined
       }
       className={cn(
+        // Marks the control for the static popper exception in index.css.
+        "pointerdown-commits",
         "border-border data-[placeholder]:text-muted-foreground bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 gap-1.5 rounded-full border px-3.5 py-2 text-sm transition-colors aria-invalid:ring-[3px] data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:flex *:data-[slot=select-value]:gap-1.5 [&_svg:not([class*='size-'])]:size-4 flex w-fit items-center justify-between whitespace-nowrap outline-none disabled:cursor-not-allowed disabled:opacity-50 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center [&_svg]:pointer-events-none [&_svg]:shrink-0 cursor-pointer",
         className,
       )}
