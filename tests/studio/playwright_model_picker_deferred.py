@@ -54,7 +54,7 @@ FAILURES: list[str] = []
 
 
 def info(message: str) -> None:
-    print(f"[picker-deferred] {message}", flush=True)
+    print(f"[picker-deferred] {message}", flush = True)
 
 
 def check(name: str, condition: bool, detail: str) -> None:
@@ -128,10 +128,10 @@ MENU_ITEMS_JS = """
 def open_on_device(page: Page) -> None:
     page.evaluate("(n) => window.__pickerScale.seed(n)", MODELS)
     page.evaluate("window.__pickerScale.setOpen(true)")
-    page.wait_for_function("() => window.__pickerScale.onDeviceTab() !== null", timeout=180_000)
+    page.wait_for_function("() => window.__pickerScale.onDeviceTab() !== null", timeout = 180_000)
     page.evaluate("() => window.__pickerScale.onDeviceTab().click()")
     page.wait_for_function(
-        "(n) => window.__pickerScale.counts().rows >= n", arg=MODELS, timeout=180_000
+        "(n) => window.__pickerScale.counts().rows >= n", arg = MODELS, timeout = 180_000
     )
 
 
@@ -413,15 +413,15 @@ def main() -> int:
         wait_for_smoke_page(
             f"{BASE}/smoke-model-picker-scale.html",
             "smoke-model-picker-scale-main.tsx",
-            proc=vite,
-            info=info,
+            proc = vite,
+            info = info,
         )
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=os.environ.get("SMOKE_HEADLESS", "1") == "1",
-                args=chromium_launch_args(),
+                headless = os.environ.get("SMOKE_HEADLESS", "1") == "1",
+                args = chromium_launch_args(),
             )
-            context = browser.new_context(viewport={"width": 1440, "height": 900})
+            context = browser.new_context(viewport = {"width": 1440, "height": 900})
             page = context.new_page()
             page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"[:200]))
             page.on(
@@ -430,13 +430,13 @@ def main() -> int:
                 if m.type == "error"
                 else None,
             )
-            page.goto(f"{BASE}/smoke-model-picker-scale.html", wait_until="domcontentloaded")
-            page.wait_for_function("() => Boolean(window.__pickerScale)", timeout=120_000)
+            page.goto(f"{BASE}/smoke-model-picker-scale.html", wait_until = "domcontentloaded")
+            page.wait_for_function("() => Boolean(window.__pickerScale)", timeout = 120_000)
             run(page)
             context.close()
 
             touch_context = browser.new_context(
-                viewport={"width": 1440, "height": 900}, has_touch=True, is_mobile=False
+                viewport = {"width": 1440, "height": 900}, has_touch = True, is_mobile = False
             )
             touch_page = touch_context.new_page()
             touch_page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"[:200]))
@@ -446,12 +446,8 @@ def main() -> int:
                 if m.type == "error"
                 else None,
             )
-            touch_page.goto(
-                f"{BASE}/smoke-model-picker-scale.html", wait_until="domcontentloaded"
-            )
-            touch_page.wait_for_function(
-                "() => Boolean(window.__pickerScale)", timeout=120_000
-            )
+            touch_page.goto(f"{BASE}/smoke-model-picker-scale.html", wait_until = "domcontentloaded")
+            touch_page.wait_for_function("() => Boolean(window.__pickerScale)", timeout = 120_000)
             run_touch(touch_page)
             touch_context.close()
             browser.close()

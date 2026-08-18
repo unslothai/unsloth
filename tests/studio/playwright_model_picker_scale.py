@@ -495,9 +495,7 @@ def run() -> dict:
             context.add_init_script(RECORDER_INIT)
             context.route(
                 re.compile(rf"^{re.escape(BASE)}/api/"),
-                lambda route: route.fulfill(
-                    status = 200, content_type = "application/json", body = "{}"
-                ),
+                lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
             )
             by_rate: dict = {}
             engine_rates = RATES if engine == "chromium" else [1.0]
