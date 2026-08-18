@@ -54,7 +54,12 @@ WORKFLOWS = REPO / ".github" / "workflows"
 
 # Jobs whose pip cache earns its place: they install a torch/transformers-class dependency
 # set, where the download genuinely dominates. Anything not listed here must not ask for it.
-PIP_CACHE_ALLOWED = {
+# The jobs that still use setup-python's built-in cache, and therefore still save on
+# every ref. Listed rather than skipped silently: the check above would otherwise report
+# a clean bill while nine jobs did exactly the thing it exists to prohibit, and a tenth
+# could join them unnoticed. The follow-up converts these to an explicit
+# restore + main-only save pair and empties this set.
+PIP_CACHE_JOBS_PENDING_CONVERSION = {
     ("consolidated-tests-ci.yml", "consolidated"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
@@ -94,6 +99,15 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     for name, jid, job in _jobs():
         for step in job.get("steps") or []:
             uses = str(step.get("uses", ""))
+            # setup-python's `cache:` is a save too, and an invisible one: the action
+            # registers a post-step (`post: dist/cache-save/index.js` in its own
+            # action.yml) that runs after the job on whatever ref it ran on, with no
+            # condition to gate it. A scan that only looked for `actions/cache` steps read
+            # as green while nine jobs wrote PR-scoped entries every run.
+            if "setup-python" in uses and (step.get("with") or {}).get("cache"):
+                if (name, jid) not in PIP_CACHE_JOBS_PENDING_CONVERSION:
+                    offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
+                continue
             if "actions/cache" not in uses:
                 continue
             saves = "/restore@" not in uses  # read-write and /save@ both write
@@ -115,7 +129,7 @@ def test_only_jobs_that_install_heavy_dependencies_ask_for_the_pip_cache():
         if "setup-python" in str(step.get("uses", ""))
         and (step.get("with") or {}).get("cache") == "pip"
     }
-    extra = asking - PIP_CACHE_ALLOWED
+    extra = asking - PIP_CACHE_JOBS_PENDING_CONVERSION
     assert not extra, (
         f"these jobs ask for the shared pip cache without installing anything that justifies "
         f"a ~700MB entry: {sorted(extra)}. The setup-python pip key is one per interpreter "
@@ -123,7 +137,7 @@ def test_only_jobs_that_install_heavy_dependencies_ask_for_the_pip_cache():
     )
 
 
-@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_ALLOWED))
+@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS_PENDING_CONVERSION))
 def test_every_allowed_pip_cache_scopes_its_key_to_what_it_installs(name, jid):
     """Without `cache-dependency-path`, setup-python hashes dependency files repo-wide.
 
@@ -149,13 +163,13 @@ def _workflows_by_name():
     return dict(_workflows())
 
 
-@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_ALLOWED))
+@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS_PENDING_CONVERSION))
 def test_every_allowed_pip_cache_job_still_exists_and_still_earns_it(name, jid):
     """The allowlist must not outlive the jobs, or it silently permits nothing."""
     doc = dict(_workflows()).get(name)
-    assert doc is not None, f"{name} no longer exists; drop it from PIP_CACHE_ALLOWED"
+    assert doc is not None, f"{name} no longer exists; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
     job = doc["jobs"].get(jid)
-    assert job is not None, f"{name} no longer has job {jid}; drop it from PIP_CACHE_ALLOWED"
+    assert job is not None, f"{name} no longer has job {jid}; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
     body = "\n".join(str(s.get("run", "")) for s in job.get("steps") or [])
     assert HEAVY.search(body), (
         f"{name}:{jid} is allowed a pip cache but no longer installs anything heavy; it "
@@ -281,4 +295,25 @@ def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
         "these cache-dependency-path entries are workspace-root-relative in a job that "
         "checks the repo out into a subdirectory, so setup-python matches no file and "
         "fails the job:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_no_setup_python_step_declares_a_cache_path_without_a_cache():
+    """Dead config reads as a caching decision that is not in force.
+
+    Removing `cache: 'pip'` and leaving `cache-dependency-path` behind is inert -- the
+    action only reads the path inside its `if (cache && isCacheFeatureAvailable())` branch
+    -- but the next reader sees a scoped cache key and believes the job is cached.
+    """
+    offenders = [
+        f"{name}:{jid}"
+        for name, jid, job in _jobs()
+        for step in job.get("steps") or []
+        if "setup-python" in str(step.get("uses", ""))
+        and (step.get("with") or {}).get("cache-dependency-path")
+        and not (step.get("with") or {}).get("cache")
+    ]
+    assert not offenders, (
+        f"these steps declare cache-dependency-path but no cache, so the key is never "
+        f"used and the config only misleads: {offenders}"
     )
