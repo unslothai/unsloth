@@ -244,6 +244,7 @@ def can_load_chat_during_training(
     vulkan_free_vram_gb: Optional[Dict[int, float]] = None,
     required_override_gb: Optional[float] = None,
     single_device_gpu: Optional[str] = None,
+    post_handoff_free_gpu_vram_gb: Optional[Dict[int, float]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
@@ -274,6 +275,39 @@ def can_load_chat_during_training(
             load_in_4bit = load_in_4bit,
             max_seq_length = max_seq_length or 2048,
         )
+
+        # A native-audio switch may carry one atomic post-handoff capacity
+        # snapshot. It already combines live free memory with only the outgoing
+        # Studio backend, so do not re-read and add those values here.
+        if (
+            not requested_gpu_ids
+            and not is_gguf
+            and post_handoff_free_gpu_vram_gb is not None
+        ):
+            required_gb = required_override_gb
+            if required_gb is None:
+                required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
+            free_vals = [
+                max(float(effective), 0.0)
+                for effective in post_handoff_free_gpu_vram_gb.values()
+            ]
+            usable_gb = max(free_vals) if free_vals else None
+            needed_gb = (
+                round(required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB, 3)
+                if required_gb is not None
+                else None
+            )
+            fits = (
+                required_gb is not None
+                and usable_gb is not None
+                and usable_gb >= needed_gb
+            )
+            return fits, {
+                "mode": "native_post_handoff",
+                "required_gb": required_gb,
+                "usable_gb": usable_gb,
+                "needed_gb": needed_gb,
+            }
 
         # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
         if not requested_gpu_ids and not is_gguf:

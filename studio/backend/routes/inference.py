@@ -7033,6 +7033,231 @@ class _LoadPlacement(NamedTuple):
     gpu_ids_are_vulkan_ordinals: bool
     diffusion_kind: Optional[bool]
     native_required_gb: Optional[float] = None
+    native_post_handoff_free_gb: Optional[dict[int, float]] = None
+
+
+class _NativeAudioAvailability(NamedTuple):
+    effective_free_gb: dict[int, float]
+    reclaimable_gpu_gb: dict[int, float]
+    owner_snapshot: tuple[Optional[str], int] = (None, 0)
+
+
+def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
+    """Free VRAM after the outgoing Studio owner is torn down, or ``None``.
+
+    Only memory attributable to a backend this CHAT handoff provably evicts is
+    credited.  Training, STT, export and unknown/external processes remain in
+    the live-used figure.  Missing attribution fails closed.
+    """
+    import utils.hardware as hardware
+    from core.inference.gpu_arbiter import CHAT, DIFFUSION, VIDEO, owner_snapshot
+
+    outgoing_owner = owner_snapshot()
+    owner = outgoing_owner[0]
+    live: dict[int, tuple[float, float]] = {}
+    reclaimable: dict[int, float] = {}
+
+    def _read_live() -> bool:
+        utilization = hardware.get_visible_gpu_utilization()
+        live.clear()
+        for device in utilization.get("devices", []):
+            try:
+                index = int(device["index"])
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            live[index] = (max(total - used, 0.0), total)
+        return bool(live)
+
+    def _merge_report(reported) -> bool:
+        if not isinstance(reported, dict):
+            return False
+        try:
+            parsed = {
+                int(index): max(float(value), 0.0)
+                for index, value in reported.items()
+                if int(index) in live
+            }
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if any(value >= 1_000_000 for value in parsed.values()):
+            return False
+        for index, value in parsed.items():
+            reclaimable[index] = reclaimable.get(index, 0.0) + value
+        return True
+
+    if owner == CHAT:
+        # Both standard inference and llama-server run in disposable processes.
+        # The Python worker returns its owner bytes with the system reading under
+        # one admission fence. llama-server contributes only its stable startup
+        # model-buffer floor, so changing KV/compute allocations remain charged.
+        backend = get_inference_backend()
+        worker_snapshot = None
+        if getattr(backend, "active_model_name", None):
+            worker_snapshot = getattr(
+                backend, "post_handoff_gpu_availability_gb", lambda: None
+            )()
+        if worker_snapshot is not None:
+            free_by_index, total_by_index, worker_reclaimable = worker_snapshot
+            live = {
+                int(index): (float(free), float(total_by_index[index]))
+                for index, free in free_by_index.items()
+                if index in total_by_index
+            }
+            if not live:
+                return None
+            _merge_report(worker_reclaimable)
+        elif not _read_live():
+            return None
+        llama_backend = get_llama_cpp_backend()
+        if getattr(llama_backend, "is_loaded", False):
+            _merge_report(
+                getattr(llama_backend, "reclaimable_gpu_memory_gb", lambda: None)()
+            )
+    elif owner in (DIFFUSION, VIDEO):
+        # Diffusers/Video normally live in this process; native sd.cpp instead
+        # contributes a child-process startup floor below. Hold the backend's
+        # generation barrier across both readings so a denoise cannot free
+        # activations between them and make the same bytes look free and
+        # reclaimable at once.
+        if owner == DIFFUSION:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+            media_backend = get_active_diffusion_engine()
+        else:
+            from core.inference.video import get_video_backend
+
+            media_backend = get_video_backend()
+        generate_lock = getattr(media_backend, "_generate_lock", None)
+        state_lock = getattr(media_backend, "_lock", None)
+        if generate_lock is None or state_lock is None:
+            return None
+        acquired = generate_lock.acquire(blocking = False)
+        if not acquired:
+            return None
+        try:
+            with state_lock:
+                # begin_load publishes this before its background worker can
+                # replace the old state. The arbiter owner/epoch does not change
+                # again at commit, so sampling the old state here would let a
+                # smaller same-owner replacement spend bytes it no longer owns.
+                if getattr(media_backend, "_loading", None) is not None:
+                    return None
+                if owner == DIFFUSION and (
+                    getattr(media_backend, "_pending_server", None) is not None
+                    or int(getattr(media_backend, "_stopping_servers", 0) or 0) > 0
+                ):
+                    return None
+                state = getattr(media_backend, "_state", None)
+                if state is None or not _read_live():
+                    return None
+                if hasattr(state, "server"):
+                    # Native sd.cpp owns VRAM in a child process. Only its
+                    # stable startup parameter floor is attributable; the
+                    # parent torch allocator says nothing about that process.
+                    server = getattr(state, "server", None)
+                    if (
+                        server is None
+                        or getattr(media_backend, "_cpu_backend_forced", False)
+                        or "--offload-to-cpu"
+                        in tuple(getattr(state, "offload_flags", ()) or ())
+                    ):
+                        return None
+                    reported = getattr(
+                        server, "reclaimable_params_vram_gb", lambda _gpu: None
+                    )(getattr(state, "physical_gpu_id", None))
+                    if not _merge_report(reported):
+                        return None
+                else:
+                    import torch
+
+                    device_type = hardware.get_device()
+                    if device_type == hardware.DeviceType.CUDA:
+                        device_module = torch.cuda
+                    elif device_type == hardware.DeviceType.XPU:
+                        device_module = torch.xpu
+                    else:
+                        return None
+                    memory_reserved = getattr(device_module, "memory_reserved", None)
+                    device_count = int(device_module.device_count())
+                    if not callable(memory_reserved) or device_count <= 0:
+                        return None
+                    physical_ids = hardware.get_parent_visible_gpu_ids()
+                    if not physical_ids:
+                        physical_ids = sorted(live) if len(live) == device_count else None
+                    if not physical_ids or len(physical_ids) < device_count:
+                        return None
+                    reclaimable = {
+                        int(physical_ids[ordinal]): max(
+                            int(memory_reserved(ordinal)) / float(1024**3), 0.0
+                        )
+                        for ordinal in range(device_count)
+                    }
+        except Exception as exc:
+            logger.warning("Could not attribute resident media GPU memory: %s", exc)
+            return None
+        finally:
+            generate_lock.release()
+    else:
+        return None
+
+    # A concurrent media handoff or unload invalidates which process/state this
+    # load will tear down.  Fail closed rather than crediting a former owner.
+    if owner_snapshot() != outgoing_owner:
+        return None
+    if not any(value > 0 for value in reclaimable.values()):
+        return None
+    return _NativeAudioAvailability(
+        effective_free_gb = {
+            index: min(free + reclaimable.get(index, 0.0), total)
+            for index, (free, total) in live.items()
+        },
+        reclaimable_gpu_gb = reclaimable,
+        owner_snapshot = outgoing_owner,
+    )
+
+
+def _wait_for_native_audio_gpu_free_gb(
+    gpu_index: int,
+    required_gb: float,
+    *,
+    max_wait: float = 5.0,
+    interval: float = 0.25,
+) -> bool:
+    """Wait until an evicted media backend's credited VRAM is actually free."""
+    from utils.hardware import get_visible_gpu_utilization
+
+    deadline = time.monotonic() + max(max_wait, 0.0)
+    while True:
+        try:
+            devices = get_visible_gpu_utilization().get("devices", [])
+            for device in devices:
+                if int(device["index"]) != int(gpu_index):
+                    continue
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+                if max(total - used, 0.0) >= required_gb:
+                    return True
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
+
+
+async def _unload_llama_before_standard_load(llama_backend) -> None:
+    """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
+    if not llama_backend.is_loaded:
+        return
+    logger.info("Unloading GGUF model before loading Unsloth model")
+    kill_started = time.monotonic()
+    await asyncio.to_thread(llama_backend.unload_model)
+    await asyncio.to_thread(
+        llama_backend._wait_for_vram_settle,
+        since_kill = kill_started,
+    )
 
 
 def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
@@ -7244,7 +7469,9 @@ async def _preflight_native_audio_placement(
             detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
         )
 
-    def _resolve() -> tuple[Optional[List[int]], Optional[float]]:
+    def _resolve() -> tuple[
+        Optional[List[int]], Optional[float], Optional[dict[int, float]]
+    ]:
         import utils.hardware as hardware
         from core.inference.native_audio import (
             native_audio_kv_memory_gb,
@@ -7264,7 +7491,7 @@ async def _preflight_native_audio_placement(
                 raise ValueError(
                     "Native audio GPU selection is only supported on CUDA and Intel XPU."
                 )
-            return None, None
+            return None, None, None
 
         model_source = getattr(config, "path", None) or config.identifier
         targets = list(
@@ -7309,25 +7536,49 @@ async def _preflight_native_audio_placement(
             max_seq_length = request.max_seq_length,
             required_override_gb = required_gb,
         )
+        post_handoff_free_gb = None
+        automatic = not placement.requested_gpu_ids
+        if required_gb is None:
+            required_gb = metadata.get("required_gb")
+        availability = _native_audio_post_handoff_free_gb() if automatic else None
         if metadata.get("selection_mode") == "fallback_all":
-            raise ValueError(
-                "No single GPU has enough free memory for this native audio model. "
-                "Select a GPU with enough free memory and try again."
+            candidates = set(resolved or ())
+            fitting = sorted(
+                (
+                    (index, free_gb)
+                    for index, free_gb in (
+                        availability.effective_free_gb if availability is not None else {}
+                    ).items()
+                    if index in candidates and required_gb is not None and free_gb >= required_gb
+                ),
+                key = lambda item: (-item[1], item[0]),
             )
+            if not fitting:
+                raise ValueError(
+                    "No single GPU has enough free memory for this native audio model. "
+                    "Select a GPU with enough free memory and try again."
+                )
+            resolved = [fitting[0][0]]
+        if automatic and availability is not None and resolved and len(resolved) == 1:
+            selected_gpu = resolved[0]
+            reported = availability.effective_free_gb.get(selected_gpu)
+            if reported is not None:
+                post_handoff_free_gb = {selected_gpu: reported}
         if resolved and len(resolved) > 1:
             raise ValueError(
                 "Native audio models currently require one GPU. Select a single GPU; "
                 "multi-GPU sharding is not supported yet."
             )
-        return resolved, required_gb
+        return resolved, required_gb, post_handoff_free_gb
 
     try:
-        resolved, required_gb = await asyncio.to_thread(_resolve)
+        resolved, required_gb, post_handoff_free_gb = await asyncio.to_thread(_resolve)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return placement._replace(
         resolved_gpu_ids = resolved,
         native_required_gb = required_gb,
+        native_post_handoff_free_gb = post_handoff_free_gb,
     )
 
 
@@ -7442,7 +7693,7 @@ def _guard_chat_load_against_training(
     placement: _LoadPlacement,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-) -> None:
+) -> Optional[dict[str, Any]]:
     """Protect active training from automatically placed chat-model loads.
 
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -7638,6 +7889,22 @@ def _guard_chat_load_against_training(
             # GGUF while training runs.
             vulkan_free_vram_gb = {}
 
+    native_post_handoff_free_gb = placement.native_post_handoff_free_gb
+    if native_post_handoff_free_gb is not None:
+        # Revalidate as one atomic post-handoff capacity snapshot.  Combining a
+        # fresh free-memory read with older owner bytes can count a reset cache
+        # twice, so the training policy consumes this value directly.
+        availability = _native_audio_post_handoff_free_gb()
+        selected = list(placement.resolved_gpu_ids or ())
+        if availability is None or len(selected) != 1:
+            native_post_handoff_free_gb = None
+        else:
+            selected_gpu = selected[0]
+            effective_free = availability.effective_free_gb.get(selected_gpu)
+            native_post_handoff_free_gb = (
+                {selected_gpu: effective_free} if effective_free is not None else None
+            )
+
     ok, info = can_load_chat_during_training(
         model_name = getattr(config, "identifier", request.model_path),
         hf_token = request.hf_token,
@@ -7649,9 +7916,10 @@ def _guard_chat_load_against_training(
         vulkan_free_vram_gb = vulkan_free_vram_gb,
         required_override_gb = required_override_gb,
         single_device_gpu = diffusion_gpu,
+        post_handoff_free_gpu_vram_gb = native_post_handoff_free_gb,
     )
     if ok:
-        return
+        return info
 
     usable = info.get("usable_gb")
     needed = info.get("needed_gb")
@@ -8444,7 +8712,14 @@ async def _load_model_impl(
 
         # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the load is known viable; the
         # already-loaded fast paths below re-assert CHAT themselves. Deferred past validation so a doomed load evicts nothing.
-        from core.inference.gpu_arbiter import acquire_for, current_owner, release, CHAT
+        from core.inference.gpu_arbiter import (
+            acquire_for,
+            current_owner,
+            release,
+            CHAT,
+            DIFFUSION,
+            VIDEO,
+        )
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = await asyncio.to_thread(get_inference_backend)
@@ -8717,7 +8992,7 @@ async def _load_model_impl(
 
         # Apply the training coexistence policy before the unload step below
         # frees the resident model. Off-loop and guarded: the guard does sync HF work.
-        await asyncio.to_thread(
+        initial_training_info = await asyncio.to_thread(
             _offline_guarded,
             (model_identifier, config.identifier, getattr(config, "base_model", None)),
             _guard_chat_load_against_training,
@@ -8791,12 +9066,114 @@ async def _load_model_impl(
                 logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
                 raise HTTPException(status_code = 400, detail = _host_offload)
 
-        if chat_load_needs_gpu:
-            await asyncio.to_thread(
-                acquire_for,
-                CHAT,
-                lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+        expected_native_owner = None
+        post_media_handoff_gpu = None
+        post_media_handoff_needed_gb = None
+        post_chat_handoff_expected_free_gb = None
+        if chat_load_needs_gpu and placement.native_post_handoff_free_gb is not None:
+            # This model was admitted using memory owned by the outgoing backend.
+            # Refresh immediately before the arbiter handoff, then bind the
+            # snapshot's epoch to the eviction so a same-owner media replacement
+            # cannot swap in a smaller model between check and teardown.
+            final_availability = await asyncio.to_thread(
+                _native_audio_post_handoff_free_gb
             )
+            selected = list(placement.resolved_gpu_ids or ())
+            required = placement.native_required_gb
+            if final_availability is None or len(selected) != 1 or required is None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "GPU residency changed while preparing this audio model. Retry the load.",
+                )
+            selected_gpu = selected[0]
+            effective_free = final_availability.effective_free_gb.get(selected_gpu)
+            if effective_free is None or effective_free < required:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "GPU residency changed and the audio model no longer fits. Retry the load.",
+                )
+            final_placement = placement._replace(
+                native_post_handoff_free_gb = {selected_gpu: effective_free}
+            )
+            final_training_info = await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                _guard_chat_load_against_training,
+                config,
+                request,
+                load_in_4bit = effective_load_in_4bit,
+                placement = final_placement,
+                llama_extra_args = extra_llama_args,
+                n_parallel = _n_parallel,
+            )
+            expected_native_owner = final_availability.owner_snapshot
+            post_handoff_needed_gb = float(
+                (final_training_info or initial_training_info or {}).get("needed_gb")
+                or required
+            )
+            if expected_native_owner[0] in (DIFFUSION, VIDEO):
+                post_media_handoff_gpu = selected_gpu
+                post_media_handoff_needed_gb = post_handoff_needed_gb
+            elif expected_native_owner[0] == CHAT:
+                post_chat_handoff_expected_free_gb = {
+                    selected_gpu: post_handoff_needed_gb
+                }
+
+        if chat_load_needs_gpu:
+            try:
+                handoff_kwargs = (
+                    {"expected_current": expected_native_owner}
+                    if expected_native_owner is not None
+                    else {}
+                )
+                await asyncio.to_thread(
+                    acquire_for,
+                    CHAT,
+                    lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+                    **handoff_kwargs,
+                )
+            except Exception as exc:
+                from core.inference.gpu_arbiter import OwnerChangedError
+
+                if isinstance(exc, OwnerChangedError):
+                    raise HTTPException(status_code = 409, detail = str(exc)) from exc
+                raise
+            if post_media_handoff_gpu is not None and post_media_handoff_needed_gb is not None:
+                settled = await asyncio.to_thread(
+                    _wait_for_native_audio_gpu_free_gb,
+                    post_media_handoff_gpu,
+                    post_media_handoff_needed_gb,
+                )
+                if not settled:
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "GPU memory was not released after the resident media model "
+                            "was stopped. Retry the audio-model load."
+                        ),
+                    )
+                # The outgoing media allocation is gone now. Re-run the training
+                # policy against live free VRAM only, so a concurrent training
+                # change cannot hide behind the earlier reclaimable snapshot.
+                live_placement = placement._replace(
+                    # Automatic selection is already fixed at this point. Bind
+                    # the live-only training recheck to that exact card, or a
+                    # roomy second GPU could approve a load that still targets
+                    # a now-constrained first GPU.
+                    requested_gpu_ids = [post_media_handoff_gpu],
+                    native_post_handoff_free_gb = None,
+                )
+                await asyncio.to_thread(
+                    _offline_guarded,
+                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                    _guard_chat_load_against_training,
+                    config,
+                    request,
+                    load_in_4bit = effective_load_in_4bit,
+                    placement = live_placement,
+                    llama_extra_args = extra_llama_args,
+                    n_parallel = _n_parallel,
+                )
         else:
             # The marker still goes up (the download-manager handshake reads it, and it keeps this load cancellable). A stale CHAT claim is dropped AFTER the load.
             gguf_load_stack.enter_context(chat_load_in_flight())
@@ -8973,9 +9350,7 @@ async def _load_model_impl(
             )
         # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
         # 160s and on-loop would block _tunnel_safe_json's own padding.
-        if llama_backend.is_loaded:
-            logger.info("Unloading GGUF model before loading Unsloth model")
-            await asyncio.to_thread(llama_backend.unload_model)
+        await _unload_llama_before_standard_load(llama_backend)
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -9012,6 +9387,7 @@ async def _load_model_impl(
             mlx_kv_bits = request.mlx_kv_bits,
             chat_template_override = request.chat_template_override,
             load_cancel_event = load_cancel_event,
+            post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
         )
 
         if not success:

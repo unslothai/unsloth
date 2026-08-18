@@ -11,6 +11,7 @@ and leaves non-training/external loads untouched."""
 import asyncio
 import importlib.util
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -374,6 +375,73 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
+    def test_post_handoff_live_recheck_stays_on_selected_gpu(self):
+        # GPU 1 has room, but the already-fixed native placement targets GPU 0.
+        # The live-only recheck must not auto-switch its safety verdict to GPU 1.
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.get_visible_gpu_utilization",
+                return_value = {"devices": _devices((0, 24, 12), (1, 48, 8))},
+            ),
+            patch("utils.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
+        ):
+            ok, info = tv.can_load_chat_during_training(
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = False,
+                max_seq_length = 2048,
+                requested_gpu_ids = [0],
+                required_override_gb = 16.0,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(info["usable_gb"], 12.0)
+        auto_mock.assert_not_called()
+
+    def test_native_post_handoff_excludes_training_allocation(self):
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.get_visible_gpu_utilization",
+                return_value = {"devices": _devices((0, 24, 22))},
+            ),
+        ):
+            ok, info = tv.can_load_chat_during_training(
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = False,
+                max_seq_length = 2048,
+                requested_gpu_ids = None,
+                required_override_gb = 16.0,
+                post_handoff_free_gpu_vram_gb = {0: 12.0},
+            )
+        self.assertFalse(ok)
+        self.assertEqual(info["mode"], "native_post_handoff")
+        self.assertEqual(info["usable_gb"], 12.0)
+
+    def test_native_post_handoff_credits_resident_when_training_still_fits(self):
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.get_visible_gpu_utilization",
+                return_value = {"devices": _devices((0, 48, 40))},
+            ),
+        ):
+            ok, info = tv.can_load_chat_during_training(
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = False,
+                max_seq_length = 2048,
+                requested_gpu_ids = None,
+                required_override_gb = 16.0,
+                post_handoff_free_gpu_vram_gb = {0: 28.0},
+            )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "native_post_handoff")
+        self.assertEqual(info["usable_gb"], 28.0)
+
     def test_non_accelerator_allows(self):
         with patch("utils.hardware.get_device", return_value = DeviceType.MLX):
             ok, info = tv.can_load_chat_during_training(
@@ -461,6 +529,11 @@ def _stub_guard_deps(
 ):
     """Inject the guard's two lazy imports (get_training_backend, can_load_chat_
     during_training); `captured` records the can_load kwargs for assertions."""
+    # patch.dict snapshots sys.modules and removes modules imported inside the
+    # context. Keep the process-wide lifecycle gate in that snapshot so a later
+    # route test cannot import a second lock through the package's stale attribute.
+    import core.inference.llama_keepwarm  # noqa: F401
+
     core_training = types.ModuleType("core.training")
     if isinstance(training_active, Exception):
 
@@ -505,6 +578,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         tensor_parallel = False,
         gpu_layers = -1,
         native_required_gb = None,
+        native_post_handoff_free_gb = None,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         placement = self.route._LoadPlacement(
@@ -513,6 +587,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             gpu_ids_are_vulkan_ordinals,
             self.route._classify_diffusion_gguf(config) if config.is_gguf else False,
             native_required_gb,
+            native_post_handoff_free_gb,
         )
         with _stub_guard_deps(
             training_active = training_active, decision = decision, captured = captured
@@ -920,6 +995,8 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         requested = None,
         rocm = False,
         metadata = None,
+        post_handoff_free_gb = None,
+        reclaimable_gpu_gb = None,
     ):
         config = SimpleNamespace(
             identifier = "test/native-audio",
@@ -945,6 +1022,18 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
                 "utils.hardware.prepare_gpu_selection",
                 return_value = (selected, metadata or {}),
             ),
+            patch.object(
+                self.route,
+                "_native_audio_post_handoff_free_gb",
+                return_value = (
+                    self.route._NativeAudioAvailability(
+                        post_handoff_free_gb,
+                        reclaimable_gpu_gb or {},
+                    )
+                    if post_handoff_free_gb is not None
+                    else None
+                ),
+            ),
             patch.object(_hw_module, "IS_ROCM", rocm),
         ):
             return asyncio.run(
@@ -967,6 +1056,494 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
                     "usable_gb": 16.0,
                 },
             )
+
+    def test_automatic_fallback_credits_only_reported_resident_memory(self):
+        placement = self._run(
+            "higgs_tts2",
+            DeviceType.CUDA,
+            selected = [0],
+            metadata = {
+                "selection_mode": "fallback_all",
+                "required_gb": 20.0,
+                "usable_gb": 6.0,
+            },
+            post_handoff_free_gb = {0: 24.0},
+            reclaimable_gpu_gb = {0: 18.0},
+        )
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+        self.assertEqual(placement.native_required_gb, 20.0)
+        self.assertEqual(placement.native_post_handoff_free_gb, {0: 24.0})
+
+    def test_automatic_fit_carries_credit_for_stricter_training_guard(self):
+        placement = self._run(
+            "higgs_tts2",
+            DeviceType.CUDA,
+            selected = [0],
+            metadata = {
+                "selection_mode": "auto",
+                "required_gb": 16.0,
+                "usable_gb": 17.0,
+            },
+            post_handoff_free_gb = {0: 28.0},
+            reclaimable_gpu_gb = {0: 11.0},
+        )
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+        self.assertEqual(placement.native_post_handoff_free_gb, {0: 28.0})
+
+    def test_post_handoff_snapshot_does_not_credit_nonresident_usage(self):
+        utilization = {
+            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 22.0}]
+        }
+        backend = SimpleNamespace(
+            active_model_name = "resident",
+            post_handoff_gpu_availability_gb = lambda: (
+                {0: 2.0},
+                {0: 24.0},
+                {0: 10.0},
+            ),
+        )
+        with (
+            patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+            patch(
+                "core.inference.gpu_arbiter.owner_snapshot",
+                return_value = ("chat", 1),
+            ),
+            patch.object(
+                self.route,
+                "get_llama_cpp_backend",
+                return_value = SimpleNamespace(is_loaded = False),
+            ),
+            patch.object(self.route, "get_inference_backend", return_value = backend),
+        ):
+            effective = self.route._native_audio_post_handoff_free_gb()
+
+        # 2 GiB is live and 10 GiB belongs to the outgoing worker.  The other
+        # 12 GiB remains charged to training/STT/external allocations.
+        self.assertEqual(effective.effective_free_gb, {0: 12.0})
+        self.assertEqual(effective.reclaimable_gpu_gb, {0: 10.0})
+
+    def test_post_handoff_snapshot_credits_live_llama_process(self):
+        utilization = {
+            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
+        }
+        llama = SimpleNamespace(
+            is_loaded = True,
+            reclaimable_gpu_memory_gb = lambda: {0: 18.0},
+        )
+        backend = SimpleNamespace(active_model_name = None)
+        with (
+            patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+            patch(
+                "core.inference.gpu_arbiter.owner_snapshot",
+                return_value = ("chat", 1),
+            ),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
+            patch.object(self.route, "get_inference_backend", return_value = backend),
+        ):
+            effective = self.route._native_audio_post_handoff_free_gb()
+
+        self.assertEqual(effective.effective_free_gb, {0: 22.0})
+        self.assertEqual(effective.reclaimable_gpu_gb, {0: 18.0})
+
+    def test_post_handoff_snapshot_rejects_same_owner_replacement(self):
+        utilization = {
+            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
+        }
+        backend = SimpleNamespace(active_model_name = None)
+        llama = SimpleNamespace(
+            is_loaded = True,
+            reclaimable_gpu_memory_gb = lambda: {0: 18.0},
+        )
+        with (
+            patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+            patch(
+                "core.inference.gpu_arbiter.owner_snapshot",
+                side_effect = [("chat", 7), ("chat", 8)],
+            ),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
+            patch.object(self.route, "get_inference_backend", return_value = backend),
+        ):
+            effective = self.route._native_audio_post_handoff_free_gb()
+
+        self.assertIsNone(effective)
+
+    def test_arbiter_epoch_refuses_changed_owner_before_eviction(self):
+        from core.inference import gpu_arbiter
+
+        evicted = []
+        with (
+            patch.object(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION),
+            patch.object(gpu_arbiter, "_owner_epoch", 8),
+            patch.dict(
+                gpu_arbiter._EVICTORS,
+                {gpu_arbiter.DIFFUSION: lambda: evicted.append(True)},
+            ),
+        ):
+            with self.assertRaises(gpu_arbiter.OwnerChangedError):
+                gpu_arbiter.acquire_for(
+                    gpu_arbiter.CHAT,
+                    expected_current = (gpu_arbiter.DIFFUSION, 7),
+                )
+
+        self.assertEqual(evicted, [])
+
+    def test_llama_unload_settles_before_standard_worker_load(self):
+        events = []
+
+        class _Llama:
+            is_loaded = True
+
+            def unload_model(self):
+                events.append("unload")
+
+            def _wait_for_vram_settle(self, *, since_kill):
+                self.assertGreater(since_kill, 0.0)
+                events.append("settle")
+
+        llama = _Llama()
+        llama.assertGreater = self.assertGreater
+        asyncio.run(self.route._unload_llama_before_standard_load(llama))
+        events.append("load")
+
+        self.assertEqual(events, ["unload", "settle", "load"])
+
+    def test_worker_reports_only_its_allocator_owned_memory(self):
+        from core.inference import worker
+
+        torch_stub = types.ModuleType("torch")
+        torch_stub.cuda = SimpleNamespace(
+            memory_reserved = lambda ordinal: (ordinal + 1) * 4 * 1024**3
+        )
+        with patch.dict(sys.modules, {"torch": torch_stub}):
+            reported = worker._worker_reclaimable_gpu_gb(
+                {"device_backend": "cuda", "resolved_gpu_ids": [3, 7]}
+            )
+
+        self.assertEqual(reported, {"3": 4.0, "7": 8.0})
+
+    def test_orchestrator_queries_worker_memory_live_each_time(self):
+        from core.inference.orchestrator import InferenceOrchestrator
+
+        process = SimpleNamespace(is_alive = lambda: True)
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        backend._proc = process
+        backend.active_model_name = "resident"
+        backend._dispatcher_lifecycle_lock = threading.Lock()
+        backend._exclusive_tts_pending = False
+        backend._exclusive_vram_probe_pending = False
+        backend._gen_lock = threading.Lock()
+        backend._active_cancel_lock = threading.Lock()
+        backend._active_cancel_events = []
+        backend._send_order_lock = threading.Lock()
+        backend._wait_dispatcher_idle = lambda: True
+        backend._send_cmd = lambda _cmd: None
+        responses = iter(
+            [
+                {"reclaimable_gpu_gb": {"0": 10.0}},
+                {"reclaimable_gpu_gb": {"0": 4.0}},
+            ]
+        )
+        backend._wait_response = lambda *_args, **_kwargs: next(responses)
+
+        utilization = [
+            {"devices": _devices((0, 24, 20))},
+            {"devices": _devices((0, 24, 14))},
+        ]
+        with patch(
+            "utils.hardware.get_visible_gpu_utilization",
+            side_effect = utilization,
+        ):
+            first = backend.post_handoff_gpu_availability_gb()
+            second = backend.post_handoff_gpu_availability_gb()
+
+        self.assertEqual(first, ({0: 4.0}, {0: 24.0}, {0: 10.0}))
+        self.assertEqual(second, ({0: 10.0}, {0: 24.0}, {0: 4.0}))
+
+    def test_worker_memory_probe_drops_stale_timed_out_reply(self):
+        from core.inference.orchestrator import InferenceOrchestrator
+
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        replies = iter(
+            [
+                {
+                    "type": "gpu_memory",
+                    "request_id": "timed-out",
+                    "reclaimable_gpu_gb": {"0": 10.0},
+                },
+                {
+                    "type": "gpu_memory",
+                    "request_id": "current",
+                    "reclaimable_gpu_gb": {"0": 4.0},
+                },
+            ]
+        )
+        backend._read_resp = lambda **_kwargs: next(replies)
+        backend._ensure_subprocess_alive = lambda: True
+
+        response = backend._wait_response(
+            "gpu_memory",
+            timeout = 1.0,
+            expected_request_id = "current",
+        )
+
+        self.assertEqual(response["reclaimable_gpu_gb"], {"0": 4.0})
+
+    def test_llama_uses_stable_startup_model_buffer_floor(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        process = SimpleNamespace(poll = lambda: None)
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = process
+        backend._child_gpu_physical_ids = (3,)
+        backend._stdout_lines = [
+            "load_tensors: CUDA0 model buffer size = 8192.0 MiB",
+            "llama_kv_cache: CUDA0 KV buffer size = 2048.0 MiB",
+        ]
+
+        self.assertEqual(backend.reclaimable_gpu_memory_gb(), {3: 8.0})
+
+    def test_llama_maps_narrowed_child_ordinal_to_physical_gpu(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        process = SimpleNamespace(poll = lambda: None)
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = process
+        backend._gpu_ids = None
+        backend._child_gpu_physical_ids = (1,)
+        backend._stdout_lines = [
+            "load_tensors: CUDA0 model buffer size = 10240.0 MiB",
+        ]
+
+        self.assertEqual(backend.reclaimable_gpu_memory_gb(), {1: 10.0})
+
+    def test_sd_server_captures_stable_resident_parameter_floor(self):
+        from collections import deque
+        from core.inference.sd_cpp_server import SdCppServer
+
+        server = SdCppServer.__new__(SdCppServer)
+        server._tail = deque(maxlen = 200)
+        server._step_listener = None
+        server._resident_params_vram_gb = None
+        process = SimpleNamespace(
+            stdout = [
+                "total params memory size = 18432.00MB "
+                "(VRAM 18432.00MB, RAM 0.00MB)\n"
+            ],
+            poll = lambda: None,
+        )
+        server._process = process
+
+        server._drain_stdout(process)
+
+        self.assertEqual(server.reclaimable_params_vram_gb(1), {1: 18.0})
+
+    def test_sd_server_physical_mapping_requires_resolved_resident_pin(self):
+        from core.inference import sd_cpp_backend
+
+        with (
+            patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [3, 7]),
+            patch.object(
+                sd_cpp_backend,
+                "sd_cpp_device_name_for_ordinal",
+                return_value = "CUDA1",
+            ),
+        ):
+            self.assertEqual(
+                sd_cpp_backend._resolved_server_physical_gpu_id(
+                    "sd-server",
+                    "cuda",
+                    1,
+                    ("--backend", "diffusion=CUDA1,te=CUDA1,vae=CUDA1"),
+                ),
+                7,
+            )
+            self.assertIsNone(
+                sd_cpp_backend._resolved_server_physical_gpu_id(
+                    "sd-server",
+                    "cuda",
+                    1,
+                    (
+                        "--offload-to-cpu",
+                        "--backend",
+                        "diffusion=CUDA1,te=CPU,vae=CPU",
+                    ),
+                )
+            )
+
+    def test_post_handoff_snapshot_credits_media_allocator_only(self):
+        utilization = {
+            "devices": [{"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
+        }
+        torch_stub = types.ModuleType("torch")
+        torch_stub.cuda = SimpleNamespace(
+            device_count = lambda: 1,
+            memory_reserved = lambda _ordinal: 18 * 1024**3,
+        )
+        for owner in ("diffusion", "video"):
+            media_backend = SimpleNamespace(
+                _generate_lock = threading.Lock(),
+                _lock = threading.Lock(),
+                _state = object(),
+            )
+            getter = (
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine"
+                if owner == "diffusion"
+                else "core.inference.video.get_video_backend"
+            )
+            with (
+                self.subTest(owner = owner),
+                patch.dict(sys.modules, {"torch": torch_stub}),
+                patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+                patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+                patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [1]),
+                patch(
+                    "core.inference.gpu_arbiter.owner_snapshot",
+                    return_value = (owner, 1),
+                ),
+                patch(getter, return_value = media_backend),
+            ):
+                effective = self.route._native_audio_post_handoff_free_gb()
+
+            self.assertEqual(effective.effective_free_gb, {1: 24.0})
+            self.assertEqual(effective.reclaimable_gpu_gb, {1: 18.0})
+
+    def test_post_handoff_snapshot_refuses_inflight_media_replacement(self):
+        utilization = {
+            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
+        }
+        for owner in ("diffusion", "video"):
+            media_backend = SimpleNamespace(
+                _generate_lock = threading.Lock(),
+                _lock = threading.Lock(),
+                _state = object(),
+                _loading = object(),
+            )
+            getter = (
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine"
+                if owner == "diffusion"
+                else "core.inference.video.get_video_backend"
+            )
+            with (
+                self.subTest(owner = owner),
+                patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+                patch(
+                    "core.inference.gpu_arbiter.owner_snapshot",
+                    return_value = (owner, 4),
+                ),
+                patch(getter, return_value = media_backend),
+            ):
+                self.assertIsNone(self.route._native_audio_post_handoff_free_gb())
+
+    def test_post_handoff_snapshot_credits_resident_sd_server_floor(self):
+        utilization = {
+            "devices": [{"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
+        }
+        server = SimpleNamespace(reclaimable_params_vram_gb = lambda _gpu: {1: 18.0})
+        state = SimpleNamespace(
+            server = server,
+            physical_gpu_id = 1,
+            offload_flags = (),
+        )
+        media_backend = SimpleNamespace(
+            _generate_lock = threading.Lock(),
+            _lock = threading.Lock(),
+            _state = state,
+            _loading = None,
+            _pending_server = None,
+            _stopping_servers = 0,
+            _cpu_backend_forced = False,
+        )
+        with (
+            patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+            patch(
+                "core.inference.gpu_arbiter.owner_snapshot",
+                return_value = ("diffusion", 8),
+            ),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = media_backend,
+            ),
+        ):
+            effective = self.route._native_audio_post_handoff_free_gb()
+
+        self.assertEqual(effective.effective_free_gb, {1: 22.0})
+        self.assertEqual(effective.reclaimable_gpu_gb, {1: 18.0})
+
+    def test_media_handoff_waits_for_credited_bytes_to_become_free(self):
+        samples = iter(
+            [
+                {
+                    "devices": [
+                        {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}
+                    ]
+                },
+                {
+                    "devices": [
+                        {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0}
+                    ]
+                },
+            ]
+        )
+        with (
+            patch(
+                "utils.hardware.get_visible_gpu_utilization",
+                side_effect = lambda: next(samples),
+            ),
+            patch.object(self.route.time, "sleep", return_value = None),
+        ):
+            self.assertTrue(
+                self.route._wait_for_native_audio_gpu_free_gb(
+                    0,
+                    16.0,
+                    max_wait = 1.0,
+                )
+            )
+
+    def test_media_handoff_refuses_when_credited_bytes_never_settle(self):
+        utilization = {
+            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
+        }
+        with patch(
+            "utils.hardware.get_visible_gpu_utilization", return_value = utilization
+        ):
+            self.assertFalse(
+                self.route._wait_for_native_audio_gpu_free_gb(
+                    0,
+                    16.0,
+                    max_wait = 0.0,
+                )
+            )
+
+    def test_media_eviction_settles_before_any_chat_backend_allocation(self):
+        import inspect
+
+        source = inspect.getsource(self.route._load_model_impl)
+        handoff = source.index("await asyncio.to_thread(\n                    acquire_for,")
+        settle = source.index("settled = await asyncio.to_thread(", handoff)
+        live_guard = source.index("live_placement = placement._replace(", settle)
+        gguf_load = source.index("# ── GGUF path", live_guard)
+
+        self.assertLess(handoff, settle)
+        self.assertLess(settle, live_guard)
+        self.assertLess(live_guard, gguf_load)
+
+    def test_chat_handoff_threads_aggregate_native_budget_to_worker_settle(self):
+        import inspect
+
+        source = inspect.getsource(self.route._load_model_impl)
+        aggregate = source.index("post_handoff_needed_gb = float(")
+        chat_target = source.index(
+            "post_chat_handoff_expected_free_gb = {", aggregate
+        )
+        worker_load = source.index("backend.load_model,", chat_target)
+        threaded = source.index(
+            "post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,",
+            worker_load,
+        )
+
+        self.assertLess(aggregate, chat_target)
+        self.assertLess(chat_target, worker_load)
+        self.assertLess(worker_load, threaded)
 
     def test_explicit_single_gpu_is_not_treated_as_no_fit_fallback(self):
         placement = self._run(

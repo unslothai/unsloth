@@ -340,6 +340,28 @@ def _run_security_gates(
     return True
 
 
+def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
+    """Live allocator-owned VRAM this disposable worker will release."""
+    resolved_gpu_ids = config.get("resolved_gpu_ids")
+    device_backend = str(config.get("device_backend") or "")
+    if not resolved_gpu_ids or device_backend not in ("cuda", "xpu"):
+        return None
+    try:
+        import torch
+
+        device_module = torch.cuda if device_backend == "cuda" else torch.xpu
+        memory_reserved = getattr(device_module, "memory_reserved", None)
+        if not callable(memory_reserved):
+            return None
+        return {
+            str(int(physical_id)): int(memory_reserved(local_ordinal)) / float(1024**3)
+            for local_ordinal, physical_id in enumerate(resolved_gpu_ids)
+        }
+    except Exception as exc:
+        logger.warning("Could not report worker-owned GPU memory: %s", exc)
+        return None
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -1109,6 +1131,15 @@ def run_inference_process(
                     cancel_event.set()
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack"})
+                elif cmd_type == "gpu_memory":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "gpu_memory",
+                            "request_id": cmd.get("request_id"),
+                            "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
+                        },
+                    )
                 elif cmd_type == "status":
                     _send_response(
                         resp_queue,
@@ -1374,6 +1405,16 @@ def run_inference_process(
                     resp_queue,
                     {
                         "type": "reset_ack",
+                    },
+                )
+
+            elif cmd_type == "gpu_memory":
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gpu_memory",
+                        "request_id": cmd.get("request_id"),
+                        "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
                     },
                 )
 
