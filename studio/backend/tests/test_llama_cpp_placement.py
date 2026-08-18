@@ -95,6 +95,9 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *args, **kwargs: None
+    # Off by default: the host-RAM preflight is not what most of these cells are about,
+    # and it now runs on every launch. The tests that ARE about it restore the real one.
+    backend._launch_host_shortfall_message = lambda *args, **kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: vulkan
@@ -1531,3 +1534,486 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     assert "--model-draft" not in cmd
     assert backend.spec_fallback_reason == "drafter_no_vram"
     assert cmd[cmd.index("-c") + 1] == "8192"
+
+
+def _restore_host_guard(backend):
+    """Put the real preflight back on a harness that stubs it off by default."""
+    backend._launch_host_shortfall_message = LlamaCppBackend._launch_host_shortfall_message.__get__(
+        backend
+    )
+    return backend
+
+
+def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **kwargs):
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, free_mib, 6141)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    # no subset holds the model, so --fit on owns placement and spills to host ram
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    for name, value in kwargs.items():
+        setattr(backend, name, value)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+    )
+    return backend, gguf
+
+
+def test_weights_larger_than_vram_plus_ram_are_refused(tmp_path, monkeypatch):
+    """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
+    about 8.5 GB of host RAM, which a 10 GB host cannot hold. Unrefused, the mmap'd
+    remainder thrashes until the OS kills Studio and the desktop session."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_the_same_load_on_a_large_ram_host_still_launches(tmp_path, monkeypatch):
+    """Deliberate CPU offload stays supported; only a shortfall refuses."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
+    )
+
+    assert "--fit" in _launch(backend, gguf)["cmd"]
+
+
+def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
+    """Same model and same host RAM as the refusal above, but a card big enough to hold
+    it. The VRAM credit is what separates the two, so the charge is the shortfall and
+    not the model size."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+
+    assert "--fit" in _launch(backend, gguf)["cmd"]
+
+
+def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch):
+    """A Vulkan iGPU's free memory and MemAvailable describe the same unified pool.
+    Crediting both let a 20 GiB model through on a 14 GiB host (12 + 14 on paper)."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 12 * 1024, 0)],
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    backend._select_gpus = lambda *args, **kwargs: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_unknown_available_ram_abstains(tmp_path, monkeypatch):
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = None, monkeypatch = monkeypatch
+    )
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+def test_an_unsized_model_abstains(tmp_path, monkeypatch):
+    """A GGUF whose size cannot be read leaves nothing to price."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    backend._get_gguf_size_bytes = lambda _path: (_ for _ in ()).throw(OSError("stat failed"))
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["-ngl", "0"],
+        ["--mlock"],
+        ["--no-mmap"],
+        ["--device", "none"],
+        ["--no-kv-offload"],
+    ],
+    ids = ["zero-layers", "mlock", "no-mmap", "cpu-device", "cpu-kv"],
+)
+def test_placement_flags_never_turn_an_allowed_load_into_a_refusal(
+    tmp_path, monkeypatch, extra_args
+):
+    """The floor prices weights against the whole free pool and models no placement.
+    Each of these moves bytes onto the host or narrows the reachable VRAM, so a guard
+    that read them could only refuse MORE. Leaving them out cannot invent a refusal,
+    which is the property that keeps this check free of llama.cpp placement modelling."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
+    )
+
+    assert _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+
+def test_the_guard_reads_the_model_the_child_opens(tmp_path, monkeypatch):
+    """Sizing comes from the argv path, not from the planner's earlier pick, so a
+    fallback that rewrote -m is priced as launched."""
+    seen = []
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    real_size = backend._get_gguf_size_bytes
+
+    def _record(path):
+        seen.append(str(path))
+        return real_size(path)
+
+    backend._get_gguf_size_bytes = _record
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+    assert str(gguf) in seen
+
+
+def test_the_env_escape_loads_a_variant_the_guard_refuses(tmp_path, monkeypatch):
+    """The picker still offers a variant `classifyGgufFit` calls "oom", and no load
+    field carries a force, so an unconditional refusal leaves that selection with no way
+    through. UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains, and the refusal names it."""
+    refused, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    with pytest.raises(RuntimeError, match = "UNSLOTH_ALLOW_HOST_OFFLOAD=1"):
+        _launch(refused, gguf)
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    allowed, gguf2 = _offload_backend(
+        allowed_dir, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    assert "--fit" in _launch(allowed, gguf2)["cmd"]
+
+
+def _load_intent(gguf, **kwargs):
+    return GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **kwargs)
+
+
+def _host_totals(
+    monkeypatch,
+    backend,
+    *,
+    vram_total_mib,
+    ram_total_mib,
+    vram_free_mib = None,
+):
+    """Pin what the preflight reads: the physical ceilings, and a free VRAM figure low
+    enough to stand for a card the resident model has not given back yet."""
+    free = vram_total_mib if vram_free_mib is None else vram_free_mib
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, free, vram_total_mib)]
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: ram_total_mib)
+    )
+
+
+def test_the_route_precheck_refuses_before_the_gpu_handoff(tmp_path, monkeypatch):
+    """`acquire_for(CHAT)` evicts a resident Images/Video pipeline and the reload
+    confirmation cancels the running generations, both before the launch guard can read the
+    finished argv. The route asks first, so a pick no reclaim can rescue, 100 GB against a
+    24 GB card and 10 GB of RAM, tears nothing down."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 100, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
+
+    verdict = backend.host_offload_refusal_for_intent(_load_intent(gguf))
+    assert verdict is not None and "does not fit in GPU memory" in verdict
+
+
+def test_the_route_precheck_credits_capacity_the_handoff_is_about_to_reclaim(tmp_path, monkeypatch):
+    """The resident llama-server, Unsloth model and media pipeline hold VRAM, and through a
+    host KV cache, CPU-offloaded weights and locked mappings they hold RAM too. The route and
+    load_model reclaim all of it after this runs, so pricing against either free reading
+    refused a switch the reclaimed machine handles outright and made switching on a busy
+    machine impossible. Both physical totals are what bound the launch.
+
+    30 GB against a 24 GB card leaves about 6.7 GB on the host, which 3 GB of MemAvailable
+    cannot hold and the machine's own 64 GB holds easily."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 30, free_mib = 900, avail_mib = 3_000, monkeypatch = monkeypatch
+    )
+    # 900 MiB free VRAM and 3 GB MemAvailable: the model being replaced still holds both
+    _host_totals(
+        monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 64_000, vram_free_mib = 900
+    )
+
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+
+
+def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeypatch):
+    """Abstains on an undownloaded repo, a device whose total the probe cannot read, an
+    unreadable pool, unreadable total RAM and the escape. So it can never reject a load the
+    launch would allow."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 100, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
+
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
+    # an igpu or a MIG/vGPU line reports total 0, so the ceiling is unknown
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 0)]
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = None)
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+
+
+def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
+    """The arch gate empties the pool AND masks every card, so the child is knowingly
+    on the CPU rather than unprobed. Abstaining there ran an oversized GGUF wholly from
+    RAM with no preflight, which is the OOM this guard exists to stop."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    assert (
+        backend._launch_host_shortfall_message(
+            ["llama-server", "-m", str(gguf)], [], child_has_no_gpu = True
+        )
+        is not None
+    )
+
+
+def test_a_masked_off_child_takes_no_vram_credit(tmp_path, monkeypatch):
+    """Manual zero-offload masks the child off cards the planner still probed. Crediting
+    that VRAM would offset a spill the child cannot place there."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 20_000, 24_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    assert backend._launch_host_shortfall_message(argv, [(0, 20_000)]) is None
+    assert (
+        backend._launch_host_shortfall_message(argv, [(0, 20_000)], child_has_no_gpu = True)
+        is not None
+    )
+
+
+def test_an_unprobed_pool_still_abstains_when_nothing_was_masked(tmp_path, monkeypatch):
+    """The abstention survives: only the launch saying it masked the child off every
+    card prices the full model, not a pool that merely came back empty."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    assert backend._launch_host_shortfall_message(["llama-server", "-m", str(gguf)], []) is None
+
+
+def test_a_gpu_less_host_running_a_cpu_only_build_still_abstains(tmp_path, monkeypatch):
+    """Studio installs a CPU-only prebuilt on a host with no GPU, so that host probes an
+    empty pool AND reports a build with no GPU backend. Letting the build state alone
+    charge the whole model refused a 7.5 GB GGUF with 9 GB of RAM, which loads on main,
+    and blamed GPU memory on a machine that has no GPU."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(7.5 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    backend._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: True
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9_216)
+    )
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+def test_a_gpu_less_host_still_abstains_on_a_zero_offload_request(tmp_path, monkeypatch):
+    """gpu_layers=0 is a request, not a probe result, so it says nothing about whether a
+    card exists. Charging the whole model on an empty pool repeats the CPU-only-build
+    refusal on the same GPU-less host."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(7.5 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9_216)
+    )
+
+    assert _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)["cmd"]
+
+
+def test_a_cpu_only_build_takes_no_vram_credit(tmp_path, monkeypatch):
+    """A split-library build shipping no cuda/hip/vulkan backend cannot offload, so the
+    cards the hardware probe still enumerates are unreachable. Crediting their VRAM
+    priced a spill the child never takes: it places the whole model in RAM."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 16_384, 24_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_192)
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    # 20 GiB - 16 GiB free VRAM reads as a 4 GiB spill an 8 GiB host can hold.
+    assert backend._launch_host_shortfall_message(argv, [(0, 16_384)]) is None
+    assert (
+        backend._launch_host_shortfall_message(argv, [(0, 16_384)], child_has_no_gpu = True)
+        is not None
+    )
+
+
+def test_an_unknown_backend_layout_keeps_its_vram_credit(tmp_path):
+    """Fails open on a static or unrecognised layout, so a custom GPU build is never
+    mistaken for a CPU-only one and refused."""
+    assert LlamaCppBackend._binary_ships_no_gpu_backend("/nonexistent/llama-server") is False
+
+
+def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch):
+    """End to end: the call site must pass the CPU-only-build state, not just accept it.
+    A 20 GiB model over 16 GiB of free VRAM reads as a 4 GiB spill an 8 GiB host holds,
+    so only the build state separates the launch from the refusal."""
+    gpu_build, gguf = _offload_backend(
+        tmp_path, gguf_gb = 20, free_mib = 16_384, avail_mib = 8_192, monkeypatch = monkeypatch
+    )
+    gpu_build._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: False
+    assert _launch(gpu_build, gguf)["cmd"]
+
+    cpu_dir = tmp_path / "cpu"
+    cpu_dir.mkdir()
+    cpu_build, gguf2 = _offload_backend(
+        cpu_dir,
+        gguf_gb = 20,
+        free_mib = 16_384,
+        avail_mib = 8_192,
+        monkeypatch = monkeypatch,
+    )
+    cpu_build._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: True
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(cpu_build, gguf2)
+
+
+def test_an_empty_gpu_pool_abstains(tmp_path, monkeypatch):
+    """_get_gpu_memory swallows a failed probe as [], so an empty pool cannot be told
+    from a host with no GPU. Pricing the full model there would refuse a load that
+    llama-server's own enumeration can still place on a card."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+@pytest.mark.parametrize("accelerator", ["sycl", "opencl", "musa", "cann"])
+def test_a_non_cuda_accelerator_build_keeps_its_vram_credit(tmp_path, accelerator):
+    """_installed_ggml_backends reads only cuda, hip and vulkan, so a split-library build
+    shipping any other supported ggml accelerator looked CPU-only. Pricing its weights
+    against RAM refused loads the accelerator can hold."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+    (lib_dir / f"{prefix}ggml-{accelerator}.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is False
+        # the narrower pre-existing helper is what misreads this layout
+        assert LlamaCppBackend._backend_lacks_gpu_lib(str(binary)) is True
+
+
+def test_a_genuinely_cpu_only_layout_is_still_recognised(tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+    (lib_dir / f"{prefix}ggml-base.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is True
+
+
+def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
+    """--rpc places layers on remote devices this cannot size, so refusing on local
+    capacity alone would block a viable distributed launch."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    assert backend._launch_host_shortfall_message(argv, [(0, 4877)]) is not None
+    assert (
+        backend._launch_host_shortfall_message([*argv, "--rpc", "10.0.0.2:50052"], [(0, 4877)])
+        is None
+    )
+    assert backend._launch_host_shortfall_message([*argv, "--rpc", "  "], [(0, 4877)]) is not None
+
+
+def test_an_rpc_env_launch_abstains(tmp_path, monkeypatch):
+    """llama.cpp reads LLAMA_ARG_RPC as the environment twin of --rpc, so the guard has
+    to see the child environment or it refuses the same distributed launch."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    assert backend._launch_host_shortfall_message(argv, [(0, 4877)], {}) is not None
+    assert (
+        backend._launch_host_shortfall_message(
+            argv, [(0, 4877)], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}
+        )
+        is None
+    )
+
+
+def test_an_external_backend_path_keeps_its_vram_credit(tmp_path):
+    """GGML_BACKEND_PATH points the child at plugins outside the lib directory, so a
+    cpu-only layout beside the binary is no longer proof the child cannot offload."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary), {}) is True
+        assert (
+            LlamaCppBackend._binary_ships_no_gpu_backend(
+                str(binary), {"GGML_BACKEND_PATH": "/opt/ggml-cuda"}
+            )
+            is False
+        )
+
+
+def test_a_paravirtual_metal_launch_prices_the_whole_model(tmp_path, monkeypatch):
+    """A virtualised Apple GPU rewrites the command to --gpu-layers 0 --device none, and
+    Metal hosts leave the pool empty, so the abstention swallowed a placement the launch
+    already knew was CPU-only."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+    argv = ["llama-server", "-m", str(gguf), "--gpu-layers", "0", "--device", "none"]
+
+    assert backend._launch_host_shortfall_message(argv, [], {}) is None
+    assert backend._launch_host_shortfall_message(argv, [], {}, child_has_no_gpu = True) is not None
