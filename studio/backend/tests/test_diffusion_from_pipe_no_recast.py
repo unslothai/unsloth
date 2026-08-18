@@ -20,9 +20,7 @@ from pathlib import Path
 
 import pytest
 
-SOURCE = (
-    Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-).read_text()
+SOURCE = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text()
 
 
 def _extract_static_method(name: str):
@@ -32,7 +30,9 @@ def _extract_static_method(name: str):
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             node.decorator_list = []
-            code = compile(ast.Module(body=[node], type_ignores=[]), filename=str(SOURCE), mode="exec")
+            code = compile(
+                ast.Module(body = [node], type_ignores = []), filename = str(SOURCE), mode = "exec"
+            )
             namespace: dict = {"__builtins__": __builtins__}
             exec(code, namespace)
             return namespace[name]
@@ -105,13 +105,19 @@ def test_unrelated_errors_still_raise():
         def from_pipe(cls, base_pipe, **kwargs):
             raise ValueError("some other failure")
 
-    with pytest.raises(ValueError, match="some other failure"):
+    with pytest.raises(ValueError, match = "some other failure"):
         _from_pipe_no_recast(_Base(), _Broken)
 
 
 def test_extra_components_forward_to_the_fallback():
     class _StrictSig:
-        def __init__(self, transformer=None, vae=None, text_encoder=None, controlnet=None):
+        def __init__(
+            self,
+            transformer = None,
+            vae = None,
+            text_encoder = None,
+            controlnet = None,
+        ):
             self.transformer = transformer
             self.vae = vae
             self.controlnet = controlnet
@@ -122,6 +128,6 @@ def test_extra_components_forward_to_the_fallback():
 
     base = _Base()
     cn = object()
-    pipe = _from_pipe_no_recast(base, _StrictSig, controlnet=cn)
+    pipe = _from_pipe_no_recast(base, _StrictSig, controlnet = cn)
     assert pipe.controlnet is cn
     assert pipe.transformer is base.components["transformer"]

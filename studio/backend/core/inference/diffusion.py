@@ -4934,7 +4934,7 @@ class DiffusionBackend:
         components manually: same resident modules, same references, no cast.
         """
         try:
-            return pipe_cls.from_pipe(pipe, torch_dtype=None, **extra)
+            return pipe_cls.from_pipe(pipe, torch_dtype = None, **extra)
         except (TypeError, ValueError) as exc:
             if "quantized" not in str(exc).lower():
                 raise
@@ -4951,9 +4951,7 @@ class DiffusionBackend:
         }
         # **kwargs-style pipelines accept everything from_pipe would pass;
         # strict signatures get exactly the names they declare.
-        has_var_kw = any(
-            param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
-        )
+        has_var_kw = any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values())
         if not has_var_kw:
             components = {k: v for k, v in components.items() if k in accepted}
         return pipe_cls(**components)
@@ -5049,7 +5047,7 @@ class DiffusionBackend:
         pipe = self._cn_pipes.get(key)
         if pipe is None:
             pipe = self._from_pipe_no_recast(
-                state.pipe, getattr(diffusers, pipe_cls_name), controlnet=cn_model
+                state.pipe, getattr(diffusers, pipe_cls_name), controlnet = cn_model
             )
             with self._lock:
                 # Same race as the model cache: an unload may have cleared _cn_pipes while from_pipe ran.
