@@ -245,13 +245,19 @@ jobs:
       # happen. Tighten it from observed runs here and drop continue-on-error, the
       # way the startup profile did.
       - name: Browser smoke for chat stream pacing
+        id: stream_pacing
         working-directory: ${{ github.workspace }}
         continue-on-error: true
         run: python3 tests/studio/playwright_stream_pacing.py
 
       # Screenshot and serialized DOM the harnesses write on failure; small, kept only then.
+      #
+      # `failure()` alone is not enough. The stream-pacing smoke is `continue-on-error`, which
+      # rewrites its CONCLUSION to success while leaving its OUTCOME as failure, so on the runs
+      # where it is the only thing that failed -- the runs where its report is the whole point --
+      # `failure()` is false and the report went nowhere. Check its raw outcome too.
       - name: Upload browser smoke artifacts
-        if: failure()
+        if: failure() || steps.stream_pacing.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts

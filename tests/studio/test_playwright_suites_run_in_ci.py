@@ -261,3 +261,36 @@ def test_every_smoke_report_is_covered_by_the_failure_upload():
         f"these smoke reports are not in the failure upload: {uncovered}; a failing smoke "
         f"would upload every report except its own. Upload patterns: {patterns}"
     )
+
+def test_a_continue_on_error_smoke_can_still_upload_its_report():
+    """`failure()` cannot see a smoke that is allowed to fail.
+
+    `continue-on-error: true` rewrites a step's CONCLUSION to success while leaving its
+    OUTCOME as failure, so a bare `if: failure()` upload is skipped on exactly the runs
+    where the non-blocking smoke is the only thing that failed, which is when its report
+    is the whole point. Each such smoke must be named in the upload condition.
+    """
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    )
+    steps = workflow["jobs"]["build"]["steps"]
+    upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
+    condition = str(upload.get("if", ""))
+
+    lenient = [
+        s for s in steps
+        if s.get("continue-on-error") and str(s.get("name", "")).startswith("Browser smoke")
+    ]
+    assert lenient, "expected at least one continue-on-error browser smoke; did one get renamed?"
+
+    unseen = []
+    for step in lenient:
+        step_id = step.get("id")
+        if not step_id:
+            unseen.append(f"{step['name']!r} has no id, so the upload cannot reference it")
+        elif f"steps.{step_id}.outcome" not in condition:
+            unseen.append(f"{step['name']!r} (id {step_id}) is not in the upload condition")
+    assert not unseen, (
+        f"{unseen}; a continue-on-error smoke that fails alone leaves conclusion=success, so "
+        f"`{condition}` skips the upload and its report is lost."
+    )
