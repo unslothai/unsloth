@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Opening a managed row must carry the row's project the way the sidebar does.
-// The view is .tsx and pulls in the whole app, so it is read as text the way
-// manage-chats-bulk-selection.test.ts does.
+// The .tsx view pulls in the whole app, so it is read as text.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

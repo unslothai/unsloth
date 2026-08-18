@@ -70,8 +70,7 @@ export function ManageChatsView() {
   const navigate = useNavigate();
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Open chat id from the route (single thread or compare pair), mirroring
-  // ArchivedChatsView: compare panes only live in the search params.
+  // Open chat id from the route: compare panes only live in the search params.
   const openChatId = useRouterState({
     select: (s) => {
       if (!s.location.pathname.startsWith("/chat")) return undefined;
@@ -105,10 +104,8 @@ export function ManageChatsView() {
     const rowId = visible[index].id;
     const target = !selectedIds.has(rowId);
     const anchorId = lastToggledId.current;
-    // Anchor on the chat id, as the sidebar does, not on the row index: the
-    // list re-sorts by updatedAt on every history update, so an index saved on
-    // the first click can address a different chat by the time the shift-click
-    // lands, and the range would archive or delete rows the user never picked.
+    // Anchor on the chat id, not the row index: the list re-sorts by updatedAt,
+    // so an index anchor would range over rows the user never picked.
     const ids =
       shiftKey && anchorId !== null
         ? rangeBetween(
@@ -136,9 +133,8 @@ export function ManageChatsView() {
   }
 
   function openChat(item: SidebarItem) {
-    // Carry the row's project, as the sidebar does. Without it ChatPage keeps
-    // the project it was already on until its backend thread lookup resolves,
-    // so the opened chat briefly runs under the wrong project.
+    // Carry the row's project, as the sidebar does: without it ChatPage briefly
+    // runs the chat under the project it was already on.
     const project = item.projectId ? { project: item.projectId } : {};
     navigate({
       to: "/chat",
@@ -183,9 +179,8 @@ export function ManageChatsView() {
   const handleDelete = () =>
     run(
       () =>
-        // Same preference the sidebar delete honours: with "Always delete
-        // files" on, a bulk delete must take the sandboxes too, or every
-        // selected chat leaves a folder with no card left to reach it from.
+        // Honour the same preference as the sidebar delete, or the selected
+        // chats leave orphan sandbox folders behind.
         deleteChatItems(selectedItems, openChatId, resetView, {
           deleteFiles: alwaysDeleteChatFiles,
         }),

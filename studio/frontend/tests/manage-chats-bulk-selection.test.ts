@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Bulk pin/unpin ordering, and the scope the header checkbox claims. The view is
-// .tsx and pulls in the whole app, so it is read as text the way
-// chat-only-route-guard.test.ts does; the store is exercised for real.
+// Bulk pin/unpin ordering, and the scope the header checkbox claims. The .tsx
+// view pulls in the whole app, so it is read as text; the store runs for real.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -73,16 +72,13 @@ test("an empty selection changes nothing in either direction", () => {
 });
 
 test("a shift range survives the list re-sorting between the two clicks", () => {
-  // useChatSidebarItems sorts by updatedAt and refetches on every history
-  // update, so a chat that streams in the background jumps to the top while the
-  // manage list is open. The anchor must still name the chat it was set on.
+  // A background stream re-sorts the list by updatedAt mid-selection; the
+  // anchor must still name the chat it was set on.
   const before = ["a", "b", "c", "d"];
   const after = ["d", "a", "b", "c"];
   // Anchor on "b", then shift-click "c" after the reorder: still exactly b..c.
   assert.deepEqual(rangeBetween(after, "b", "c"), ["b", "c"]);
-  // What an index anchor would have done: "b" was index 1 before, and index 1
-  // after the reorder is "a", so the range would have swept a..c and a bulk
-  // delete would have taken "a", a chat the user never selected.
+  // An index anchor would instead sweep a..c, deleting "a" unasked.
   assert.equal(before.indexOf("b"), 1);
   assert.equal(after[1], "a");
   assert.deepEqual(rangeBetween(after, after[1], "c"), ["a", "b", "c"]);
@@ -92,16 +88,14 @@ test("the shift anchor is stored as a chat id, not a row index", async () => {
   const src = await manageChatsSource();
   assert.match(src, /useRef<string \| null>\(null\)/);
   assert.match(src, /rangeBetween\(/);
-  // The index-anchored form is the bug: it addresses whatever row now sits at
-  // the saved position rather than the chat the user first clicked.
+  // An index anchor addresses whatever row now sits at the saved position.
   assert.doesNotMatch(src, /lastToggledIndex/);
 });
 
 test("bulk delete passes the always-delete-files preference through", async () => {
   const src = await manageChatsSource();
-  // Without this, deleteChatItems defaults args to {} and the API is called
-  // with delete_files:false, keeping every selected chat's sandbox even though
-  // the user asked for them to go. Same preference the sidebar delete reads.
+  // Without this, deleteChatItems defaults args to {} and sends
+  // delete_files:false, keeping every selected chat's sandbox.
   assert.match(
     src,
     /useChatPreferencesStore\(\s*\(s\) => s\.alwaysDeleteChatFiles,?\s*\)/,
@@ -114,8 +108,7 @@ test("bulk delete passes the always-delete-files preference through", async () =
 
 test("the header checkbox says it selects the visible chats, which is what it does", async () => {
   const src = await manageChatsSource();
-  // Rows sit behind a "Show more", so the control cannot reach the whole list
-  // and the label must not promise that it does.
+  // Rows sit behind a "Show more", so the label must not promise the whole list.
   assert.match(src, /onCheckedChange=\{toggleAllVisible\}/);
   assert.match(src, /aria-label="Select all visible chats"/);
   assert.doesNotMatch(src, /aria-label="Select all chats"/);
