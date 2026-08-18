@@ -7018,7 +7018,9 @@ class LlamaCppBackend:
                 # memory.current includes file-backed cache. Inactive file pages
                 # are reclaimable under pressure, so price the launch against the
                 # cgroup working set rather than charging cached GGUF pages twice.
-                used = max(0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file"))
+                used = max(
+                    0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
+                )
             remaining.append(limit if used is None else limit - used)
 
         v1_root = os.path.join(_CGROUP_ROOT, "memory")
@@ -7043,7 +7045,9 @@ class LlamaCppBackend:
                     0,
                     used
                     - _stat_integer(
-                        os.path.join(directory, "memory.stat"), "total_inactive_file", "inactive_file"
+                        os.path.join(directory, "memory.stat"),
+                        "total_inactive_file",
+                        "inactive_file",
                     ),
                 )
             remaining.append(limit if used is None else limit - used)
@@ -7059,7 +7063,6 @@ class LlamaCppBackend:
         available = None
         try:
             import psutil
-
             available = int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
@@ -14322,11 +14325,7 @@ class LlamaCppBackend:
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
-                        {
-                            idx
-                            for idx, _free in _detected_gpus
-                            if total_by_idx.get(idx, 1) <= 0
-                        }
+                        {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
                         if is_vulkan_backend
                         else set()
                     )
