@@ -43,3 +43,31 @@ test("reads mcp_server from provenance, string-only", () => {
   assert.equal(mcpServerFromProvenance(undefined), undefined);
   assert.equal(mcpServerFromProvenance("GitHub"), undefined);
 });
+
+test("old history with no stamp still renders, showing the raw id", () => {
+  // Pre-8557 messages carry no provenance; they must stay readable rather than
+  // fall back to the raw mcp__ name.
+  assert.equal(
+    formatMcpToolName("mcp__a3f9c1d2e4b6f807__create_issue", undefined),
+    "a3f9c1d2e4b6f807 · create_issue",
+  );
+});
+
+test("a stamped name survives the server being renamed or deleted", () => {
+  // The stamp is frozen at call time, so it does not consult the server row.
+  assert.equal(formatMcpToolName("mcp__gone__run", "Old Name"), "Old Name · run");
+});
+
+test("adversarial display names are passed through verbatim for React to escape", () => {
+  for (const name of [
+    "line\nbreak",
+    "**bold**",
+    "<script>alert(1)</script>",
+    "‮gnitseT",
+    "x".repeat(1000),
+  ]) {
+    const out = formatMcpToolName("mcp__srv__tool", name);
+    assert.ok(out?.startsWith(name), `display name mangled: ${JSON.stringify(out)}`);
+    assert.ok(out?.endsWith(" · tool"));
+  }
+});

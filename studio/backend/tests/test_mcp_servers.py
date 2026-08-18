@@ -1384,3 +1384,54 @@ def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypat
 
     assert "mcp_server" not in provisional_tool_provenance("python")
     assert "mcp_server" not in provisional_tool_provenance("mcp__missing__x")
+
+
+def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch):
+    """The display name is presentation only. Routing, approvals and replay all
+    key off mcp__<serverId>__<tool>, so it must survive a server whose display
+    name would otherwise be substituted into the name."""
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import (
+        mcp_display_parts,
+        provisional_tool_provenance,
+    )
+    from core.inference.tools import _mcp_specs_for_server
+
+    specs = _mcp_specs_for_server(
+        {"id": "srv1", "display_name": "GitHub"}, [{"name": "create_issue"}]
+    )
+    assert specs[0]["function"]["name"] == "mcp__srv1__create_issue"
+    # The display name is allowed in the description and the provenance stamp.
+    assert "GitHub" in specs[0]["function"]["description"]
+    assert provisional_tool_provenance("mcp__srv1__create_issue")["mcp_server"] == "GitHub"
+    assert mcp_display_parts("mcp__srv1__create_issue") == ("GitHub", "create_issue")
+
+
+def test_two_servers_sharing_a_display_name_stay_separately_routable(tmp_path, monkeypatch):
+    """Duplicate display names must not collapse two servers into one route."""
+    _reset_db(tmp_path, monkeypatch)
+    for sid in ("srv1", "srv2"):
+        mcp_servers_db.create_server(id = sid, display_name = "GitHub", url = f"https://{sid}/m")
+    from core.inference.tools import _mcp_specs_for_server
+
+    names = {
+        _mcp_specs_for_server({"id": sid, "display_name": "GitHub"}, [{"name": "run"}])[0][
+            "function"
+        ]["name"]
+        for sid in ("srv1", "srv2")
+    }
+    assert names == {"mcp__srv1__run", "mcp__srv2__run"}
+
+
+@pytest.mark.parametrize(
+    "display",
+    ["line\nbreak", "**bold**", "<script>", "‮gnitseT", "x" * 1000],
+)
+def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch, display):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = display, url = "https://a/m")
+    from core.inference.tool_loop_controller import provisional_tool_provenance
+
+    # Stored verbatim; escaping is the renderer's job, not the stamp's.
+    assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display

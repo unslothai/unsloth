@@ -137,6 +137,9 @@ function formatToolCallName(toolName: string, mcpServer?: string): string {
   if (TOOL_CALL_LABELS[normalized]) return TOOL_CALL_LABELS[normalized];
   const mcpLabel = formatMcpToolName(toolName, mcpServer);
   if (mcpLabel) return `MCP: ${mcpLabel}`;
+  // An mcp__ name too malformed to split still belongs to the mcp category, so
+  // keep the MCP prefix here rather than falling through to the word-caser.
+  if (normalized.startsWith("mcp__")) return `MCP: ${toolName.slice(5)}`;
   return toolName
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
