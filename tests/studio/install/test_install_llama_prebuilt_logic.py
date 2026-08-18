@@ -5059,3 +5059,73 @@ def test_the_validator_stubs_still_model_the_real_signature(name):
         f"{name} keyword-only parameters are now {actual}; update the "
         f"fake_validate stubs in this file, then this list"
     )
+
+
+def test_supported_sms_stays_out_of_the_install_fingerprint():
+    """The CUDA analog of the mapped_targets fingerprint guard. supported_sms is
+    recorded for the runtime gate and backfilled onto existing markers, which only
+    works while it is NOT hashed: if it entered the payload, every install made
+    before the field existed would compare stale and reinstall on upgrade."""
+    base = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b9001",
+        name = "app-b9001-linux-x64-cuda13-older.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        bundle_profile = "app",
+        runtime_line = "cuda13",
+        coverage_class = "older",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+        },
+    )
+    kwargs = dict(llama_tag = "b9001", release_tag = "release-1", approved_checksums = checksums)
+    without = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = AssetChoice(**base), **kwargs
+    )
+    with_sms = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = AssetChoice(**base, supported_sms = ["75", "80", "86", "89"]), **kwargs
+    )
+    assert without and without == with_sms, (
+        "recording supported_sms changed the install fingerprint; every existing "
+        "install would refresh on upgrade"
+    )
+
+
+@pytest.mark.parametrize(
+    "install_kind, runtime_line",
+    [("linux-vulkan", "vulkan"), ("linux-cpu", "cpu"), ("linux-rocm", "rocm")],
+)
+def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kind, runtime_line):
+    """The runtime gate has no is_vulkan_backend guard: it stays inert on those
+    hosts only because a non-CUDA bundle records an empty list, which the reader
+    treats as unknown coverage. Pin that invariant at the writing end."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    choice = _cuda_choice(
+        install_kind = install_kind, runtime_line = runtime_line, supported_sms = None
+    )
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b10360",
+        release_tag = "b10360",
+        choice = choice,
+        approved_checksums = approved_release_checksums_for_asset(choice.name, "a" * 64),
+        prebuilt_fallback_used = False,
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["supported_sms"] == []
