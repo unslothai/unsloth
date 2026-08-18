@@ -411,6 +411,55 @@ def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
     return False
 
 
+def _external_llama_runtime_fallback() -> tuple[Path, str, str] | None:
+    """A --with-llama-cpp-dir runtime the managed-installer metadata never
+    covers (#9179).
+
+    ``installed_llama_runtime()`` only recognizes a completed managed prebuilt
+    install (UNSLOTH_PREBUILT_INFO.json under the managed root). A
+    --with-llama-cpp-dir checkout — the user's own build, symlinked into the
+    canonical llama.cpp slot — carries no such marker, so slim whisper pairing
+    answered None and the prebuilt install failed with "no managed llama.cpp
+    prebuilt install", exactly as reported.
+
+    This fallback resolves the ACTIVE llama-server through the same
+    environment the runtime uses, runs ``--version`` for its tag, and returns
+    the directory holding the binary's sibling ggml libraries. The per-file
+    sonames and backend-module gates in slim_pairing_for_artifact still
+    verify everything this probe cannot promise; an unparseable version or a
+    binary-less tree simply keeps the old behavior.
+    """
+    try:
+        import shutil
+        import subprocess
+
+        binary = os.environ.get("LLAMA_SERVER_PATH") or shutil.which("llama-server")
+        if not binary:
+            return None
+        proc = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
+        match = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
+        if not match:
+            return None
+        build = int(match.group(1))
+        if build <= 1:
+            # A source build with no git tags reports 1: unknown, not a tag.
+            return None
+        bin_dir = Path(binary).resolve().parent
+        if not bin_dir.is_dir():
+            return None
+        return bin_dir, f"b{build}", ""
+    except Exception as exc:
+        log(f"external_llama_runtime: probe failed: {exc}")
+        return None
+
+
 def slim_pairing_for_artifact(
     artifact: dict[str, Any], host: HostInfo, backend: str
 ) -> tuple[Path, str] | None:
@@ -419,6 +468,13 @@ def slim_pairing_for_artifact(
     then retries via CPU or reports the prebuilt unavailable."""
     asset = artifact.get("asset")
     runtime = installed_llama_runtime()
+    if runtime is None:
+        runtime = _external_llama_runtime_fallback()
+        if runtime is not None:
+            log(
+                f"slim_selection: {asset}: pairing with external llama.cpp at "
+                f"{runtime[0]} ({runtime[1]}) — not a managed prebuilt install"
+            )
     if runtime is None:
         log(f"slim_selection: {asset} skipped: no managed llama.cpp prebuilt install")
         return None

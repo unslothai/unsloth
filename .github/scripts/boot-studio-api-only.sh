@@ -68,7 +68,9 @@ rm -rf ~/.unsloth/studio/auth
 mkdir -p "$(dirname "$LOG")"
 
 # shellcheck disable=SC2086  # $API_ONLY is one flag or empty, and must not become ''
-UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$PORT" $API_ONLY > "$LOG" 2>&1 &
+# No MLX on these runners (--no-torch install): the self-heal would only
+# pip-install mid-test and starve the 3 vCPU shared runner (#9183).
+UNSLOTH_DISABLE_MLX_AUTOREPAIR=1 UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$PORT" $API_ONLY > "$LOG" 2>&1 &
 SERVER_PID=$!
 
 echo "[boot] unsloth studio ${API_ONLY:---with-frontend} on 127.0.0.1:${PORT}, pid ${SERVER_PID}, log ${LOG}"
