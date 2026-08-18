@@ -56,13 +56,39 @@ _activated = False
 
 
 def native_tls_enabled() -> bool:
-    """Resolve ``UNSLOTH_STUDIO_NATIVE_TLS`` against the platform default."""
+    """Resolve ``UNSLOTH_STUDIO_NATIVE_TLS`` against the platform default.
+
+    On Linux the default flips to on when the backend runs as the Tauri
+    desktop's owned process (#9218): the .deb/AppImage desktop is launched
+    from a desktop icon, not a shell, so a self-signed CA trusted only in
+    the OS store is unreachable both ways — the provider connectivity
+    check fails with CERTIFICATE_VERIFY_FAILED, and exporting
+    SSL_CERT_FILE replaces the roots instead of adding to them, taking
+    Hugging Face downloads down too. The headless ``unsloth studio``
+    server keeps the opt-in default (distro OpenSSL configurations vary
+    there, and an operator running from a shell can export the env).
+    """
     flag = os.environ.get(_NATIVE_TLS_ENV, "").strip().lower()
     if flag in _TRUTHY:
         return True
     if flag in _FALSEY:
         return False
-    return sys.platform in _DEFAULT_ON_PLATFORMS
+    if sys.platform in _DEFAULT_ON_PLATFORMS:
+        return True
+    if sys.platform.startswith("linux"):
+        return _desktop_owned_process()
+    return False
+
+
+def _desktop_owned_process() -> bool:
+    """True when this backend belongs to the Tauri desktop app.
+
+    Mirrors main._load_desktop_owner's handshake (kind == "tauri") without
+    consuming the env vars it pops: native_tls activates BEFORE main's
+    loader pops either variable, so reading the kind marker here cannot
+    race or steal it.
+    """
+    return os.environ.get("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "") == "tauri"
 
 
 # Children that cannot import this module (the `python -c` probes,

@@ -154,3 +154,32 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
     monkeypatch.setitem(sys.modules, "truststore", fake)
 
     assert native_tls.activate_native_tls() is False
+
+
+# ── #9218: the Linux desktop's owned backend trusts the OS store by default ──
+
+
+@pytest.mark.parametrize(
+    ("platform", "desktop_kind", "expected"),
+    [
+        ("linux", "tauri", True),   # .deb/AppImage desktop: icon launch, no shell profile
+        ("linux", "", False),       # headless `unsloth studio`: opt-in stays
+        ("linux", "other", False),  # unknown owner kind: not the Tauri handshake
+    ],
+)
+def test_linux_desktop_owner_flips_native_tls_default(
+    monkeypatch, platform, desktop_kind, expected
+):
+    monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", desktop_kind)
+    assert native_tls.native_tls_enabled() is expected
+
+
+def test_linux_explicit_opt_out_wins_over_desktop_owner(monkeypatch):
+    # The env override outranks the desktop detection: a user who needs
+    # certifi-only verification keeps a way back.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "0")
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
+    assert native_tls.native_tls_enabled() is False
