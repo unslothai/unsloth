@@ -148,8 +148,14 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
                 # Carried so a merge of two searches can put one long turn's pieces back
-                # in the order they were written; nothing renders it.
+                # in the order they were written; nothing renders them. `createdAt` is the
+                # tie-breaker `_conversation_order` uses and the merge needs for the same
+                # reason: every pre-ordinal row has `turn` None, so without it two legacy
+                # turns fall back to the order the queries happened to return them in, and
+                # a numbered pair can tie too, since the ordinal is deliberately not
+                # UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
+                "createdAt": _row_value(r, "created_at"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
         )

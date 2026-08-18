@@ -1856,3 +1856,51 @@ def test_merging_two_recall_queries_keeps_one_turns_chunks_in_order(conn, monkey
     assert merged is not None
     text, _sources = merged
     assert text.index("ALPHAHEAD") < text.index("OMEGATAIL")
+
+
+def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_said(tmp_path,
+                                                                                   monkeypatch):
+    """Every pre-ordinal row has `turn` None, so ordering them only by chunk index leaves
+    them in whatever order the two queries happened to return them: the anchor's hits
+    first, then the follow-up's. `_conversation_order` breaks exactly this tie with
+    `created_at`, and the merged path has to agree with it or the block contradicts its own
+    oldest-first header on an upgraded database."""
+    from core.rag import conversation_archive
+
+    merged = [
+        {"turn": None, "createdAt": "2026-01-02T00:00:00Z", "chunkIndex": 0, "text": "later"},
+        {"turn": None, "createdAt": "2026-01-01T00:00:00Z", "chunkIndex": 0, "text": "earlier"},
+        {"turn": 3, "createdAt": "2026-01-03T00:00:00Z", "chunkIndex": 0, "text": "numbered"},
+    ]
+    merged.sort(
+        key = lambda source: (
+            source.get("turn") is not None,
+            source.get("turn") or 0,
+            source.get("createdAt") or "",
+            source.get("chunkIndex") or 0,
+        )
+    )
+
+    assert [m["text"] for m in merged] == ["earlier", "later", "numbered"]
+
+
+def test_recall_sources_carry_the_fields_the_merge_orders_by():
+    """The sort above is only as good as the field it reads, and nothing RENDERS
+    `createdAt` or `chunkIndex`, so an unused-looking key is exactly the sort of thing a
+    later cleanup deletes. This pins the producer."""
+    from types import SimpleNamespace
+
+    from core.rag import tool
+
+    rows = {
+        "c1": {"document_id": "d1", "filename": "chat", "text": "hello",
+               "archive_ordinal": None, "chunk_index": 2,
+               "created_at": "2026-01-01T00:00:00Z"},
+    }
+    hits = [SimpleNamespace(chunk_id = "c1", score = 0.5)]
+
+    _, sources = tool.format_conversation_recall(rows, hits)
+
+    assert sources[0]["createdAt"] == "2026-01-01T00:00:00Z"
+    assert sources[0]["chunkIndex"] == 2
+    assert sources[0]["turn"] is None

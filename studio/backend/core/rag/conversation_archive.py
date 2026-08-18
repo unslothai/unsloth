@@ -962,6 +962,7 @@ def recall(
                 key = lambda source: (
                     source.get("turn") is not None,
                     source.get("turn") or 0,
+                    source.get("createdAt") or "",
                     source.get("chunkIndex") or 0,
                 )
             )
