@@ -1118,5 +1118,72 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
     ), f"a timing axis is classified as a count: {HARNESS.COUNTER_AXES}"
 
 
+# ── the report has to survive being written out ───────────────────────
+#
+# Making the wall floor a callable put the lambda itself into the growth report. main() attaches
+# that report to `results` and json.dumps it, so every complete run raised "Object of type
+# function is not JSON serializable" AFTER taking all its measurements. No unit test caught it
+# because none of them serialised the report, which is the gap this section closes.
+
+
+def test_the_growth_report_is_json_serializable() -> None:
+    report = HARNESS.report_growth(counter_cells(0, 9))
+    json.dumps(report)  # raises if any value is a function
+
+
+def test_the_report_is_serializable_for_a_callable_floor_axis() -> None:
+    """The wall axes are the ones whose floor is a callable, so they are the case that broke."""
+    report = HARNESS.report_growth(
+        {
+            "engines": ["chromium"],
+            "sizes": [25000, 300000],
+            "repetitions": 1,
+            "by_engine": {
+                "chromium": {
+                    "by_size": {
+                        size: {
+                            "paint_floor_ms": 33.0,
+                            "actions": {"menu": {"wall_ms": 200.0, "paint_waits": 2}},
+                        }
+                        for size in ("25000", "300000")
+                    }
+                }
+            },
+        }
+    )
+    json.dumps(report)
+    assert report["chromium"]["menu wall ms"]["floored"] == [2, 2], report["chromium"][
+        "menu wall ms"
+    ]
+
+
+def test_the_recorded_floor_is_the_count_that_was_subtracted() -> None:
+    """A boolean would serialise too and say nothing. The report carries the actual count at each
+    end of the ratio, so a reader can check the subtraction rather than trust it."""
+    report = HARNESS.report_growth(wall_cells_for_report(2))
+    assert report["chromium"]["menu wall ms"]["floored"] == [2, 2]
+    report = HARNESS.report_growth(wall_cells_for_report(0))
+    assert report["chromium"]["menu wall ms"]["floored"] == [0, 0]
+
+
+def wall_cells_for_report(paint_waits: int) -> dict:
+    return {
+        "engines": ["chromium"],
+        "sizes": [25000, 300000],
+        "repetitions": 1,
+        "by_engine": {
+            "chromium": {
+                "by_size": {
+                    size: {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"menu": {"wall_ms": 200.0, "paint_waits": paint_waits}},
+                    }
+                    for size in ("25000", "300000")
+                }
+            }
+        },
+    }
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

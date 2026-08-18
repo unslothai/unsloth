@@ -1355,6 +1355,17 @@ COUNTER_AXES = frozenset(f"{a} frames over 33ms" for a in ACTIONS)
 CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
+def resolve_floor(floored, row: dict) -> int:
+    """The floor count for one row, as an INT.
+
+    `floored` may be a callable, and the growth report is written to JSON at the end of the run.
+    Putting the callable itself in the report made `json.dumps` raise `Object of type function is
+    not JSON serializable`, which failed every complete run AFTER all the measurements were taken.
+    Nothing in the unit tests caught it because none of them serialise the report.
+    """
+    return int(floored(row) if callable(floored) else floored)
+
+
 def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, float | None]:
     """`floored` is a COUNT of double-rAF waits inside the metric, not a flag.
 
@@ -1377,7 +1388,7 @@ def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, 
             value = pick(row)
             if value is None:
                 return None, None
-            count = floored(row) if callable(floored) else floored
+            count = resolve_floor(floored, row)
             if count:
                 value -= count * row["paint_floor_ms"]
             values.append(round(value, 2))
@@ -1394,6 +1405,12 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
         per_axis: dict[str, dict] = {}
         for name, pick, floored in GROWTH_AXES:
             small, large = growth(cells, pick, floored, results["sizes"])
+            # Resolved here, once, so what lands in the JSON is the count that was actually
+            # subtracted at each end rather than the thing that computes it.
+            floor_counts = [
+                resolve_floor(floored, cells.get(str(size), {}))
+                for size in (results["sizes"][0], results["sizes"][-1])
+            ]
             if small is None or large is None:
                 per_axis[name] = {
                     "small": None,
@@ -1418,7 +1435,7 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                         "ratio": None,
                         "discriminated": False,
                         "reason": "at or under the paint floor at the smallest size",
-                        "floored": floored,
+                        "floored": floor_counts,
                     }
                     continue
                 # `large > small` is not enough. These are counts of missed frames and long
@@ -1441,7 +1458,7 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                             "zero at the smallest size and this axis is a timing, not a count, "
                             "so there is no rise to measure"
                         ),
-                        "floored": floored,
+                        "floored": floor_counts,
                     }
                     continue
                 rose = large >= ZERO_BASED_MIN_RISE
@@ -1460,7 +1477,7 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                     "ratio": None,
                     "discriminated": rose,
                     "reason": reason,
-                    "floored": floored,
+                    "floored": floor_counts,
                 }
                 continue
             ratio = round(large / small, 2)
@@ -1470,7 +1487,7 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 "ratio": ratio,
                 "discriminated": ratio > DISCRIMINATION_RATIO,
                 "reason": "-",
-                "floored": floored,
+                "floored": floor_counts,
             }
         report[engine] = per_axis
     return report
