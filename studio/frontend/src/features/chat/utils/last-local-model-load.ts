@@ -167,7 +167,9 @@ export async function readLastLocalModelLoad(
       }
     }
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
+    // Name, not instanceof: the retry wrapper can surface an abort as a plain
+    // Error, and swallowing it would return a stale record to a cancelled read.
+    if ((err as { name?: string } | null)?.name === "AbortError") {
       throw err;
     }
     // Unreachable settings API: fall back to the legacy record.

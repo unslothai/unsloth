@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import functools
+import hashlib
 import re
 import threading
 import time
@@ -999,6 +1000,28 @@ def update_model_memory(
 
 LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
 _LAST_LOCAL_MODEL_LOCK = threading.Lock()
+
+
+def _last_local_model_key(subject: str) -> str:
+    """Per-subject storage key. The endpoint authenticates a subject, so one
+    shared row would hand user B whichever model user A last loaded."""
+    subject = (subject or "").strip()
+    if not subject:
+        return LAST_LOCAL_MODEL_SETTING_KEY
+    # Hashed so an arbitrary subject string cannot collide with another key.
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+    return f"{LAST_LOCAL_MODEL_SETTING_KEY}:{digest}"
+
+
+def _read_last_local_model(subject: str) -> "dict | None":
+    """The subject's record, falling back to the pre-scoping shared row so an
+    upgrade does not lose the model a single-user install already remembered."""
+    from storage.studio_db import get_app_setting
+
+    stored = get_app_setting(_last_local_model_key(subject), None)
+    if not isinstance(stored, dict):
+        stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    return stored if isinstance(stored, dict) else None
 # Client clocks stamp loads (a dropped PUT can only be ordered by the clock that
 # saw it), but a future-dated stamp must not freeze the record forever: cap the
 # lead a client clock may claim over server time.
@@ -1034,11 +1057,9 @@ class LastLocalModelResponse(BaseModel):
 def get_last_local_model(
     current_subject: str = Depends(get_current_subject),
 ) -> LastLocalModelResponse:
-    from storage.studio_db import get_app_setting
-
-    stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    stored = _read_last_local_model(current_subject)
     _now = int(time.time() * 1000)
-    if not isinstance(stored, dict):
+    if stored is None:
         return LastLocalModelResponse(server_now = _now)
     try:
         payload = LastLocalModelPayload(**stored)
@@ -1051,13 +1072,14 @@ def get_last_local_model(
 def update_last_local_model(
     payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
 ) -> LastLocalModelResponse:
-    from storage.studio_db import get_app_setting, upsert_app_settings
+    from storage.studio_db import upsert_app_settings
 
     # A delayed older PUT (token refresh, network retry) must not overwrite a newer
     # load from another surface: loaded_at orders stamped writes, and the stored
     # record is returned so the caller sees the authoritative state. Unstamped
     # writes come from pre-loaded_at clients and keep last-write-wins.
     _server_now = int(time.time() * 1000)
+    _key = _last_local_model_key(current_subject)
     with _LAST_LOCAL_MODEL_LOCK:
         if payload.loaded_at is not None:
             if payload.client_now is not None:
@@ -1068,8 +1090,8 @@ def update_last_local_model(
             _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
             if payload.loaded_at > _cap:
                 payload = payload.model_copy(update = {"loaded_at": _cap})
-            stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
-            if isinstance(stored, dict):
+            stored = _read_last_local_model(current_subject)
+            if stored is not None:
                 try:
                     current = LastLocalModelPayload(**stored)
                 except Exception:
@@ -1082,9 +1104,7 @@ def update_last_local_model(
                     return LastLocalModelResponse(
                         **current.model_dump(exclude = {"client_now"}), server_now = _server_now
                     )
-        upsert_app_settings(
-            {LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump(exclude = {"client_now"})}
-        )
+        upsert_app_settings({_key: payload.model_dump(exclude = {"client_now"})})
     return LastLocalModelResponse(
         **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
     )
