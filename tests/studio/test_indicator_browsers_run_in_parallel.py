@@ -95,9 +95,7 @@ def test_each_engine_gets_its_own_studio_home():
     # The home has to VARY, and vary by the same token that selects the engine. A fixed
     # path would be the shared home again under a new name. Resolved through one level of
     # shell indirection, because the path is built into a local before it is exported.
-    assignments = dict(
-        re.findall(r"(?m)^\s*(\w+)=(.+?)\s*\\?$", run)
-    )
+    assignments = dict(re.findall(r"(?m)^\s*(\w+)=(.+?)\s*\\?$", run))
     assignment = next((l for l in run.splitlines() if "UNSLOTH_STUDIO_HOME=" in l), "")
     value = assignment.split("UNSLOTH_STUDIO_HOME=", 1)[1]
     seen, frontier = set(), re.findall(r"\$\{?(\w+)\}?", value)
