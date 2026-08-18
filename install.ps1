@@ -381,18 +381,24 @@ function Install-UnslothStudio {
     }
 
     function New-StudioPrivateTempDirectory {
+        # Only under paths scripts/uninstall.ps1 already reclaims: LOCALAPPDATA\
+        # "Unsloth Studio" is the data dir it deletes wholesale, and ~\.unsloth\
+        # .cache is on its explicit sibling list. Somewhere of our own invention
+        # would survive an uninstall, and anything else directly under ~\.unsloth
+        # would be worse than litter -- that directory is removed only when empty,
+        # so a leftover would keep the uninstaller from clearing it at all.
         $roots = @()
         if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-            $roots += (Join-Path $env:LOCALAPPDATA "UnslothStudio\temp")
+            $roots += (Join-Path $env:LOCALAPPDATA "Unsloth Studio\temp")
         }
         try {
             $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
             if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
-                $roots += (Join-Path $localAppData "UnslothStudio\temp")
+                $roots += (Join-Path $localAppData "Unsloth Studio\temp")
             }
         } catch {}
         if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-            $roots += (Join-Path $env:USERPROFILE ".unsloth\temp")
+            $roots += (Join-Path $env:USERPROFILE ".unsloth\.cache\temp")
         }
         foreach ($root in $roots) {
             # Short leaf on purpose: the .NET Framework compiler Windows

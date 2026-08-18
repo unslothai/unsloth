@@ -413,6 +413,23 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "TEMP:") == [f"TEMP:{env['TEMP']}"]
 
 
+def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
+    """It outlives the install, so it has to sit where the uninstaller looks."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    roots = _extract(r"    function New-StudioPrivateTempDirectory \{.*?\n    \}\n", source)
+
+    # LOCALAPPDATA\"Unsloth Studio" is the data dir uninstall.ps1 removes wholesale.
+    assert 'Join-Path $env:LOCALAPPDATA "Unsloth Studio\\temp"' in roots
+    assert '"Unsloth Studio"' in uninstall
+    # ~\.unsloth\.cache is on its explicit sibling list. Directly under ~\.unsloth
+    # would be worse than litter: that directory is removed only when it is empty,
+    # so anything left there stops the uninstaller clearing it at all.
+    assert 'Join-Path $env:USERPROFILE ".unsloth\\.cache\\temp"' in roots
+    assert '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }' in uninstall
+    assert '.unsloth\\temp' not in roots
+
+
 def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
 
