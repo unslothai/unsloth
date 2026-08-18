@@ -144,6 +144,7 @@ import { curatedArtifactIsOfferable } from "./host-artifact-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
+import { ModelRowShell, useRowActive } from "./row-activation";
 import {
   type ModelLoadTimes,
   loadedAt,
@@ -281,21 +282,34 @@ function useRovingModelList({
   const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
   const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
 
+  // One pass instead of one `indexOf` per row. Every row calls `getOptionProps` while it renders,
+  // and each of those was a linear scan of the whole key list, so a list of N rows cost O(N^2)
+  // string comparisons to draw -- 1000 downloaded models is half a million of them per render.
+  // First occurrence wins, exactly as `indexOf` resolved a duplicated key.
+  const optionIndexByKey = useMemo(() => {
+    const byKey = new Map<string, number>();
+    for (let index = 0; index < optionKeys.length; index += 1) {
+      const key = optionKeys[index];
+      if (key !== undefined && !byKey.has(key)) byKey.set(key, index);
+    }
+    return byKey;
+  }, [optionKeys]);
+
   const preferredOptionKey =
-    selectedOptionKey && optionKeys.includes(selectedOptionKey)
+    selectedOptionKey && optionIndexByKey.has(selectedOptionKey)
       ? selectedOptionKey
       : (optionKeys[0] ?? null);
   const activeOptionKey =
-    rovingOptionKey && optionKeys.includes(rovingOptionKey)
+    rovingOptionKey && optionIndexByKey.has(rovingOptionKey)
       ? rovingOptionKey
       : preferredOptionKey;
 
   const getOptionDomId = useCallback(
     (optionKey: string) => {
-      const index = optionKeys.indexOf(optionKey);
-      return index === -1 ? undefined : `${listboxId}-option-${index}`;
+      const index = optionIndexByKey.get(optionKey);
+      return index === undefined ? undefined : `${listboxId}-option-${index}`;
     },
-    [listboxId, optionKeys],
+    [listboxId, optionIndexByKey],
   );
 
   const focusOption = useCallback(
@@ -538,22 +552,55 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   );
 }
 
+/**
+ * A row's tooltip, mounted only once the row has been reached.
+ *
+ * A closed tooltip draws nothing, so a row the pointer has never been near does not need one; what
+ * it needs is the trigger element itself, which is rendered either way. `useRowActive()` is false
+ * only inside a `ModelRowShell` (the On Device lists) that no pointer or focus has touched -- every
+ * other list in the app reads the context default and mounts the tooltip immediately, as before.
+ */
+function RowTooltip({
+  children,
+  content,
+  side,
+  className,
+  delayDuration,
+}: {
+  children: ReactNode;
+  content: ReactNode;
+  side?: "top" | "bottom" | "left" | "right";
+  className?: string;
+  delayDuration?: number;
+}) {
+  const rowActive = useRowActive();
+  if (!rowActive) return children;
+  return (
+    <Tooltip delayDuration={delayDuration}>
+      <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
+      <TooltipContent side={side} className={className}>
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** "This model reads images", from the GGUF metadata (On Device rows). */
 function VisionBadge() {
   return (
-    <Tooltip delayDuration={0}>
-      <TooltipTrigger asChild={true}>
-        <span
-          aria-label="Vision"
-          className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
-        >
-          <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
-        This model can process image inputs
-      </TooltipContent>
-    </Tooltip>
+    <RowTooltip
+      delayDuration={0}
+      side="top"
+      className="tooltip-compact"
+      content="This model can process image inputs"
+    >
+      <span
+        aria-label="Vision"
+        className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
+      >
+        <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
+      </span>
+    </RowTooltip>
   );
 }
 
@@ -578,23 +625,23 @@ const FORMAT_TONE_DOT: Record<FormatTone, string> = {
  *  "Safetensors" is wide enough to shove the rest of the row around. */
 function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   return (
-    <Tooltip delayDuration={0}>
-      <TooltipTrigger asChild={true}>
-        {/* Hit area, so hovering the dot is not a pixel hunt. */}
+    <RowTooltip
+      delayDuration={0}
+      side="top"
+      className="tooltip-compact"
+      content={label}
+    >
+      {/* Hit area, so hovering the dot is not a pixel hunt. */}
+      <span
+        aria-label={label}
+        className="flex size-[14px] shrink-0 items-center justify-center"
+      >
         <span
-          aria-label={label}
-          className="flex size-[14px] shrink-0 items-center justify-center"
-        >
-          <span
-            aria-hidden="true"
-            className={cn("size-[5px] rounded-full", FORMAT_TONE_DOT[tone])}
-          />
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
-        {label}
-      </TooltipContent>
-    </Tooltip>
+          aria-hidden="true"
+          className={cn("size-[5px] rounded-full", FORMAT_TONE_DOT[tone])}
+        />
+      </span>
+    </RowTooltip>
   );
 }
 
@@ -864,6 +911,7 @@ function ModelRow({
   const paramLabel = parsed.param ?? extractParamLabel(name) ?? null;
   // Use the passed-in capabilities (tag-aware) or infer from the repo name.
   const caps = capabilities ?? detectCapabilities({ id: label });
+  const rowActive = useRowActive();
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
@@ -1041,6 +1089,13 @@ function ModelRow({
       </span>
     </button>
   );
+
+  // Nothing below this line is on screen until the row is hovered or focused, and building it is
+  // the bulk of what a row costs: the tooltip body, the Radix root, its portal and its Presence.
+  // A row inside a `ModelRowShell` that has not been reached yet stops here.
+  if (!rowActive) {
+    return content;
+  }
 
   // Optional Hugging Face address line for online/Hub rows, rendered under
   // whichever tooltip shows so the repo id / URL is always visible on hover.
@@ -4693,7 +4748,10 @@ export function HubModelPicker({
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
     return (
-      <div key={optionKey} className={downloadedRowShellClassName(isSelected)}>
+      <ModelRowShell
+        key={optionKey}
+        className={downloadedRowShellClassName(isSelected)}
+      >
         {/* Through ModelRow, so a pinned quant lands in the same columns as
             the rows below it. */}
         <div className="min-w-0 flex-1">
@@ -4781,7 +4839,7 @@ export function HubModelPicker({
             }}
           />
         </span>
-      </div>
+      </ModelRowShell>
     );
   };
 
@@ -4817,7 +4875,10 @@ export function HubModelPicker({
       pipelineTag: c.task ?? null,
     };
     return (
-      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
+      <ModelRowShell
+        key={c.repo_id}
+        className={downloadedRowShellClassName(isSelected)}
+      >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
@@ -4883,7 +4944,7 @@ export function HubModelPicker({
             }}
           />
         </span>
-      </div>
+      </ModelRowShell>
     );
   };
 
@@ -4902,7 +4963,7 @@ export function HubModelPicker({
     });
     return (
       <div key={c.repo_id}>
-        <div className={downloadedRowShellClassName(isSelected)}>
+        <ModelRowShell className={downloadedRowShellClassName(isSelected)}>
           <div className="min-w-0 flex-1">
             <ModelRow
               label={c.repo_id}
@@ -4930,7 +4991,7 @@ export function HubModelPicker({
           </div>
           {/* Stands in for the other rows' buttons, so the tags line up. */}
           <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
-        </div>
+        </ModelRowShell>
         {expanderOpen && (
           <GgufVariantExpander
             repoId={c.repo_id}
@@ -4976,7 +5037,10 @@ export function HubModelPicker({
     const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
     const isSelected = value === c.repo_id;
     return (
-      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
+      <ModelRowShell
+        key={c.repo_id}
+        className={downloadedRowShellClassName(isSelected)}
+      >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
@@ -5060,7 +5124,7 @@ export function HubModelPicker({
             }}
           />
         </span>
-      </div>
+      </ModelRowShell>
     );
   };
 
@@ -5072,7 +5136,10 @@ export function HubModelPicker({
     // show the name and drop the Hub link -- the raw path reads as neither.
     const isLocalPath = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(model.id);
     return (
-      <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
+      <ModelRowShell
+        key={model.id}
+        className={downloadedRowShellClassName(isSelected)}
+      >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={isLocalPath ? model.name : model.id}
@@ -5105,7 +5172,7 @@ export function HubModelPicker({
           />
         </div>
         <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
-      </div>
+      </ModelRowShell>
     );
   };
 
