@@ -58,6 +58,21 @@ def _between(source: str, start: str, end: str) -> str:
     return tail.split(end, 1)[0]
 
 
+def _guard_for(source: str, call: str) -> str:
+    """The `if (...)` condition whose body performs ``call``.
+
+    Searching the whole file for the identity comparison is not enough: the abort
+    and cleanup branches next to the dispatch carry the same expression, so the
+    dispatch guard could regress to `.has(reservationKey)` on its own and a
+    whole-file search would still find a match in its neighbours.
+    """
+    assert call in source, f"missing call: {call}"
+    head = source.split(call, 1)[0]
+    opener = head.rfind("if (")
+    assert opener != -1, f"no `if (` guarding {call}"
+    return head[opener:]
+
+
 def test_scheduler_dispatches_each_ready_chat_without_a_frontend_global_cap():
     pump = _between(
         THREAD,
@@ -162,16 +177,44 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "usePromptQueueUI.getState()" in submit
     assert "livePreStreamRunActive" in submit
     assert "liveThreadIsRunning || livePreStreamRunActive" in submit
-    assert "startHydratedPromptQueue(" in submit
+    # The submit path decides whether to queue; the queueing itself lives in
+    # queueComposerText, which #8952 extracted so the Cmd/Ctrl+Enter path could
+    # share it. Assert the delegation here and the queueing there, rather than
+    # expecting the call inline, so this stays a contract on behaviour instead
+    # of on where the code happens to sit.
+    assert "queueComposerText(liveThreadIsRunning || livePreStreamRunActive)" in submit
+
+    queue_composer_text = _between(
+        THREAD,
+        "const queueComposerText = useCallback(",
+        "const dismissWaitToast = useCallback(",
+    )
+    assert "startHydratedPromptQueue(" in queue_composer_text
     # Read into a local first: the send guard arms on the untrimmed value too,
     # since that is what a late DOM write carries.
-    assert "const cleared = aui.composer().getState().text" in submit
-    assert "cleared.trim() !== queuedPrompt" in submit
+    assert "const cleared = aui.composer().getState().text" in queue_composer_text
+    assert "cleared.trim() !== queuedPrompt" in queue_composer_text
     assert "promptQueueStartPendingRef.current" in THREAD
-    assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
+    # Identity, not mere presence: a reservation can be replaced between the
+    # start and the callback, and acting on the successor would dispatch the
+    # wrong prompt. `.has` only asked whether the key was occupied.
+    # Read out of the guard that actually dispatches, not out of the file: the
+    # abort and cleanup branches beside it hold the same comparison, so a
+    # whole-file search stays green while the dispatch alone regresses to `.has`.
+    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
+    assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
+    assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
+    # The other two are load-bearing as well. Abort without the identity check
+    # reports the successor's start as this one's failure; cleanup without it
+    # deletes the successor's entry.
+    assert THREAD.count("promptQueueStartPendingRef.current.get(reservationKey) ===") == 3
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
-    assert "temporary: useChatRuntimeStore.getState().incognito" in THREAD
+    # Captured when the queue starts, not read live when it dispatches: a chat
+    # toggled out of temporary mid-queue must not have its queued prompts
+    # persisted, and reading the store at dispatch time would do exactly that.
+    assert "const incognitoAtQueueStart = chatStateAtQueueStart.incognito" in THREAD
+    assert "temporary: incognitoAtQueueStart" in THREAD
     assert "localPromptQueueModelBoundary.capture()" in THREAD
     assert "shouldAbortPendingQueueForModelBoundary" in THREAD
     assert "queuedSettingsEpoch:" in THREAD
