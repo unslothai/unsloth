@@ -4373,14 +4373,24 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # because _detect_rocm_version_tag re-runs amd-smi and rpm and a healthy ROCm host
 # (whose index is not */cpu) must not pay for a question it already answered.
 _amd_no_rocm_version_reroute=false
+_amd_probed_gfx_first=""
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
            [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
-           ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu && \
-           [ -n "$(_probe_amd_gfx_arch)" ] && \
-           [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
-            _amd_no_rocm_version_reroute=true
+           ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu; then
+            # Same first-token reduction get_torch_index_url makes, so the state means
+            # "that function deferred on THIS arch" and the reroute below can route on it.
+            _amd_probed_gfx_first=$(_probe_amd_gfx_arch | sed 's/:.*$//' \
+                | tr '[:upper:]' '[:lower:]' | awk 'NF{print; exit}')
+            # Mapping checked here, not just downstream: an unmappable probe never made
+            # get_torch_index_url defer, so it must not claim this state either.
+            # _detect_rocm_version_tag last -- it is the only expensive test.
+            if [ -n "${_amd_probed_gfx_first:-}" ] && \
+               _amd_arch_index_family_for_gfx "$_amd_probed_gfx_first" >/dev/null 2>&1 && \
+               [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
+                _amd_no_rocm_version_reroute=true
+            fi
         fi
         ;;
 esac
@@ -4396,14 +4406,17 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     case "$TORCH_INDEX_URL" in
         */cpu)
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
-            # The no-version host got here with an arch rocminfo/amd-smi read
-            # directly, which is better evidence than a marketing name and is the
-            # only arch available when lspci is absent (unslothai#8731). Inference
-            # still goes first, so every host that reached this reroute before
-            # keeps the arch it was already getting.
-            if [ -z "$_linux_inferred_gfx" ] && [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
-                _linux_inferred_gfx=$(_probe_amd_gfx_arch | sed 's/:.*$//' \
-                    | tr '[:upper:]' '[:lower:]' | awk 'NF{print; exit}')
+            # The no-version host reached this reroute BECAUSE rocminfo/amd-smi read
+            # its arch, and that reading is what the decision was made on, so it is
+            # what gets routed on. Marketing-name inference is a lookup table over
+            # lspci and can name a different card on a mixed APU + discrete host --
+            # taking its answer here would install arch-specific wheels for a GPU the
+            # decision never looked at, and export that arch to setup.sh as well.
+            # Only this path is affected: every host that reached the reroute before
+            # had an empty probe and still gets the inferred arch (unslothai#8731).
+            if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+               [ -n "${_amd_probed_gfx_first:-}" ]; then
+                _linux_inferred_gfx="$_amd_probed_gfx_first"
             fi
             if [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
