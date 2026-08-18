@@ -175,6 +175,85 @@ def test_mcp_specs_skip_empty_tool_name():
     assert specs == []
 
 
+def test_mcp_specs_skip_app_only_tools():
+    """MCP Apps tools marked _meta.ui.visibility without "model" are for the
+    server's rendered widget, not the LLM; keep them out of the schema set."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {"name": "shown"},
+        {"name": "widget_only", "meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "both", "meta": {"ui": {"visibility": ["app", "model"]}}},
+        {"name": "flat_key", "meta": {"ui/visibility": ["app"]}},
+        {"name": "underscore_meta", "_meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "unrelated_meta", "meta": {"ui": {"resourceUri": "ui://x"}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    names = {s["function"]["name"] for s in specs}
+    assert names == {"mcp__srv__shown", "mcp__srv__both", "mcp__srv__unrelated_meta"}
+
+
+def test_mcp_specs_read_visibility_from_either_meta_spelling():
+    """A "meta" holding unrelated keys must not mask an app-only "_meta"."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {
+            "name": "widget_only",
+            "meta": {"vendor": "x"},
+            "_meta": {"ui": {"visibility": ["app"]}},
+        },
+        {"name": "shown", "meta": {"vendor": "x"}, "_meta": {"ui": {"visibility": ["model"]}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    assert {s["function"]["name"] for s in specs} == {"mcp__srv__shown"}
+
+
+@pytest.mark.parametrize(
+    "visibility, visible",
+    [
+        (["model"], True),
+        (["app"], False),
+        ([], False),  # "visible to nobody" reads as hidden
+        ("model", True),  # not a list: unrecognised shape stays visible
+        (None, True),
+        (["Model"], False),  # spec values are lowercase
+    ],
+)
+def test_mcp_specs_visibility_shapes(visibility, visible):
+    from core.inference.tools import _mcp_specs_for_server
+
+    tool = {"name": "t", "meta": {"ui": {"visibility": visibility}}}
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
+    assert bool(specs) is visible
+
+
+@pytest.mark.parametrize("schema_key", ["inputSchema", "input_schema"])
+def test_mcp_specs_keep_the_tool_arguments(schema_key):
+    """Reading one spelling only would leave every tool argument-less after an
+    mcp 2.x bump."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    tool = {"name": "search", "description": "d", schema_key: schema}
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
+    assert specs[0]["function"]["parameters"] == schema
+
+
+def test_mcp_specs_match_the_installed_sdk_dump():
+    """Whichever spelling the pinned SDK emits, the arguments must survive."""
+    from mcp.types import Tool
+
+    from core.inference.tools import _mcp_specs_for_server
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    dumped = Tool(name = "search", description = "d", inputSchema = schema).model_dump(exclude_none = True)
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [dumped])
+    assert specs[0]["function"]["parameters"] == schema
+
+
 def test_mcp_specs_drops_duplicate_names():
     """Duplicate tool names from one server -> OpenAI rejects; drop before forwarding."""
     from core.inference.tools import _mcp_specs_for_server
