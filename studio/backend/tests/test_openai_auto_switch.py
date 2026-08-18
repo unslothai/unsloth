@@ -4258,9 +4258,9 @@ def test_chat_count_tokens_counts_a_passthrough_catalog_without_messages(monkeyp
     catalog = [{"type": "function", "function": {"name": "lookup_order"}}]
     body = _counted_body(_count_request([], tools = catalog))
     assert body["input_tokens"] == 640
-    assert [
-        (tool.get("function") or {}).get("name") for tool in counted.get("tools") or []
-    ] == ["lookup_order"]
+    assert [(tool.get("function") or {}).get("name") for tool in counted.get("tools") or []] == [
+        "lookup_order"
+    ]
 
 
 # Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
