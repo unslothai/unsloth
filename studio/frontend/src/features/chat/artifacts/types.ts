@@ -80,14 +80,93 @@ export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {
   };
 }
 
-export function getArtifactFilename(
-  artifact: Pick<ChatArtifact, "title">,
+export type ArtifactDownloadFormat = "html" | "md" | "txt";
+
+interface ArtifactDownloadFormatMeta {
+  label: string;
+  extension: string;
+  mimeType: string;
+}
+
+const ARTIFACT_DOWNLOAD_FORMAT_META: Record<
+  ArtifactDownloadFormat,
+  ArtifactDownloadFormatMeta
+> = {
+  html: {
+    label: "HTML",
+    extension: "html",
+    mimeType: "text/html;charset=utf-8",
+  },
+  md: {
+    label: "Markdown",
+    extension: "md",
+    mimeType: "text/markdown;charset=utf-8",
+  },
+  txt: {
+    label: "Plain Text",
+    extension: "txt",
+    mimeType: "text/plain;charset=utf-8",
+  },
+};
+
+// Order the canvas download menu is rendered in.
+export const ARTIFACT_DOWNLOAD_FORMATS: readonly ArtifactDownloadFormat[] = [
+  "html",
+  "md",
+  "txt",
+];
+
+export function getArtifactDownloadFormatLabel(
+  format: ArtifactDownloadFormat,
 ): string {
-  const slug = artifact.title
+  return ARTIFACT_DOWNLOAD_FORMAT_META[format].label;
+}
+
+export function getArtifactDownloadMimeType(
+  format: ArtifactDownloadFormat,
+): string {
+  return ARTIFACT_DOWNLOAD_FORMAT_META[format].mimeType;
+}
+
+export function getArtifactDownloadExtension(
+  format: ArtifactDownloadFormat,
+): string {
+  return ARTIFACT_DOWNLOAD_FORMAT_META[format].extension;
+}
+
+function slugifyArtifactTitle(title: string): string {
+  return title
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-  return `${slug || "canvas"}.html`;
+}
+
+export function getArtifactFilename(
+  artifact: Pick<ChatArtifact, "title">,
+  format: ArtifactDownloadFormat = "html",
+): string {
+  const slug = slugifyArtifactTitle(artifact.title);
+  return `${slug || "canvas"}.${ARTIFACT_DOWNLOAD_FORMAT_META[format].extension}`;
+}
+
+// Matches the fence the source view renders, so Markdown downloads open as a
+// valid, readable document instead of dumping raw unlabeled markup.
+export function buildArtifactHtmlFence(source: string): string {
+  const longestBacktickRun = Math.max(
+    2,
+    ...(source.match(/`+/g) ?? []).map((match) => match.length),
+  );
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return `${fence}html\n${source}\n${fence}`;
+}
+
+// HTML downloads keep the raw source; Markdown wraps it in a fenced code
+// block; plain text keeps the raw source too, for editors with no HTML mode.
+export function buildArtifactDownloadContent(
+  code: string,
+  format: ArtifactDownloadFormat,
+): string {
+  return format === "md" ? buildArtifactHtmlFence(code) : code;
 }
