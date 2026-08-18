@@ -100,3 +100,16 @@ test("a variant with no live job is returned untouched", () => {
 
   assert.equal(row, original);
 });
+
+test("a reused mmproj does not come back as bytes still to fetch", () => {
+  // snapshot_progress nets the baseline out of both of the job's counters, so
+  // 5 GB plan - 1 GB already on disk = a 4 GB job, 1 GB of which has arrived.
+  const [row] = applyLiveGgufVariantStates(
+    [variant({ size_bytes: 5 * GB, download_size_bytes: 5 * GB })],
+    live({ expectedBytes: 4 * GB, transferredBytes: 1 * GB }) as never,
+  );
+
+  assert.equal(row.download_remaining_bytes, 3 * GB);
+  // The catalog total still drives the size the row reports, untouched.
+  assert.equal(row.download_size_bytes, 5 * GB);
+});
