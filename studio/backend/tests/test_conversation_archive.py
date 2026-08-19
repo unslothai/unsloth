@@ -1838,7 +1838,9 @@ def test_a_long_tool_exchange_stays_on_branch_across_a_chunk_boundary():
         group = [
             {
                 "role": "user",
-                "content": "\n".join(f"line {i} of the question about the repo" for i in range(lines)),
+                "content": "\n".join(
+                    f"line {i} of the question about the repo" for i in range(lines)
+                ),
             },
             {
                 "role": "assistant",

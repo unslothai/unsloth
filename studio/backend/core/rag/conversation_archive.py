@@ -838,7 +838,13 @@ def _scan_probes(
             fresh = True
         else:
             return None
-    return index, cursor, (opened_at or 0), partial, (opened_index if opened_index is not None else start)
+    return (
+        index,
+        cursor,
+        (opened_at or 0),
+        partial,
+        (opened_index if opened_index is not None else start),
+    )
 
 
 def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
