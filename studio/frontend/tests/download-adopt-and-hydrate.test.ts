@@ -99,9 +99,8 @@ test("a scan that never happened does not retire a job", () => {
 });
 
 test("the held-transfer marker travels with the counters it describes", () => {
-  // It is a statement about the seeded bytes: keeping them while dropping it
-  // restores undefined, which reads as measured, and the row goes back to
-  // "0 B left" against the retry's smaller total.
+  // Keeping the bytes while dropping it restores undefined, which reads as
+  // measured, and the row goes back to "0 B left".
   assert.equal(seededMeasuredTransfer(true, false), false);
   assert.equal(seededMeasuredTransfer(true, true), true);
   // No seed means zeroed counters, so there is no held figure to distrust.
@@ -112,8 +111,7 @@ test("the held-transfer marker travels with the counters it describes", () => {
 
 test("the adoption path actually seeds the marker onto the job", () => {
   // The helper above is pure, so it cannot catch the seed being computed and
-  // then left off the rebuilt job, which is exactly how the marker was lost.
-  // Pin the wiring: startJob must hand the seeded value to putJob.
+  // then left off the rebuilt job, which is how the marker was lost once.
   const src = readFileSync(
     new URL(
       "../src/features/hub/download-manager/poll-loop.ts",

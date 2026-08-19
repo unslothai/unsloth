@@ -1172,19 +1172,17 @@ def existing_blob_bytes(
 ) -> int:
     """Bytes a download will NOT have to fetch again for *blob_hashes*, in *root* or, when it is
     None, the active HF cache root: finalized blobs, plus partials something can still resume
-    from. A row pinned to another root must pass it: a resume writes into the root the row names,
-    so blobs sitting in the active one are not bytes it can reuse, and crediting them says less
-    is left than really is. A blob is in exactly
-    one state, so summing both candidate names never double-counts. Used to size what a
-    (possibly resumed) download still needs to write before the run starts."""
+    from. A row pinned to another root must pass it, since a resume writes into the root the row
+    names and blobs in the active one are not bytes it can reuse. A blob is in exactly one state,
+    so summing both candidate names never double-counts. Used to size what a (possibly resumed)
+    download still needs to write before the run starts."""
     if not blob_hashes:
         return 0
-    # One tally for ALL the repo dirs the active root holds, not one per dir. The Hub resolves
-    # repo ids case-insensitively while huggingface_hub keeps the caller's casing in the folder
-    # name, so a case-sensitive filesystem really does end up with models--Org--Model beside
+    # One tally for ALL the repo dirs the root holds, not one per dir. The Hub resolves repo ids
+    # case-insensitively while huggingface_hub keeps the caller's casing in the folder name, so
+    # a case-sensitive filesystem really does end up with models--Org--Model beside
     # models--org--model, each holding its own copy of the same blob. Summing the dirs counted
-    # that shard twice, and the caller's max(0, total - have) then clamped to zero: a variant
-    # still missing a whole shard reported nothing left to fetch.
+    # that shard twice, and the caller's max(0, total - have) then clamped to zero.
     present = {blob_hash: 0 for blob_hash in blob_hashes}
     for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         blobs_dir = entry / "blobs"
@@ -1216,13 +1214,12 @@ def existing_blob_bytes(
                     # room for. Two GGUF variants sharing an mmproj hit this every time.
                     continue
                 # A partial is measured by the bytes actually ON DISK, not by its logical
-                # length. hf_transfer's parallel Range writer (and any other out-of-order
-                # writer sharing this cache) leaves a sparse file whose st_size runs ahead of
-                # what has been written -- observed at 1.2 GB reported against 112 MB present.
-                # Crediting the logical size understated the transfer by that whole gap, and
-                # once st_size reached the declared size the remainder read as zero for a file
-                # barely started. A finalized blob is whole by construction, so it keeps
-                # st_size: st_blocks is smaller than the file on a compressing filesystem.
+                # length: hf_transfer's parallel Range writer leaves a sparse file whose
+                # st_size runs ahead of what has been written -- observed at 1.2 GB reported
+                # against 112 MB present, and once st_size reached the declared size the
+                # remainder read as zero for a file barely started. A finalized blob is whole
+                # by construction, so it keeps st_size: st_blocks is smaller than the file on
+                # a compressing filesystem.
                 bytes_here = (
                     blob_bytes_present(blob)
                     if partial_hash is not None

@@ -86,15 +86,14 @@ function sanitizePersistedJob(
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
-    // A held reading survives the reload that carried it. Dropping the flag would restore the
-    // stale downloadedBytes beside the new run's shrunken expectedBytes with the guard reading
-    // undefined (so, measured), which is the "0 B left" the guard exists to stop.
+    // A held reading survives the reload that carried it: dropping the flag restores the stale
+    // downloadedBytes with the guard reading undefined (so, measured), which is the "0 B left"
+    // the guard exists to stop.
     //
     // Absent means "never polled" only for a record written since the field existed. Below that
-    // version a job that HAD polled says nothing either way, and an upgrade landing mid-reclaim
-    // restores its held bytes as measured -- so a legacy record already carrying counters is read
-    // as held instead. It costs one poll of an untightened remainder; believing it costs the
-    // "0 B left" this whole marker is for.
+    // version a job that HAD polled says nothing either way, so a legacy record already carrying
+    // counters is read as held. It costs one poll of an untightened remainder; believing it
+    // costs the "0 B left" this whole marker is for.
     ...(typeof value.measuredTransfer === "boolean"
       ? { measuredTransfer: value.measuredTransfer }
       : legacy && nonNegativeNumber(value.downloadedBytes) > 0

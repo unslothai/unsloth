@@ -331,10 +331,9 @@ test("a new generation resets the fraction, not only the bytes", () => {
 
 test("a held transfer reading is reported as held, not as a measurement", () => {
   // The card may keep drawing the last figure, but a consumer that subtracts it
-  // from the CURRENT expectedBytes is mixing two plans. The XET-to-HTTP reclaim
-  // recomputes completed_baseline_bytes from disk and keeps the generation, so
-  // the retry's first reading is a legitimate zero against a shrunken total and
-  // the bytes held behind it belong to the previous, larger one.
+  // from the CURRENT expectedBytes is mixing two plans: after an XET-to-HTTP
+  // reclaim the retry's first reading is a legitimate zero against a shrunken
+  // total, and the bytes held behind it belong to the previous, larger one.
   const held = resolveProgressUpdate(
     job({ downloadedBytes: 3 * GB, completedBytes: 3 * GB }),
     emptyReading({ expected_bytes: GB / 2 }),

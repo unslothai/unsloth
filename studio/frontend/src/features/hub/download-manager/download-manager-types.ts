@@ -17,10 +17,9 @@ export interface ManagedDownload {
   /** False when the last poll HELD `downloadedBytes` rather than measuring it
    * (see `resolveProgressUpdate`). A held figure belongs to the previous
    * reading's total, so a surface that subtracts it from the current
-   * `expectedBytes` is mixing two plans; such a surface should fall back to the
-   * backend's own remainder instead. Undefined on a job that has not polled yet
-   * or was persisted before this field existed, which reads as "no reason to
-   * distrust it" -- a job that has never polled has no held bytes to forward. */
+   * `expectedBytes` is mixing two plans and should fall back to the backend's
+   * own remainder. Undefined on a job that has not polled yet, which has no held
+   * bytes to forward. */
   measuredTransfer?: boolean;
   // Finalized bytes on disk (excludes the in-progress `.incomplete` portion in
   // `downloadedBytes`). The completion fallback keys off this so a partial can't

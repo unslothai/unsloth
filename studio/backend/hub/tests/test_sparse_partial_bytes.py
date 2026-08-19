@@ -4,9 +4,8 @@
 """The all-sparse partial: a file sized before a single byte of it is transferred.
 
 A parallel Range writer sets the ``.incomplete`` to its final length up front and then fills
-blocks out of order. Between those two moments the file is its full logical size with nothing
-allocated behind it, and crediting ``st_size`` there prices the remainder at zero -- the row
-reads "0 B left" on a download that has not moved.
+blocks out of order. In between the file is its full logical size with nothing allocated behind
+it, and crediting ``st_size`` there reads "0 B left" on a download that has not moved.
 """
 
 import os

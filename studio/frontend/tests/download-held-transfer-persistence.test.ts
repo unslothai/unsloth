@@ -2,12 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // An XET-to-HTTP reclaim keeps the same generation, so the first reading for the
-// new run holds the dead run's downloadedBytes beside a shrunken expectedBytes.
-// measuredTransfer marks that reading as held so the remainder is not derived
-// from it. If the flag does not survive a reload, the restored job carries the
-// stale bytes with the guard reading "measured" again, and the row goes back to
-// "0 B left" until a poll repairs it -- on app start that is the whole gap
-// before the first poll returns.
+// new run holds the dead run's downloadedBytes beside a shrunken expectedBytes,
+// and measuredTransfer marks it as held. If the flag does not survive a reload,
+// the restored job carries the stale bytes with the guard reading "measured"
+// again and the row reads "0 B left" until the first poll repairs it.
 
 import assert from "node:assert/strict";
 import test from "node:test";

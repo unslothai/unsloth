@@ -78,12 +78,11 @@ export function resolveProgressUpdate(
   // so every real change -- up or down -- still lands on the next poll.
   const reportedDownloaded = finiteReading(progressResp.downloaded_bytes);
   // Whether this poll MEASURED the transfer counter or merely held the last
-  // one. The held figure is fine to draw a bar with, but it is priced against
-  // the PREVIOUS total, and a caller that subtracts it from the current
-  // expectedBytes gets a remainder for a plan that no longer exists. The
-  // fallback reclaim is exactly that pairing: the baseline is recomputed from
-  // disk, so the retry's first reading is a legitimate 0 against a shrunken
-  // total, and the 3 GB held behind it wipe out a 0.5 GB remainder.
+  // one. A held figure is fine to draw a bar with, but it is priced against the
+  // PREVIOUS total, so a caller subtracting it from the current expectedBytes
+  // gets a remainder for a plan that no longer exists. The XET fallback reclaim
+  // is exactly that pairing: the retry's first reading is a legitimate 0 against
+  // a shrunken total, and the 3 GB held behind it wipe out a 0.5 GB remainder.
   const measuredTransfer = resetMonotonic || reportedDownloaded > 0;
   const downloadedBytes = measuredTransfer
     ? Math.max(0, reportedDownloaded)

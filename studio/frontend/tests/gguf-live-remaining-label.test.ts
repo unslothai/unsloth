@@ -95,10 +95,9 @@ test("a completed download is left alone, so no row reads as partial", () => {
 });
 
 test("a cancelled job keeps the remainder the backend measured", () => {
-  // Progress is not reusable bytes. From huggingface_hub 1.18 the partial is
-  // process-unique, opened "wb" and unlinked in a finally, so an interrupted
-  // in-file transfer is refetched whole -- which is how existing_blob_bytes
-  // already prices it. Subtracting the dead job's 17 GB reported "1.0 GB left"
+  // Progress is not reusable bytes: from huggingface_hub 1.18 the partial is
+  // process-unique and unlinked in a finally, so an interrupted in-file transfer
+  // is refetched whole. Subtracting the dead job's 17 GB reported "1.0 GB left"
   // for a resume that still has all 18 GB to fetch.
   for (const state of ["cancelled", "error"]) {
     const [row] = applyLiveGgufVariantStates(
@@ -125,11 +124,9 @@ test("a cancelled job keeps the remainder the backend measured", () => {
 
 test("an XET fallback does not price the retry against the dead run's bytes", () => {
   // The XET attempt finalized 3 GB of a 3.5 GB quant, then fell back to HTTP.
-  // The reclaim keeps the generation and recomputes completed_baseline_bytes
-  // from disk, so the backend nets those 3 GB out of BOTH counters: the retry
-  // reports a 0.5 GB total with 0.1 GB moved and completed_bytes 0, which
-  // resolveProgressUpdate holds the old 3 GB behind. Pricing the remainder off
-  // the held figure read "0 B left" with 0.4 GB still to fetch.
+  // The reclaim recomputes completed_baseline_bytes from disk, so the retry
+  // reports a 0.5 GB total with 0.1 GB moved and completed_bytes 0. Taking the
+  // max against the held 3 GB read "0 B left" with 0.4 GB still to fetch.
   const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
   const states = select({
     jobs: {
@@ -162,12 +159,10 @@ test("an XET fallback does not price the retry against the dead run's bytes", ()
 });
 
 test("a retry that has not measured a byte yet keeps the backend remainder", () => {
-  // The reading right after the reclaim, before the HTTP run moves anything.
-  // snapshot_progress recomputes completed_baseline_bytes from the finalized
-  // blobs, nets it out of both counters and out of the total, so it reports
-  // downloaded_bytes 0 against a 0.5 GB total -- and resolveProgressUpdate
-  // holds the dead run's 3 GB behind that zero. Pricing the remainder off the
-  // held figure read "0 B left" with all 0.5 GB still to fetch.
+  // The reading right after the reclaim, before the HTTP run moves anything: a
+  // real downloaded_bytes 0 against a 0.5 GB total, behind which
+  // resolveProgressUpdate holds the dead run's 3 GB. Pricing the remainder off
+  // that held figure read "0 B left" with all 0.5 GB still to fetch.
   const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
   const states = select({
     jobs: {

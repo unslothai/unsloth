@@ -32,13 +32,10 @@ export function carriesOverSeed(
 /**
  * Whether an adopted job keeps the persisted held-transfer marker.
  *
- * It travels with the counters, because it is a statement ABOUT them: an XET-to-HTTP reclaim
- * holds the dead run's `downloadedBytes` beside the retry's smaller total, and `false` is what
- * stops the remainder being derived from that. Seeding the bytes while dropping the marker
- * restores it as undefined, which reads as measured, and the row goes back to "0 B left".
- *
- * Not carrying the seed zeroes the counters, so there is no held figure left to distrust and
- * undefined is the honest answer rather than a lost one.
+ * It travels with the counters, because it is a statement ABOUT them: seeding the bytes while
+ * dropping the marker restores it as undefined, which reads as measured, and the row goes back
+ * to "0 B left". Not carrying the seed zeroes the counters, so there is no held figure left to
+ * distrust and undefined is the honest answer rather than a lost one.
  */
 export function seededMeasuredTransfer(
   carryOverSeed: boolean,

@@ -396,13 +396,12 @@ def variant_remaining_bytes(
     """Bytes a resume of this variant still has to fetch, or None when unknown.
 
     Priced per file, which is what the transfer actually reuses: a finished shard is
-    kept, an unresumable partial is refetched whole. So a one-file quant reads back its
-    full size, and that is the honest number to show.
+    kept, an unresumable partial is refetched whole, so a one-file quant reads back its
+    full size.
 
     Counted in the root the row names, falling back to the active one. Pricing a pinned row
-    against the active root is wrong in both directions: shards already in the pinned root earn
-    no credit, and a copy of the same blob in the active root earns credit a resume into the
-    pinned root cannot use, which says less is left than really is.
+    against the active root is wrong in both directions: shards in the pinned root earn no
+    credit, and a copy in the active root earns credit a resume cannot use.
     """
     if requirement is None or not requirement.required_hashes:
         return None
@@ -426,9 +425,8 @@ def variant_remaining_bytes_from_state(
     plan. The worker writes a manifest before it fetches anything, so a partial row can still
     be priced from the file list that produced it.
 
-    Deliberately not capped by the row's own size. A local listing sizes a variant from the
-    shards ON DISK, so on an early interruption that total is smaller than the transfer, and
-    capping by it reported less left than has to be fetched.
+    Deliberately not capped by the row's own size: a local listing sizes a variant from the
+    shards ON DISK, so on an early interruption that total is smaller than the transfer.
     """
     if not variant:
         return None

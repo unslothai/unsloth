@@ -265,9 +265,8 @@ def blob_bytes_present(path: Path) -> int:
         return min(blocks * 512, st.st_size)
     # A present zero is not a missing field. A parallel writer that sets the partial to its
     # final length before its first chunk lands sits exactly here, and reading st_size then
-    # credits the whole blob -- the row says "0 B left" on a download that has transferred
-    # nothing. The zero alone is not enough to act on, because a mount that never populates
-    # st_blocks is indistinguishable from one reporting an empty extent map, so confirm the
+    # says "0 B left" on a download that has transferred nothing. The zero alone is not enough
+    # to act on -- a mount that never populates st_blocks looks the same -- so confirm the
     # emptiness directly before believing it.
     if blocks == 0 and _holds_no_data(path):
         return 0
@@ -281,9 +280,8 @@ def blob_bytes_present(path: Path) -> int:
 def _holds_no_data(path: Path) -> bool:
     """Whether the file has no allocated extent anywhere, asked of the kernel rather than
     inferred. ``SEEK_DATA`` past the end of the last extent is ENXIO, so a file with nothing
-    written raises on the very first seek. Only ever narrows an already-zero ``st_blocks``:
-    every other answer -- an unsupported seek, a filesystem that reports all files as data
-    from offset 0, an unreadable path -- leaves the caller's size fallback in charge.
+    written raises on the very first seek. Every other answer -- an unsupported seek, an
+    unreadable path -- leaves the caller's size fallback in charge.
     """
     seek_data = getattr(os, "SEEK_DATA", None)
     if seek_data is None:

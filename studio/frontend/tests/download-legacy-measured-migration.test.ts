@@ -3,10 +3,9 @@
 
 // A record written before measuredTransfer existed cannot say whether its byte
 // counters were measured, so an absent marker there is not the "never polled"
-// it means in a current record. An upgrade landing mid-reclaim restores the
-// dead run's held bytes with the guard reading measured, which is the "0 B left"
-// the marker exists to stop. The migration reads a legacy record that already
-// carries counters as held instead.
+// it means in a current record. The migration reads a legacy record that already
+// carries counters as held, so an upgrade landing mid-reclaim does not restore
+// the dead run's bytes as measured.
 
 import assert from "node:assert/strict";
 import test from "node:test";

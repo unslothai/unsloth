@@ -4,10 +4,9 @@
 """A partial row is priced by what a resume still has to fetch.
 
 The card used to print the variant total beside a resume button, so continuing a
-sharded download that was 40 GB in still read "56 GB" and looked like the whole
-model coming down again. Bytes reused are whole files: a finished shard is kept,
-an unresumable partial is refetched, so a one-file quant really does read back
-its full size.
+sharded download that was 40 GB in still read "56 GB". Bytes reused are whole
+files: a finished shard is kept, an unresumable partial is refetched, so a
+one-file quant really does read back its full size.
 """
 
 from __future__ import annotations
@@ -43,9 +42,8 @@ def blobs(monkeypatch, tmp_path):
     blobs_dir.mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(blobs_root))
 
-    # Honours an explicit root, which is what a row pinned to another cache passes; None
-    # still resolves to the active one. A stub that ignored the argument would answer the
-    # active root for a pinned row and hide exactly the bug the pinned tests are about.
+    # Honours an explicit root, which is what a row pinned to another cache passes. A stub that
+    # ignored the argument would hide exactly the bug the pinned tests are about.
     def _root(*, root: Optional[Path] = None, **_kw):
         return Path(root) if root is not None else blobs_root
 
@@ -89,8 +87,8 @@ def test_an_unresumable_partial_is_priced_as_a_full_refetch(blobs):
 
 
 def test_a_one_file_quant_reads_back_its_full_size(blobs):
-    """Nothing to keep, so a resume costs the whole quant. This is the case users report
-    as the model downloading all over again, and the number has to say so."""
+    """Nothing to keep, so a resume costs the whole quant -- the case users report as the
+    model downloading all over again, and the number has to say so."""
     plan = plan_from_expected_files(
         "Q4_K_M",
         [ExpectedFile(path = "model-Q4_K_M.gguf", size = 4 * GB, sha256 = SHARD_A)],
@@ -164,8 +162,8 @@ def test_an_unnamed_variant_is_not_priced(blobs, state):
 
 
 def test_a_local_row_is_not_capped_by_the_shards_it_already_has(blobs, state):
-    """A local scan sizes a variant from the shards ON DISK, so an early interruption makes that
-    total smaller than the transfer. Capping by it reported less left than must be fetched."""
+    """A local scan sizes a variant from the shards ON DISK, so an early interruption makes
+    that total smaller than the transfer still to come."""
     shard_c = "c" * 64
     _write_manifest(
         [
@@ -183,8 +181,7 @@ def test_a_local_row_is_not_capped_by_the_shards_it_already_has(blobs, state):
 # --------------------------------------------------------------------------------------------
 # A partial is measured by the bytes really on disk, and one shard is credited once however
 # many repo directories the cache holds for the same repo. Both were observed against real
-# caches: an interrupted hf_transfer download and two real `hf_hub_download` calls that spelled
-# one repo id in two casings.
+# caches.
 # --------------------------------------------------------------------------------------------
 
 
@@ -201,8 +198,7 @@ def _sparse(path: Path, written: int, logical: int) -> Path:
 
 def test_a_sparse_partial_is_priced_by_the_bytes_it_actually_holds(blobs):
     """hf_transfer's parallel Range writer leaves a partial whose st_size runs ahead of what has
-    been written. Crediting the logical size understated the transfer by the whole gap, and once
-    st_size reached the declared size the card read "0 B left" for a file barely started."""
+    been written, so crediting the logical size read "0 B left" for a file barely started."""
     from filelock import FileLock
 
     plan = plan_from_expected_files(
@@ -227,10 +223,9 @@ def test_a_sparse_partial_is_priced_by_the_bytes_it_actually_holds(blobs):
 
 
 def test_one_shard_in_two_case_variant_repo_dirs_is_credited_once(blobs, monkeypatch):
-    """The Hub resolves repo ids case-insensitively and huggingface_hub keeps the caller's
+    """The Hub resolves repo ids case-insensitively while huggingface_hub keeps the caller's
     casing in the folder name, so a case-sensitive filesystem holds models--Org--Model beside
-    models--org--model. Summing the directories counted one shard twice and clamped a variant
-    still missing a whole shard to "0 B left"."""
+    models--org--model. Summing the directories counted one shard twice."""
     root = blobs.parent.parent
     twin = root / "models--org--model" / "blobs"
     twin.mkdir(parents = True)
@@ -242,8 +237,7 @@ def test_one_shard_in_two_case_variant_repo_dirs_is_credited_once(blobs, monkeyp
 
 # --------------------------------------------------------------------------------------------
 # A row pinned to another cache root. A resume writes into the root the row names, so blobs in
-# the active root are not bytes it can reuse. Both directions were wrong: shards in the pinned
-# root earned no credit, and a copy in the active root earned credit that does not exist.
+# the active root are not bytes it can reuse. Both directions used to be wrong.
 # --------------------------------------------------------------------------------------------
 
 
@@ -258,8 +252,8 @@ def test_a_pinned_root_gets_credit_for_the_shards_it_holds(blobs, tmp_path):
 
 
 def test_the_active_roots_copy_does_not_pay_for_a_pinned_row(blobs, tmp_path):
-    # The whole variant sits in the active root, and none of it in the pinned one. Counting it
-    # reported nothing left to fetch for a transfer that has everything still to do.
+    # The whole variant sits in the active root and none of it in the pinned one, so counting
+    # it reported nothing left to fetch for a transfer that has everything still to do.
     _write(blobs / SHARD_A, 2 * GB)
     _write(blobs / SHARD_B, 2 * GB)
     other_root = tmp_path / "previous-hub"

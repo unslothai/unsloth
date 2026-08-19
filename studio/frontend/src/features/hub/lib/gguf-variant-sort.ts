@@ -38,9 +38,9 @@ export function ggufVariantTransferBytes(variant: GgufVariantTransfer): number {
   return typeof remaining === "number" && remaining >= 0 ? remaining : total;
 }
 
-/** Size of the transfer the button would start. A partial says what is LEFT:
- * the full size there reads as "this downloads all over again", which is only
- * true when the quant is one file. */
+/** Labelled form of the above. A partial says what is LEFT: the full size there
+ * reads as "this downloads all over again", which is only true for a one-file
+ * quant. */
 export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
   const label = formatBytes(ggufVariantTransferBytes(variant));
   return variant.partial ? `${label} left` : label;

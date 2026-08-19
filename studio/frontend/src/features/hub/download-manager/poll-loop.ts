@@ -615,8 +615,7 @@ export async function startJob(
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
   // Whatever the counters mean, they keep meaning it. Seeding the bytes without
   // this said "measured" for a figure the poll only held, which is the
-  // "0 B left" the guard exists to stop. Not carrying the seed zeroes the
-  // counters, so there is no held figure and undefined is the honest answer.
+  // "0 B left" the guard exists to stop.
   const seedMeasuredTransfer = seededMeasuredTransfer(
     carryOverSeed,
     existing?.measuredTransfer,
