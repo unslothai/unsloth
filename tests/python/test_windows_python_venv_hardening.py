@@ -418,6 +418,7 @@ def _run_uv_venv_creation_result(
     fallback_mode: str,
     migrated: bool = False,
     foreign: bool = False,
+    detected_python_missing: bool = False,
 ) -> dict[str, str]:
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     readiness = _extract(r"    function Test-VenvPythonReady \{.*?\n    \}\n", source)
@@ -458,6 +459,7 @@ exit 0
     )
     detected_python.write_text(
         """
+if ($args[0] -eq "-c") { exit 0 }
 [System.IO.File]::WriteAllText($env:TEST_FALLBACK_LOG, ($args -join "|"))
 $target = $args[2]
 New-Item -ItemType Directory -Force -Path $target | Out-Null
@@ -476,6 +478,8 @@ exit 0
 """.strip(),
         encoding = "utf-8",
     )
+    if detected_python_missing:
+        detected_python.unlink()
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -623,6 +627,23 @@ def test_uv_venv_creation_result_nonzero_ready_uv_still_uses_fallback(
     _assert_uv_invocation(state, tmp_path)
     assert state["failure"] == "False", state
     assert state["package"] == "True", state
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_uv_venv_creation_result_missing_selected_python_stops_before_packages(
+    tmp_path: Path, shell: str
+):
+    state = _run_uv_venv_creation_result(
+        tmp_path, shell, "nonzero_ready", "ready", detected_python_missing = True
+    )
+    assert state["calls"] == "create virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
+    assert state["marker"] == "True", state
+    assert state["failure"] == "True", state
+    assert state["failure_code"] == "1", state
+    assert "Failed to repair virtual environment (exit code 1)" in state["failure_message"], state
+    assert state["package"] == "False", state
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

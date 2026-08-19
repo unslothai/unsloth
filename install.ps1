@@ -4173,7 +4173,11 @@ exit 0
                 return (Exit-InstallFailure "Refusing to repair unowned virtual environment directory $VenvDir")
             }
             Write-StudioLine "[WARN] uv did not produce a usable virtual environment; repairing with the selected Python." -ForegroundColor Yellow
-            $fallbackVenvExit = Invoke-InstallCommand -Label "repair virtual environment" { & $DetectedPython.Path -m venv $VenvDir }
+            if (-not (Test-VenvPythonReady -PythonExe $DetectedPython.Path)) {
+                $fallbackVenvExit = 1
+            } else {
+                $fallbackVenvExit = Invoke-InstallCommand -Label "repair virtual environment" { & $DetectedPython.Path -m venv $VenvDir }
+            }
         }
     } else {
         step "venv" "using migrated environment"
