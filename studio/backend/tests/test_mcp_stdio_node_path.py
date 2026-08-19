@@ -352,9 +352,7 @@ def test_windows_npx_sibling_runtime_is_the_one_validated(
     assert result == f"{managed_node_install}{os.pathsep}{configured}"
 
 
-def test_posix_split_layout_still_trusts_the_path_node(
-    managed_node_install, monkeypatch, tmp_path
-):
+def test_posix_split_layout_still_trusts_the_path_node(managed_node_install, monkeypatch, tmp_path):
     """On POSIX npx is a shebang script resolving node via PATH, so a split is fine."""
     good = tmp_path / "good"
     good.mkdir()
