@@ -509,7 +509,11 @@ def test_sticky_boundary_prefers_the_recorded_branch_boundary(monkeypatch):
     assert llama_cpp._sticky_compaction_boundary("t1") == 4
 
 
-def _anchored_row(boundary, anchor, content = "a"):
+def _anchored_row(
+    boundary,
+    anchor,
+    content = "a",
+):
     return {
         "role": "assistant",
         "content": content,
