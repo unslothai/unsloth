@@ -64,11 +64,13 @@ import {
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
 import {
+  THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
   type ThreadScopedSettingKey,
   type ThreadScopedSettings,
   hasThreadScopedSettings,
   isThreadOwnedSettingKey,
+  isThreadScopedParamKey,
   sanitizeThreadScopedSettings,
 } from "../utils/thread-scoped-settings";
 import {
@@ -781,12 +783,22 @@ let threadSettingsWriteThreadId: string | null = null;
 // leaves in the store by the time the debounce fires.
 let threadSettingsWriteSnapshot: ThreadScopedSettings | null = null;
 
+/** Where a thread-scoped key's live value is: sampling under `params`, the rest fields. */
+function readThreadScopedValue(
+  state: ChatRuntimeStore,
+  key: ThreadScopedSettingKey,
+): unknown {
+  return isThreadScopedParamKey(key)
+    ? state.params[key]
+    : (state as Record<string, unknown>)[key];
+}
+
 function readThreadScopedSettings(
   state: ChatRuntimeStore,
 ): ThreadScopedSettings {
   const source: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_SETTING_KEYS) {
-    source[key] = state[key];
+    source[key] = readThreadScopedValue(state, key);
   }
   // drops "full" with it: a stored bypass would come back without the warning dialog.
   return sanitizeThreadScopedSettings(source);
@@ -873,6 +885,129 @@ const CLAMPED_PILL_KEYS = [
   "webFetchToolsEnabled",
 ] as const;
 type ClampedPillKey = (typeof CLAMPED_PILL_KEYS)[number];
+
+/**
+ * The value of a sampling edit still waiting on its chat's read, if there is one.
+ *
+ * Pills can be read back off the store when the window closes, but the sampling keys
+ * share `params` with the model's recommendation, so a load landing in the same window
+ * would overwrite the edit first, pinning the model's value onto the chat as if the user
+ * had chosen it. Captured at the edit instead; last entry wins, as the read-back did.
+ */
+function heldThreadScopedParamValue(key: string): unknown {
+  for (let i = heldThreadScopedEdits.length - 1; i >= 0; i -= 1) {
+    if (heldThreadScopedEdits[i].field === key) {
+      return heldThreadScopedEdits[i].value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Put back the sampling keys the open chat owns, so a model load or status poll applying
+ * that model's recommendation leaves the chat running on what it stored. Only an unpinned
+ * chat falls through to the model's values.
+ */
+function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
+  const kept: Record<string, unknown> = {};
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    // ?? and not ||: 0, "" and -1 are all values a user sets on purpose here.
+    const held = heldThreadScopedParamValue(key) ?? threadScopedOverride(key);
+    if (held === undefined || isSameThreadScopedValue(held, params[key])) {
+      continue;
+    }
+    kept[key] = held;
+  }
+  return hasKeys(kept) ? { ...params, ...kept } : params;
+}
+
+/**
+ * Take the open chat's own values back out of a snapshot about to be remembered against
+ * a model: they belong to the chat, so leaving them in replays one chat's prompt and
+ * sampling into the next chat opened on that model. What the model already remembered
+ * wins over the installation values, so stepping off a model inside a chat does not
+ * flatten a preference it was given outside one.
+ *
+ * A chat whose read is still out owns its keys just as much as an applied one (the edit
+ * sits in heldThreadScopedEdits, not a snapshot); gating on the applied id alone let a
+ * model switch in that window snapshot the chat's sampling into the outgoing model's
+ * memory, which every other chat on that model then replays.
+ */
+function withoutActiveThreadParams(
+  state: ChatRuntimeStore,
+  params: InferenceParams,
+): InferenceParams {
+  if (threadScopedSettingsThreadId === null && pendingPairingThreadId === null) {
+    return params;
+  }
+  const remembered = params.checkpoint
+    ? state.paramsByModel[params.checkpoint]
+    : undefined;
+  const restored: Record<string, unknown> = {};
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    // Only a key this chat actually owns; the rest are already the model's.
+    const held = heldThreadScopedParamValue(key);
+    if (held === undefined && threadScopedOverride(key) === undefined) continue;
+    // For a held key the installation copy can still be null and the store no longer
+    // holds the pre-edit value; the sample taken when the window opened is that value.
+    const own =
+      remembered?.[key] ??
+      globalThreadScopedDefaults?.[key] ??
+      (held !== undefined ? pairingWindowDefaults?.[key] : undefined);
+    if (own === undefined || isSameThreadScopedValue(own, params[key])) {
+      continue;
+    }
+    restored[key] = own;
+  }
+  return hasKeys(restored) ? { ...params, ...restored } : params;
+}
+
+/**
+ * Drop the sampling keys the open chat just took, so they reach neither the installation
+ * defaults nor this model's memory: both are shared with every other chat. A model's own
+ * values are never taken and pass straight through.
+ */
+function withoutCapturedThreadEdits(
+  changedParams: PersistedInferenceParams,
+  fromModelDefaults: boolean,
+): PersistedInferenceParams {
+  const shared: PersistedInferenceParams = {};
+  for (const [key, value] of Object.entries(changedParams)) {
+    if (
+      isThreadScopedParamKey(key) &&
+      !fromModelDefaults &&
+      // By value: this runs inside the updater, so the store still holds the pre-edit
+      // value, and a load in the same pairing window is what a read-back would find.
+      captureThreadScopedEdit(key, null, value)
+    ) {
+      continue;
+    }
+    (shared as Record<string, unknown>)[key] = value;
+  }
+  return shared;
+}
+
+/**
+ * Move the in-memory copy of the installation defaults to what was just written.
+ * `applyThreadScopedSettings` falls back to it for a chat with no snapshot, so leaving it
+ * stale means such a chat runs the sampling of whichever model was loaded before it.
+ */
+function noteThreadScopedDefaults(shared: PersistedInferenceParams): void {
+  let next: Record<string, unknown> | null = null;
+  for (const [key, value] of Object.entries(shared)) {
+    if (!isThreadScopedParamKey(key)) continue;
+    // Held field: the pairing capture restores it from the sample taken when the window
+    // opened, so without this the pre-window value goes back and the in-memory defaults
+    // stay behind the server's for the session, pinning onto the next snapshot-less chat.
+    if (isHeldThreadScopedField(key)) {
+      hydratedDefaultsByHeldField.set(key, value);
+    }
+    if (globalThreadScopedDefaults === null) continue;
+    next ??= { ...globalThreadScopedDefaults };
+    next[key] = value;
+  }
+  if (next !== null) globalThreadScopedDefaults = next as ThreadScopedSettings;
+}
 
 function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   if (Object.is(next, current)) return true;
@@ -1371,6 +1506,8 @@ let pairingWindowDefaultsThreadId: string | null = null;
 let heldThreadScopedEdits: {
   field: string;
   writeGlobal: (() => void) | null;
+  /** Sampling keys only, captured by value; see heldThreadScopedParamValue. */
+  value?: unknown;
 }[] = [];
 
 /** Start of the window: the read for `threadId` is out but its snapshot has not landed. */
@@ -1515,6 +1652,8 @@ export function commitHeldThreadScopedEditsToTheirThread(
   closeThreadScopedPairingGate(null);
   if (threadId === null || held.length === 0) return Promise.resolve();
   const changes = heldThreadScopedChanges(held);
+  // Read off the store above, so only now that the values are safely captured.
+  restoreDefaultsOverCommittedEdits(threadId, held);
   if (keepalive) {
     sendThreadScopedSettingsBeacon(threadId, changes, true);
     return Promise.resolve();
@@ -1524,13 +1663,66 @@ export function commitHeldThreadScopedEditsToTheirThread(
   return mergeThreadScopedSettingsIntoRow(threadId, changes);
 }
 
+/**
+ * Put the installation values back over the edits just written to the chat the user left.
+ * Without this the store keeps showing that chat's temperature and system prompt, and the
+ * next chat opened takes them: a snapshot-less one captures the store as the installation
+ * defaults and is pinned with them, a brand new one simply runs on them.
+ *
+ * Only when the chat is actually being left. A failed read about to be retried commits the
+ * same way while the chat stays open, as does a fork; putting the defaults back there
+ * would undo an edit the user is looking at.
+ */
+function restoreDefaultsOverCommittedEdits(
+  threadId: string,
+  held: { field: string }[],
+): void {
+  if (useChatRuntimeStore.getState().activeThreadId === threadId) return;
+  const before = (pairingWindowDefaults ?? globalThreadScopedDefaults) as Record<
+    string,
+    unknown
+  > | null;
+  const fields: Record<string, unknown> = {};
+  const params: Record<string, unknown> = {};
+  for (const edit of held) {
+    // The server answered for this field while the window was open, so that value is
+    // the installation's; the pre-window sample is only what this browser had cached.
+    const value = hydratedDefaultsByHeldField.has(edit.field)
+      ? hydratedDefaultsByHeldField.get(edit.field)
+      : before?.[edit.field];
+    hydratedDefaultsByHeldField.delete(edit.field);
+    // Nothing known to go back to: leaving the edit up is no worse than blanking it.
+    if (value === undefined) continue;
+    if (isThreadScopedParamKey(edit.field)) {
+      params[edit.field] = value;
+    } else {
+      fields[edit.field] = value;
+    }
+  }
+  if (!hasKeys(fields) && !hasKeys(params)) return;
+  // setState and not setParams: these values are already the installation's, and going
+  // through the setter would persist them back to it and to the loaded model's memory.
+  useChatRuntimeStore.setState((state) =>
+    hasKeys(params)
+      ? ({ ...fields, params: { ...state.params, ...params } } as Partial<ChatRuntimeStore>)
+      : (fields as Partial<ChatRuntimeStore>),
+  );
+}
+
 /** What the user actually touched, read off the store, which still holds their edits. */
 function heldThreadScopedChanges(
   held: { field: string }[],
 ): ThreadScopedSettings {
   const edited: Record<string, unknown> = {};
-  const live = useChatRuntimeStore.getState() as Record<string, unknown>;
-  for (const edit of held) edited[edit.field] = live[edit.field];
+  const live = useChatRuntimeStore.getState();
+  // Same reader the snapshot path uses: sampling keys sit under `params`, so a direct
+  // field read returns undefined and the sanitizer drops them.
+  for (const edit of held) {
+    edited[edit.field] = readThreadScopedValue(
+      live,
+      edit.field as ThreadScopedSettingKey,
+    );
+  }
   return sanitizeThreadScopedSettings(edited);
 }
 
@@ -1591,6 +1783,10 @@ async function mergeThreadScopedSettingsIntoRow(
  * belong to the chat, so when its pairing window closes the default goes back to the
  * value from before the window, which is this browser's pre-hydration copy. The server's
  * is the authoritative one and lands nowhere else.
+ *
+ * A default published by a model that loaded inside the window is recorded here for the
+ * same reason: setParams already sent it to the installation, so restoring the pre-window
+ * sample over it would leave this session's copy behind the server's.
  */
 const hydratedDefaultsByHeldField = new Map<string, unknown>();
 
@@ -1603,6 +1799,7 @@ function isHeldThreadScopedField(field: string): boolean {
 function captureThreadScopedEdit(
   field: string,
   writeGlobal: (() => void) | null = null,
+  value?: unknown,
 ): boolean {
   if (!isThreadOwnedSettingKey(field)) return false;
   const threadId = useChatRuntimeStore.getState().activeThreadId;
@@ -1617,7 +1814,7 @@ function captureThreadScopedEdit(
     return true;
   }
   if (threadId === pendingPairingThreadId) {
-    heldThreadScopedEdits.push({ field, writeGlobal });
+    heldThreadScopedEdits.push({ field, writeGlobal, value });
     return true;
   }
   return false;
@@ -2478,8 +2675,9 @@ type ChatRuntimeStore = {
     options?: {
       persist?: boolean;
       trackQueuedSettings?: boolean;
-      /** These params are the model's defaults, so its remembered settings are
-       * laid back over them even though the checkpoint did not change. */
+      /** These params are the model's defaults, so its remembered settings are laid back
+       * over them even though the checkpoint did not change. Being the model's and not
+       * the user's, they also move the installation defaults, never the chat's. */
       fromModelDefaults?: boolean;
       /** The context the model just loaded with. */
       maxTokensCap?: number;
@@ -2855,6 +3053,9 @@ function persistReplayedParams(
   const changed = getChangedInferenceParams(nextParams, state.params);
   if (state.settingsHydrated && hasKeys(changed)) {
     saveSettingsPatch({ inferenceParams: changed });
+    // Same reason as the setParams write: the in-memory copy is what a chat with
+    // no snapshot falls back to, so it has to move with what was just stored.
+    noteThreadScopedDefaults(changed);
   }
 }
 
@@ -2909,7 +3110,10 @@ function getParamsByModelAfterEdit(
       outgoing ?? state.paramsByModel,
       nextParams.checkpoint,
       changedParams,
-      pickRememberedParams(nextParams),
+      // Same filter as the outgoing snapshot: an edit to a key the memory keeps but the
+      // chat does not (maxTokens, fastMode) still records the WHOLE snapshot, so the open
+      // chat's sampling would ride into the model's entry and replay into the next chat.
+      pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
     ),
     nextParams.checkpoint,
   );
@@ -2925,7 +3129,9 @@ function rememberOutgoingModel(
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
-  const snapshot = pickRememberedParams(outgoing);
+  const snapshot = pickRememberedParams(
+    withoutActiveThreadParams(state, outgoing),
+  );
   // Only to seed a model with no entry: later changes are written key by key by
   // the edit that made them, and a full snapshot would put this browser's copy
   // of untouched keys over another tab's.
@@ -3135,6 +3341,15 @@ function getHydratedSettingsState(
   const params = { ...state.params };
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
+    // A slider moved before this response landed is held for the open chat, like a pill
+    // clicked in the same window. The edit wins in the store, but it is the chat's, so
+    // keep the server's value for the restore that runs when the pairing window closes:
+    // without it the default falls back to this browser's pre-hydration copy and is
+    // pinned onto the next snapshot-less chat. The edit already moved the version below.
+    if (value !== undefined && isHeldThreadScopedField(key)) {
+      hydratedDefaultsByHeldField.set(key, value);
+      continue;
+    }
     if (
       value !== undefined &&
       !keepModelDefaults &&
@@ -3593,14 +3808,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // marks the updates that re-apply model defaults after a load or a status
       // poll: they overwrite remembered values, so memory goes back over them.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
+      const replayed = checkpointChanged || fromModelDefaults;
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
         params,
         params.checkpoint,
-        checkpointChanged || fromModelDefaults,
+        replayed,
         options?.maxTokensCap,
       );
+      // A chat outranks both the model's memory and its defaults, so the sampling it
+      // pinned goes back on top of the replay. Live store only: persistence is decided
+      // from nextParams below, so a pinning chat does not withhold the model's value.
+      const effective = replayed
+        ? restoreThreadScopedParams(nextParams)
+        : nextParams;
       // A user edit fences the keys it moved against a hydration response still
       // in flight; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(
@@ -3610,27 +3832,45 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         state.params,
-        nextParams,
+        effective,
         options?.trackQueuedSettings !== false,
       );
+      const persistingGlobally =
+        options?.persist !== false && state.settingsHydrated;
+      // A sampling key moved with a chat open belongs to that chat, so it reaches neither
+      // the installation defaults nor this model's memory, both shared with every other
+      // chat. What is left over is still the installation's.
+      //
+      // Capture is NOT gated on hydration, unlike the global write: the composer and the
+      // settings sheet are live while the initial /api/chat/settings request is still out,
+      // and this chat's pairing has already begun. Leaving such an edit uncaptured let the
+      // arriving snapshot apply over it and let the pairing capture take it for an
+      // installation default, pinning it onto the next snapshot-less chat.
+      const sharedParams =
+        options?.persist !== false
+          ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
+          : changedParams;
       // An edit belongs to the model the params now describe, so a call that moves
       // checkpoint and sliders at once files them under the destination.
       const paramsByModel = getParamsByModelAfterEdit(
         state,
         outgoing,
         nextParams,
-        changedParams,
+        sharedParams,
         options?.persist !== false && !fromModelDefaults,
       );
-      if (options?.persist !== false && state.settingsHydrated) {
+      if (persistingGlobally) {
         // A switch replays the destination's entry over the params, so writing
         // it back says nothing new and, merged per key on the server, would put
         // this browser's copy over one another tab has since changed.
         persistParamEdit(
-          changedParams,
+          sharedParams,
           checkpointChanged ? null : paramsByModel,
           nextParams.checkpoint,
         );
+        // Level with what was just written, or a chat opened later in the same
+        // session falls back to the sampling from before this model loaded.
+        noteThreadScopedDefaults(sharedParams);
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
@@ -3638,7 +3878,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         );
       }
       return {
-        params: nextParams,
+        params: effective,
         ...(paramsByModel ? { paramsByModel } : {}),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
@@ -3884,8 +4124,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: modelId,
         maxTokens: nextMaxTokens,
       };
+      // The chat outranks the model it switches to, so its pinned sampling and prompt go
+      // back over the replay; an external switch has no load after it to do that. Live
+      // store only: getReplayStatePatch still persists from the unrestored object, so the
+      // model's own values reach the installation defaults.
+      const restoredParams = checkpointChanged
+        ? restoreThreadScopedParams(nextParams)
+        : nextParams;
       return {
-        params: nextParams,
+        params: restoredParams,
         ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
@@ -3995,10 +4242,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const nextState: Partial<ChatRuntimeStore> = {};
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
+      const paramsPatch: Record<string, unknown> = {};
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         // the user set this one while the read was in flight, so it wins over what came back.
         if (heldFields.has(key)) {
-          applied[key] = state[key];
+          applied[key] = readThreadScopedValue(state, key);
           continue;
         }
         // full access was accepted through a warning dialog: a switch must not drop it.
@@ -4028,7 +4276,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
         if (value === undefined) continue;
         applied[key] = value;
-        if (!isSameThreadScopedValue(value, state[key])) target[key] = value;
+        if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
+          continue;
+        }
+        // The sampling ones are one object, gathered and applied together below.
+        if (isThreadScopedParamKey(key)) {
+          paramsPatch[key] = value;
+        } else {
+          target[key] = value;
+        }
+      }
+      if (hasKeys(paramsPatch)) {
+        nextState.params = { ...state.params, ...paramsPatch };
       }
       // Search and Thinking are mutually exclusive on Kimi, and the model-selection effect
       // that enforces it does not rerun on a thread switch. Restoring both, which a chat
@@ -4542,7 +4801,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.rememberParamsPerModel,
       );
       // Turning it on adopts the settings on screen for the active model.
-      const snapshot = pickRememberedParams(state.params);
+      // Inside a chat the sampling on screen is that chat's and both writes below are
+      // shared, so the outgoing snapshot's filter takes those keys back out first.
+      const snapshot = pickRememberedParams(
+        withoutActiveThreadParams(state, state.params),
+      );
       const paramsByModel = trackParamsByModel(
         state,
         getRememberedParamsPatch(
@@ -4568,6 +4831,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // restores that instead.
       if (!rememberParamsPerModel && state.settingsHydrated) {
         saveSettingsPatch({ inferenceParams: snapshot });
+        // Third write of the installation-wide sampling; level the copy as the others do.
+        noteThreadScopedDefaults(snapshot);
       }
       return {
         rememberParamsPerModel,
