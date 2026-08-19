@@ -70,6 +70,13 @@ function RouteFallback() {
   );
 }
 
+function ReloadSnapshotReady() {
+  useLayoutEffect(() => {
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, []);
+  return null;
+}
+
 // ImagesPage is mounted persistently below (not via the /images route) so an in-flight batch survives leaving the tab,
 // mirroring ChatPage. Kept lazy so its bundle still loads only on the first /images visit.
 const ImagesPage = lazy(() =>
@@ -366,6 +373,7 @@ function RootLayout() {
 
   const content = (
     <>
+      <ReloadSnapshotReady />
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}

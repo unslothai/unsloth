@@ -3239,3 +3239,19 @@ html[data-chat-font] .aui-root {
 		);
 	}
 }
+
+.reload-snapshot {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	pointer-events: auto;
+	background: var(--background);
+}
+
+.reload-snapshot *,
+.reload-snapshot *::before,
+.reload-snapshot *::after {
+	pointer-events: none !important;
+	animation-play-state: paused !important;
+	transition: none !important;
+}
