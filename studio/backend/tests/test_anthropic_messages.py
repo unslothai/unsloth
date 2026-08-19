@@ -2028,6 +2028,19 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+        # Reading this conversation's own archive is as read-only as the other two, and
+        # is_potentially_unsafe_tool_call says so, so selecting it must not trip the gate.
+        # Adding the schema to ALL_TOOLS without adding the name here made the Anthropic
+        # selector pick it and the pre-switch guard reject the whole request with the
+        # terminal/python message, on auto and on the omitted default alike.
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(
+                enable_tools = True, enabled_tools = ["search_conversation"], **extra
+            )
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
         # But auto or an omitted mode that would run a local tool (terminal/python,
         # via a bare Anthropic tool type or enabled_tools) is rejected, since that
         # tool could need the gate this channel lacks.

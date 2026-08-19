@@ -85,13 +85,29 @@ def _text_of(content, *, include_tool_calls: bool = False) -> str:
 def _probe_text(message: dict) -> str:
     """One message flattened in the ORDER ``render_turn`` writes it.
 
-    The branch check matches in order, so both must agree on it: a tool call before any
-    assistant text on the same message, its result after. Laid out that way here for both
-    shapes, the request's ``tool_calls`` and the store's ``tool-call`` content parts.
+    The branch check matches in order, so both must agree on it. Bucketing the whole
+    message as call, text, result only holds while the text came BEFORE the call. A
+    persisted row whose tool call is followed by the model's final answer -- the ordinary
+    agent turn -- renders as call, result, answer, and the buckets put the answer in the
+    middle: `_scan_probes` advanced its cursor past the answer to find the result and then
+    could not find the answer again, so an unchanged evicted tool exchange was classified
+    off-branch and no query could return it. Measured end to end: recall came back with
+    the user's question alone and the document holding the answer was filtered out.
+
+    So the buckets are flushed the way the replay serializer flushes its pending calls,
+    when text arrives after a call. Text before a call still rides ahead of it, which is
+    the shape it is written in.
     """
+    chunks: list[str] = []
     calls: list[str] = []
     texts: list[str] = []
     results: list[str] = []
+
+    def flush() -> None:
+        chunks.extend(part for part in calls + texts + results if part)
+        calls.clear()
+        texts.clear()
+        results.clear()
 
     def rendered(value) -> list[str]:
         """A structured value as the strings a wire-format copy of it could look like.
@@ -121,6 +137,8 @@ def _probe_text(message: dict) -> str:
                 if result not in (None, "", {}, []):
                     results.extend(rendered(result))
             elif part.get("type") in ("text", "input_text") or "text" in part:
+                if calls:
+                    flush()
                 texts.append(str(part.get("text") or ""))
     else:
         texts.append(_text_of(content))
@@ -129,7 +147,8 @@ def _probe_text(message: dict) -> str:
         for value in (function.get("name"), function.get("arguments")):
             if value:
                 calls.append(str(value))
-    return "\n".join(part for part in calls + texts + results if part)
+    flush()
+    return "\n".join(chunks)
 
 
 def _is_injected(message: dict) -> bool:
