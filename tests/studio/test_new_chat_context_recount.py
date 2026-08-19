@@ -204,6 +204,14 @@ function getReplayedParams(
 function getReplayStatePatch(): any {
   return {};
 }
+// The open chat's own sampling, laid back over the replay by the sliced
+// setCheckpoint. No thread-scoped snapshot is ever seeded here -- this file is
+// about the context window, not about which chat pinned a temperature -- so
+// nothing is held and the replay passes through untouched. The real restore is
+// covered by studio/frontend/tests/thread-scoped-pairing-invariants.test.ts.
+function restoreThreadScopedParams(params: any): any {
+  return params;
+}
 function saveLastExternalCheckpoint(_id: string | null): void {}
 function saveBool(_key: string, _value: boolean): void {}
 function parseExternalModelId(id: string): any {

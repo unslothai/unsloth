@@ -143,6 +143,7 @@ def test_dataset_cache_scan_attaches_app_bytes_without_replacing_raw_path(monkey
             "cache_path": "/cache/hub/datasets--Org--Data",
             "partial": False,
             "partial_transport": None,
+            "partial_resumable": False,
             "processed_cache": True,
             "app_processed_cache": True,
         }

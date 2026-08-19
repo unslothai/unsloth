@@ -120,6 +120,7 @@ import {
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   awaitThreadScopedPairing,
@@ -1501,6 +1502,43 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+function extractVideoPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "file") return undefined;
+  const filePart = part as unknown as { data?: string; mimeType?: string };
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  return filePart.data.startsWith("data:")
+    ? filePart.data.split(",")[1]
+    : filePart.data;
+}
+
+/** Base64 of the clip on the newest user turn. Only the newest counts, like
+ * audio: replaying an older one would re-sample it into frames and spend the
+ * context of every text follow-up. */
+export function findLatestUserVideoBase64(
+  messages: RunMessages,
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "user") continue;
+    for (const part of message.content ?? []) {
+      const base64 = extractVideoPartBase64(part);
+      if (base64) return base64;
+    }
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractVideoPartBase64(part);
+          if (base64) return base64;
+        }
+      }
+    }
+    break;
+  }
+  return undefined;
+}
+
 // The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
 // text the request carries.
 export const CANVAS_TOOL_INSTRUCTION =
@@ -1676,7 +1714,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -1948,6 +1986,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   ggufContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
@@ -1973,6 +2012,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "supportsReasoningOff",
   "reasoningEffortLevels",
   "supportsPreserveThinking",
+  "preserveThinking",
   "supportsTools",
   "toolsEnabled",
   "codeToolsEnabled",
@@ -2079,6 +2119,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
+    preserveThinking: state.preserveThinking,
     ggufContextLength: state.ggufContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
@@ -2088,6 +2129,7 @@ function queuedResolvedModelFromStore(
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
+          hasVideoInput: activeModel.hasVideoInput,
         }
       : null,
   };
@@ -3063,6 +3105,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3108,6 +3151,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3430,6 +3474,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3529,6 +3574,7 @@ async function resolveQueuedEmptyLocalModel(
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
+            preserveThinking: resolvePreserveThinkingOnLoad(status),
             ggufContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
@@ -3539,6 +3585,7 @@ async function resolveQueuedEmptyLocalModel(
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
+              hasVideoInput: status.has_video_input ?? false,
             },
           },
         };
@@ -3762,6 +3809,9 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
+                preserveThinking:
+                  queuedEmptyModelRuntime?.preserveThinking ??
+                  liveRuntime.preserveThinking,
                 ggufContextLength:
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.ggufContextLength
@@ -3914,6 +3964,9 @@ export function createOpenAIStreamAdapter(
             inferenceRequest,
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
+            budgets: {
+              modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
+            },
             websitePolicy: {
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
@@ -4103,6 +4156,9 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
+              preserveThinking:
+                queuedEmptyModelRuntime?.preserveThinking ??
+                liveRuntime.preserveThinking,
               ggufContextLength:
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.ggufContextLength
@@ -4483,6 +4539,7 @@ export function createOpenAIStreamAdapter(
         survivingMessages,
         !queuedRunSettings && !continuation,
       );
+      const videoBase64 = findLatestUserVideoBase64(survivingMessages);
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
@@ -5442,6 +5499,7 @@ export function createOpenAIStreamAdapter(
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -5498,7 +5556,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(codeToolsEnabled
+                      ? ["python", "terminal", "edit_file"]
+                      : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
