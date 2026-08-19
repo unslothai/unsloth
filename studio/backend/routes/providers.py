@@ -297,6 +297,18 @@ async def update_provider_config(
         payload.max_output_tokens,
     )
     persisted_models = list(existing.get("models") or [])
+    if existing_info.get("auth_kind") == "chatgpt_oauth":
+        # The OAuth bundle is shared through the installation DB while the catalog is per
+        # process, so another worker may have rebound this connection. The chat route
+        # makes the same check; without it here a save would persist exactly what every
+        # send then refuses.
+        current_bundle = openai_codex_auth.load_oauth_bundle(provider_id)
+        current_account = current_bundle.get("account_id") if current_bundle else None
+        if current_account and not openai_codex_client.subscription_catalog_matches_account(
+            provider_id, current_account
+        ):
+            openai_codex_client.forget_subscription_models(provider_id)
+            openai_codex_client.mark_subscription_catalog_stale(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
         # Only a slug that is neither seeded nor already saved here needs the plan
         # catalog. Reaching upstream for the others would make an ordinary save wait out

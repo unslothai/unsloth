@@ -321,7 +321,9 @@ export interface CodexSubscriptionModels {
   /** Every model the plan returned, offered or not: absent from this means the account
    * cannot reach it, while present-but-unoffered only means it is no longer shown. */
   known?: ProviderModelInfo[];
-  source: "subscription" | "curated";
+  /** "reauthorization_required" is a curated answer that also says the connection has
+   * to be reconnected: the picker must not treat it as the plan's catalog. */
+  source: "subscription" | "curated" | "reauthorization_required";
 }
 
 export async function fetchCodexSubscriptionModels(

@@ -367,20 +367,44 @@ async def list_subscription_models(
 
     ticket = _begin_catalog_request(provider_id)
     url = _validated_models_url()
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "chatgpt-account-id": account_id,
-        "originator": OPENAI_CODEX_ORIGINATOR,
-        "User-Agent": OPENAI_CODEX_USER_AGENT,
-        "Accept": "application/json",
-    }
+
+    def _headers(token: str, account: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "chatgpt-account-id": account,
+            "originator": OPENAI_CODEX_ORIGINATOR,
+            "User-Agent": OPENAI_CODEX_USER_AGENT,
+            "Accept": "application/json",
+        }
+
     client = _create_http_client()
     try:
         response = await client.get(
             url,
-            headers = headers,
+            headers = _headers(access_token, account_id),
             params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
         )
+        if response.status_code == 401:
+            # Upstream can reject a token before its recorded expiry while the refresh
+            # credential is still good. The responses transport spends one forced refresh
+            # on that; without the same here the editor cannot load a catalog for a
+            # connection whose chats recover fine.
+            try:
+                access_token, account_id = await codex_auth.resolve_access(
+                    provider_id,
+                    force_refresh = True,
+                    expected_access_token = access_token,
+                )
+            except Exception as exc:
+                raise CodexReauthorizationError(
+                    "ChatGPT authorization expired. Reconnect this connection.",
+                    status = 401,
+                ) from exc
+            response = await client.get(
+                url,
+                headers = _headers(access_token, account_id),
+                params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
+            )
         if response.status_code == 401:
             raise CodexReauthorizationError(
                 "ChatGPT authorization expired. Reconnect this connection.",

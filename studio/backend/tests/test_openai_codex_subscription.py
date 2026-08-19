@@ -2020,9 +2020,9 @@ def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
 
 def test_the_model_route_reports_a_dead_connection(monkeypatch):
     """The editor route must say reconnect rather than answer with a healthy seed list."""
-    from fastapi import HTTPException
     from routes import openai_codex_auth as codex_routes
 
+    curated = get_provider_info("openai_codex")["default_models"]
     monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
     monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "connected")
 
@@ -2030,11 +2030,77 @@ def test_the_model_route_reports_a_dead_connection(monkeypatch):
         raise codex_auth.CodexAuthError("ChatGPT authorization is no longer valid.")
 
     monkeypatch.setattr(codex_routes.codex_auth, "resolve_access", _needs_reauth)
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            codex_routes.list_subscription_models(
-                "provider-10", _credential = ("user", "session"), via_api_key = False
-            )
+    answered = asyncio.run(
+        codex_routes.list_subscription_models(
+            "provider-10", _credential = ("user", "session"), via_api_key = False
         )
-    assert excinfo.value.status_code == 401
-    assert "no longer valid" in str(excinfo.value.detail)
+    )
+    # Not a 401: authFetch would read that as an expired Studio session, refresh it and
+    # retry, and the retry would look like a healthy curated list.
+    assert answered["source"] == "reauthorization_required"
+    assert [model["id"] for model in answered["models"]] == curated
+
+
+def test_a_catalog_401_spends_one_forced_refresh(monkeypatch):
+    """Upstream can reject a token before its recorded expiry; the refresh may be fine.
+
+    The responses transport already spends one forced refresh on that, so the editor
+    should not be the only path that gives up and demands a reconnect.
+    """
+    import httpx
+
+    forget_subscription_models("provider-11")
+    calls = []
+
+    class Rejecting:
+        async def get(self, _url, headers = None, params = None):
+            calls.append(headers["Authorization"])
+            if len(calls) == 1:
+                return httpx.Response(401, json = {"detail": "expired"})
+            return httpx.Response(
+                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
+            )
+
+        async def aclose(self):
+            return None
+
+    refreshed = []
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        refreshed.append(force_refresh)
+        return "fresh-token", "acct-1"
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Rejecting())
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    try:
+        models = asyncio.run(list_subscription_models("provider-11", "stale-token", "acct-1"))
+        assert [model["id"] for model in models] == ["gpt-5.4"]
+        assert refreshed == [True]
+        assert calls == ["Bearer stale-token", "Bearer fresh-token"]
+    finally:
+        forget_subscription_models("provider-11")
+
+
+def test_a_second_catalog_401_asks_for_reconnection(monkeypatch):
+    """A refresh that does not help is a real reauthorization, not an endless retry."""
+    import httpx
+
+    forget_subscription_models("provider-12")
+
+    class AlwaysRejecting:
+        async def get(self, _url, headers = None, params = None):
+            return httpx.Response(401, json = {"detail": "expired"})
+
+        async def aclose(self):
+            return None
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "fresh-token", "acct-1"
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: AlwaysRejecting())
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    try:
+        with pytest.raises(CodexReauthorizationError):
+            asyncio.run(list_subscription_models("provider-12", "stale-token", "acct-1"))
+    finally:
+        forget_subscription_models("provider-12")

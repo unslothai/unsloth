@@ -1069,6 +1069,16 @@ export function ChatProvidersSettings({
       getProviderModelCapabilities("openai_codex"),
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed?.source === "reauthorization_required") {
+      // The backend already marked the bundle; resync so the connect panel offers
+      // Reconnect instead of leaving the connection looking healthy.
+      void syncExternalProvidersFromBackend(providersRef.current)
+        .then((synced) => {
+          providersRef.current = synced;
+          onProvidersChange(synced);
+        })
+        .catch(() => undefined);
+    }
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
       // A curated fallback is not the account's catalog, so it retires nothing: keep

@@ -8,7 +8,7 @@ import { createServer, type ViteDevServer } from "vite";
 interface SubscriptionModels {
   models: { id: string; vision?: boolean | null }[];
   known?: { id: string; vision?: boolean | null }[];
-  source: "subscription" | "curated";
+  source: "subscription" | "curated" | "reauthorization_required";
 }
 
 type Resolve = (
@@ -198,4 +198,25 @@ test("a hidden saved slug still contributes its capability", async () => {
     undefined,
   );
   assert.deepEqual(resolved?.["gpt-5.7-nova"], { vision: false });
+});
+
+
+test("a reauthorization answer retires nothing and describes nothing", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const resolve = loaded.resolveCodexPickerModels as Resolve;
+  const capabilities = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  // It carries the seed, but the connection is dead: nothing about it is authoritative.
+  const { selected } = resolve(
+    CURATED,
+    ["gpt-5.4", "gpt-5.7-nova"],
+    { models: CURATED.map((id) => ({ id })), source: "reauthorization_required" },
+  );
+  assert.deepEqual(selected, ["gpt-5.4", "gpt-5.7-nova"]);
+  assert.equal(
+    capabilities(ENTRY, {
+      source: "reauthorization_required",
+      models: [{ id: "gpt-5.7-nova", vision: true }],
+    }, undefined),
+    null,
+  );
 });
