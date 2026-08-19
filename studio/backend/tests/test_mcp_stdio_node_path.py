@@ -157,7 +157,9 @@ def test_stale_managed_node_leaves_stdio_env_alone(managed_node_install, monkeyp
 def test_managed_node_check_is_memoized_on_success(managed_node_install, monkeypatch):
     """One probe per process once usable: _stdio_env runs on every client build."""
     calls = []
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: calls.append(executable) or True)
+    monkeypatch.setattr(
+        node_runtime, "_node_version_ok", lambda executable: calls.append(executable) or True
+    )
     assert node_runtime.managed_node_usable() is True
     assert node_runtime.managed_node_usable() is True
     assert len(calls) == 1
