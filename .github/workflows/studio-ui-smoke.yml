@@ -35,6 +35,9 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # Both apt steps in this workflow shell out to it, so an edit to it changes
+      # what this workflow actually runs.
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
@@ -108,10 +111,32 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
+        # Retried through the shared helper. Unbounded, this stalled on the Azure
+        # mirror for 28 minutes on one shard before anyone noticed, and would have
+        # spent the job's full 30: an apt stall is not slow, it is silent. Every
+        # step after it is skipped and the run reports "cancelled" with no reason,
+        # so the shard says nothing about its subject.
+        #
+        # The retry is the point, not the shorter wait. The note on this job's
+        # timeout-minutes records the last attempt at this -- cutting the JOB budget
+        # to 20 turned the same stall from a slow pass into a red build, because a
+        # single attempt had nowhere to go. Three bounded attempts do: 180s is ~14x
+        # the 13 seconds this takes healthy, so only a mirror that is genuinely gone
+        # burns all three, and that is a hang rather than a slow mean.
+        #
+        # The job's 30 stays the final backstop and is deliberately not tightened.
+        timeout-minutes: 20
+        env:
+          # See the note above: two long attempts beat three short ones against a
+          # mirror that is slow rather than gone.
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -206,12 +231,41 @@ jobs:
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        timeout-minutes: 18
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            python -m playwright install-deps chromium firefox webkit
+            set -- install-deps chromium firefox webkit
           else
-            python -m playwright install --with-deps chromium firefox webkit
+            set -- install --with-deps chromium firefox webkit
           fi
+          bash .github/scripts/retry-with-apt-lock.sh python -m playwright "$@"
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
@@ -601,10 +655,32 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
+        # Retried through the shared helper. Unbounded, this stalled on the Azure
+        # mirror for 28 minutes on one shard before anyone noticed, and would have
+        # spent the job's full 30: an apt stall is not slow, it is silent. Every
+        # step after it is skipped and the run reports "cancelled" with no reason,
+        # so the shard says nothing about its subject.
+        #
+        # The retry is the point, not the shorter wait. The note on this job's
+        # timeout-minutes records the last attempt at this -- cutting the JOB budget
+        # to 20 turned the same stall from a slow pass into a red build, because a
+        # single attempt had nowhere to go. Three bounded attempts do: 180s is ~14x
+        # the 13 seconds this takes healthy, so only a mirror that is genuinely gone
+        # burns all three, and that is a hang rather than a slow mean.
+        #
+        # The job's 30 stays the final backstop and is deliberately not tightened.
+        timeout-minutes: 20
+        env:
+          # See the note above: two long attempts beat three short ones against a
+          # mirror that is slow rather than gone.
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
@@ -646,12 +722,41 @@ jobs:
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        timeout-minutes: 18
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            python -m playwright install-deps chromium firefox webkit
+            set -- install-deps chromium firefox webkit
           else
-            python -m playwright install --with-deps chromium firefox webkit
+            set -- install --with-deps chromium firefox webkit
           fi
+          bash .github/scripts/retry-with-apt-lock.sh python -m playwright "$@"
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
