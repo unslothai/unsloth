@@ -132,6 +132,24 @@ export function pruneProviderModelIds(
   return modelIds;
 }
 
+/** Which model ids a synced connection ends up with: server, else browser-saved, else seed.
+ *
+ * The saved list is pruned BEFORE the emptiness test, not after it. A browser selection
+ * made up entirely of retired slugs is no selection at all: resolving to it empties the
+ * picker, and the caller's backfill would send that empty list to a backend that rejects
+ * it. `serverModels` and `defaultModels` arrive pruned already. */
+export function resolveSyncedModelIds(
+  providerType: string,
+  serverModels: string[],
+  savedModels: string[],
+  defaultModels: string[],
+): string[] {
+  if (serverModels.length > 0) return serverModels;
+  const prunedSaved = pruneProviderModelIds(providerType, savedModels);
+  return prunedSaved.length > 0 ? prunedSaved : defaultModels;
+}
+
+
 /** Carry browser-local provider knobs through a backend sync rebuild. */
 export function mergeLocalProviderOptions(
   existing: ExternalProviderConfig | undefined,
@@ -242,21 +260,17 @@ export async function syncExternalProvidersFromBackend(
       );
       const savedModels = existing?.models ?? [];
       const savedAvailableModels = existing?.availableModels ?? [];
-      const resolvedModels = pruneProviderModelIds(
+      const resolvedModels = resolveSyncedModelIds(
         uiProviderType,
-        serverModels.length > 0
-          ? serverModels
-          : savedModels.length > 0
-            ? savedModels
-            : defaultModels,
+        serverModels,
+        savedModels,
+        defaultModels,
       );
-      const resolvedAvailableModels = pruneProviderModelIds(
+      const resolvedAvailableModels = resolveSyncedModelIds(
         uiProviderType,
-        serverAvailableModels.length > 0
-          ? serverAvailableModels
-          : savedAvailableModels.length > 0
-            ? savedAvailableModels
-            : defaultModels,
+        serverAvailableModels,
+        savedAvailableModels,
+        defaultModels,
       );
       const needsModelBackfill =
         serverModels.length === 0 && savedModels.length > 0;

@@ -1536,11 +1536,18 @@ export function ChatProvidersSettings({
               authStatus={providers.find((provider) => provider.id === editingProviderId)?.authStatus}
               ensureProvider={ensureCodexProvider}
               onChanged={async () => {
+                // The form can move while this sync is out, and the id below is the one
+                // captured when the flow started. Every transition retires the catalog
+                // generation, so a change here means this continuation is for a form the
+                // user has already left.
+                const request = codexCatalogRequestRef.current;
+                const changedProviderId = editingProviderId;
                 const synced = await syncExternalProvidersFromBackend(providersRef.current);
                 providersRef.current = synced;
                 onProvidersChange(synced);
+                if (request !== codexCatalogRequestRef.current) return;
                 const connected = synced.find(
-                  (provider) => provider.id === editingProviderId,
+                  (provider) => provider.id === changedProviderId,
                 );
                 if (connected) {
                   await applyCodexSubscriptionModels(
