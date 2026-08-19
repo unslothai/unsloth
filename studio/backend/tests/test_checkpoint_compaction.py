@@ -771,9 +771,7 @@ def test_the_memory_tool_override_needs_a_request_that_can_actually_reset(monkey
 
     def _names(**kwargs):
         tools = asyncio.run(
-            routes_mod._select_request_tools(
-                payload, tools_on = False, mcp_allowed = True, **kwargs
-            )
+            routes_mod._select_request_tools(payload, tools_on = False, mcp_allowed = True, **kwargs)
         )
         return [tool["function"]["name"] for tool in tools]
 
