@@ -382,7 +382,17 @@ def archive_turns(
                 # Commit here: this path holds no transaction of its own and can return
                 # before reaching the write lock, the ordinary case on a re-compacted
                 # thread, so it is the only chance an upgraded archive has to converge.
-                _restamp(conn, scope, digest, seats, commit = True)
+                #
+                # Bounded by the LIVE-AWARE budget, not by every seat: a rewind or a bigger
+                # window can put one occurrence of a repeated turn back in the prompt, and
+                # keeping a copy per seat then left two byte-identical documents, both
+                # passing the branch filter, so a recall slot went on text the model could
+                # already read. Measured: 3 passages of which 2 were distinct. At least one
+                # survives, since a turn that is momentarily all-live still has an archive.
+                _restamp(
+                    conn, scope, digest, seats[: max(1, budget)] if seats else seats,
+                    commit = True,
+                )
                 _widen_span(conn, scope, digest, span)
                 continue
             chunks = chunk_pages(
