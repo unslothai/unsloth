@@ -264,6 +264,17 @@ jobs:
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '300'
+          # install-deps runs its own `apt-get update`, and that is the only apt call
+          # in this repo that cannot be restructured to try the image's lists first.
+          # The helper's 20s transfer cap was applied and confirmed in the log on
+          # 2026-08-19 and the update still burned 4m31s of a 300s attempt, twice, so
+          # the step failed having never reached the download. Four InRelease URIs
+          # stalling to the cap, repeated over apt's default 3 retries, is 4 x 4 x 20s.
+          #
+          # Zero hands resilience to the outer attempt loop, which re-runs the command
+          # under a fresh timeout and reports which way each attempt went. apt's own
+          # retries are invisible and are charged to the caller's budget.
+          APT_ACQUIRE_RETRIES: '0'
         run: |
           # The browsers first, and WITHOUT --with-deps. That flag makes playwright
           # run its own `apt-get update` internally, which is the one apt call this
@@ -801,6 +812,17 @@ jobs:
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '300'
+          # install-deps runs its own `apt-get update`, and that is the only apt call
+          # in this repo that cannot be restructured to try the image's lists first.
+          # The helper's 20s transfer cap was applied and confirmed in the log on
+          # 2026-08-19 and the update still burned 4m31s of a 300s attempt, twice, so
+          # the step failed having never reached the download. Four InRelease URIs
+          # stalling to the cap, repeated over apt's default 3 retries, is 4 x 4 x 20s.
+          #
+          # Zero hands resilience to the outer attempt loop, which re-runs the command
+          # under a fresh timeout and reports which way each attempt went. apt's own
+          # retries are invisible and are charged to the caller's budget.
+          APT_ACQUIRE_RETRIES: '0'
         run: |
           # The browsers first, and WITHOUT --with-deps. That flag makes playwright
           # run its own `apt-get update` internally, which is the one apt call this
