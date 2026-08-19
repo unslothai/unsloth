@@ -511,13 +511,32 @@ def _download(
 
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     """``extractall`` with a per-member containment check, so an archive carrying an
-    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip)."""
+    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip).
+
+    ``zipfile.extractall`` also writes symlink members as regular files holding the
+    link-target text (CPython's zipfile never restores symlinks). The release
+    archives ship the ggml/webp shared-library links that way, and flattening them
+    leaves sd-cli unable to start, so they are recreated here from the member list."""
     base = target.resolve()
+    links: list[tuple[Path, str, str]] = []
     for member in zf.infolist():
         dest = (base / member.filename).resolve()
         if dest != base and base not in dest.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+        if stat.S_ISLNK(member.external_attr >> 16):
+            links.append(
+                (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
+            )
     zf.extractall(target)
+    for dest, link_target, filename in links:
+        # A symlink member must stay inside the tree too: absolute or ``..`` targets
+        # are refused, matching the Zip-Slip guard on the member paths above.
+        resolved = (dest.parent / link_target).resolve()
+        if resolved != base and base not in resolved.parents:
+            raise RuntimeError(f"unsafe symlink in archive: {filename!r} -> {link_target!r}")
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+        dest.symlink_to(link_target)
 
 
 def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:

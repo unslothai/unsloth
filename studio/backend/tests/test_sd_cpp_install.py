@@ -25,6 +25,7 @@ import time  # noqa: E402
 import io  # noqa: E402
 import re  # noqa: E402
 import json  # noqa: E402
+import stat  # noqa: E402
 import urllib.error  # noqa: E402
 import zipfile  # noqa: E402
 
@@ -385,6 +386,37 @@ def test_safe_extractall_extracts_normal_members(tmp_path):
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
     assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"ok"
+
+
+def test_safe_extractall_restores_symlink_members(tmp_path):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "symlink.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("build/bin/libfoo.so.1", b"ELF")
+        info = zipfile.ZipInfo("build/bin/libfoo.so")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "libfoo.so.1")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+    link = target / "build" / "bin" / "libfoo.so"
+    assert link.is_symlink()
+    assert link.readlink() == Path("libfoo.so.1")
+    assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"ELF"
+
+
+def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "symlink-escape.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("build/bin/escape.so")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "../../../escape.txt")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not (tmp_path / "escape.txt").exists()
 
 
 def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
