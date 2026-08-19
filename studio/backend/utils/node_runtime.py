@@ -108,7 +108,11 @@ def _reset_managed_node_check() -> None:
     _usable_node_cache.clear()
 
 
-def _path_has_usable_node(path: str, require_npm: bool = True, require_npx: bool = True) -> bool:
+def _path_has_usable_node(
+    path: str,
+    require_npm: bool = True,
+    require_npx: bool = True,
+) -> bool:
     """Whether ``path`` provides what a stdio command actually uses. The installers gate
     on node plus npm and never look at npx, so each launcher is checked against what it
     needs: node alone, node plus npm, or both plus the npx that launches it."""
@@ -166,7 +170,9 @@ def managed_node_usable() -> bool:
 
 
 def path_with_managed_node(
-    base_path: str | None = None, require_npm: bool = True, require_npx: bool = True
+    base_path: str | None = None,
+    require_npm: bool = True,
+    require_npx: bool = True,
 ) -> str:
     """``base_path`` (default: this process's PATH) with the managed Node bin dir
     moved to the front, unchanged when it is unusable or the PATH already resolves a

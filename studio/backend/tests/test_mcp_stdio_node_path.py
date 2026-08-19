@@ -33,7 +33,11 @@ def managed_node(tmp_path, monkeypatch):
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
 
-    def _no_usable_node(path, require_npm = True, require_npx = True):
+    def _no_usable_node(
+        path,
+        require_npm = True,
+        require_npx = True,
+    ):
         return False
 
     monkeypatch.setattr(node_runtime, "_path_has_usable_node", _no_usable_node)

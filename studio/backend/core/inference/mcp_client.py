@@ -309,9 +309,7 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
     try:
         from utils.node_runtime import path_with_managed_node
         require_npm, require_npx = _runtime_requirements(command)
-        patched = path_with_managed_node(
-            base, require_npm = require_npm, require_npx = require_npx
-        )
+        patched = path_with_managed_node(base, require_npm = require_npm, require_npx = require_npx)
     except (ImportError, OSError, ValueError):
         patched = base
     if patched and patched != env.get(key):
