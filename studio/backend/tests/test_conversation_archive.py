@@ -522,6 +522,55 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_swapping_the_tool_retires_the_archived_call():
+    """Which tool ran is part of what the turn says, so it has to be part of the probe.
+
+    The label `render_turn` writes ("assistant called terminal: <args>") was stripped
+    whole, name included, leaving only the arguments to match. A retry that kept the
+    arguments and changed the tool therefore left the archived pre-edit turn eligible, and
+    it could be recalled as though the old call had happened on this branch. `_probe_text`
+    renders a live call as "<name> <arguments>", so the name is there to be required.
+    """
+    from core.rag import conversation_archive as archive
+
+    archived = archive.render_turn(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "function": {"name": "terminal", "arguments": '{"cmd":"ls -la /srv"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "total 12"},
+        ]
+    )
+
+    def _branch(tool):
+        return [
+            archive._normalise(archive._probe_text(message))
+            for message in [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "function": {"name": tool, "arguments": '{"cmd":"ls -la /srv"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "total 12"},
+            ]
+        ]
+
+    assert archive._on_live_branch(archived, _branch("terminal")) is True
+    assert archive._on_live_branch(archived, _branch("python")) is False
+
+
 def test_the_tool_call_exemption_ends_where_the_call_does():
     """The exemption belongs to the CALL, not to the rest of the message.
 
@@ -2549,9 +2598,7 @@ def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
     assert (
         archive._write_budget([["a"], ["a"]], [0, 1], archive._live_positions(one_live), group) == 1
     )
-    assert (
-        archive._write_budget([["a"], ["a"]], [], archive._live_positions(one_live), group) == 1
-    )
+    assert archive._write_budget([["a"], ["a"]], [], archive._live_positions(one_live), group) == 1
     # Live occurrences are COUNTED, not tested for membership: three seats with one copy
     # still in the prompt owes two writes, not one.
     assert (
