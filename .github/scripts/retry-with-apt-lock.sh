@@ -14,12 +14,22 @@
 #
 # Two things make the retry actually work, and both were learned the hard way:
 #
-#   1. The dpkg lock. apt runs as root, so killing the attempt leaves the
-#      apt-get child alive holding /var/lib/dpkg/lock-frontend, and the next
-#      attempt dies two seconds later with "Could not get lock". A retry that
-#      cannot succeed is worse than none: it buries the real reason under a
-#      second, different failure. So wait for the lock, then take it -- the
-#      holder is our own orphan and the runner is disposable.
+#   1. The apt locks, PLURAL. apt runs as root, so killing the attempt leaves the
+#      apt-get child alive holding a lock, and the next attempt dies two seconds
+#      later with "Could not get lock". A retry that cannot succeed is worse than
+#      none: it buries the real reason under a second, different failure. So wait
+#      for the locks, then take them -- the holder is our own orphan and the
+#      runner is disposable.
+#
+#      There are four, and which one matters depends on what apt was doing.
+#      Waiting on only /var/lib/dpkg/lock-frontend is how the first version of
+#      this shipped, and it made the retry useless for exactly the case it was
+#      written for: `apt-get update` takes /var/lib/apt/lists/lock and nothing
+#      else, so the wait saw a free lock, retried immediately, and produced
+#
+#        E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2420 (apt-get)
+#
+#      twice in a row in under two seconds. Three attempts, one real one.
 #
 #   2. `set -e`. GitHub runs `run:` blocks as `bash -e`, so a bare failing
 #      command aborts the step then and there. A retry loop written as
@@ -71,7 +81,9 @@ set -uo pipefail
 
 ATTEMPTS="${RETRY_ATTEMPTS:-3}"
 ATTEMPT_TIMEOUT="${RETRY_ATTEMPT_TIMEOUT:-480}"
-DPKG_LOCK="/var/lib/dpkg/lock-frontend"
+# Every lock apt takes. dpkg's two cover install/configure, lists covers `update`,
+# and archives covers the download cache; an orphan can be holding any of them.
+APT_LOCKS="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock"
 APT_TIMEOUT="${APT_ACQUIRE_TIMEOUT:-20}"
 APT_RETRIES="${APT_ACQUIRE_RETRIES:-3}"
 APT_CONF="/etc/apt/apt.conf.d/99-unsloth-ci-fail-fast"
@@ -104,18 +116,36 @@ Acquire::ftp::Timeout \"${APT_TIMEOUT}\";"
   echo "apt configured to fail fast: ${APT_TIMEOUT}s transfer timeout, ${APT_RETRIES} internal retries"
 }
 
-release_dpkg_lock() {
+# Held locks, as a single string. Absent files are not locks, and `fuser` on one
+# is an error rather than an answer, so they are skipped rather than waited on.
+held_apt_locks() {
+  held=""
+  for lock in $APT_LOCKS; do
+    [ -e "$lock" ] || continue
+    if sudo fuser "$lock" > /dev/null 2>&1; then
+      held="$held $lock"
+    fi
+  done
+  printf '%s' "$held"
+}
+
+release_apt_locks() {
   if ! have_fuser; then
-    echo "::warning::fuser unavailable; cannot wait on ${DPKG_LOCK}, retrying blind"
+    echo "::warning::fuser unavailable; cannot wait on the apt locks, retrying blind"
     sleep 15
     return 0
   fi
   for _ in $(seq 1 24); do
-    sudo fuser "$DPKG_LOCK" > /dev/null 2>&1 || return 0
+    holding="$(held_apt_locks)"
+    [ -n "$holding" ] || return 0
     sleep 5
   done
-  echo "::warning::${DPKG_LOCK} still held after 120s; terminating the holder"
-  sudo fuser -k "$DPKG_LOCK" > /dev/null 2>&1 || true
+  holding="$(held_apt_locks)"
+  [ -n "$holding" ] || return 0
+  echo "::warning::still held after 120s, terminating the holders:${holding}"
+  for lock in $holding; do
+    sudo fuser -k "$lock" > /dev/null 2>&1 || true
+  done
   sleep 5
 }
 
@@ -143,7 +173,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   echo "::warning::attempt ${attempt}/${ATTEMPTS} of '$*' ${reason}"
 
   [ "$attempt" -ge "$ATTEMPTS" ] && break
-  release_dpkg_lock
+  release_apt_locks
 done
 
 echo "::error::'$*' failed ${ATTEMPTS} times; the attempt warnings above say which way each one went"

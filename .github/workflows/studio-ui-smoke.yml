@@ -127,8 +127,10 @@ jobs:
         # The job's 30 stays the final backstop and is deliberately not tightened.
         timeout-minutes: 20
         env:
-          RETRY_ATTEMPTS: '3'
-          RETRY_ATTEMPT_TIMEOUT: '180'
+          # See the note above: two long attempts beat three short ones against a
+          # mirror that is slow rather than gone.
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         # One call, not two: retrying the install after a stalled update just re-reads
         # the same broken package list, and two calls double the worst case for no
         # extra coverage.
@@ -669,8 +671,10 @@ jobs:
         # The job's 30 stays the final backstop and is deliberately not tightened.
         timeout-minutes: 20
         env:
-          RETRY_ATTEMPTS: '3'
-          RETRY_ATTEMPT_TIMEOUT: '180'
+          # See the note above: two long attempts beat three short ones against a
+          # mirror that is slow rather than gone.
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         # One call, not two: retrying the install after a stalled update just re-reads
         # the same broken package list, and two calls double the worst case for no
         # extra coverage.
