@@ -8509,14 +8509,33 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        return await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            current_request_counted = current_request_counted,
-            on_reload_confirmed = on_reload_confirmed,
-            load_cancel_event = attempt.cancel_event,
+        load_task = asyncio.create_task(
+            _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                current_request_counted = current_request_counted,
+                on_reload_confirmed = on_reload_confirmed,
+                load_cancel_event = attempt.cancel_event,
+            )
         )
+        try:
+            return await asyncio.shield(load_task)
+        except asyncio.CancelledError:
+            # Cancelling this waiter must not abandon a to_thread worker that can still mutate
+            # the backend. Keep the lease until the shielded load has reached its own cleanup.
+            current_task = asyncio.current_task()
+            while not load_task.done():
+                try:
+                    await asyncio.shield(load_task)
+                except asyncio.CancelledError:
+                    if current_task is not None:
+                        current_task.uncancel()
+            try:
+                load_task.result()
+            except BaseException:
+                pass
+            raise
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -8538,6 +8557,7 @@ class _LoadAdmission(NamedTuple):
     token: str
     kind: str
     model_path: str
+    deletion_model_path: str
     subject: str
     attempt: _ScopedLoadAttempt
     lease_claimed: bool = False
@@ -8560,6 +8580,14 @@ def _pending_async_model() -> Optional[str]:
 
 def get_pending_async_load_model() -> Optional[str]:
     return _pending_async_model()
+
+
+def get_pending_async_load_deletion_path() -> Optional[str]:
+    with _load_admissions_lock:
+        operation = _pending_async_load
+        if operation is not None and operation.task is not None and not operation.task.done():
+            return operation.deletion_model_path
+    return None
 
 
 def _status_loading(backend_loading = ()) -> List[str]:
@@ -8617,6 +8645,10 @@ async def load_model(
     if request.async_load:
         if not request.load_request_id:
             raise HTTPException(status_code = 422, detail = "async_load requires load_request_id")
+        deletion_model_path, _, _ = _resolve_model_identifier_for_request(
+            request, operation = "load-model"
+        )
+        pending_model_label = _lifecycle_model_label(request.model_path, request.gguf_variant)
         with _load_admissions_lock:
             if _pending_async_load is not None:
                 raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
@@ -8629,7 +8661,15 @@ async def load_model(
             except BaseException:
                 release_inference_lifecycle_gate()
                 raise
-            operation = _LoadAdmission(uuid.uuid4().hex, "async", request.model_path, current_subject, attempt, True)
+            operation = _LoadAdmission(
+                uuid.uuid4().hex,
+                "async",
+                pending_model_label,
+                deletion_model_path,
+                current_subject,
+                attempt,
+                True,
+            )
             _load_admissions[operation.token] = operation
             _pending_async_load = operation
             _last_async_load_error = None
@@ -8639,8 +8679,17 @@ async def load_model(
                 try:
                     await asyncio.sleep(0)
                     await _run_tracked_load_model_impl(
-                        request, fastapi_request, current_subject, attempt = attempt
+                        request,
+                        fastapi_request,
+                        current_subject,
+                        attempt = attempt,
+                        on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                            force = request.force_cancel_active,
+                            action = "Loading a model",
+                            cancel = cancel,
+                        ),
                     )
+                    get_llama_cpp_backend()._loaded_by_user_action = True
                     with _load_admissions_lock:
                         if _pending_async_load is operation:
                             _last_async_load_error = None
@@ -8673,20 +8722,26 @@ async def load_model(
                     _finish_load_admission(operation)
 
             task.add_done_callback(_finish)
-        return LoadAcceptedResponse(status = "loading", model = request.model_path)
+        return LoadAcceptedResponse(status = "loading", model = pending_model_label)
 
     with _load_admissions_lock:
         if _pending_async_load is not None or _load_admissions:
             raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
         attempt = _begin_load_attempt(request, current_subject)
-        operation = _LoadAdmission(uuid.uuid4().hex, "sync", request.model_path, current_subject, attempt)
+        operation = _LoadAdmission(
+            uuid.uuid4().hex,
+            "sync",
+            _lifecycle_model_label(request.model_path, request.gguf_variant),
+            request.model_path,
+            current_subject,
+            attempt,
+        )
         _load_admissions[operation.token] = operation
     try:
         response = await _tunnel_safe_json(
             load_model_gated(request, fastapi_request, current_subject, user_initiated = True, attempt = attempt),
             label = "Model load",
         )
-        _last_async_load_error = None
         return response
     finally:
         _finish_load_admission(operation)
@@ -11233,6 +11288,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                load_error = _last_async_load_error,
             )
 
         is_vision = False

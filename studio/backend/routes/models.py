@@ -3049,9 +3049,12 @@ async def delete_finetuned_model(
             ) from e
 
     try:
-        from routes.inference import get_llama_cpp_backend, get_pending_async_load_model
+        from routes.inference import (
+            get_llama_cpp_backend,
+            get_pending_async_load_deletion_path,
+        )
 
-        pending_async_load = get_pending_async_load_model()
+        pending_async_load = get_pending_async_load_deletion_path()
         if pending_async_load and _loading_model_matches_deleted_path(
             pending_async_load, target_path
         ):
