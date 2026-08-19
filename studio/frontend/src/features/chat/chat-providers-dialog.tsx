@@ -202,6 +202,8 @@ export function ChatProvidersSettings({
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  // Only the newest Codex catalog request may write to the form.
+  const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
@@ -967,6 +969,7 @@ export function ChatProvidersSettings({
     savedModels: string[],
     authStatus: ProviderAuthStatus | undefined,
   ) {
+    const request = ++codexCatalogRequestRef.current;
     const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
@@ -975,6 +978,11 @@ export function ChatProvidersSettings({
       } catch {
         // Keep the curated seed: the form must still open when upstream is unreachable.
       }
+    }
+    if (request !== codexCatalogRequestRef.current) {
+      // The form moved to another connection while this catalog was in flight, and
+      // applying it here would save the first connection's models onto the second.
+      return;
     }
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
     setAvailableModels(picker.catalog);

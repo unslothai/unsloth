@@ -622,3 +622,61 @@ def test_hugging_face_secret_routes_reject_api_key_authentication():
             via_api_key = True,
         )
     assert delete_error.value.status_code == 403
+
+
+def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
+    """A save must not reject a slug the plan lists just because this process forgot it.
+
+    The catalog lives in memory, so a restart between the picker's fetch and this save
+    leaves it empty; the update path refreshes it on the same terms as the chat gate.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    listed = "gpt-5.7-nova"
+    codex_client.forget_subscription_models(created.id)
+
+    async def _no_catalog(_provider_id):
+        return set()
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _no_catalog)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(models = [listed]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+    assert refused.value.status_code == 400
+
+    async def _refresh(provider_id):
+        codex_client._offered_models[provider_id] = {
+            listed: {"id": listed, "display_name": listed, "vision": None}
+        }
+        return {listed}
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _refresh)
+    try:
+        updated = asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(models = [listed]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert updated.models == [listed]
+    finally:
+        codex_client.forget_subscription_models(created.id)

@@ -282,6 +282,11 @@ async def update_provider_config(
         max_output_tokens_requested,
         payload.max_output_tokens,
     )
+    if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
+        # The catalog is process-local: a restart between the picker's fetch and this
+        # save would otherwise reject a slug the plan really does list. Refresh first,
+        # on the same terms as the chat gate, so both paths authorize alike.
+        await openai_codex_client.ensure_subscription_models(provider_id)
     _validate_provider_auth_contract(
         existing_info,
         encrypted_api_key = payload.encrypted_api_key,
