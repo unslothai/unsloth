@@ -12408,6 +12408,8 @@ async def _proxy_to_external_provider(
             CodexTransportError,
             CodexQuotaError,
             CodexReauthorizationError,
+            ensure_subscription_models,
+            offered_subscription_model,
             offered_subscription_model_ids,
         )
 
@@ -12441,11 +12443,19 @@ async def _proxy_to_external_provider(
         allowed_models = set(info.get("default_models", []))
         allowed_models |= offered_subscription_model_ids(payload.provider_id)
         if model not in allowed_models:
+            # The catalog is process-local, so a restart leaves a saved plan slug with
+            # nothing to authorize it. Refresh once before refusing what the user picked.
+            allowed_models |= await ensure_subscription_models(payload.provider_id)
+        if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
-        model_supports_vision = bool(
-            info.get("model_capabilities", {}).get(model, {}).get("vision")
-        )
+        capabilities = info.get("model_capabilities", {})
+        if model in capabilities:
+            model_supports_vision = bool(capabilities[model].get("vision"))
+        else:
+            # A slug the registry never listed: the plan's own entry is all we know.
+            listed_model = offered_subscription_model(payload.provider_id, model)
+            model_supports_vision = bool(listed_model and listed_model.get("vision"))
         if not model_supports_vision:
             for message in payload.messages:
                 if isinstance(message.content, list) and any(

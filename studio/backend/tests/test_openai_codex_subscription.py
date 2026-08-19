@@ -1367,7 +1367,7 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
     assert "provide your final answer now" in replayed[-1]["content"]
 
 
-def _codex_chat_gate(monkeypatch, model: str):
+def _codex_chat_gate(monkeypatch, model: str, resolve = None):
     """Drive the chat route far enough to answer "may this model be used?".
 
     The gate is one line inside ``_proxy_to_external_provider`` and is only
@@ -1394,7 +1394,7 @@ def _codex_chat_gate(monkeypatch, model: str):
     async def _refuse(*_args, **_kwargs):
         raise codex_auth.CodexAuthError("stub: past the model gate")
 
-    monkeypatch.setattr(codex_auth, "resolve_access", _refuse)
+    monkeypatch.setattr(codex_auth, "resolve_access", resolve or _refuse)
 
     async def _is_disconnected():
         return False
@@ -1432,7 +1432,9 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
     assert "Choose a curated Codex model." in str(refused.detail)
 
     # Exactly what a picker fetch records for this connection.
-    codex_client._offered_models["codex-1"] = {listed}
+    codex_client._offered_models["codex-1"] = {
+        listed: {"id": listed, "display_name": listed, "vision": True}
+    }
     try:
         accepted = _codex_chat_gate(monkeypatch, listed)
         assert accepted.status_code == 401, accepted.detail
@@ -1441,5 +1443,130 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
         never_listed = _codex_chat_gate(monkeypatch, "gpt-5.3-codex-spark")
         assert never_listed.status_code == 400
         assert "Choose a curated Codex model." in str(never_listed.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
+    """A restart empties the in-memory catalog; the saved slug must still work.
+
+    Nothing refetches /codex/models on startup, so gating on the seed alone would
+    reject a model the user legitimately saved until they reopened the connection
+    editor.
+    """
+    listed = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+
+    calls = []
+
+    async def _resolve(_provider_id):
+        calls.append(_provider_id)
+        # The gate's refresh resolves first; the chat path's own call then stops
+        # the request before it can reach upstream.
+        if len(calls) > 1:
+            raise codex_auth.CodexAuthError("stub: past the model gate")
+        return "secret-token", "acct-1"
+
+    fake = _models_response(
+        {"models": [{"slug": listed, "visibility": "list", "input_modalities": ["text"]}]}
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    try:
+        # Cold cache, exactly as after a restart: the gate fetches rather than refusing.
+        accepted = _codex_chat_gate(monkeypatch, listed, resolve = _resolve)
+        assert accepted.status_code == 401, accepted.detail
+        assert offered_subscription_model_ids("codex-1") == {listed}
+        assert len(calls) == 2
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_refuses_when_the_catalog_cannot_be_refreshed(monkeypatch):
+    """An unreachable upstream falls back to the seed instead of locking the user out."""
+    forget_subscription_models("codex-1")
+
+    async def _fail(_provider_id):
+        raise codex_auth.CodexAuthError("disconnected")
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _fail)
+    try:
+        # A seed model still passes the gate.
+        seeded = _codex_chat_gate(monkeypatch, "gpt-5.4")
+        assert seeded.status_code == 401, seeded.detail
+        # An unknown slug is refused rather than proxied blind.
+        refused = _codex_chat_gate(monkeypatch, "gpt-5.7-nova")
+        assert refused.status_code == 400
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
+    """A dynamic slug's image support comes from /codex/models, not the static registry."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
+    listed = "gpt-5.7-nova"
+    assert listed not in get_provider_info("openai_codex")["model_capabilities"]
+
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda _pid: {
+            "id": _pid,
+            "provider_type": "openai_codex",
+            "base_url": OPENAI_CODEX_API_BASE,
+            "display_name": "ChatGPT subscription",
+            "is_enabled": True,
+        },
+    )
+
+    async def _refuse(*_args, **_kwargs):
+        raise codex_auth.CodexAuthError("stub: past the image gate")
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _refuse)
+
+    async def _is_disconnected():
+        return False
+
+    def call():
+        request = SimpleNamespace(
+            headers = {},
+            state = SimpleNamespace(skip_api_monitor = True),
+            is_disconnected = _is_disconnected,
+        )
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                    ],
+                }
+            ],
+            provider_id = "codex-1",
+            external_model = listed,
+            stream = True,
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(
+                inf._proxy_to_external_provider(payload, request, current_subject = "t")
+            )
+        return excinfo.value
+
+    codex_client._offered_models["codex-1"] = {
+        listed: {"id": listed, "display_name": listed, "vision": False}
+    }
+    try:
+        refused = call()
+        assert refused.status_code == 400
+        assert "does not accept image input" in str(refused.detail)
+        # The same slug listed as image-capable is carried through to the provider.
+        codex_client._offered_models["codex-1"] = {
+            listed: {"id": listed, "display_name": listed, "vision": True}
+        }
+        accepted = call()
+        assert accepted.status_code == 401, accepted.detail
+        assert "does not accept image input" not in str(accepted.detail)
     finally:
         forget_subscription_models("codex-1")

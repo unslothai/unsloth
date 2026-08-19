@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference import openai_codex_auth as codex_auth
 from core.inference.openai_codex_auth import (
     OPENAI_CODEX_CLIENT_VERSION,
     OPENAI_CODEX_COMPATIBILITY_INSTRUCTIONS,
@@ -230,7 +231,7 @@ _MODELS_CACHE_TTL_SECONDS = 600
 _MODELS_CACHE_MAX_ENTRIES = 32
 _models_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Outlives the cache TTL: a slug listed for this plan stays saveable afterwards.
-_offered_models: dict[str, set[str]] = {}
+_offered_models: dict[str, dict[str, dict[str, Any]]] = {}
 
 
 def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
@@ -267,7 +268,12 @@ def cached_subscription_models(provider_id: str) -> list[dict[str, Any]] | None:
 
 
 def offered_subscription_model_ids(provider_id: str) -> set[str]:
-    return _offered_models.get(provider_id, set())
+    return set(_offered_models.get(provider_id, {}))
+
+
+def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any] | None:
+    """What the plan said about one slug, for models the static registry cannot describe."""
+    return _offered_models.get(provider_id, {}).get(model_id)
 
 
 def forget_subscription_models(provider_id: str) -> None:
@@ -329,8 +335,27 @@ async def list_subscription_models(
         _models_cache.clear()
         _offered_models.clear()
     _models_cache[provider_id] = (time.time() + _MODELS_CACHE_TTL_SECONDS, models)
-    _offered_models[provider_id] = {model["id"] for model in models}
+    _offered_models[provider_id] = {model["id"]: model for model in models}
     return models
+
+
+async def ensure_subscription_models(provider_id: str) -> set[str]:
+    """The plan's slugs, fetching them once when this process has none yet.
+
+    The catalog lives in memory, so a restart leaves a saved dynamic slug with
+    nothing to authorize it. Callers use this before refusing such a model; an
+    unreachable or disconnected upstream returns empty so the caller falls back
+    to the seed rather than locking the account out.
+    """
+    listed = offered_subscription_model_ids(provider_id)
+    if listed:
+        return listed
+    try:
+        access_token, account_id = await codex_auth.resolve_access(provider_id)
+        await list_subscription_models(provider_id, access_token, account_id)
+    except Exception:
+        return set()
+    return offered_subscription_model_ids(provider_id)
 
 
 def _quota_metadata(response: httpx.Response) -> dict[str, Any]:
