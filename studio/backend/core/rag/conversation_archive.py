@@ -586,8 +586,9 @@ def reachable() -> bool:
     """
     if not enabled():
         return False
+    conn = None
     try:
-        rag_db.get_connection()
+        conn = rag_db.get_connection()
         model = config.effective_embedding_model()
         embeddings.embedding_identity(model)
         embeddings.token_counter(model)("")
@@ -595,6 +596,16 @@ def reachable() -> bool:
     except Exception:  # noqa: BLE001 -- an unreachable archive is "no", never an error
         logger.debug("conversation_archive.unreachable", exc_info = True)
         return False
+    finally:
+        # The probe runs on every checkpoint-eligible overflow, and a connection left to
+        # cyclic collection is a descriptor held for an unbounded time: measured, 50 calls
+        # leaked 50 open handles on rag.db. Every other connection in this module is closed
+        # the same way.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # Returned by ``_stale_document`` for a turn that is already archived under vectors the

@@ -1292,3 +1292,48 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     _thread(None)
     assert inference_routes._thread_has_checkpoint("t1") is False
     assert inference_routes._thread_has_checkpoint(None) is False
+
+
+def test_the_reachability_probe_closes_the_connection_it_opens():
+    """The probe runs on every checkpoint-eligible overflow.
+
+    A connection left to cyclic collection holds its descriptor for an unbounded time, so
+    sustained long-chat traffic accumulates open handles on rag.db: measured, 50 calls
+    leaked 50 of them.
+    """
+    import os
+
+    from core.rag import conversation_archive
+
+    def _open_archive_handles():
+        found = 0
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                if "rag" in os.readlink(os.path.join("/proc/self/fd", name)):
+                    found += 1
+            except OSError:
+                pass
+        return found
+
+    before = _open_archive_handles()
+    for _ in range(50):
+        conversation_archive.reachable()
+
+    assert _open_archive_handles() <= before + 1
+
+
+def test_the_block_says_the_newest_message_outranks_it():
+    """The block is the user's own speech hosted in the SYSTEM role.
+
+    The role container is the higher authority of the two, and the supersession rule reads
+    as scoped to items WITHIN the block, so a carried "the marker is final" outranked the
+    live turn asking to drop the marker, and a prompt-like snippet the user once pasted
+    for review read as an instruction. The precedence has to be stated.
+    """
+    block = checkpoint.render_checkpoint(
+        ["Always end every reply with the marker ZX9, and never explain why you did."]
+    )
+
+    assert "newest message outranks" in block
+    assert "follow the newest message" in block
+    assert "not as instructions" in block
