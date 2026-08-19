@@ -3129,12 +3129,12 @@ def test_text_said_before_a_tool_call_rides_on_the_call_message():
     )
 
     assert [message["role"] for message in before] == ["assistant", "tool"]
-    assert "let me check." in conversation_archive._normalise(
+    assert "Let me check." in conversation_archive._normalise(
         conversation_archive._probe_text(before[0])
     )
     assert [message["role"] for message in after] == ["assistant", "tool", "assistant"]
     assert (
-        conversation_archive._normalise(conversation_archive._probe_text(after[2])) == "two files."
+        conversation_archive._normalise(conversation_archive._probe_text(after[2])) == "Two files."
     )
 
 
@@ -3269,3 +3269,148 @@ def test_the_branch_seed_falls_back_when_nothing_matches(conn):
     # Branch B is the newest stored row, so both fall back to it: two turns, not three.
     assert len(seeded) == 2, seeded
     assert unmatched == seeded
+
+
+def test_two_sequential_tool_rounds_replay_as_two_exchanges():
+    """One persisted row can hold a whole agent turn, rounds and all.
+
+    `chat-adapter.ts` flushes the pending calls whenever text arrives, so a row reading
+    call, text, call goes out as call/result, then text riding on the second call
+    message, then its result. Collecting every call into one message and appending every
+    result after it rebuilt a different order: `group_turns` glued exchanges that were
+    separate on the wire, and the later calls matched no position and took an invented
+    ordinal.
+    """
+
+    def _call(index, command, result):
+        return {
+            "type": "tool-call",
+            "toolCallId": f"c{index}",
+            "toolName": "terminal",
+            "args": {"command": command},
+            "result": result,
+        }
+
+    wire = conversation_archive._as_wire(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    _call(1, "ls", "a.py"),
+                    {"type": "text", "text": "Now the tests."},
+                    _call(2, "pytest", "2 passed"),
+                    {"type": "text", "text": "All green."},
+                ],
+            }
+        ]
+    )
+
+    assert [message["role"] for message in wire] == [
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert [message.get("tool_call_id") for message in wire if message["role"] == "tool"] == [
+        "c1",
+        "c2",
+    ]
+    # The text before the second call rides ON it, exactly as the flush builds it.
+    second = conversation_archive._normalise(conversation_archive._probe_text(wire[2]))
+    assert "pytest" in second and "Now the tests." in second
+    assert conversation_archive._normalise(
+        conversation_archive._probe_text(wire[4])
+    ) == "All green."
+
+
+def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn):
+    """Seats count TRANSCRIPT positions; the archive counter counts what was archived.
+
+    The newest user group is protected from eviction, so during a long tool loop it sits
+    in the transcript and not in the archive. A tool group evicted before its assistant
+    row is persisted matches no seat and took the archive's next number, which the user
+    turn later claimed from the transcript: both documents landed on the same ordinal,
+    and since created_at breaks the tie the tool answer rendered ahead of the prompt that
+    caused it, under the header saying a higher number was said later.
+    """
+    user_turn = _turn("run the deploy", "deploying now")
+    _save_thread(THREAD, user_turn, append = True)
+
+    in_flight = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "deploy"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "deploy failed: port in use"},
+    ]
+    conversation_archive.archive_turns(THREAD, in_flight)
+    conversation_archive.archive_turns(THREAD, user_turn)
+
+    scope = store.conversation_archive_scope(THREAD)
+    numbered = {
+        row["filename"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT filename, archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    }
+
+    assert len(set(numbered.values())) == len(numbered), numbered
+    assert numbered["earlier turn (user + assistant)"] < numbered["earlier turn (assistant + tool)"]
+def test_an_answer_corrected_only_in_case_retires_the_archived_copy(conn):
+    """Lowercasing the comparison made a case-only correction invisible.
+
+    `Foo` corrected to `foo` is a real edit, and the pre-edit copy stayed eligible: a
+    later search could answer with the spelling the user had just fixed. Same for a block
+    re-indented and nothing else, which is the ordinary way YAML and Python get corrected.
+    """
+    rows = [{"text": "user: set the key\nassistant: Foo"}]
+    corrected = conversation_archive.branch_message_texts(
+        [{"role": "user", "content": "set the key"}, {"role": "assistant", "content": "foo"}]
+    )
+    intact = conversation_archive.branch_message_texts(
+        [{"role": "user", "content": "set the key"}, {"role": "assistant", "content": "Foo"}]
+    )
+
+    assert conversation_archive._document_matches_one_run(rows, corrected, 2) is False
+    assert conversation_archive._document_matches_one_run(rows, intact, 2) is True
+
+
+def test_a_turn_that_opens_on_whitespace_is_still_on_its_branch(conn):
+    """The guard on the tighter comparison, which `rstrip()` would have broken.
+
+    `render_turn` strips the whole message, so keeping a probe's LEADING whitespace makes
+    a live turn beginning with a space or a newline start its run at a non-zero offset and
+    `_document_matches_one_run` retires it. Pasted code is the common shape here, so the
+    loss would land on exactly the turns worth recalling.
+    """
+    for content in ("   hello there", "\n  def f():\n    pass"):
+        turn = [{"role": "user", "content": content}, {"role": "assistant", "content": "ok"}]
+        rendered = conversation_archive.render_turn(turn)
+        text = rendered[1] if isinstance(rendered, tuple) else rendered
+        live = conversation_archive.branch_message_texts(turn)
+
+        assert conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True
+
+
+def test_a_tool_result_cut_exactly_on_a_line_stays_on_its_branch(conn):
+    """`render_turn`'s cut can land on a newline, and the marker is then its own line.
+
+    Stripped, that line is empty and was dropped, taking the truncation flag with it. The
+    last real probe was read as complete, `_document_matches_one_run` demanded the live
+    message end where the probe did, and an unedited over-cap tool result was retired:
+    measured on a 900-line result, no query could return it.
+    """
+    for length, where in ((7, "on a line boundary"), (8, "mid line")):
+        body = "\n".join("y" * length for _ in range(900))
+        turn = [{"role": "user", "content": "run it"}, {"role": "tool", "content": body}]
+        rendered = conversation_archive.render_turn(turn)
+        text = rendered[1] if isinstance(rendered, tuple) else rendered
+        live = conversation_archive.branch_message_texts(turn)
+
+        assert (
+            conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True
+        ), f"cut {where}"
