@@ -5068,7 +5068,10 @@ def _verify_native_path_lease_for_request(
 
 
 def _resolve_model_identifier_for_request(
-    request: LoadRequest | ValidateModelRequest, *, operation: str, native_grant = None
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+    native_grant = None,
 ) -> tuple[str, str, bool]:
     if native_grant is None and not request.native_path_lease:
         return request.model_path, request.model_path, False
@@ -8709,11 +8712,17 @@ async def load_model(
         pending_model_label = _lifecycle_model_label(request.model_path, request.gguf_variant)
         with _load_admissions_lock:
             if _pending_async_load is not None:
-                raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
+                raise HTTPException(
+                    status_code = 409, detail = "Another model operation is already in progress."
+                )
             if any(item.kind == "sync" for item in _load_admissions.values()):
-                raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
+                raise HTTPException(
+                    status_code = 409, detail = "Another model operation is already in progress."
+                )
             if not acquire_inference_lifecycle_gate_nowait():
-                raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
+                raise HTTPException(
+                    status_code = 409, detail = "Another model operation is already in progress."
+                )
             try:
                 attempt = _begin_load_attempt(request, current_subject)
             except BaseException:
@@ -8787,7 +8796,9 @@ async def load_model(
         if _pending_async_load is not None or any(
             item.kind == "async" for item in _load_admissions.values()
         ):
-            raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
+            raise HTTPException(
+                status_code = 409, detail = "Another model operation is already in progress."
+            )
         attempt = _begin_load_attempt(request, current_subject)
         operation = _LoadAdmission(
             uuid.uuid4().hex,
@@ -8801,7 +8812,9 @@ async def load_model(
     deferred = False
     try:
         response = await _tunnel_safe_json(
-            load_model_gated(request, fastapi_request, current_subject, user_initiated = True, attempt = attempt),
+            load_model_gated(
+                request, fastapi_request, current_subject, user_initiated = True, attempt = attempt
+            ),
             label = "Model load",
         )
         task = getattr(response, "_same_task", None)

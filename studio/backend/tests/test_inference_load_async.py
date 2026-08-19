@@ -13,9 +13,7 @@ _loggers = types.ModuleType("loggers")
 _loggers.get_logger = lambda name: logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers)
 _structlog = types.ModuleType("structlog")
-_structlog.get_logger = lambda *args, **kwargs: logging.getLogger(
-    args[0] if args else "structlog"
-)
+_structlog.get_logger = lambda *args, **kwargs: logging.getLogger(args[0] if args else "structlog")
 sys.modules.setdefault("structlog", _structlog)
 
 import core.inference.llama_keepwarm as keepwarm
@@ -36,7 +34,12 @@ def reset_state():
     inference_route._pending_async_load = None
 
 
-def request(model = "unsloth/test", *, async_load = False, request_id = "load-1"):
+def request(
+    model = "unsloth/test",
+    *,
+    async_load = False,
+    request_id = "load-1",
+):
     return LoadRequest(model_path = model, async_load = async_load, load_request_id = request_id)
 
 
@@ -190,10 +193,7 @@ def test_manual_unload_cancels_pending_async_admission(monkeypatch):
         operation = inference_route._pending_async_load
         assert operation is not None
         assert not operation.attempt.cancel_event.is_set()
-        assert (
-            inference_route._cancel_pending_async_load("unsloth/test", "subject")
-            is operation
-        )
+        assert inference_route._cancel_pending_async_load("unsloth/test", "subject") is operation
         assert operation.attempt.cancel_event.is_set()
         release.set()
         await operation.task
@@ -252,9 +252,7 @@ def test_async_load_preserves_active_generation_callback(monkeypatch):
     )
 
     async def scenario():
-        await inference_route.load_model(
-            request(async_load = True), object(), "subject"
-        )
+        await inference_route.load_model(request(async_load = True), object(), "subject")
         await asyncio.sleep(0)
         release.set()
         await inference_route._pending_async_load.task
