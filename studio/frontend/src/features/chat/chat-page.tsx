@@ -134,6 +134,8 @@ import {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
+import { ChatModelNotice } from "./components/chat-model-notice";
+import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -2112,6 +2114,25 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
+  // A chat opened as ?new=<nonce> has no thread in the URL, and it keeps none after
+  // the first send, so the model notice never saw the row that send created: switching
+  // model in a chat you just started offered nothing until you navigated away and
+  // reopened it. The store does learn the id -- runtime-provider publishes it once the
+  // visible thread is the one being persisted -- but it still holds the PREVIOUS chat's
+  // id for the first render, until ThreadNewChatSwitch blanks it in an effect. Handing
+  // that over would put the previous chat's notice on this one. So latch on having seen
+  // it blanked for this nonce; before the first send there is nothing to offer anyway.
+  const newChatBlankedRef = useRef<string | null>(null);
+  if (
+    search.new &&
+    (activeThreadId === null || isAssistantLocalThreadId(activeThreadId))
+  ) {
+    newChatBlankedRef.current = search.new;
+  }
+  const newChatThreadId =
+    search.new && newChatBlankedRef.current === search.new
+      ? persistedActiveThreadId
+      : null;
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -2749,8 +2770,21 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeVideoDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
-    enabled: active && view.mode === "single",
+    // Compare used to disable this outright, so a drop there vanished with no
+    // overlay and no message (#9036). Keep listening and refuse out loud. The
+    // refusal covers models too: nothing may load behind a compare view.
+    enabled: active,
+    dropsUnsupportedReason:
+      view.mode === "single"
+        ? undefined
+        : "Dropped files need a single chat. Open one, then drop it there.",
     attachmentScope,
     attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
@@ -2760,6 +2794,7 @@ export function ChatPage({
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
     onAttachAudio: handleNativeAudioDrop,
+    onAttachVideo: handleNativeVideoDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -3263,6 +3298,33 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
+  // Everything the picker can offer right now, so the chat's own model is only
+  // proposed when selecting it would actually work. A model since deleted, or a
+  // connection since removed, drops out and the notice stays quiet.
+  const selectableModelIds = useMemo(
+    () =>
+      new Set<string>([
+        ...models.map((model) => model.id),
+        ...loraModels.map((model) => model.id),
+        ...externalModels.map((model) => model.id),
+      ]),
+    [models, loraModels, externalModels],
+  );
+
+  // Still handleCheckpointChange, the picker's own handler, but reached the way
+  // the picker reaches it: with the row's metadata, not the bare id. A local or
+  // fine-tuned row is in neither `/api/models/list` nor the external ids, so
+  // without it the switch loads on different arguments than the menu would.
+  const handleSwitchBackToChatModel = useCallback(
+    (modelId: string) => {
+      handleCheckpointChange(
+        modelId,
+        chatModelSwitchMeta(modelId, loraModels),
+      );
+    },
+    [handleCheckpointChange, loraModels],
+  );
+
   const inventoryRefreshStartedRef = useRef(false);
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
@@ -3425,14 +3487,20 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is actually on
+          screen, and the thread viewport adds it to the top padding it already
+          reserves for the header. Without it the notice is an opaque bar over
+          space nothing reserved, and the top of the first message reads
+          underneath it. Declared here, on the nearest ancestor of BOTH the
+          notice and the viewport, so the two cannot disagree about its height. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
@@ -3677,6 +3745,15 @@ export function ChatPage({
             )}
           </div>
         </div>
+
+        {view.mode === "single" && (
+          <ChatModelNotice
+            threadId={view.threadId ?? newChatThreadId ?? undefined}
+            checkpoint={inferenceParams.checkpoint}
+            selectableModelIds={selectableModelIds}
+            onSwitch={handleSwitchBackToChatModel}
+          />
+        )}
 
         {view.mode === "project" ? (
           <ProjectLanding
