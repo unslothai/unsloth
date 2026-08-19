@@ -590,7 +590,7 @@ GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     }
 )
 
-# Name hints for model/file basenames whose architecture is not yet in the set above.
+# Name hints for model, file and intrinsic GGUF names whose architecture is not yet above.
 _EMBEDDING_NAME_HINTS: tuple[str, ...] = (
     "nomic-embed",
     "llama-embed",
@@ -601,6 +601,7 @@ _EMBEDDING_NAME_HINTS: tuple[str, ...] = (
     "e5-",
     "minilm",
 )
+_RERANKER_NAME_HINTS: tuple[str, ...] = ("reranker", "rerank")
 
 
 def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
@@ -612,6 +613,10 @@ def _has_embedding_name_hint(value: Optional[str]) -> bool:
     return bool(value and any(needle in value.strip().lower() for needle in _EMBEDDING_NAME_HINTS))
 
 
+def _has_reranker_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _RERANKER_NAME_HINTS))
+
+
 def is_gguf_embedding_model(
     gguf_path: str,
     model_identifier: Optional[str] = None,
@@ -619,22 +624,24 @@ def is_gguf_embedding_model(
 ) -> bool:
     """Whether a GGUF should be launched with ``--embedding`` for /v1/embeddings."""
     meta = read_gguf_general_metadata(gguf_path) or {}
-    arch = (architecture or meta.get("general.architecture") or "").strip().lower()
-    if is_gguf_embedding_architecture(arch):
-        return True
-
+    identifier_basename = None
     if model_identifier:
         identifier_basename = model_identifier.strip().replace("\\", "/").rsplit("/", 1)[-1]
-        if _has_embedding_name_hint(identifier_basename):
-            return True
-
-    for key in ("general.name", "general.basename"):
-        if _has_embedding_name_hint(meta.get(key)):
-            return True
-
     try:
-        if _has_embedding_name_hint(Path(gguf_path).name):
-            return True
+        file_basename: Optional[str] = Path(gguf_path).name
     except Exception:
-        pass
-    return False
+        file_basename = None
+    name_candidates = (
+        identifier_basename,
+        file_basename,
+        meta.get("general.name"),
+        meta.get("general.basename"),
+        meta.get("general.base_model.0.name"),
+    )
+    if any(_has_reranker_name_hint(value) for value in name_candidates):
+        return False
+
+    arch = (architecture or meta.get("general.architecture") or "").strip().lower()
+    return is_gguf_embedding_architecture(arch) or any(
+        _has_embedding_name_hint(value) for value in name_candidates
+    )

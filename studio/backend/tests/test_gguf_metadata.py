@@ -619,3 +619,14 @@ def test_is_gguf_embedding_model_from_intrinsic_name_hints(tmp_path: Path):
             {"general.architecture": "qwen3", key: value},
         )
         assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is True
+
+
+def test_is_gguf_embedding_model_excludes_reranker_without_pooling(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "bge-reranker-v2-m3-Q4_K_M.gguf",
+        {"general.architecture": "bert", "general.name": "Bge M3"},
+    )
+    assert (
+        is_gguf_embedding_model(str(p), model_identifier = "gpustack/bge-reranker-v2-m3-GGUF")
+        is False
+    )
