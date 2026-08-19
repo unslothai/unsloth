@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+// #9242: a Windows ROCm system with a discrete GPU and an iGPU using shared
+// memory showed the SUM (28 GiB) as "VRAM". The aggregate stays the
+// denominator for usage math, but the halves must be derivable separately so
+// the caption can read "16 GiB VRAM + 12 GiB shared".
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  aggregateGpuMemoryTotalGb,
+  dedicatedGpuMemoryTotalGb,
+  sharedGpuMemoryTotalGb,
+} from "../src/hooks/gpu-vram.ts";
+
+test("dedicated and shared split the aggregate (#9242)", () => {
+  const devices = [
+    { memory_total_gb: 15.92 }, // RX 9060 XT: dedicated
+    { memory_total_gb: 12.15, shared_memory: true }, // iGPU: shared pool
+  ];
+  const dedicated = dedicatedGpuMemoryTotalGb(devices);
+  const shared = sharedGpuMemoryTotalGb(devices);
+  const aggregate = aggregateGpuMemoryTotalGb(devices);
+
+  assert.equal(dedicated, 15.92);
+  assert.equal(shared, 12.15);
+  assert.ok(
+    Math.abs(dedicated + shared - aggregate) < 1e-9,
+    "dedicated + shared must equal the aggregate the usage math uses",
+  );
+});
+
+test("a shared pool counts once even when several devices report it", () => {
+  const devices = [
+    { memory_total_gb: 8 },
+    { memory_total_gb: 12.15, shared_memory: true },
+    { memory_total_gb: 12.15, shared_memory: true }, // same GTT pool, two views
+  ];
+  assert.equal(sharedGpuMemoryTotalGb(devices), 12.15);
+  assert.equal(dedicatedGpuMemoryTotalGb(devices), 8);
+});
+
+test("all-dedicated systems report zero shared", () => {
+  const devices = [{ memory_total_gb: 24 }, { memory_total_gb: 24 }];
+  assert.equal(sharedGpuMemoryTotalGb(devices), 0);
+  assert.equal(dedicatedGpuMemoryTotalGb(devices), 48);
+});
+
+test("float error does not leak into the halves", () => {
+  // 2dp inputs; the derived halves must stay at the same precision.
+  const devices = [{ memory_total_gb: 179.06 }, { memory_total_gb: 179.06 }];
+  assert.equal(dedicatedGpuMemoryTotalGb(devices), 358.12);
+});

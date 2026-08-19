@@ -42,6 +42,42 @@ export function aggregateGpuMemoryTotalGb(
   return Math.round((dedicated + shared) * 100) / 100;
 }
 
+/** Dedicated VRAM alone, ignoring shared-memory pools.
+ *
+ * The display counterpart of aggregateGpuMemoryTotalGb: a "16 GiB VRAM +
+ * 12 GiB shared" readout (#9242) needs the two halves separately, and a
+ * shared pool shared by several devices counts once either way.
+ */
+export function dedicatedGpuMemoryTotalGb(
+  devices: MemoryTotalDevice[],
+): number {
+  return roundToDevicePrecision(
+    devices
+      .filter((device) => !device.shared_memory)
+      .reduce((sum, device) => sum + (device.memory_total_gb ?? 0), 0),
+  );
+}
+
+/** The largest shared-memory pool among the devices, or 0 when all are dedicated. */
+export function sharedGpuMemoryTotalGb(
+  devices: MemoryTotalDevice[],
+): number {
+  return roundToDevicePrecision(
+    Math.max(
+      0,
+      ...devices
+        .filter((device) => device.shared_memory)
+        .map((device) => device.memory_total_gb ?? 0),
+    ),
+  );
+}
+
+function roundToDevicePrecision(value: number): number {
+  // Devices arrive rounded to 2dp; keep the derived halves at the same
+  // precision so dedicated + shared still equals the aggregate exactly.
+  return Math.round(value * 100) / 100;
+}
+
 /** Whether every device reports its own usage, so each row and their sum are real. */
 export function gpuVramUsedIsPerDevice(
   devices: VramReportingDevice[],

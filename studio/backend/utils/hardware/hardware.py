@@ -1227,6 +1227,10 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": None,
+                    # A unified-memory ROCm APU's total spans shared system
+                    # memory, not dedicated VRAM (#9242): the UI splits the
+                    # aggregate instead of labeling the whole pool VRAM.
+                    "unified_memory": _rocm_props_total_is_carve_out(props),
                 }
             )
         except Exception as e:
@@ -3574,6 +3578,10 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "visible_ordinal": td["visible_ordinal"],
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
+                    # Unified-memory devices report a shared pool as their
+                    # total (#9242); surface the same flag the Vulkan path
+                    # already sets so the UI can split VRAM from shared.
+                    "shared_memory": bool(td.get("unified_memory")),
                 }
                 for td in torch_devices
             ]
