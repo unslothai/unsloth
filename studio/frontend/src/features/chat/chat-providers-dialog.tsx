@@ -607,9 +607,11 @@ export function ChatProvidersSettings({
       );
       setModelsLoading(true);
       try {
+        // The live checkboxes, not the persisted list: a manual reload re-reads the
+        // catalog, it does not revert edits the user has not saved yet.
         await applyCodexSubscriptionModels(
           editingProviderId,
-          provider?.models ?? selectedModelIds,
+          selectedModelIds,
           provider?.authStatus,
         );
       } finally {
