@@ -8590,6 +8590,25 @@ def get_pending_async_load_deletion_path() -> Optional[str]:
     return None
 
 
+def _cancel_pending_async_load(model_path: str, current_subject: str) -> Optional[_LoadAdmission]:
+    with _load_admissions_lock:
+        operation = _pending_async_load
+        if (
+            operation is None
+            or operation.subject != current_subject
+            or operation.task is None
+            or operation.task.done()
+            or model_path.strip().casefold()
+            not in {
+                operation.model_path.strip().casefold(),
+                operation.deletion_model_path.strip().casefold(),
+            }
+        ):
+            return None
+        operation.attempt.cancel_event.set()
+        return operation
+
+
 def _status_loading(backend_loading = ()) -> List[str]:
     loading = list(backend_loading)
     pending = _pending_async_model()
@@ -8742,6 +8761,8 @@ async def load_model(
             load_model_gated(request, fastapi_request, current_subject, user_initiated = True, attempt = attempt),
             label = "Model load",
         )
+        with _load_admissions_lock:
+            _last_async_load_error = None
         return response
     finally:
         _finish_load_admission(operation)
@@ -9348,6 +9369,8 @@ async def _load_model_impl(
             )
 
             if not success:
+                if load_cancel_event is not None and load_cancel_event.is_set():
+                    raise HTTPException(status_code = 409, detail = "Model load cancelled")
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
@@ -9472,6 +9495,8 @@ async def _load_model_impl(
         )
 
         if not success:
+            if load_cancel_event is not None and load_cancel_event.is_set():
+                raise HTTPException(status_code = 409, detail = "Model load cancelled")
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
@@ -10658,6 +10683,11 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             finally:
                 attempt.cancel_complete.set()
+
+        pending_async = _cancel_pending_async_load(request.model_path, current_subject)
+        if pending_async is not None:
+            logger.info("Cancelled pending async load: %s", request.model_path)
+            return UnloadResponse(status = "unloaded", model = request.model_path)
 
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only

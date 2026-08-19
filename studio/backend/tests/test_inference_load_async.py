@@ -60,6 +60,16 @@ def test_defaults_to_sync_and_preserves_response(monkeypatch):
     assert calls == [False]
 
 
+def test_successful_sync_load_clears_stale_async_error(monkeypatch):
+    async def load(req, fastapi_request, subject, **kwargs):
+        return response(req.model_path)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    inference_route._last_async_load_error = "Model load failed"
+    assert isinstance(run(inference_route.load_model(request(), object(), "subject")), LoadResponse)
+    assert inference_route._last_async_load_error is None
+
+
 def test_async_requires_non_empty_request_id():
     with pytest.raises(Exception):
         LoadRequest(model_path = "m", async_load = True, load_request_id = "")
@@ -159,6 +169,33 @@ def test_pending_admission_keeps_public_label_separate_from_delete_identity(monk
         assert inference_route.get_pending_async_load_deletion_path() == "org/test"
         release.set()
         await inference_route._pending_async_load.task
+
+    run(scenario())
+
+
+def test_manual_unload_cancels_pending_async_admission(monkeypatch):
+    release = asyncio.Event()
+
+    async def load(req, fastapi_request, subject, **kwargs):
+        await release.wait()
+        return response(req.model_path)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    monkeypatch.setattr(keepwarm, "acquire_inference_lifecycle_gate_nowait", lambda: True)
+    monkeypatch.setattr(keepwarm, "release_inference_lifecycle_gate", lambda: None)
+
+    async def scenario():
+        await inference_route.load_model(request(async_load = True), object(), "subject")
+        operation = inference_route._pending_async_load
+        assert operation is not None
+        assert not operation.attempt.cancel_event.is_set()
+        assert (
+            inference_route._cancel_pending_async_load("unsloth/test", "subject")
+            is operation
+        )
+        assert operation.attempt.cancel_event.is_set()
+        release.set()
+        await operation.task
 
     run(scenario())
 
