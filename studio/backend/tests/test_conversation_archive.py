@@ -1912,9 +1912,7 @@ def test_one_pass_holding_both_spans_widens_the_window_too(conn):
     ]
 
     # One call, both turns, shortest first.
-    _archive(
-        short + [{"role": "user", "content": "and again please"}] + long
-    )
+    _archive(short + [{"role": "user", "content": "and again please"}] + long)
 
     scope = store.conversation_archive_scope(THREAD)
     spans = [
