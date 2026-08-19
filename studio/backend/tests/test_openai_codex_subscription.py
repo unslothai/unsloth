@@ -2007,9 +2007,7 @@ def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
     codex_client._catalog_accounts["codex-1"] = "acct-a"
 
     # What the shared DB now says this connection is bound to.
-    monkeypatch.setattr(
-        codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"}
-    )
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
     try:
         refused = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
         assert refused.status_code == 401, refused.detail
