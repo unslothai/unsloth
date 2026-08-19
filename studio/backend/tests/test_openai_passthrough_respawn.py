@@ -598,7 +598,10 @@ def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch)
         async for chunk in response.body_iterator:
             text = chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk
             chunks.append(text)
-            if backend.respawn_started.is_set() and text == inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE:
+            if (
+                backend.respawn_started.is_set()
+                and text == inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+            ):
                 backend.keepalive_during_respawn.set()
         return "".join(chunks)
 
