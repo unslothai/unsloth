@@ -210,9 +210,10 @@ class _CpuFallbackRuntime(NamedTuple):
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
-    "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
-    "installed. Run `unsloth studio setup` to download the prebuilt runtime, "
-    "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
+    "This is a GGUF model, but no executable llama.cpp runtime (llama-server) "
+    "is available. Run `unsloth studio setup` to download the prebuilt runtime, "
+    "then try again. If you selected a custom runtime, restore its execute "
+    "permission first (for example, `chmod +x llama-server` on Unix)."
 )
 
 # Shared by the pre-teardown and post-metadata rejections (#7205).
@@ -3713,6 +3714,11 @@ class LlamaCppBackend:
         # Which llama-server file this load ran. `unsloth studio update` replaces it
         # in place, so a stand-down blamed on the binary can spot a real update.
         self._launch_binary_revision: tuple = ()
+        # Binary a load has selected but not necessarily spawned yet. None means
+        # no load is pending; the settings route compares a populated revision
+        # before is_active becomes true so a concurrent path save cannot hide a
+        # required reload.
+        self._binary_revision_pending: Optional[tuple] = None
         # Set after an auto-Vulkan crash recovers with all devices disabled.
         self._cpu_fallback_reason: Optional[str] = None
         self._cpu_fallback_runtime: Optional[_CpuFallbackRuntime] = None
@@ -4020,12 +4026,16 @@ class LlamaCppBackend:
         # path string, and on macOS the launch resolves a managed entrypoint to
         # its target, so comparing an unresolved discovery path against it would
         # differ for the same unchanged file and reload the model on every Apply.
+        return self._binary_changed_since_revision(self._launch_binary_revision)
+
+    def _binary_changed_since_revision(self, revision: tuple) -> bool:
+        """Whether the current selection differs from a captured binary."""
         current = self._binary_revision(
             self._exec_path_for_launch(self._find_llama_server_binary())
         )
-        if not current or not self._launch_binary_revision:
+        if not current or not revision:
             return False
-        return current != self._launch_binary_revision
+        return current != revision
 
     def spec_binary_fallback_can_retry(self) -> bool:
         """Whether the binary has since gained what the last load stood down for.
@@ -4857,24 +4867,30 @@ class LlamaCppBackend:
         Search order:
         1.  LLAMA_SERVER_PATH environment variable (direct path to binary)
         1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
-        2.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
-        3.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
-        4.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
-        5.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
-        6.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
-        7.  llama-server on PATH                     (system install)
-        8.  ./bin/llama-server                       (legacy: extracted binary)
+        2.  Studio's custom llama.cpp folder setting
+        3.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
+        4.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
+        5.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
+        6.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
+        7.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
+        8.  llama-server on PATH                     (system install)
+        9.  ./bin/llama-server                       (legacy: extracted binary)
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         def _file_status(p: Path) -> str:
-            # "file", "absent", or "denied" (exists but stays access-denied
-            # across a short retry: Windows AV/ACL or an install replace in
-            # flight). is_file() raises PermissionError (WinError 5) instead of
-            # returning False for the locked case, so never treat it as missing.
+            # "file", "absent", "non_executable", or "denied". A denied
+            # file stays access-denied across a short retry (Windows AV/ACL or
+            # an install replace in flight). is_file() raises PermissionError
+            # (WinError 5) instead of returning False for the locked case, so
+            # never treat it as missing.
             for _ in range(5):
                 try:
-                    return "file" if p.is_file() else "absent"
+                    if not p.is_file():
+                        return "absent"
+                    if sys.platform != "win32" and not os.access(p, os.X_OK):
+                        return "non_executable"
+                    return "file"
                 except PermissionError:
                     time.sleep(0.2)
                 except OSError:
@@ -4885,33 +4901,43 @@ class LlamaCppBackend:
             return _file_status(p) == "file"
 
         def _layout_candidates(d: Path) -> list:
-            # build layouts probed under a llama.cpp dir, highest priority first
-            cands = [d / binary_name, d / "build" / "bin" / binary_name]
-            if sys.platform == "win32":
-                cands.append(d / "build" / "bin" / "Release" / binary_name)
-            return cands
+            # Keep Settings validation and runtime discovery on one layout
+            # contract so a folder accepted by the UI is always launchable.
+            from utils.llama_cpp_path_settings import llama_server_candidates
+            return list(llama_server_candidates(d))
 
         def _unavailable(p: object) -> None:
             # a pinned or managed binary that exists but is access-denied: report
             # it instead of silently downgrading to a lower-priority llama-server
             logger.warning(
-                f"llama-server at {p} exists but is access-denied (antivirus or "
-                "an in-flight install); not falling back to another binary, "
-                "retry once it is released"
+                f"llama-server at {p} is not executable or is access-denied "
+                "(permissions, antivirus, or an in-flight install); not falling "
+                "back to another binary, retry once it is available"
             )
             return None
 
         def _scan_pinned(paths: list):
-            # first existing candidate wins -> (path, None); a present-but-denied
-            # one -> (None, denied_path) so the caller reports it rather than
-            # skipping to a lower-priority location. include_denied returns the
-            # locked path instead: diffusion asset lookup only needs its dir.
+            # First executable candidate wins. A genuinely access-denied one
+            # stops immediately; a known non-executable candidate is remembered
+            # while sibling build layouts are checked. include_denied returns an
+            # unavailable path instead: diffusion asset lookup only needs its dir.
+            non_executable = None
             for p in paths:
                 st = _file_status(p)
                 if st == "file":
                     return str(p), None
                 if st == "denied":
                     return (str(p), None) if include_denied else (None, p)
+                if st == "non_executable" and non_executable is None:
+                    # A source checkout may leave a stale root entrypoint beside a
+                    # valid CMake build. Keep looking within this pinned layout,
+                    # but do not fall through to a different runtime if none works.
+                    non_executable = p
+            if non_executable is not None:
+                # include_denied is used only to preserve genuinely transient
+                # access-denied paths. A missing execute bit needs repair, not a
+                # retry, and must not pass the download preflight as available.
+                return (None, None) if include_denied else (None, non_executable)
             return None, None
 
         # 1. Env var: direct path to binary
@@ -4925,14 +4951,37 @@ class LlamaCppBackend:
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-        if custom_llama_cpp:
+        managed_path_marker = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+        if custom_llama_cpp and not managed_path_marker:
             hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
                 return hit
 
-        # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
+        # 2. Studio setting: a deliberate pin, so a missing or inaccessible
+        # selected build must not silently fall through to the bundled runtime.
+        # The user would otherwise see their custom path selected while another
+        # llama-server actually ran.
+        try:
+            from utils.llama_cpp_path_settings import get_stored_custom_llama_cpp_path
+            studio_custom_llama_cpp = get_stored_custom_llama_cpp_path()
+        except Exception:
+            studio_custom_llama_cpp = None
+        if studio_custom_llama_cpp is not None:
+            hit, locked = _scan_pinned(_layout_candidates(studio_custom_llama_cpp))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
+            logger.warning(
+                "The custom llama.cpp folder selected in Studio no longer contains "
+                "%s; not falling back to another runtime",
+                binary_name,
+            )
+            return None
+
+        # 3-5. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
         legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
         _resolved_sr, _is_legacy = LlamaCppBackend._resolved_studio_root_and_is_legacy()
@@ -11322,11 +11371,16 @@ class LlamaCppBackend:
         if not binary:
             return True
         try:
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
             from utils.llama_cpp_update import (
                 _active_install_is_local_link,
                 _llama_install_root,
             )
 
+            # A Settings-selected checkout is user-owned even when its ordinary
+            # `llama.cpp` directory name or prebuilt marker resembles our tree.
+            if custom_llama_cpp_path_source() == "studio":
+                return False
             # A --with-llama-cpp-dir tree is the user's own checkout reached
             # through a symlinked llama.cpp dir. The updater refuses to write
             # through that link, so it cannot repair the binary either, and its
@@ -11460,7 +11514,12 @@ class LlamaCppBackend:
         if not binary or sys.platform != "darwin":
             return binary
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
-            return binary
+            try:
+                from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
+                if custom_llama_cpp_path_source() != "studio":
+                    return binary
+            except Exception:
+                return binary
         if not _is_installer_entrypoint(binary):
             return binary
         # template_only: the outer entrypoint being ours says nothing about
@@ -13629,7 +13688,7 @@ class LlamaCppBackend:
 
     @contextlib.contextmanager
     def _serial_load_scope(self):
-        """Hold the serial load lock, and release the pending budget with it.
+        """Hold the serial load lock and release pending launch state with it.
 
         The pending fraction is armed before the download, so every exit ahead of
         the spawn has to give it back or the settings route, which reads it before
@@ -13644,6 +13703,7 @@ class LlamaCppBackend:
                 yield
             finally:
                 self._vram_fraction_pending = None
+                self._binary_revision_pending = None
 
     @_with_gguf_load_marker
     def load_model(
@@ -13850,19 +13910,27 @@ class LlamaCppBackend:
 
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
-            binary = self._find_llama_server_binary()
-            # macOS: launch the resolved server, never a shell entrypoint. SIP
-            # purges DYLD_* while starting the protected /bin/sh a wrapper
-            # entrypoint runs under, so the loader path built for the child
-            # would not survive the wrapper's own exec (#8566). The installer
-            # writes a wrapper only when it cannot symlink, and that wrapper
-            # does nothing but exec the target with "$@", so this is the same
-            # launch minus the shell hop. The resolved path stays inside the
-            # managed install, so provenance-aware advice is unaffected.
-            # Resolved here rather than at the later reset so every consumer of
-            # `binary` below (capability probe, revision stamp) shares one path
-            # space; `_binary_changed_since_launch` compares against this one.
-            binary = self._exec_path_for_launch(binary)
+            # Serialize this snapshot with settings writes. If a save wins the
+            # guard, this load sees the new folder; if the load wins, the save
+            # response compares against this pending old revision and asks for a
+            # reload even before Popen makes is_active true.
+            from utils.llama_cpp_path_settings import llama_cpp_path_selection_guard
+
+            with llama_cpp_path_selection_guard():
+                binary = self._find_llama_server_binary()
+                # macOS: launch the resolved server, never a shell entrypoint. SIP
+                # purges DYLD_* while starting the protected /bin/sh a wrapper
+                # entrypoint runs under, so the loader path built for the child
+                # would not survive the wrapper's own exec (#8566). The installer
+                # writes a wrapper only when it cannot symlink, and that wrapper
+                # does nothing but exec the target with "$@", so this is the same
+                # launch minus the shell hop. The resolved path stays inside the
+                # managed install, so provenance-aware advice is unaffected.
+                # Resolved here rather than at the later reset so every consumer of
+                # `binary` below (capability probe, revision stamp) shares one path
+                # space; `_binary_changed_since_launch` compares against this one.
+                binary = self._exec_path_for_launch(binary)
+                self._binary_revision_pending = self._binary_revision(binary)
 
             # Every capability answer shaping this launch, latching whether any was a
             # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
@@ -19220,6 +19288,11 @@ class LlamaCppBackend:
     def adopt_load_intent_if_matched(self, intent: GgufLoadIntent) -> bool:
         """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
+            return False
+        # A custom-path save leaves the model intent unchanged, but the
+        # resident process still belongs to the previously selected runtime.
+        if self._binary_changed_since_launch():
+            logger.info("llama-server selection changed since launch; forcing a reload")
             return False
         intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
