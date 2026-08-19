@@ -9,6 +9,8 @@ export type LiveGgufVariantState = {
   state: ManagedDownload["state"];
   expectedBytes: number;
   transferredBytes: number;
+  /** Whether `transferredBytes` came from a poll that measured it. */
+  measuredTransfer: boolean;
   startedAt: number;
 };
 
@@ -62,6 +64,9 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
           // Taking the max there subtracted 3 GB from a 0.5 GB remainder and the
           // row read "0 B left" with the transfer barely started.
           transferredBytes: job.downloadedBytes,
+          // Undefined is a job that has not polled yet, which has no held
+          // figure to forward; only an explicit false is a held reading.
+          measuredTransfer: job.measuredTransfer !== false,
           startedAt: job.startedAt,
         },
       ]);
@@ -112,8 +117,19 @@ export function applyLiveGgufVariantStates(
     // subtracting the dead job's progress here overwrote a correct backend
     // reading with a far smaller one: cancelling a one-file 18 GB download at
     // 17 GB read "1.0 GB left" for a transfer with all 18 GB still to fetch.
+    //
+    // And only off a MEASURED reading. resolveProgressUpdate holds the previous
+    // transfer through a poll that reported zero, which the retry after an XET
+    // fallback or an XET resume that purged its partial legitimately does: the
+    // reclaim recomputes the baseline from disk, so the first reading is a real
+    // 0 against a total shrunk by everything already finalized. Both terms have
+    // to come from the same reading, and a held one is priced against the
+    // previous, larger total -- subtracting 3 GB of it from the 0.5 GB that
+    // remains read "0 B left" until the retry moved its first byte. The backend
+    // remainder below already covers that window, as it does for a terminal row.
     const liveRemaining =
       activeDownloadState(live.state) &&
+      live.measuredTransfer &&
       live.expectedBytes > 0 &&
       live.transferredBytes > 0
         ? Math.max(live.expectedBytes - live.transferredBytes, 0)

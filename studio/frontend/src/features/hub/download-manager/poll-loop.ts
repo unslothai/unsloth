@@ -153,6 +153,7 @@ export function applyProgressUpdate(
   patchJob(key, {
     expectedBytes: resolved.expected,
     downloadedBytes: resolved.downloadedBytes,
+    measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
     completeOnDisk: resolved.completeOnDisk,
     fraction: resolved.fraction,
@@ -337,14 +338,22 @@ function reconcileProgressAndSpeed(
   progressResp: ProgressLike,
   generationChanged: boolean,
 ): { madeProgress: boolean } {
-  const { expected, downloadedBytes, completedBytes, completeOnDisk, fraction, madeProgress } =
-    resolveProgressUpdate(current, progressResp, {
-      resetMonotonic: generationChanged,
-    });
+  const {
+    expected,
+    downloadedBytes,
+    measuredTransfer,
+    completedBytes,
+    completeOnDisk,
+    fraction,
+    madeProgress,
+  } = resolveProgressUpdate(current, progressResp, {
+    resetMonotonic: generationChanged,
+  });
   const bytesPerSec = applySpeedSample(rt, downloadedBytes, expected, Date.now());
   patchJob(key, {
     expectedBytes: expected,
     downloadedBytes,
+    measuredTransfer,
     completedBytes,
     completeOnDisk,
     fraction,

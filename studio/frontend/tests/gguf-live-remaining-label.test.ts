@@ -40,6 +40,7 @@ const live = (over: Record<string, unknown> = {}) =>
         state: "running",
         expectedBytes: 4 * GB,
         transferredBytes: 3 * GB,
+        measuredTransfer: true,
         startedAt: 0,
         ...over,
       },
@@ -152,6 +153,79 @@ test("an XET fallback does not price the retry against the dead run's bytes", ()
         download_size_bytes: 3.5 * GB,
         partial: true,
         download_remaining_bytes: 3.5 * GB,
+      }),
+    ],
+    states as never,
+  );
+
+  assert.equal(row.download_remaining_bytes, 0.4 * GB);
+});
+
+test("a retry that has not measured a byte yet keeps the backend remainder", () => {
+  // The reading right after the reclaim, before the HTTP run moves anything.
+  // snapshot_progress recomputes completed_baseline_bytes from the finalized
+  // blobs, nets it out of both counters and out of the total, so it reports
+  // downloaded_bytes 0 against a 0.5 GB total -- and resolveProgressUpdate
+  // holds the dead run's 3 GB behind that zero. Pricing the remainder off the
+  // held figure read "0 B left" with all 0.5 GB still to fetch.
+  const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
+  const states = select({
+    jobs: {
+      "model:unsloth/model-GGUF:Q4_K_M": {
+        kind: "model",
+        repoId: "unsloth/model-GGUF",
+        variant: "Q4_K_M",
+        state: "running",
+        expectedBytes: 0.5 * GB,
+        downloadedBytes: 3 * GB,
+        measuredTransfer: false,
+        completedBytes: 3 * GB,
+        startedAt: 0,
+      },
+    },
+  } as never);
+
+  const [row] = applyLiveGgufVariantStates(
+    [
+      variant({
+        size_bytes: 3.5 * GB,
+        download_size_bytes: 3.5 * GB,
+        partial: true,
+        download_remaining_bytes: 0.5 * GB,
+      }),
+    ],
+    states as never,
+  );
+
+  assert.equal(row.download_remaining_bytes, 0.5 * GB);
+  assert.equal(ggufVariantTransferLabel(row), "500 MB left");
+});
+
+test("the retry prices itself off the first reading that does measure", () => {
+  const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
+  const states = select({
+    jobs: {
+      "model:unsloth/model-GGUF:Q4_K_M": {
+        kind: "model",
+        repoId: "unsloth/model-GGUF",
+        variant: "Q4_K_M",
+        state: "running",
+        expectedBytes: 0.5 * GB,
+        downloadedBytes: 0.1 * GB,
+        measuredTransfer: true,
+        completedBytes: 0,
+        startedAt: 0,
+      },
+    },
+  } as never);
+
+  const [row] = applyLiveGgufVariantStates(
+    [
+      variant({
+        size_bytes: 3.5 * GB,
+        download_size_bytes: 3.5 * GB,
+        partial: true,
+        download_remaining_bytes: 0.5 * GB,
       }),
     ],
     states as never,
