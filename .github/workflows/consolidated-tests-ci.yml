@@ -474,9 +474,13 @@ jobs:
           #     HF=4.57.6 + TRL<1           517s                  229s
           #     HF=default + TRL=default    568s                  246s
           #
-          # Two of the three cells agreed exactly, failure sets and skip sets both. The
-          # third produced 14 failures that serial does not: 8 in test_mlx_generate.py
-          # and 6 in test_moe_bnb4bit_per_expert_conversions.py.
+          # Across two runs of all three cells, four agreed exactly -- failure sets and
+          # skip sets both -- and two produced 14 failures serial does not: 8 in
+          # test_mlx_generate.py and 6 in test_moe_bnb4bit_per_expert_conversions.py.
+          #
+          # The same 14 every time, and NOT the same cell: the second run moved them from
+          # HF=default to HF=latest. So this is not a dependency combination, it is worker
+          # scheduling, and roughly one cell per run draws the losing order.
           #
           # Both files pass on their own, and pass under xdist on their own, so they are
           # self-contained. What breaks them is another file running first in the same

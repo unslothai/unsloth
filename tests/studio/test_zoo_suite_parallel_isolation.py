@@ -10,12 +10,19 @@ Measured on a staging runner, whole suite, all three matrix cells:
     HF=4.57.6 + TRL<1           517s                  229s
     HF=default + TRL=default    568s                  246s
 
-Two cells agreed exactly, failure sets and skip sets both. The third produced 14
-failures serial does not: 8 in test_mlx_generate.py, 6 in
-test_moe_bnb4bit_per_expert_conversions.py. Both files pass alone, and pass under
-xdist alone, so they are self-contained; what breaks them is another file running
-first in the same worker, an ordering serial never produces because serial is
-alphabetical.
+Across two runs of all three cells, four agreed exactly -- failure sets and skip
+sets both -- and two produced 14 failures serial does not: 8 in
+test_mlx_generate.py, 6 in test_moe_bnb4bit_per_expert_conversions.py.
+
+The same 14 every time, and not the same cell: the second run moved them from
+HF=default to HF=latest. That rules out a dependency combination and leaves worker
+scheduling, with roughly one cell per run drawing the losing order. It also means a
+single green run proves nothing here, which is why the pin stays even though four
+of six observations were clean.
+
+Both files pass alone, and pass under xdist alone, so they are self-contained; what
+breaks them is another file running first in the same worker, an ordering serial
+never produces because serial is alphabetical.
 
 So the pair is ignored from the parallel pass and run again in a process of their
 own. That pairing is the thing this file guards, because half of it is silent:
