@@ -230,9 +230,24 @@ def _fit_context(messages, **kwargs):
             # retrievable while nothing was indexed, and repeat that claim every later turn.
             # Cleared, it says stored but not retrievable now -- true either way -- and the
             # tool is still offered so a recovered archive is not walled off.
-            degraded = _archive_is_degraded()
+            # Resolved lazily, and once. Establishing this probes the store and runs a
+            # real embedding forward, and it was being paid on EVERY persisted tool-capable
+            # request using truncate_oldest -- including short conversations that never
+            # overflow and never render a block. The fit asks only where the answer
+            # changes what it does: before starting a new epoch, and before claiming a
+            # block is searchable.
+            _degraded: dict = {}
+
+            def _is_degraded() -> bool:
+                if "value" not in _degraded:
+                    _degraded["value"] = _archive_is_degraded()
+                return bool(_degraded["value"])
+
             fitted, truncation = checkpoint.fit_checkpoint_context(
-                messages, can_reset = not degraded, searchable = not degraded, **kwargs
+                messages,
+                can_reset = lambda: not _is_degraded(),
+                searchable = lambda: not _is_degraded(),
+                **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
             # boundary is no longer enough (measured: a threadless request went from
@@ -777,13 +792,21 @@ def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
 
 
 def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict]]) -> str:
-    """The text of the first message a fit KEPT, as the branch spells it, or "".
+    """The text of the first message a fit kept AFTER everything it dropped, or "".
 
     ``boundary_messages`` is a count against one particular transcript, and the next
     request's transcript is not guaranteed to be that one plus new turns: deleting an
     already-evicted prompt shortens the front, so replaying the count unchanged lands the
     boundary two messages too deep and evicts history that is still live. The anchor names
     the message the boundary was meant to land ON, which survives a deletion in front of it.
+
+    After the LAST eviction, not simply the first survivor. Eviction is a clean prefix only
+    while nothing is protected mid-list; an instruction pin or an anchored recall leaves
+    live turns on both sides, and the first survivor is then the pin itself, sitting near
+    the front. `_sticky_compaction_boundary` clamps the count down to the anchor's index,
+    so anchoring on the pin cut the replayed boundary back to the pin and handed back every
+    turn compacted after it -- one turn after the user was told they were compacted away,
+    which is the same un-compaction `_branch_boundary`'s own count was fixed to prevent.
 
     Text, not an id or an index: ids are per-request objects and an index is the very thing
     that goes stale. Read back by ``_sticky_compaction_boundary``, which only ever lets the
@@ -792,7 +815,11 @@ def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict
     """
     messages = _branch_non_system(branch)
     live = {id(message) for message in conversation}
-    for message in messages:
+    last_dropped = max(
+        (index for index, message in enumerate(messages) if id(message) not in live),
+        default = -1,
+    )
+    for message in messages[last_dropped + 1 :]:
         if id(message) in live:
             return _archive_message_text(message.get("content"))
     return ""

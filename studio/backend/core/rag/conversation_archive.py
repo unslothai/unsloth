@@ -641,6 +641,19 @@ def reachable() -> bool:
     conn = None
     try:
         conn = rag_db.get_connection()
+        # WRITABLE, not merely open. `get_connection` succeeds against a database that is
+        # read-only, on a full filesystem, or held by another writer, and the archive
+        # write happens after the reset and swallows its own failure, so the block would
+        # promise a searchable history that nothing could store.
+        #
+        # A real statement, rolled back. `BEGIN IMMEDIATE` on its own is NOT enough:
+        # sqlite defers the check, and it returns cleanly on a read-only connection that
+        # raises the moment anything is written. The rollback leaves the schema untouched.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS _archive_write_probe(x)")
+        finally:
+            conn.rollback()
         model = config.effective_embedding_model()
         embeddings.embedding_identity(model)
         embeddings.token_counter(model)("")

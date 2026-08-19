@@ -147,6 +147,11 @@ def carried_forward_items(
     return list(reversed(chosen))
 
 
+def _resolved(value):
+    """A gate that may be a callable, so establishing it costs nothing until it is asked."""
+    return value() if callable(value) else value
+
+
 def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
@@ -161,8 +166,15 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
 
 # A capture group, so `findall` yields the BODY; without it the last item swallows the
 # closing delimiter.
+# The HEADER is part of the pattern, not just the delimiters: the tag is ordinary prompt
+# text and a caller's own system prompt may already use it. Matching on the tag alone
+# stripped that caller-owned section on every reset, reintroduced its bullet lines as
+# lower-authority quoted user history, and deleted whatever was not bullet-shaped, which
+# silently rewrites the caller's policy. Only a block Studio itself rendered carries this
+# header, so only that one is claimed.
 _BLOCK = re.compile(
-    re.escape(_OPEN) + r"(.*?)" + re.escape(_CLOSE) + r"\s*", re.IGNORECASE | re.DOTALL
+    re.escape(_OPEN) + r"\n" + re.escape(_HEADER) + r"(.*?)" + re.escape(_CLOSE) + r"\s*",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -255,6 +267,10 @@ def fit_checkpoint_context(
     Signature-compatible with ``fit_rolling_context`` so the call sites can choose a policy
     without knowing which one they got.
 
+    ``can_reset`` and ``searchable`` may each be a callable, resolved only where they are
+    actually needed: establishing them means probing the store and the embedder, which is
+    wasted on the great majority of requests, since neither overflows nor renders a block.
+
     ``can_reset`` is the caller's assertion that the dropped turns will be archived and the
     search tool can be offered. False forbids STARTING a new epoch (an unsearchable reset is
     data loss, not compaction) while still replaying one already in force, so a thread whose
@@ -289,7 +305,10 @@ def fit_checkpoint_context(
         )
         if prior:
             items = _recap(prior + items, max_tokens = budget, max_items = MAX_ITEMS)
-        text = render_checkpoint(items, searchable = searchable)
+        if not items:
+            # Nothing to carry, so nothing to claim: do not pay for the probe.
+            return _append_to_system(kept, ""), ""
+        text = render_checkpoint(items, searchable = _resolved(searchable))
         return _append_to_system(kept, text), text
 
     # Phase one: replay the epoch already in force. Without it the client re-sending the
@@ -321,7 +340,7 @@ def fit_checkpoint_context(
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable
     # group in one pass; the primitive itself protects system, developer, final and newest
     # user groups.
-    if current_tokens > prompt_target and can_reset:
+    if current_tokens > prompt_target and _resolved(can_reset):
         candidate, reset_dropped = truncate_oldest_messages(
             messages, 0.0, protected_message_ids = protected_message_ids
         )

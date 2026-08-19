@@ -279,9 +279,19 @@ def test_a_multiline_instruction_survives_being_read_back():
     ]
     assert checkpoint._block_items(checkpoint.render_checkpoint([nested])) == [nested]
 
-    # A block written before the continuation indent existed still reads line by line.
-    legacy = "<carried_forward>\nheader\n\n- plain one\n- plain two\n</carried_forward>"
-    assert checkpoint._block_items(legacy) == ["plain one", "plain two"]
+    # A flat block, no continuation indent, still reads line by line. It carries Studio's
+    # own header, which is what marks a block as ours; a foreign one is not read at all.
+    flat = (
+        checkpoint._OPEN
+        + "\n"
+        + checkpoint._HEADER
+        + "\n\n- plain one\n- plain two\n"
+        + checkpoint._CLOSE
+    )
+    assert checkpoint._block_items(flat) == ["plain one", "plain two"]
+    assert checkpoint._block_items(
+        "<carried_forward>\nheader\n\n- plain one\n</carried_forward>"
+    ) == []
 
 
 def test_the_merged_block_is_re_capped_not_just_concatenated():
@@ -1379,3 +1389,205 @@ def test_the_reachability_probe_encodes_rather_than_only_tokenizing(monkeypatch)
     # iteration.
     assert conversation_archive.reachable() is True
     assert len(calls) == 1
+
+
+def test_the_reachability_probe_requires_a_writable_database(monkeypatch, tmp_path):
+    """`get_connection` succeeds against a database it cannot write.
+
+    Read-only, a full filesystem, or another writer holding it: the archive write happens
+    after the reset and swallows its own failure, so the block would promise a searchable
+    history that nothing could store.
+    """
+    import sqlite3
+
+    from core.rag import conversation_archive, embeddings
+    from storage import rag_db
+
+    conversation_archive._REACHABLE_MEMO.clear()
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: "st:model-a")
+    monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: (lambda _text: 1))
+    monkeypatch.setattr(embeddings, "encode", lambda *_a, **_k: [[0.0]])
+
+    path = tmp_path / "probe.db"
+    sqlite3.connect(str(path)).close()
+
+    def _readonly_connection():
+        return sqlite3.connect(f"file:{path}?mode=ro", uri = True)
+
+    monkeypatch.setattr(rag_db, "get_connection", _readonly_connection)
+    assert conversation_archive.reachable() is False
+
+    conversation_archive._REACHABLE_MEMO.clear()
+    monkeypatch.setattr(rag_db, "get_connection", lambda: sqlite3.connect(str(path)))
+    assert conversation_archive.reachable() is True
+
+
+def test_the_archive_probe_is_not_paid_by_a_conversation_that_fits():
+    """Establishing the gates runs a real embedding forward and a database probe.
+
+    It was paid on every persisted, tool-capable request using truncate_oldest, including
+    short conversations that never overflow and never render a block, which is latency and
+    memory pressure for an answer that changes nothing. The fit asks only where the answer
+    matters: before starting a new epoch, and before claiming a block is searchable.
+    """
+    asked = {"n": 0}
+
+    def _gate():
+        asked["n"] += 1
+        return True
+
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "hello"},
+    ]
+    fitted, truncation = checkpoint.fit_checkpoint_context(
+        messages,
+        context_length = 4096,
+        max_tokens = 256,
+        count_tokens = lambda candidate: 10 * len(candidate),
+        can_reset = _gate,
+        searchable = _gate,
+    )
+
+    assert truncation is None or truncation.get("fits")
+    assert asked["n"] == 0, asked
+
+    # And it IS asked once the prompt overflows and a reset is on the table.
+    long_thread = [{"role": "system", "content": "You are helpful."}] + [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"turn {index}"}
+        for index in range(40)
+    ]
+    checkpoint.fit_checkpoint_context(
+        long_thread,
+        context_length = 512,
+        max_tokens = 128,
+        count_tokens = lambda candidate: 50 * len(candidate),
+        can_reset = _gate,
+        searchable = _gate,
+    )
+    assert asked["n"] >= 1
+
+
+def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch):
+    """The count and the anchor have to agree, or persistence undoes the fix.
+
+    `_branch_boundary` counts every evicted message, including the ones past a protected
+    pin. `_sticky_compaction_boundary` then re-derives the depth from the stored anchor and
+    only ever moves it SHALLOWER, so an anchor naming the first survivor -- which under a
+    mid-list pin IS the pin, sitting near the front -- clamps the count straight back down
+    and hands back every turn compacted after it. Passing `_branch_boundary` to the next
+    fit directly never sees that: the clamp lives on the persisted path.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    pinned = {
+        "role": "user",
+        "content": "Standing instruction two, given later: prefix every reply with BETA-7788.",
+    }
+    branch = [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "Understood."},
+    ]
+    for index in range(4):
+        branch += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+    branch += [pinned, {"role": "assistant", "content": "Will do."}]
+    for index in range(4, 8):
+        branch += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+    branch += [{"role": "user", "content": "continue"}]
+    protected = {id(pinned)}
+
+    fitted, truncation = _fit(branch, protected_message_ids = protected)
+    assert truncation["checkpoint_started"] is True
+    kept_ids = {id(message) for message in fitted}
+    evicted = [
+        message for message in branch if id(message) not in kept_ids and message["role"] != "system"
+    ]
+    assert any("Section 7" in str(message["content"]) for message in evicted)
+
+    # Exactly what the route persists on the assistant turn it just produced.
+    recorded = llama_cpp._branch_boundary(fitted, branch)
+    anchor = llama_cpp._branch_boundary_anchor(fitted, branch)
+    reply = {"role": "assistant", "content": "Carrying on."}
+    _stub_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": reply["content"],
+                "metadata": {
+                    "custom": {
+                        "contextTruncation": {
+                            "fits": True,
+                            "checkpoint": True,
+                            "dropped_messages": recorded,
+                            "boundary_messages": recorded,
+                            "boundary_anchor": anchor,
+                        }
+                    }
+                },
+            }
+        ],
+    )
+
+    # The next request of the same epoch, read back the way production reads it.
+    later = branch + [reply, {"role": "user", "content": "and now the second half"}]
+    replayed_boundary = llama_cpp._sticky_compaction_boundary("t1", later)
+    assert replayed_boundary == recorded, (
+        f"the persisted boundary shrank from {recorded} to {replayed_boundary} on read-back"
+    )
+
+    replayed, _ = _fit(
+        later, sticky_dropped = replayed_boundary, protected_message_ids = protected
+    )
+    live = {id(message) for message in replayed}
+    back = [message for message in evicted if id(message) in live]
+    assert not back, (
+        "turns the reset compacted away are back one turn later: "
+        + ", ".join(str(message["content"])[:24] for message in back)
+    )
+
+
+def test_a_caller_owned_carried_forward_tag_is_left_alone():
+    """The delimiter is prompt text, and prompt text belongs to whoever wrote it.
+
+    A caller whose own system prompt happens to use `<carried_forward>` had that section
+    read as Studio's block: stripped on every reset, its bullet lines reintroduced further
+    down as lower-authority quoted USER history, and anything not bullet-shaped deleted
+    outright. Silently rewriting a caller's system policy is worse than carrying nothing,
+    so the block is recognised by the header Studio itself writes, not by the tag alone.
+    """
+    caller = (
+        "You are a support agent.\n"
+        "<carried_forward>\n"
+        "- Never quote an internal price.\n"
+        "Escalate refunds over 500 dollars.\n"
+        "</carried_forward>"
+    )
+    messages = [{"role": "system", "content": caller}] + _thread()[1:]
+    messages += [{"role": "user", "content": "continue"}]
+
+    fitted, truncation = _fit(messages)
+
+    assert truncation["checkpoint_started"] is True
+    system = fitted[0]["content"]
+    assert caller in system, "the caller's own section was rewritten by the reset"
+    assert (
+        "Escalate refunds over 500 dollars." in system
+    ), "non-bullet lines of the caller's section were deleted"
+    # And Studio's own block is still appended, and still read back on the next reset.
+    assert system.count("<carried_forward>") == 2
+    assert "STATUS::ZQXVARA123-ALPHA" in system
+    assert (
+        checkpoint._block_items(system) and
+        "Never quote an internal price." not in checkpoint._block_items(system)
+    ), "the caller's bullets were adopted as carried-forward user history"
