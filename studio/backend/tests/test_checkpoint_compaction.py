@@ -986,8 +986,11 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
         module = types.SimpleNamespace(
             list_chat_messages = lambda thread_id: [
                 {"role": "user", "content": "q"},
-                {"role": "assistant", "content": "a",
-                 "metadata": {"custom": {"contextTruncation": truncation}}},
+                {
+                    "role": "assistant",
+                    "content": "a",
+                    "metadata": {"custom": {"contextTruncation": truncation}},
+                },
             ]
         )
         package = types.ModuleType("storage")

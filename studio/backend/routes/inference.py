@@ -3436,9 +3436,9 @@ def _thread_has_checkpoint(thread_id) -> bool:
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
                 continue
-            truncation = metadata.get("contextTruncation") or (
-                metadata.get("custom") or {}
-            ).get("contextTruncation")
+            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
+                "contextTruncation"
+            )
             if isinstance(truncation, dict) and truncation.get("checkpoint"):
                 return True
     except Exception:
