@@ -5,6 +5,11 @@ import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
 
+export type MmprojFallbackReason =
+  | "cpu_offload"
+  | "projector_incompatible"
+  | "projector_startup_failure";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -15,6 +20,7 @@ export interface BackendModelDetails {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -41,6 +47,9 @@ export interface LoadModelRequest {
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
+
+  /** Start a fresh runtime even when the active settings already match. */
+  force_reload?: boolean;
   /**
      * Stop any chats still generating instead of getting a 409: a load replaces the single
      * llama-server they all decode on. Set only after the user confirms.
@@ -209,6 +218,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -247,6 +257,8 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How Studio recovered after a multimodal projector failed at startup. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -295,6 +307,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {
@@ -336,6 +349,8 @@ export interface InferenceStatusResponse {
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How the active GGUF recovered after a multimodal projector startup failure. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
@@ -548,6 +563,7 @@ export interface OpenAIChatCompletionsRequest {
   presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
+  video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   reasoning_effort?:

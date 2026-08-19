@@ -35,6 +35,11 @@ class LoadRequest(BaseModel):
         pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description = "Opaque client attempt ID for scoped in-flight cancellation",
     )
+
+    force_reload: bool = Field(
+        False,
+        description = "Start a fresh runtime even when the active settings already match",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -681,6 +686,13 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Audio codec or native generation architecture.",
     )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    has_video_input: bool = Field(
+        False,
+        description = (
+            "Whether llama-server accepts video input for this model, from its /props "
+            "modalities. False unless the mmproj, the build and ffmpeg all support it."
+        ),
+    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -809,6 +821,18 @@ class _InferenceRuntimeFields(BaseModel):
             "Why an automatic GGUF load was downgraded to CPU. "
             "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
             "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
+    )
+
+    mmproj_fallback_reason: Optional[
+        Literal["cpu_offload", "projector_incompatible", "projector_startup_failure"]
+    ] = Field(
+        None,
+        description = (
+            "How an automatic GGUF multimodal-projector recovery changed the load. "
+            "'cpu_offload' keeps vision with the projector on CPU; "
+            "'projector_incompatible' and 'projector_startup_failure' mean the "
+            "model recovered text-only."
         ),
     )
     n_cpu_moe: int = Field(
@@ -1489,6 +1513,13 @@ class ChatCompletionRequest(BaseModel):
     audio_language: Optional[str] = Field(
         None,
         description = "[x-unsloth] Target-language hint for native audio models that support it.",
+    )
+    video_base64: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Base64-encoded video (mp4/mov/webm/mkv/avi) for video-input "
+            "models. GGUF only: llama-server samples frames with ffmpeg."
+        ),
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,

@@ -185,6 +185,8 @@ export const hi = {
       closeAriaLabel: "सेटिंग्स बंद करें",
       searchPlaceholder: "सेटिंग्स खोजें…",
       searchNoResults: "कोई सेटिंग नहीं मिली।",
+      panelFailed: "यह अनुभाग लोड नहीं हो सका।",
+      panelReload: "फिर से लोड करें",
     },
     tabs: {
       general: "सामान्य",
@@ -199,6 +201,50 @@ export const hi = {
       agents: "एजेंट",
       debugging: "लॉग",
       voice: "आवाज़",
+      keyboardShortcuts: "शॉर्टकट",
+    },
+    keyboardShortcuts: {
+      title: "कीबोर्ड शॉर्टकट",
+      description:
+        "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
+      searchPlaceholder: "शॉर्टकट खोजें…",
+      noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
+      unassigned: "असाइन नहीं",
+      recording: "कुंजियाँ दबाएँ…",
+      recordingHint: "नया संयोजन दबाएँ, या रद्द करने के लिए Esc।",
+      needsModifier: "⌘, Ctrl या Alt जोड़ें। अकेली कुंजी टाइपिंग निगल लेगी।",
+      conflict: "यह किसी और शॉर्टकट में भी इस्तेमाल हो रहा है",
+      conflictShadowed: "यह संयोजन किसी और शॉर्टकट के पास है और उसके बदले वही चलता है",
+      edit: "शॉर्टकट बदलें",
+      clear: "शॉर्टकट हटाएँ",
+      reset: "डिफ़ॉल्ट पर लौटाएँ",
+      resetAll: "सभी को डिफ़ॉल्ट पर रीसेट करें",
+      groups: {
+        general: "सामान्य",
+        chat: "चैट",
+      },
+      actions: {
+        newChat: {
+          label: "नई चैट",
+          description: "नई चैट शुरू करें",
+        },
+        searchChats: {
+          label: "चैट खोजें",
+          description: "चैट खोज संवाद खोलें",
+        },
+        toggleSidebar: {
+          label: "साइडबार टॉगल करें",
+          description: "साइडबार दिखाएँ या छिपाएँ",
+        },
+        openSettings: {
+          label: "सेटिंग्स खोलें",
+          description: "सेटिंग्स संवाद खोलें",
+        },
+        openKeyboardShortcuts: {
+          label: "कीबोर्ड शॉर्टकट",
+          description: "यह शॉर्टकट सूची खोलें",
+        },
+      },
     },
     debugging: {
       logSection: "लॉग फ़ाइल",
@@ -361,6 +407,7 @@ export const hi = {
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
+        openAudioAction: "ऑडियो खोलें",
         voiceLabel: "आवाज़",
         voiceDescription: "इस डिवाइस पर सबसे अच्छी आवाज़ें",
         speedLabel: "गति",
@@ -370,6 +417,7 @@ export const hi = {
         previewDescription: "एक छोटा नमूना चलाएँ",
         previewFailed: "TTS पूर्वावलोकन विफल रहा",
         previewAction: "सुनें",
+        preparingAction: "बना रहे हैं…",
         stopAction: "रोकें",
         ttsLabel: "टेक्स्ट-टू-स्पीच",
         notSupported: "इस ब्राउज़र में समर्थित नहीं है",
@@ -1116,6 +1164,9 @@ export const hi = {
       archivedVideos: "संग्रहित वीडियो",
       archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
+      manageChats: "चैट प्रबंधित करें",
+      manageChatsDescription:
+        "कई चैट चुनें और उन्हें स्थानांतरित, पिन, संग्रहित, निर्यात या हटाएं।",
       exportArchivedChats: "एक्सपोर्ट करें",
       exportingArchivedChats: "एक्सपोर्ट हो रहा है...",
       exportedOneArchivedChat: "1 संग्रहित चैट एक्सपोर्ट की गई",
