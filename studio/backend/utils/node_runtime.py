@@ -82,12 +82,9 @@ def managed_node_bin_dir() -> Path | None:
         return None
 
 
-# Memoize ONLY a usable managed Node, mirroring _resolved_node: the installer may
-# finish after the first probe, so a negative result must not stick until restart.
+# Success-only memoization, like _resolved_node: the installer may finish after the
+# first probe, so a negative verdict must not stick until restart.
 _managed_node_ok: bool = False
-
-
-# Memoized per resolved executable, success only (same reason as _resolved_node).
 _usable_node_cache: dict[str, bool] = {}
 
 
@@ -99,10 +96,9 @@ def _reset_managed_node_check() -> None:
 
 
 def _path_has_usable_node(path: str) -> bool:
-    """Whether ``path`` already provides what stdio servers need: a ``node`` clearing
-    the version floor AND an ``npx`` to launch packaged servers. decide_node_source()
-    installs the managed runtime unless both are satisfied, so checking node alone
-    would skip a managed install a host with no npm still needs."""
+    """Whether ``path`` provides both a floor-clearing ``node`` and an ``npx``.
+    decide_node_source() installs the managed runtime unless both hold, so a host
+    with node but no npm still needs it."""
     try:
         node = shutil.which("node", path = path)
         npx = shutil.which("npx", path = path)
@@ -119,10 +115,9 @@ def _path_has_usable_node(path: str) -> bool:
 
 
 def managed_node_usable() -> bool:
-    """Whether the managed Node clears the version floor. ``decide_node_source``
-    leaves an existing install in place when it picks the system runtime, so a dir
-    left over from before a floor raise must not win the lookup over a good system
-    Node. Mirrors the managed branch of resolve_node_executable()."""
+    """Whether the managed Node clears the version floor, mirroring the managed branch
+    of resolve_node_executable(). Setup leaves an install in place when it picks the
+    system runtime, so a stale dir must not win the lookup."""
     global _managed_node_ok
     if _managed_node_ok:
         return True
@@ -137,23 +132,19 @@ def managed_node_usable() -> bool:
 
 def path_with_managed_node(base_path: str | None = None) -> str:
     """``base_path`` (default: this process's PATH) with the managed Node bin dir
-    prepended, unchanged when there is no usable managed install or it is already there.
-
-    The installer only puts the isolated Node on PATH for the setup process, so
-    subprocesses that need ``node``/``npx`` must be handed it explicitly."""
+    prepended, unchanged when it is unusable or already there. The installer puts the
+    isolated Node on PATH for setup only, so subprocesses must be handed it."""
     current = os.environ.get("PATH", "") if base_path is None else base_path
     bin_dir = managed_node_bin_dir()
     if bin_dir is None:
         return current
-    # resolve_node_executable() prefers an adequate system Node, so a leftover managed
-    # install must not shadow one the configured PATH already reaches.
+    # Never shadow a runtime the PATH already reaches (resolve_node_executable order).
     if _path_has_usable_node(current):
         return current
     if not managed_node_usable():
         return current
     bin_str = str(bin_dir)
-    # Keep empty components: on POSIX one means the working directory, so dropping
-    # it would silently remove a lookup location the server config asked for.
+    # An empty component means the working directory on POSIX; dropping it loses it.
     entries = current.split(os.pathsep) if current else []
     normalized = os.path.normcase(os.path.normpath(bin_str))
     if any(entry and os.path.normcase(os.path.normpath(entry)) == normalized for entry in entries):

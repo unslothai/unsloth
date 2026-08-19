@@ -263,9 +263,9 @@ def _stdio_env(headers: Optional[dict]) -> Optional[dict]:
 
 
 def _stdio_argv(parts: list, env: Optional[dict]) -> list:
-    """argv with argv[0] resolved against the child's PATH. Windows looks the command
-    up in the parent environment before ``env`` applies (and cannot run a bare ``npx``
-    that lives only in the managed Node dir), so hand it the full path."""
+    """argv with argv[0] resolved against the child's PATH. Windows resolves the
+    command against the parent environment before ``env`` applies, so a managed-only
+    ``npx`` has to be handed over as a full path."""
     path = (env or {}).get("PATH")
     if not isinstance(path, str):
         path = os.environ.get("PATH", "")
