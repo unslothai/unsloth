@@ -21938,8 +21938,8 @@ class LlamaCppBackend:
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
-                # Reuse the exact fitted request after a respawn; re-running the preflight
-                # would emit the same truncation event twice.
+                # Reuse the fitted request on respawn; re-running the preflight would
+                # emit the same truncation event twice.
                 retry_messages = openai_messages
                 retry_image_b64 = None
                 retry_max_tokens = payload["max_tokens"]
@@ -22089,8 +22089,8 @@ class LlamaCppBackend:
                     retry_preflight_context_length is not None
                     and retry_preflight_context_length != self._effective_context_length
                 ):
-                    # Refit the already-compacted prompt against a replacement server's
-                    # actual window. Any event now reports only additional evictions.
+                    # Refit the compacted prompt against the replacement server's window;
+                    # any event now reports only additional evictions.
                     retry_context_overflow = context_overflow
                     if max_tokens is None:
                         retry_max_tokens = None
