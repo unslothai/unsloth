@@ -71,8 +71,12 @@ case "$AGENT" in
     npm_retry "@openai/codex" || install_fail "npm install -g @openai/codex failed"
     ;;
   opencode)
-    # Exercise the V2 path; start.py still falls back to an installed V1 `opencode`.
-    npm_retry "@opencode-ai/cli@beta" || install_fail "npm install -g @opencode-ai/cli@beta failed"
+    case "${OPENCODE_CHANNEL:-stable}" in
+      stable) package="opencode-ai" ;;
+      beta) package="@opencode-ai/cli@beta" ;;
+      *) install_fail "unknown OpenCode channel '${OPENCODE_CHANNEL}'" ;;
+    esac
+    npm_retry "$package" || install_fail "npm install -g $package failed"
     ;;
   openclaw)
     # start.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
