@@ -38,7 +38,12 @@ from core.inference.openai_codex_client import (
     CodexTransportError,
     OpenAICodexClient,
     _responses_input,
+    cached_subscription_models,
+    forget_subscription_models,
+    list_subscription_models,
+    offered_subscription_model_ids,
 )
+from core.inference import openai_codex_client as codex_client
 
 from core.inference.openai_responses_shared import normalize_function_schema
 from core.inference.providers import get_provider_info, list_available_providers
@@ -58,7 +63,6 @@ def test_protocol_constants_and_curated_provider_contract():
     assert info["base_url_editable"] is False
     assert info["model_ids_editable"] is False
     assert info["default_models"] == [
-        "gpt-5.3-codex-spark",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.5",
@@ -726,6 +730,177 @@ def test_structured_upstream_error_is_actionable_and_bounded():
     assert error.value.status == 400
     assert "Unsupported request field" in str(error.value)
     assert "secret-token" not in str(error.value)
+
+
+def test_bare_detail_upstream_error_reaches_the_user():
+    """The subscription endpoint reports a rejected model as a bare "detail"."""
+
+    class FakeStream:
+        async def __aenter__(self):
+            return __import__("httpx").Response(
+                400,
+                json = {
+                    "detail": (
+                        "The 'gpt-5.3-codex-spark' model is not supported when using "
+                        "Codex with a ChatGPT account."
+                    )
+                },
+            )
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def stream(self, *_args, **_kwargs):
+            return FakeStream()
+
+        async def aclose(self):
+            return None
+
+    async def run():
+        client = OpenAICodexClient("secret-token", "acct-1")
+        await client._client.aclose()
+        client._client = FakeClient()
+        try:
+            return [
+                line
+                async for line in client.stream(
+                    provider_id = "provider",
+                    thread_id = "thread",
+                    messages = [{"role": "user", "content": "hello"}],
+                    model = "gpt-5.3-codex-spark",
+                    max_tokens = None,
+                    reasoning_effort = None,
+                    tools = None,
+                    tool_choice = None,
+                )
+            ]
+        finally:
+            await client.close()
+
+    with pytest.raises(CodexTransportError) as error:
+        asyncio.run(run())
+    assert error.value.status == 400
+    assert "is not supported" in str(error.value)
+    assert "secret-token" not in str(error.value)
+
+
+def _models_response(payload, status = 200):
+    import httpx
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        async def get(self, url, headers = None, params = None):
+            self.calls.append((url, params))
+            return httpx.Response(status, json = payload)
+
+        async def aclose(self):
+            return None
+
+    return FakeClient()
+
+
+def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
+    fake = _models_response(
+        {
+            "models": [
+                {
+                    "slug": "gpt-5.4",
+                    "visibility": "list",
+                    "display_name": "GPT-5.4",
+                    "context_window": 272000,
+                    "input_modalities": ["text", "image"],
+                    "supported_reasoning_levels": [
+                        {"effort": "low"},
+                        {"effort": "high"},
+                    ],
+                },
+                # Internal review slug the picker must never offer.
+                {"slug": "codex-auto-review", "visibility": "hide"},
+                {"slug": "", "visibility": "list"},
+                "not-a-model",
+            ]
+        }
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("provider-1")
+
+    models = asyncio.run(list_subscription_models("provider-1", "secret-token", "acct-1"))
+
+    assert models == [
+        {
+            "id": "gpt-5.4",
+            "display_name": "GPT-5.4",
+            "context_length": 272000,
+            "vision": True,
+            "reasoning_efforts": ["low", "high"],
+        }
+    ]
+    assert fake.calls[0][0] == f"{OPENAI_CODEX_API_BASE}/codex/models"
+    assert fake.calls[0][1] == {"client_version": codex_auth.OPENAI_CODEX_CLIENT_VERSION}
+    # A second call is served from cache rather than re-hitting upstream.
+    assert asyncio.run(list_subscription_models("provider-1", "secret-token", "acct-1")) == models
+    assert len(fake.calls) == 1
+    # Outlives the cache so a slow save is still accepted by the provider routes.
+    assert offered_subscription_model_ids("provider-1") == {"gpt-5.4"}
+    forget_subscription_models("provider-1")
+    assert cached_subscription_models("provider-1") is None
+    assert offered_subscription_model_ids("provider-1") == set()
+
+
+def test_subscription_model_list_rejects_non_200(monkeypatch):
+    monkeypatch.setattr(
+        codex_client,
+        "_create_http_client",
+        lambda: _models_response({"detail": "Not Found"}, status = 404),
+    )
+    forget_subscription_models("provider-2")
+
+    with pytest.raises(CodexTransportError) as error:
+        asyncio.run(list_subscription_models("provider-2", "secret-token", "acct-1"))
+    assert error.value.status == 404
+    assert "secret-token" not in str(error.value)
+    assert cached_subscription_models("provider-2") is None
+
+
+def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch):
+    from routes import openai_codex_auth as codex_routes
+
+    curated = get_provider_info("openai_codex")["default_models"]
+    monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
+
+    def call():
+        return asyncio.run(
+            codex_routes.list_subscription_models(
+                "provider-3", _credential = ("user", "session"), via_api_key = False
+            )
+        )
+
+    monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "disconnected")
+    disconnected = call()
+    assert disconnected["source"] == "curated"
+    assert [model["id"] for model in disconnected["models"]] == curated
+
+    async def _resolve(_provider_id):
+        return "secret-token", "acct-1"
+
+    async def _boom(*_args, **_kwargs):
+        raise CodexTransportError("upstream is down")
+
+    monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "connected")
+    monkeypatch.setattr(codex_routes.codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(codex_routes.codex_client, "list_subscription_models", _boom)
+    assert call()["source"] == "curated"
+
+    async def _models(*_args, **_kwargs):
+        return [{"id": "gpt-5.6-terra", "display_name": "GPT-5.6-Terra", "context_length": 272000}]
+
+    monkeypatch.setattr(codex_routes.codex_client, "list_subscription_models", _models)
+    live = call()
+    assert live["source"] == "subscription"
+    assert [model["id"] for model in live["models"]] == ["gpt-5.6-terra"]
 
 
 def test_client_never_emits_done_marker_itself():

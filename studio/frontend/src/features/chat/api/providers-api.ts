@@ -314,6 +314,19 @@ export async function listProviderModels(payload: {
 }
 
 
+export interface CodexSubscriptionModels {
+  models: ProviderModelInfo[];
+  source: "subscription" | "curated";
+}
+
+export async function fetchCodexSubscriptionModels(
+  providerId: string,
+): Promise<CodexSubscriptionModels> {
+  const response = await authFetch(`/api/providers/${providerId}/codex/models`);
+  return parseJsonOrThrow<CodexSubscriptionModels>(response);
+}
+
+
 export interface CodexOAuthFlow {
   flow_id: string;
   method: "browser" | "device";

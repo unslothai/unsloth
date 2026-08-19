@@ -6,15 +6,19 @@
 import secrets
 from typing import Literal
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_credential
 from core.inference import openai_codex_auth as codex_auth
+from core.inference import openai_codex_client as codex_client
+from core.inference.providers import get_provider_info
 from routes.provider_credentials import current_credential_write, require_ui_session
 from storage import providers_db
 
 router = APIRouter()
+logger = structlog.get_logger(__name__)
 
 
 class OAuthStartRequest(BaseModel):
@@ -147,6 +151,36 @@ async def cancel_oauth(
         raise _safe_error(exc) from exc
 
 
+@router.get("/{provider_id}/codex/models")
+async def list_subscription_models(
+    provider_id: str,
+    _credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Models this plan can reach, falling back to the curated seed."""
+    require_ui_session(via_api_key)
+    _provider(provider_id)
+    curated = [
+        {"id": model, "display_name": model, "context_length": None}
+        for model in get_provider_info("openai_codex")["default_models"]
+    ]
+    if codex_auth.auth_status(provider_id) != "connected":
+        return {"models": curated, "source": "curated"}
+    try:
+        token, account_id = await codex_auth.resolve_access(provider_id)
+        models = await codex_client.list_subscription_models(provider_id, token, account_id)
+    except Exception as exc:
+        logger.warning(
+            "openai_codex.model_list_failed",
+            provider_id = provider_id,
+            error_type = type(exc).__name__,
+        )
+        return {"models": curated, "source": "curated"}
+    if not models:
+        return {"models": curated, "source": "curated"}
+    return {"models": models, "source": "subscription"}
+
+
 @router.delete("/{provider_id}/oauth", status_code = 204)
 async def delete_oauth(
     provider_id: str,
@@ -158,6 +192,7 @@ async def delete_oauth(
     codex_auth.credential_secrets.get_or_create_credential_encryption_key()
 
     await codex_auth.cancel_provider_flows(provider_id)
+    codex_client.forget_subscription_models(provider_id)
     async with codex_auth.provider_oauth_write_guard(provider_id):
         with current_credential_write(credential):
             codex_auth.delete_oauth_bundle(provider_id)

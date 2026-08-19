@@ -34,6 +34,8 @@ import {
 
 const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
+// Rejected for every ChatGPT account, so drop it from selections saved earlier.
+const OPENAI_CODEX_UNSUPPORTED_MODELS = new Set(["gpt-5.3-codex-spark"]);
 const OPENROUTER_EXCLUDED_MODELS = new Set([
   "google/chirp-3",
   "kwaivgi/kling-v3.0-pro",
@@ -96,6 +98,9 @@ export function pruneProviderModelIds(
   }
   if (providerType === "openrouter") {
     return modelIds.filter((id) => !OPENROUTER_EXCLUDED_MODELS.has(id));
+  }
+  if (providerType === "openai_codex") {
+    return modelIds.filter((id) => !OPENAI_CODEX_UNSUPPORTED_MODELS.has(id));
   }
   return modelIds;
 }

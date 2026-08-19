@@ -42,7 +42,10 @@ OPENAI_CODEX_DEVICE_REDIRECT_URI = f"{OPENAI_CODEX_ISSUER}/deviceauth/callback"
 OPENAI_CODEX_ORIGINATOR = "unsloth_studio"
 OPENAI_CODEX_API_BASE = "https://chatgpt.com/backend-api"
 OPENAI_CODEX_RESPONSES_URL = f"{OPENAI_CODEX_API_BASE}/codex/responses"
+OPENAI_CODEX_MODELS_URL = f"{OPENAI_CODEX_API_BASE}/codex/models"
 OPENAI_CODEX_USER_AGENT = "unsloth-studio/1"
+# /codex/models hides any slug whose minimal_client_version exceeds this.
+OPENAI_CODEX_CLIENT_VERSION = "0.156.0"
 OPENAI_CODEX_COMPATIBILITY_INSTRUCTIONS = (
     "You are operating inside Unsloth Studio. Follow the user's instructions, "
     "use only tools supplied in this request, and return concise, accurate results."

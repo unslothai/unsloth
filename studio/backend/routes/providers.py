@@ -42,7 +42,7 @@ from core.inference.providers import (
 from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 
-from core.inference import openai_codex_auth
+from core.inference import openai_codex_auth, openai_codex_client
 from models.providers import (
     ProviderCreate,
     ProviderCredentialMigration,
@@ -101,6 +101,7 @@ def _validate_provider_auth_contract(
     models: list[str] | None,
     updating: bool,
     clear_api_key: bool = False,
+    provider_id: str | None = None,
 ) -> None:
     if info.get("auth_kind") != "chatgpt_oauth":
         return
@@ -108,7 +109,13 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscriptions do not use API keys.")
     if base_url is not None and (not updating or base_url != info["base_url"]):
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
-    if models is not None and (not models or not set(models).issubset(set(info["default_models"]))):
+    if models is None:
+        return
+    allowed = set(info["default_models"])
+    # A plan can expose slugs newer than the seed; read only what was already listed.
+    if provider_id:
+        allowed |= openai_codex_client.offered_subscription_model_ids(provider_id)
+    if not models or not set(models).issubset(allowed):
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
 
 
@@ -282,6 +289,7 @@ async def update_provider_config(
         models = payload.models,
         updating = True,
         clear_api_key = payload.clear_api_key,
+        provider_id = provider_id,
     )
 
     if payload.clear_api_key and payload.encrypted_api_key:

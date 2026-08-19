@@ -40,9 +40,11 @@ import { ApiProviderLogo } from "./api-provider-logo";
 
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
+  type ProviderAuthStatus,
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
+  fetchCodexSubscriptionModels,
   listProviderModels,
   listProviderRegistry,
   testProviderConnection,
@@ -942,6 +944,30 @@ export function ChatProvidersSettings({
     }
   }
 
+  async function applyCodexSubscriptionModels(
+    providerId: string,
+    savedModels: string[],
+    authStatus: ProviderAuthStatus | undefined,
+  ) {
+    const curated = registryByType.get("openai_codex")?.default_models ?? [];
+    let catalog = [...curated];
+    if (authStatus === "connected") {
+      try {
+        const listed = await fetchCodexSubscriptionModels(providerId);
+        if (listed.models.length > 0) {
+          catalog = listed.models.map((model) => model.id);
+        }
+      } catch {
+        // Keep the curated seed: the form must still open when upstream is unreachable.
+      }
+    }
+    const offered = new Set(catalog);
+    setAvailableModels(catalog);
+    // Plans differ, so a slug saved before (or by another plan) may no longer exist.
+    setSelectedModelIds(savedModels.filter((model) => offered.has(model)));
+    setManualModelIds("");
+  }
+
   async function editProvider(provider: ExternalProviderConfig) {
     setEditingProviderId(provider.id);
     autoOpenedAddFormRef.current = true;
@@ -1000,6 +1026,10 @@ export function ChatProvidersSettings({
       setManualModelIds(
         provider.models.filter((model) => !catalogSet.has(model)).join("\n"),
       );
+      return;
+    }
+    if (provider.authKind === "chatgpt_oauth") {
+      await applyCodexSubscriptionModels(provider.id, provider.models, provider.authStatus);
       return;
     }
     const entry = registryByType.get(provider.providerType);
@@ -1446,6 +1476,16 @@ export function ChatProvidersSettings({
                 const synced = await syncExternalProvidersFromBackend(providersRef.current);
                 providersRef.current = synced;
                 onProvidersChange(synced);
+                const connected = synced.find(
+                  (provider) => provider.id === editingProviderId,
+                );
+                if (connected) {
+                  await applyCodexSubscriptionModels(
+                    connected.id,
+                    connected.models,
+                    connected.authStatus,
+                  );
+                }
               }}
             />
           ) : null}
