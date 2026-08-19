@@ -270,10 +270,15 @@ def _command_selects_runtime(command: Optional[str]) -> bool:
     )
 
 
-def _command_needs_npm(command: Optional[str]) -> bool:
-    """A direct ``node`` server needs no npm or npx, so requiring them would shadow a
-    perfectly good Node its PATH already provides."""
-    return command is None or _launcher_name(command) != "node"
+def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
+    """``(needs npm, needs npx)`` for argv[0]. node needs neither, npm needs npm, and
+    only npx needs npx, so an unrelated missing launcher cannot shadow a good runtime."""
+    name = _launcher_name(command) if command is not None else None
+    if name == "node":
+        return False, False
+    if name == "npm":
+        return True, False
+    return True, True
 
 
 def _path_key(env: dict) -> str:
@@ -303,7 +308,10 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
         base = os.environ.get("PATH", "")
     try:
         from utils.node_runtime import path_with_managed_node
-        patched = path_with_managed_node(base, require_npm = _command_needs_npm(command))
+        require_npm, require_npx = _runtime_requirements(command)
+        patched = path_with_managed_node(
+            base, require_npm = require_npm, require_npx = require_npx
+        )
     except (ImportError, OSError, ValueError):
         patched = base
     if patched and patched != env.get(key):

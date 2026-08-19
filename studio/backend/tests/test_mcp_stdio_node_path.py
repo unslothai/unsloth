@@ -33,7 +33,7 @@ def managed_node(tmp_path, monkeypatch):
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
 
-    def _no_usable_node(path, require_npm = True):
+    def _no_usable_node(path, require_npm = True, require_npx = True):
         return False
 
     monkeypatch.setattr(node_runtime, "_path_has_usable_node", _no_usable_node)
@@ -438,7 +438,10 @@ def _node_only_dir(tmp_path):
 def test_direct_node_server_keeps_a_node_only_path(managed_node_install, monkeypatch, tmp_path):
     nodeonly = _node_only_dir(tmp_path)
     _patch_floors(monkeypatch, lambda executable: True)
-    assert node_runtime.path_with_managed_node(str(nodeonly), require_npm = False) == str(nodeonly)
+    unchanged = node_runtime.path_with_managed_node(
+        str(nodeonly), require_npm = False, require_npx = False
+    )
+    assert unchanged == str(nodeonly)
 
 
 def test_npx_server_still_needs_npm_on_a_node_only_path(
@@ -469,13 +472,14 @@ def test_stdio_env_still_augments_for_npx_on_a_node_only_path(
     assert env["PATH"] == f"{managed_node_install}{os.pathsep}{nodeonly}"
 
 
-def test_command_needs_npm_only_for_launchers():
-    assert not mcp_client._command_needs_npm("node")
-    assert not mcp_client._command_needs_npm("/usr/bin/node")
-    assert not mcp_client._command_needs_npm("node.exe")
-    assert mcp_client._command_needs_npm("npx")
-    assert mcp_client._command_needs_npm("npm.cmd")
-    assert mcp_client._command_needs_npm(None)
+def test_runtime_requirements_match_each_launcher():
+    assert mcp_client._runtime_requirements("node") == (False, False)
+    assert mcp_client._runtime_requirements("/usr/bin/node") == (False, False)
+    assert mcp_client._runtime_requirements("node.exe") == (False, False)
+    assert mcp_client._runtime_requirements("npm") == (True, False)
+    assert mcp_client._runtime_requirements("npm.cmd") == (True, False)
+    assert mcp_client._runtime_requirements("npx") == (True, True)
+    assert mcp_client._runtime_requirements(None) == (True, True)
 
 
 def test_absolute_node_launcher_keeps_its_configured_path(managed_node, monkeypatch):
@@ -503,3 +507,27 @@ def test_command_selects_runtime_only_for_node_paths():
     assert not mcp_client._command_selects_runtime("node")
     assert not mcp_client._command_selects_runtime("/opt/node/bin/npx")
     assert not mcp_client._command_selects_runtime(None)
+
+
+def test_direct_npm_server_does_not_need_npx(managed_node_install, monkeypatch, tmp_path):
+    """The installers gate on node and npm only, so a missing npx is irrelevant here."""
+    nonpx = tmp_path / "nonpx"
+    nonpx.mkdir()
+    _make_executable(nonpx, "node")
+    _make_executable(nonpx, "npm")
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(nonpx))
+    assert mcp_client._stdio_env(None, "npm")["PATH"] == str(nonpx)
+
+
+def test_npx_server_on_the_same_path_still_gets_managed(
+    managed_node_install, monkeypatch, tmp_path
+):
+    nonpx = tmp_path / "nonpx"
+    nonpx.mkdir()
+    _make_executable(nonpx, "node")
+    _make_executable(nonpx, "npm")
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(nonpx))
+    env = mcp_client._stdio_env(None, "npx")
+    assert env["PATH"] == f"{managed_node_install}{os.pathsep}{nonpx}"

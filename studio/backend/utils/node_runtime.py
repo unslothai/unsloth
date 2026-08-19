@@ -108,20 +108,22 @@ def _reset_managed_node_check() -> None:
     _usable_node_cache.clear()
 
 
-def _path_has_usable_node(path: str, require_npm: bool = True) -> bool:
-    """Whether ``path`` provides the runtime a stdio command needs. A direct ``node``
-    server needs only a floor-clearing node; ``npm``/``npx`` also need the npm the
-    installers gate on, so the two cases cannot share one verdict."""
+def _path_has_usable_node(path: str, require_npm: bool = True, require_npx: bool = True) -> bool:
+    """Whether ``path`` provides what a stdio command actually uses. The installers gate
+    on node plus npm and never look at npx, so each launcher is checked against what it
+    needs: node alone, node plus npm, or both plus the npx that launches it."""
     try:
         node = shutil.which("node", path = path)
         npm = shutil.which("npm", path = path) if require_npm else None
-        npx = shutil.which("npx", path = path) if require_npm else None
+        npx = shutil.which("npx", path = path) if require_npx else None
     except OSError:
         return False
     if not node:
         return False
-    if require_npm:
-        if not npm or not npx:
+    if require_npm and not npm:
+        return False
+    if require_npx:
+        if not npx:
             return False
         if _IS_WINDOWS:
             # npm's npx.cmd runs the node.exe beside it when there is one, so that is
@@ -163,7 +165,9 @@ def managed_node_usable() -> bool:
     return _managed_node_ok
 
 
-def path_with_managed_node(base_path: str | None = None, require_npm: bool = True) -> str:
+def path_with_managed_node(
+    base_path: str | None = None, require_npm: bool = True, require_npx: bool = True
+) -> str:
     """``base_path`` (default: this process's PATH) with the managed Node bin dir
     moved to the front, unchanged when it is unusable or the PATH already resolves a
     runtime. The installer puts it on PATH for setup only, so subprocesses need it."""
@@ -172,7 +176,7 @@ def path_with_managed_node(base_path: str | None = None, require_npm: bool = Tru
     if bin_dir is None:
         return current
     # Never shadow a runtime the PATH already reaches (resolve_node_executable order).
-    if _path_has_usable_node(current, require_npm = require_npm):
+    if _path_has_usable_node(current, require_npm = require_npm, require_npx = require_npx):
         return current
     if not managed_node_usable():
         return current
