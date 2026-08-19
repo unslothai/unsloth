@@ -194,6 +194,23 @@ const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+// Both backends offer this feature, so the sentences that describe the feature itself are
+// shared and only the backend-specific parts differ.
+const SPECULATIVE_HINT_SUMMARY =
+  "Drafts several tokens ahead and verifies them in one step, so generation " +
+  "is faster when the drafts are accepted.";
+const SPECULATIVE_HINT_PICK = "Pick one to force it, or Off to disable.";
+const GGUF_SPECULATIVE_HINT =
+  `${SPECULATIVE_HINT_SUMMARY} Auto picks the best strategy for the model and ` +
+  "platform: DSpark or DFlash when the model ships a drafter sidecar, otherwise " +
+  `MTP / ngram. ${SPECULATIVE_HINT_PICK} DSpark downloads a sidecar of about ` +
+  "11 GB and DFlash one of about 1.5 GB, both trading VRAM for speed; on " +
+  "quantized targets their greedy output can differ from a non speculative run. " +
+  "MTP and ngram do not change output.";
+const MLX_SPECULATIVE_HINT =
+  `${SPECULATIVE_HINT_SUMMARY} Auto picks the fastest method this model has a ` +
+  `drafter for. ${SPECULATIVE_HINT_PICK} Output can differ from ordinary ` +
+  "generation, and the speedup depends on how many drafted tokens are accepted.";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
 const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
@@ -1177,7 +1194,7 @@ function MlxAdvancedSettings({
   speculative: ComponentProps<typeof MlxSpeculativeSetting>;
 }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-3">
       {servedByMlx && (
         <>
           <MlxSpeculativeSetting {...speculative} />
@@ -1598,13 +1615,7 @@ function MlxSpeculativeSetting({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Speculative Decoding</span>
-          <InfoHint>
-            Drafts several tokens ahead with a smaller matching checkpoint and
-            verifies them in one step. Output can differ from ordinary
-            generation, and the speedup depends on how many drafted tokens are
-            accepted. Auto picks the fastest method this model has a drafter
-            for.
-          </InfoHint>
+          <InfoHint>{MLX_SPECULATIVE_HINT}</InfoHint>
         </div>
         <Select
           value={mode}
@@ -1811,15 +1822,7 @@ function GgufAdvancedSettings({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
-          <InfoHint>
-            Faster generation. Auto picks the best strategy for the model and
-            platform: DSpark or DFlash when the model ships a drafter sidecar,
-            otherwise MTP / ngram. Pick a strategy to force it, or Off to
-            disable. DSpark downloads a sidecar of about 11 GB and DFlash one of
-            about 1.5 GB, both trading VRAM for speed; on quantized targets
-            their greedy output can differ from a non speculative run. MTP and
-            ngram do not change output.
-          </InfoHint>
+          <InfoHint>{GGUF_SPECULATIVE_HINT}</InfoHint>
         </div>
         <Select
           value={config.speculativeType ?? speculativeFallback}
