@@ -64,12 +64,12 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
-
 def _ps_file(directory: Path, name: str, script: str) -> str:
     """Same reason as _run_powershell: a 32 KB command line is not available here."""
     path = directory / name
     path.write_text(script, encoding = "utf-8-sig")
     return str(path)
+
 
 # The chain Get-StudioFinalPath dispatches to. It used to compile the native helper
 # inline, so a test could extract it alone; extracting the dispatcher by itself now
@@ -665,8 +665,13 @@ Exit-StudioInstallMutex -Mutex $mutex
 """
     holder = subprocess.Popen(
         [
-            shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", _ps_file(tmp_path, "holder.ps1", holder_script),
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            _ps_file(tmp_path, "holder.ps1", holder_script),
         ],
         stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
@@ -806,8 +811,13 @@ Exit-StudioInstallMutex -Mutex $mutex
 """
     holder = subprocess.Popen(
         [
-            shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", _ps_file(tmp_path, "holder.ps1", holder_script),
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            _ps_file(tmp_path, "holder.ps1", holder_script),
         ],
         stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
