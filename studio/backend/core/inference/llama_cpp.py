@@ -52,6 +52,7 @@ import httpx
 from core.inference.context_window import (
     prompt_budget,
     estimate_messages_tokens,
+    estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
     messages_have_media,
@@ -23273,10 +23274,14 @@ class LlamaCppBackend:
                                 # leave the tools array out, and a big catalogue can put
                                 # the request near its budget while this still reports
                                 # room for several 500-token chunks.
-                                _spent = estimate_messages_tokens(conversation) + (
+                                # Dense on the fallback leg only: `_prompt_token_offset`
+                                # already carries the fit's exact tokenizer count, so it
+                                # needs no correction, while the estimate that stands in
+                                # for it undercounts CJK and emoji by about half.
+                                _spent = estimate_messages_tokens_dense(conversation) + (
                                     _prompt_token_offset
                                     if _prompt_token_offset is not None
-                                    else estimate_messages_tokens(safe_tools or [])
+                                    else estimate_messages_tokens_dense(safe_tools or [])
                                 )
                                 kwargs["conversation_budget_tokens"] = max(
                                     0,

@@ -522,6 +522,33 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_a_line_inserted_INTO_an_archived_turn_retires_it():
+    """An edit that adds a line BETWEEN two archived lines is still an edit.
+
+    The two anchors either side of this covered an edit that prepends to a message the run
+    stepped into and one that appends to a message it is leaving. A correction dropped
+    between two archived lines matched both probes with the new line sitting unexamined in
+    the gap, so the pre-edit turn stayed recallable and could be quoted back as current.
+
+    A label `render_turn` wrote is still allowed in that gap, or a pasted chat log carrying
+    its own "user:" lines would retire turns nobody touched.
+    """
+    from core.rag import conversation_archive as archive
+
+    probes = [("A: drain traffic", False), ("B: flip the flag", False)]
+
+    assert archive._scan_probes(probes, ["A: drain traffic\nB: flip the flag"], 0, 1) is not None
+    assert (
+        archive._scan_probes(
+            probes, ["A: drain traffic\ncorrection: hold on\nB: flip the flag"], 0, 1
+        )
+        is None
+    )
+    assert (
+        archive._scan_probes(probes, ["A: drain traffic\nuser: B: flip the flag"], 0, 1) is not None
+    )
+
+
 def test_a_pasted_transcript_cannot_widen_a_turns_run(conn):
     """Counting role labels counts lines the USER wrote, not just the renderer's.
 
