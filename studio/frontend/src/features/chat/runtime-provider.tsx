@@ -1133,6 +1133,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
 function useStudioRuntimeAdapters(
   modelType: ModelType,
   pairId?: string,
+  reloadReadyThreadId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -1301,8 +1302,12 @@ function useStudioRuntimeAdapters(
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
       async load() {
-        const completeLoad = <T,>(result: T): T => {
-          if (modelType === "base" && !pairId) {
+        const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
+          if (
+            modelType === "base" &&
+            !pairId &&
+            (!reloadReadyThreadId || loadedThreadId === reloadReadyThreadId)
+          ) {
             window.dispatchEvent(new Event("unsloth:app-shell-ready"));
           }
           return result;
@@ -1416,19 +1421,23 @@ function useStudioRuntimeAdapters(
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
-          return completeLoad({
-            messages: msgs.map((m) => {
-              const parentId = m.parentId != null ? m.parentId : previousId;
-              previousId = m.id;
-              return {
-                parentId,
-                message: toThreadMessage(m),
-              };
-            }),
-          });
+          return completeLoad(
+            {
+              messages: msgs.map((m) => {
+                const parentId = m.parentId != null ? m.parentId : previousId;
+                previousId = m.id;
+                return {
+                  parentId,
+                  message: toThreadMessage(m),
+                };
+              }),
+            },
+            remoteId,
+          );
         }
         return completeLoad(
           ExportedMessageRepository.fromArray(msgs.map(toThreadMessage)),
+          remoteId,
         );
       },
 
@@ -1531,7 +1540,7 @@ function useStudioRuntimeAdapters(
         return trackHistoryAppend(message.id, write);
       },
     }),
-    [aui, modelType, pairId],
+    [aui, modelType, pairId, reloadReadyThreadId],
   );
 
   // Always register the adapter so the mic stays clickable for any engine. The
@@ -1578,8 +1587,13 @@ function useStudioRuntimeAdapters(
 function useRuntimeHook(
   modelType: ModelType,
   pairId?: string,
+  reloadReadyThreadId?: string,
 ): ReturnType<typeof useLocalRuntime> {
-  const adapters = useStudioRuntimeAdapters(modelType, pairId);
+  const adapters = useStudioRuntimeAdapters(
+    modelType,
+    pairId,
+    reloadReadyThreadId,
+  );
   const persistedChatAdapter = useMemo(
     () =>
       createPersistedRunAdapter(
@@ -1590,9 +1604,13 @@ function useRuntimeHook(
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }
 
-function createRuntimeHook(modelType: ModelType, pairId?: string) {
+function createRuntimeHook(
+  modelType: ModelType,
+  pairId?: string,
+  reloadReadyThreadId?: string,
+) {
   return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-    return useRuntimeHook(modelType, pairId);
+    return useRuntimeHook(modelType, pairId, reloadReadyThreadId);
   };
 }
 
@@ -2173,8 +2191,8 @@ export function ChatRuntimeProvider({
   listThreads?: boolean;
 }): ReactElement {
   const runtimeHook = useMemo(
-    () => createRuntimeHook(modelType, pairId),
-    [modelType, pairId],
+    () => createRuntimeHook(modelType, pairId, initialThreadId),
+    [initialThreadId, modelType, pairId],
   );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,

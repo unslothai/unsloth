@@ -582,6 +582,14 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
     runtimeProviderSource,
     /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await listStoredChatMessages\(remoteId\)[\s\S]*?return completeLoad/,
   );
+  assert.match(
+    runtimeProviderSource,
+    /!reloadReadyThreadId \|\| loadedThreadId === reloadReadyThreadId/,
+  );
+  assert.match(
+    runtimeProviderSource,
+    /createRuntimeHook\(modelType, pairId, initialThreadId\)/,
+  );
 });
 
 test("keeps what a display:contents wrapper renders, drops what is offscreen", () => {
