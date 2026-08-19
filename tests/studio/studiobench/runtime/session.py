@@ -245,8 +245,20 @@ class CellRunner:
                              dom = None, recorder = rec, open_window = s.window, log = self.log,
                              base_args = {"base_url": self.base_url,
                                           "thread_id": seeded.thread_id,
+                                          "cell_id": cell.cell_id,
+                                          "cadence": self.cadence,
                                           "image_path": str(self.image_path)
                                           if self.image_path else None,
+                                          # The follow-up turns `send_turn` streams mid-film, and
+                                          # the pacer it reloads to serve them.
+                                          "_pacer": self.pacer,
+                                          "_stream_queue": [
+                                              {"reasoning": u.reasoning, "content": u.content,
+                                               "kind": u.kind}
+                                              for u in (plan.follow_up_units or [])],
+                                          # Shared and MUTABLE, so consecutive sends advance
+                                          # through the queue. See send_turn.
+                                          "_stream_cursor": {"i": 0},
                                           "_input_instrument": next(
                                               (i for i in s.instruments if i.name == "input"),
                                               None)})

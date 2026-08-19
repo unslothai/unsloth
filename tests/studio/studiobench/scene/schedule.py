@@ -70,24 +70,28 @@ STANDARD = Scene(name = "standard", slots = _slots([
     # ── during generation ────────────────────────────────────────
     ("scroll_during_generation", 3_000, 8_000),
     ("keystroke",                12_000, 6_000),
-    # 15s, not 19s: the fixed tail drains at about 18s, so a slot at 19s would be labelled
-    # "during generation" while running against a finished reply.
-    ("scroll_during_generation", 15_000, 8_000),
+    # 12s. The tail is a JITTERED clip capped at 6,000 characters, so its drain time varies from
+    # about 14s to 18s across the ladder, and a during-generation slot has to open before the
+    # SHORTEST of those, not the longest. At 19s, then 15s, this slot ran against a finished reply
+    # at the top rung while still being labelled "during generation".
+    ("scroll_during_generation", 12_000, 8_000),
     ("stop_generation",          28_000, 8_000),
     # ── after the reply is complete ──────────────────────────────
     ("scroll_after",             38_000, 8_000),
     ("reasoning_toggle",         47_000, 12_000),
-    ("message_menu",             60_000, 12_000),
-    ("copy_markdown",            73_000, 6_000),
-    ("select_text",              80_000, 6_000),
-    ("select_all_copy",          87_000, 10_000),
-    ("composer_fill",            98_000, 10_000),
-    ("model_change",            109_000, 10_000),
-    ("settings",                120_000, 12_000),
-    ("image_upload",            133_000, 12_000),
+    ("send_turn",                60_000, 12_000),
+    ("message_menu",             73_000, 12_000),
+    ("copy_markdown",            86_000, 6_000),
+    ("select_text",              93_000, 6_000),
+    ("send_turn",               100_000, 12_000),
+    ("select_all_copy",         113_000, 10_000),
+    ("composer_fill",           124_000, 10_000),
+    ("model_change",            135_000, 10_000),
+    ("settings",                146_000, 12_000),
+    ("image_upload",            159_000, 12_000),
     # ── destructive, last ────────────────────────────────────────
-    ("thread_reopen",           146_000, 30_000),
-    ("delete_message",          177_000, 15_000),
+    ("thread_reopen",           172_000, 30_000),
+    ("delete_message",          203_000, 15_000),
 ]))
 
 # The quick film. The SAME fifteen actions in the same order -- a tier that drops actions cannot be
@@ -107,16 +111,21 @@ QUICK = Scene(name = "quick", slots = _slots([
     ("stop_generation",          20_000, 8_000),
     ("scroll_after",             29_000, 5_000),
     ("reasoning_toggle",         34_500, 8_000),
-    ("message_menu",             43_000, 8_000),
-    ("copy_markdown",            51_500, 5_000),
-    ("select_text",              57_000, 5_000),
-    ("select_all_copy",          62_500, 7_000),
-    ("composer_fill",            70_000, 7_000),
-    ("model_change",             77_500, 7_000),
-    ("settings",                 85_000, 9_000),
-    ("image_upload",             94_500, 9_000),
-    ("thread_reopen",           104_000, 25_000),
-    ("delete_message",          129_500, 12_000),
+    # A SECOND streamed turn, into a thread that has already grown, with user actions on either
+    # side. One streamed turn per cell samples "what a chunk costs given what is on screen" once;
+    # three sample it three times at three different thread sizes within the same cell.
+    ("send_turn",                43_000, 10_000),
+    ("message_menu",             53_500, 8_000),
+    ("copy_markdown",            62_000, 5_000),
+    ("select_text",              67_500, 5_000),
+    ("send_turn",                73_000, 10_000),
+    ("select_all_copy",          83_500, 7_000),
+    ("composer_fill",            91_000, 7_000),
+    ("model_change",             98_500, 7_000),
+    ("settings",                106_000, 9_000),
+    ("image_upload",            115_500, 9_000),
+    ("thread_reopen",           125_000, 25_000),
+    ("delete_message",          150_500, 12_000),
 ]))
 
 SCENES = {"quick": QUICK, "standard": STANDARD, "full": STANDARD}

@@ -203,6 +203,15 @@
         // children, so a thread with the same text can carry wildly different DOM depending on
         // how that text got there. Without this split, "seeded has 20% fewer spans" is a number
         // with three possible explanations and no way to choose between them.
+        // Tool components. TWO markers, because there are two renderers: a known tool gets a
+        // `tool-group-root`, and anything else gets the generic `tool-fallback-root` ("Used
+        // tool"). Counting only the first read ZERO on a thread that visibly contained tool
+        // blocks -- the second wrong selector in a row for this one component, and both times the
+        // reading was a confident zero rather than an error.
+        tool_groups: qa('[data-slot="tool-group-root"]').length
+                   + qa('[data-slot="tool-fallback-root"]').length,
+        tool_groups_open: qa('[data-slot="tool-group-content"]').length
+                        + qa('[data-slot="tool-fallback-content"]').length,
         reasoning_spans: qa('[data-slot="reasoning-root"] pre span').length,
         reasoning_code_blocks: qa('[data-slot="reasoning-root"] pre').length,
         content_spans:

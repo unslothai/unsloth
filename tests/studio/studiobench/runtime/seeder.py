@@ -55,6 +55,13 @@ def _assistant_content(unit: Unit) -> list[dict]:
     parts: list[dict] = []
     if unit.reasoning:
         parts.append({"type": "reasoning", "text": unit.reasoning})
+    # Tool calls sit BETWEEN the reasoning and the answer, which is where a real turn puts them:
+    # the model thinks, calls tools, then answers. reasoning.tsx groups adjacent tool-call parts
+    # with the reasoning above them, so the order decides whether a tool group renders inside the
+    # collapsible pane or as its own block, and those are different components with different
+    # costs.
+    for call in unit.tool_calls:
+        parts.append(dict(call))
     if unit.content:
         parts.append({"type": "text", "text": unit.content})
     return parts

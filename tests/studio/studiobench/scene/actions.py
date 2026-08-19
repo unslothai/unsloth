@@ -742,6 +742,76 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
 
 # ── 12. image upload ────────────────────────────────────────────────
 
+@register_action(name = "send_turn", default_budget_ms = 10000)
+def send_turn(ctx: ActionContext) -> ActionResult:
+    """Send another prompt mid-film and let the next reply stream in.
+
+    ONE STREAMED TURN IS NOT A CONVERSATION. Everything above this action measured a thread that
+    was seeded in bulk and then streamed exactly once, at the end. A real session streams
+    repeatedly into a thread that is already large, and the interesting cost -- what a chunk
+    costs given what is already on screen -- is only sampled once per cell that way.
+
+    The extra turns come out of the SAME fixed streaming budget as the first, split between them,
+    so adding turns costs no wall clock. The corpus alternates reasoning-heavy and code-heavy
+    units, so consecutive sends exercise the `<think>` re-parse and the Streamdown/Shiki path
+    rather than repeating one of them.
+    """
+    pacer = ctx.args.get("_pacer")
+    queue = ctx.args.get("_stream_queue") or []
+    # A SHARED MUTABLE cursor, not a scalar in `args`. The scene runner builds each action's args
+    # as `{**base_args, **slot.args}`, so a scalar written back here lands in a dict that is
+    # discarded when the action returns: the second send re-sent the first turn, reported
+    # `turn_index: 1` twice, and failed because that message was already in the thread.
+    cursor = ctx.args.get("_stream_cursor")
+    if not isinstance(cursor, dict):
+        return not_run("no shared stream cursor was passed to the action")
+    index = int(cursor.get("i", 0))
+    if pacer is None:
+        return not_run("no pacer was passed to the action")
+    if index >= len(queue):
+        return not_run(f"the stream queue is exhausted ({len(queue)} turns planned)")
+    if _ev(ctx, "() => window.__sb.dom.isRunning()"):
+        # Sending while a reply is in flight queues the message instead of starting a stream, and
+        # the action would report a fast, precise number about a message that is merely parked.
+        return not_run("a reply was still streaming, so this send would have been queued")
+
+    unit = queue[index]
+    cursor["i"] = index + 1
+    pacer.reset()
+    pacer.load(unit["reasoning"], unit["content"], cadence = ctx.args.get("cadence", "field"),
+               tag = f"{ctx.args.get('cell_id', 'cell')}#turn{index + 1}")
+
+    selector = 'textarea[aria-label="Message input"]'
+    if ctx.page.query_selector(selector) is None:
+        return not_run("no composer on the page")
+    ctx.page.fill(selector, f"studiobench follow-up {index + 1}")
+    ctx.page.wait_for_timeout(80)
+    before = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    started = time.monotonic()
+    ctx.page.keyboard.press("Enter")
+
+    first_ms = None
+    deadline = started + SETTLE_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        if _ev(ctx, "() => window.__sb.dom.isRunning()"):
+            first_ms = (time.monotonic() - started) * 1000
+            break
+        ctx.page.wait_for_timeout(50)
+    after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    # A POSITIVE consequence: the turn actually started streaming AND the thread grew. A send that
+    # silently failed leaves both unchanged and would otherwise read as an instant send.
+    ok = first_ms is not None and isinstance(after, int) and isinstance(before, int) \
+        and after > before
+    return ActionResult(
+        ran = True, expect_ok = ok,
+        expect = {"messages_before": before, "messages_after": after,
+                  "turn_index": index + 1, "queued_turns": len(queue),
+                  "streamed_chars": len(unit["reasoning"]) + len(unit["content"]),
+                  "unit_kind": unit.get("kind")},
+        timings = {"to_first_token_ms": None if first_ms is None else round(first_ms, 1)},
+        reason = None if ok else "the send did not start a new streaming reply")
+
+
 #: What the page can tell us when the attachments button cannot be found. Reads geometry, style,
 #: hit-testing and the surrounding chrome, so the three explanations that look identical from a
 #: `not_run` string look different here.

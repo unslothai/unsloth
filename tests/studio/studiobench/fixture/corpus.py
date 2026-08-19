@@ -47,10 +47,36 @@ MANIFEST_JSON = FROZEN_DIR / "manifest.json"
 CORPUS_SEED = 20260819
 CORPUS_VERSION = 1
 
-# Span density, calibrated against the field capture. See the module docstring.
+# Span density, calibrated against the field capture. See the module docstring. These are now the
+# MEANS of a jittered distribution rather than fixed sizes -- see `_jitter`.
 PROSE_CHARS = 1250
 FENCE_CHARS = 1800
 PREAMBLE_FRACTION = 0.25
+
+# How far each block's size may wander from its mean, as a fraction. Real replies do not emit
+# identically sized paragraphs and fences, and a fixture that does lets a cost that is really
+# per-block masquerade as per-character (and vice versa): with every block the same size the two
+# are perfectly collinear and no measurement can separate them. Jitter breaks that.
+#
+# Applied through the PER-UNIT rng, so unit 40 is still the same text whether it was reached by
+# generating 41 units or by asking for that one. Randomised is not the same as nondeterministic:
+# the corpus hash still pins every byte.
+BLOCK_JITTER = 0.55
+
+# Unit sizes wander too, around the escalating nominal. Same reason at the turn level: a thread of
+# turns that are all exactly 10,000 characters is not the shape of a real session, and the rung
+# planner then has no short turns to land its target on.
+UNIT_JITTER = 0.35
+
+# Tool calls per unit, as a range. The thread renders a tool group for each, which is a component
+# with its own mount and update cost and which nothing in the corpus previously exercised.
+TOOL_CALLS_PER_UNIT = (0, 3)
+
+#: The stored part shape that actually renders a tool block. VERIFIED, not assumed: seeding a flat
+#: `{"type": "tool-call", ...}` and an assistant-ui style `{"type": "tool-invocation", ...}` both
+#: rendered their sibling text and NO tool UI, while this shape produced a "Used tool" group. A
+#: corpus full of parts the app ignores looks richer and measures nothing.
+TOOL_NAMES = ("web_search", "code_execution", "python", "terminal", "search_knowledge_base")
 
 # The escalating cycle. Reasoning first because a turn's reasoning is what the pane holds open.
 CYCLE_BASE = ((("reasoning", 10_000), ("code", 8_000)),)
@@ -103,11 +129,20 @@ class Unit:
     content: str           # goes out as delta.content
     chars: int
     sha256: str
+    #: Stored tool-call parts for this turn, in the shape the app renders. Not counted in `chars`:
+    #: `chars` is the rung's size axis and must stay comparable with every earlier measurement,
+    #: while a tool call's cost is a mount, not a character count. Reported separately.
+    tool_calls: tuple = ()
+
+    @property
+    def tool_call_count(self) -> int:
+        return len(self.tool_calls)
 
     def as_row(self) -> dict:
         return {
             "index": self.index, "kind": self.kind, "chars": self.chars, "sha256": self.sha256,
             "reasoning": self.reasoning, "content": self.content,
+            "tool_calls": list(self.tool_calls),
         }
 
     def clipped_to(self, chars: int) -> "Unit":
@@ -150,6 +185,10 @@ class Unit:
             # be checked against its hash or reported under it.
             sha256 = "clip:" + hashlib.sha256(
                 f"{self.sha256}\x00{chars}".encode("utf-8")).hexdigest(),
+            # Tool calls survive clipping. They carry no `chars` weight, so dropping them would
+            # silently remove a whole component from exactly the rung -- the smallest -- that every
+            # growth ratio is taken against.
+            tool_calls = self.tool_calls,
         )
 
     @classmethod
@@ -157,6 +196,7 @@ class Unit:
         return cls(
             index = row["index"], kind = row["kind"], reasoning = row["reasoning"],
             content = row["content"], chars = row["chars"], sha256 = row["sha256"],
+            tool_calls = tuple(row.get("tool_calls") or ()),
         )
 
 
@@ -239,8 +279,20 @@ def _fence(rng: random.Random, target: int, salt: str, lang: Optional[str] = Non
     return "\n".join(lines)
 
 
+def _jitter(rng: random.Random, mean: int, spread: float = BLOCK_JITTER,
+            floor: int = 80) -> int:
+    """A size around `mean`, never below `floor`.
+
+    Uniform on [1-spread, 1+spread] rather than lognormal: the point is to decorrelate block size
+    from block count, and a symmetric spread does that while keeping the MEAN exactly where the
+    span-density calibration put it. A skewed distribution would quietly move the mean and with it
+    the characters-per-span figure the whole corpus is tuned to.
+    """
+    return max(floor, int(mean * (1.0 + rng.uniform(-spread, spread))))
+
+
 def _body(rng: random.Random, target: int, salt: str, *, preamble: bool) -> str:
-    """Preamble, then the prose/fence alternation, to `target` characters."""
+    """Preamble, then a jittered prose/fence alternation, to `target` characters."""
     parts: list[str] = []
     size = 0
     if preamble:
@@ -249,15 +301,37 @@ def _body(rng: random.Random, target: int, salt: str, *, preamble: bool) -> str:
         parts.append(head)
         size += len(head) + 2
     while size < target:
-        p = _prose(rng, PROSE_CHARS, f"{salt}{len(parts)}")
+        p = _prose(rng, _jitter(rng, PROSE_CHARS), f"{salt}{len(parts)}")
         parts.append(p)
         size += len(p) + 2
         if size >= target:
             break
-        f = _fence(rng, FENCE_CHARS, f"{salt}{len(parts)}")
+        f = _fence(rng, _jitter(rng, FENCE_CHARS), f"{salt}{len(parts)}")
         parts.append(f)
         size += len(f) + 2
     return "\n\n".join(parts)
+
+
+def _tool_calls(rng: random.Random, salt: str) -> list[dict]:
+    """Zero to three tool calls for one turn, in the part shape the app actually renders."""
+    low, high = TOOL_CALLS_PER_UNIT
+    out: list[dict] = []
+    for i in range(rng.randint(low, high)):
+        name = rng.choice(TOOL_NAMES)
+        query = _prose(rng, _jitter(rng, 220, floor = 40), f"{salt}t{i}q").replace("\n", " ")
+        result = _prose(rng, _jitter(rng, 900, floor = 120), f"{salt}t{i}r")
+        args = {"query": query} if name in ("web_search", "search_knowledge_base") \
+            else {"code": query}
+        out.append({
+            "type": "tool-call",
+            "toolCallId": f"call_{salt}_{i}",
+            "toolName": name,
+            "argsText": json.dumps(args),
+            "args": args,
+            "state": "result",
+            "result": result,
+        })
+    return out
 
 
 def _unit_targets(index: int) -> tuple[str, int]:
@@ -266,7 +340,12 @@ def _unit_targets(index: int) -> tuple[str, int]:
     slot = index % 2
     base = 10_000 if slot == 0 else 8_000
     kind = "reasoning" if slot == 0 else "code"
-    return kind, min(MAX_UNIT_CHARS, base * (2 ** cycle))
+    nominal = min(MAX_UNIT_CHARS, base * (2 ** cycle))
+    # Jittered around the nominal, deterministic in `index` alone so the escalating shape survives
+    # while no two turns are the same size. A separate RNG from the body's, so changing block
+    # jitter does not reshuffle which turns are large.
+    rng = random.Random((index * 6_364_136_223_846_793_005) ^ 0x5DEECE66D)
+    return kind, max(1_500, min(MAX_UNIT_CHARS, _jitter(rng, nominal, UNIT_JITTER, floor = 1_500)))
 
 
 def generate_unit(index: int, seed: int = CORPUS_SEED) -> Unit:
@@ -289,12 +368,14 @@ def generate_unit(index: int, seed: int = CORPUS_SEED) -> Unit:
         # A code turn: the mass is visible content, so the cost lands on Streamdown and Shiki.
         reasoning = _prose(rng, 1_200, f"r{salt}")
         content = _body(rng, target, f"a{salt}", preamble = False)
+    tools = tuple(_tool_calls(rng, salt))
     chars = len(reasoning) + len(content)
     digest = hashlib.sha256(
-        f"{index}\x00{kind}\x00{reasoning}\x00{content}".encode("utf-8")
+        (f"{index}\x00{kind}\x00{reasoning}\x00{content}\x00"
+         + json.dumps(tools, sort_keys = True)).encode("utf-8")
     ).hexdigest()
     return Unit(index = index, kind = kind, reasoning = reasoning, content = content,
-                chars = chars, sha256 = digest)
+                chars = chars, sha256 = digest, tool_calls = tools)
 
 
 def units_for_chars(total_chars: int, seed: int = CORPUS_SEED) -> list[Unit]:
@@ -474,6 +555,23 @@ PROVISIONAL_CHARS_PER_TOKEN = 4.0
 # that claims the reply is complete, rather than finishing exactly as it starts.
 STREAM_TAIL_CHARS = 6_000
 
+# How many turns actually stream per cell: the opening one plus the follow-ups the `send_turn`
+# action sends mid-film. They SHARE the budget above rather than each getting it, so three turns
+# and one turn take the same wall clock. Three because the corpus alternates reasoning-heavy and
+# code-heavy units, so three consecutive turns are guaranteed to cover both kinds.
+STREAM_TURNS = 3
+
+# Each follow-up's size. Small on purpose: the follow-ups exist to sample "what does a chunk cost
+# given what is already on screen" at two more points inside the cell, not to add mass.
+FOLLOW_UP_CHARS = 1_500
+
+# Below this the rung streams ONCE. Three turns need about 9,000 characters of budget and the 1K
+# rung is 4,000 characters in total, so splitting it three ways produced an opening stream that
+# drained in four seconds -- shorter than the during-generation slots timed against it -- and a
+# rung 40% over its own target. A small rung is allowed to be a single exchange, which is also
+# what a 1K-token conversation actually is.
+MULTI_TURN_MIN_CHARS = 20_000
+
 
 @dataclass
 class RungPlan:
@@ -484,6 +582,9 @@ class RungPlan:
     target_chars: int
     seeded_units: list[Unit] = field(default_factory = list)
     streamed_unit: Optional[Unit] = None
+    #: Further turns streamed DURING the film by the `send_turn` action. They come out of the same
+    #: fixed streaming budget as the first, split between them, so more turns cost no wall clock.
+    follow_up_units: list[Unit] = field(default_factory = list)
 
     @property
     def seeded_chars(self) -> int:
@@ -494,8 +595,15 @@ class RungPlan:
         return self.streamed_unit.chars if self.streamed_unit else 0
 
     @property
+    def follow_up_chars(self) -> int:
+        return sum(u.chars for u in self.follow_up_units)
+
+    @property
     def total_chars(self) -> int:
-        return self.seeded_chars + self.streamed_chars
+        # The follow-ups are part of the rung's mass: they are streamed INTO the thread during the
+        # film and are on screen for most of it. Leaving them out understated every rung by the
+        # follow-up budget, which at the 1K rung is most of the rung.
+        return self.seeded_chars + self.streamed_chars + self.follow_up_chars
 
 
 def plan_rung(corpus: Corpus, rung: str,
@@ -531,8 +639,10 @@ def plan_rung(corpus: Corpus, rung: str,
     # Holding the tail constant also isolates the variable under investigation. The question is
     # what a streamed chunk costs AS A FUNCTION OF THE THREAD ALREADY ON SCREEN, and that needs
     # the chunk workload held fixed while the thread grows, not both moving together.
+    turns = STREAM_TURNS if target_chars >= MULTI_TURN_MIN_CHARS else 1
     tail_target = min(STREAM_TAIL_CHARS, target_chars)
-    seed_target = max(0, target_chars - tail_target)
+    follow_budget = FOLLOW_UP_CHARS * (turns - 1)
+    seed_target = max(0, target_chars - tail_target - follow_budget)
 
     # Size the SEEDED PREFIX to the remainder, then trim its last unit to land on the target.
     # Growing it a whole unit at a time instead overshoots by up to one turn, which at the 1K
@@ -548,10 +658,24 @@ def plan_rung(corpus: Corpus, rung: str,
     # nearly the whole frozen corpus, and running off the end must not be a KeyError in the middle
     # of a 60-minute tier.
     last_index = max(e["index"] for e in corpus.manifest["units"])
+
+    # The streaming budget is SPLIT across the opening turn and the follow-ups, so a cell that
+    # streams three times takes the same wall clock as one that streams once. Turns are taken from
+    # consecutive corpus units, which alternate reasoning-heavy and code-heavy, so the follow-ups
+    # exercise the `<think>` re-parse and the Streamdown path rather than repeating one of them.
+    # The opening turn keeps the FULL tail budget and the follow-ups are extra. The three
+    # during-generation slots are timed against the opening stream, so it has to outlast them;
+    # splitting the budget between turns left it draining in four seconds and those slots then ran
+    # against a finished reply while still being labelled "during generation".
     streamed = corpus.unit(min(len(seeded), last_index)).clipped_to(tail_target)
+    follow_ups = [
+        corpus.unit(min(len(seeded) + i, last_index)).clipped_to(FOLLOW_UP_CHARS)
+        for i in range(1, turns)
+    ]
 
     return RungPlan(rung = rung, target_tokens = tokens, target_chars = target_chars,
-                    seeded_units = seeded, streamed_unit = streamed)
+                    seeded_units = seeded, streamed_unit = streamed,
+                    follow_up_units = follow_ups)
 
 
 def _main(argv: list[str]) -> int:
