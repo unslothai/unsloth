@@ -10,6 +10,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test, { mock } from "node:test";
 
+// The real one, not a stub: what counts as a local thread is the rule under test,
+// and a hand-written copy of the prefix here could drift from the app's.
+import { isAssistantLocalThreadId } from "../src/features/chat/utils/thread-ids.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
@@ -59,6 +62,7 @@ function freshStore(counts: Record<string, number> = {}): {
           return new Map(Object.entries(counts));
         },
       },
+      "./thread-ids": { isAssistantLocalThreadId },
     },
   );
   return { store, requests };
@@ -82,7 +86,10 @@ test("a 200-message thread costs one request, not one per message", async () => 
   assert.deepEqual(requests, ["thread-a"]);
   assert.equal(historyListenerCount(), 1);
   // Every badge sees the count the single request brought back.
-  assert.equal(seen.every((count) => count === 3), true);
+  assert.equal(
+    seen.every((count) => count === 3),
+    true,
+  );
   assert.equal(store.forkCountFor("thread-a", "m7"), 3);
   assert.equal(store.forkCountFor("thread-a", "m8"), 0);
 
@@ -135,7 +142,11 @@ test("badges churning under the hover autohide do not refetch the thread", async
     badge();
   }
   await flush();
-  assert.equal(requests.length, 1, "hovering ten messages refetched the whole thread");
+  assert.equal(
+    requests.length,
+    1,
+    "hovering ten messages refetched the whole thread",
+  );
 
   // Closing the thread is what drops the counts.
   thread();
@@ -161,7 +172,10 @@ test("the badge no longer owns a listener or a per-message request", () => {
   assert.doesNotMatch(thread, /addEventListener\(CHAT_HISTORY_UPDATED_EVENT/);
   assert.match(thread, /subscribeForkCounts\(remoteId, onChange\)/);
   // The badges all unmount at rest, so the thread has to hold the subscription itself.
-  assert.match(thread, /const useThreadForkCounts[\s\S]*?subscribeForkCounts\(remoteId,/);
+  assert.match(
+    thread,
+    /const useThreadForkCounts[\s\S]*?subscribeForkCounts\(remoteId,/,
+  );
   assert.match(thread, /^ {2}useThreadForkCounts\(\);$/m);
 });
 
@@ -193,8 +207,12 @@ test("a continuous stream costs one refresh per ceiling, not one per debounce wi
   }
   const streamMs = chunks * gap;
   const midStream = requests.length - 1;
-  const throttleWould = Math.floor(streamMs / store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
-  const ceilingAllows = Math.floor(streamMs / store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
+  const throttleWould = Math.floor(
+    streamMs / store.FORK_COUNT_REFRESH_DEBOUNCE_MS,
+  );
+  const ceilingAllows = Math.floor(
+    streamMs / store.FORK_COUNT_REFRESH_MAX_WAIT_MS,
+  );
   assert.equal(
     midStream,
     ceilingAllows,
@@ -324,7 +342,11 @@ test("unsubscribing cancels the ceiling as well as the trailing edge", async (t)
 
   const second = store.subscribeForkCounts("thread-b", () => {});
   await flush();
-  assert.deepEqual(requests, ["thread-a", "thread-b"], "the new thread fetches once on subscribe");
+  assert.deepEqual(
+    requests,
+    ["thread-a", "thread-b"],
+    "the new thread fetches once on subscribe",
+  );
 
   mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS * 2);
   await flush();
@@ -334,4 +356,59 @@ test("unsubscribing cancels the ceiling as well as the trailing edge", async (t)
     "a ceiling armed by the previous thread outlived it and refetched the new one",
   );
   second();
+});
+
+test("a local thread never asks the server for forks it cannot have", async (t) => {
+  // #8992 added this store; it did not exclude threads the server has never seen.
+  // A `__LOCALID_` thread has no server record, so the request can only 404, and
+  // getThreadForkCounts maps 404 to the empty map the entry already holds.
+  //
+  // It is not a rounding error. A new chat is in exactly this state, and this store
+  // refreshes on CHAT_HISTORY_UPDATED_EVENT, which fires once per streaming chunk --
+  // so the first reply in a new chat paid one useless request per debounce window
+  // for as long as it streamed. The heavy-thread smoke, which counts requests issued
+  // inside a measured interaction, is what caught it.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 });
+
+  const unsubscribe = store.subscribeForkCounts("__LOCALID_abc123", () => {});
+  await flush();
+  assert.deepEqual(
+    requests,
+    [],
+    "subscribing to a local thread must not fetch",
+  );
+
+  for (let i = 0; i < 20; i++) fireHistoryUpdated();
+  mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
+  await flush();
+  assert.deepEqual(requests, [], "nor must a burst of history events");
+
+  // The badge still reads, it just reads the empty answer without asking.
+  assert.equal(store.forkCountFor("__LOCALID_abc123", "m1"), 0);
+  unsubscribe();
+});
+
+test("a saved thread alongside a local one still refreshes", async (t) => {
+  // The guard must be per thread, not a global off switch: the local thread is the
+  // one being composed, and a saved thread is on screen next to it.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore({ m1: 2 });
+
+  const stop = [
+    store.subscribeForkCounts("__LOCALID_abc123", () => {}),
+    store.subscribeForkCounts("thread-saved", () => {}),
+  ];
+  await flush();
+  assert.deepEqual(requests, ["thread-saved"]);
+
+  fireHistoryUpdated();
+  mock.timers.tick(store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  await flush();
+  assert.deepEqual(requests, ["thread-saved", "thread-saved"]);
+  assert.equal(store.forkCountFor("thread-saved", "m1"), 2);
+
+  for (const unsubscribe of stop) unsubscribe();
 });
