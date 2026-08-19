@@ -1005,10 +1005,14 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     # a Retry that forked BEFORE the turn which recorded the epoch leaves that turn on an
     # abandoned sibling, and a thread-wide scan would report a checkpoint for a branch
     # that never reset.
-    on_branch = [{"role": "user", "content": "q"},
-                 {"role": "assistant", "content": "the epoch reply, written out in full"}]
-    off_branch = [{"role": "user", "content": "q"},
-                  {"role": "assistant", "content": "regenerated, sharing none of its words"}]
+    on_branch = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "the epoch reply, written out in full"},
+    ]
+    off_branch = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "regenerated, sharing none of its words"},
+    ]
     assert inference_routes._thread_has_checkpoint("t1", on_branch) is True
     assert inference_routes._thread_has_checkpoint("t1", off_branch) is False
 
