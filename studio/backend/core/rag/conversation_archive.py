@@ -403,6 +403,16 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             except Exception:
                 conn.rollback()
                 raise
+            # Surplus only, NOT a restamp. The re-embed path never reaches the
+            # already-archived branch where copies are retired, so a repeat archived twice
+            # and then rewound kept its extra copy: measured after a rewind plus an
+            # embedder change, three documents for two turns with the recall quoting the
+            # repeated turn twice. Re-stamping here would be wrong for exactly the reason
+            # the re-embed keeps `archive_ordinal` and `created_at` -- a turn archived
+            # before the column existed must stay unnumbered, or it moves to the end of its
+            # own conversation and the header calls it the latest word. Runs after the new
+            # row exists, so the count is what the scope actually holds.
+            _retire_surplus(conn, scope, digest, seats)
             conn.commit()
             written += 1
             if _INGEST_FAILED:
@@ -660,6 +670,31 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     ]
 
 
+def _retire_surplus(conn, scope: str, digest: str, seats: list[int], *, rows = None) -> bool:
+    """Delete copies of this turn the conversation no longer holds. True if any went.
+
+    More copies than occurrences means a rewind removed one. The survivors are
+    byte-identical, so the branch filter validates every copy against the single remaining
+    occurrence and `recall` dedups on chunk id, which differs: measured, a recall slot went
+    on quoting one turn twice, and the surplus kept an ordinal a genuinely later turn had
+    since taken.
+
+    Does nothing without seats, so a turn that failed to match its occurrences at all --
+    an unreconstructable transcript, a thread with no persisted rows -- never loses a copy.
+    """
+    if not seats:
+        return False
+    try:
+        copies = rows if rows is not None else store.documents_by_hash(conn, scope, digest)
+        surplus = copies[len(seats) :]
+        for copy in surplus:
+            store.delete_document(conn, copy["id"], commit = False)
+        return bool(surplus)
+    except Exception:  # noqa: BLE001 -- tidying an archive is not worth a chat
+        logger.debug("conversation_archive.retire_surplus_failed", exc_info = True)
+        return False
+
+
 def _restamp(
     conn,
     scope: str,
@@ -693,16 +728,7 @@ def _restamp(
             if copy.get("archive_ordinal") != seat:
                 store.set_archive_ordinal(conn, copy["id"], seat)
                 moved = True
-        # More copies than the conversation now has occurrences means a rewind removed one.
-        # The survivors are byte-identical, so the branch filter validates every copy
-        # against the single remaining occurrence and `recall` dedups on chunk id, which
-        # differs: measured, a recall slot went on quoting one turn twice, and the surplus
-        # kept an ordinal that a genuinely later turn had since taken. Guarded by the
-        # `not seats` return above, so a turn that simply failed to match its occurrences
-        # never deletes anything.
-        for surplus in rows[len(seats) :]:
-            store.delete_document(conn, surplus["id"], commit = False)
-            moved = True
+        moved = _retire_surplus(conn, scope, digest, seats, rows = rows) or moved
         if moved and commit:
             conn.commit()
     except Exception:  # noqa: BLE001 -- ordering an old archive is not worth a chat

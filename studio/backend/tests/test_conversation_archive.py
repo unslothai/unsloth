@@ -2608,3 +2608,47 @@ def test_an_incidental_number_does_not_take_over_the_filter(conn):
     assert store.conversation_match_queries("what about v2 of the plan")[0] == '"v2"'
     assert store.conversation_match_queries("we talked about 2024 revenue")[0] == '"2024"'
     assert store.conversation_match_queries("What is the current value of 9134?")[0] == '"9134"'
+
+
+def test_a_re_embed_after_a_rewind_retires_the_surplus_copy_too(conn, monkeypatch):
+    """The re-embed path never reaches the branch where surplus copies are retired.
+
+    A repeated turn archived twice and then rewound leaves one copy more than the
+    conversation holds. Replacing one copy's vectors under a new embedder writes a fresh
+    document and returns, so the surplus is never looked at: measured, three documents for
+    two turns after the rewind, with the recall quoting the repeated turn twice and the
+    surplus still holding a position a later turn had taken.
+    """
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings, "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    first = _turn("set ZQXVARA123 to 1", "ok")
+    second = _turn("set ZQXVARA123 to 2", "ok")
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    for group in (first, second, repeat):
+        _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    assert len(store.list_documents(conn, scope)) == 3
+
+    # Rewind past the repeat, and the embedder changes underneath the thread.
+    _save_thread(THREAD, first + second)
+    identity["name"] = "st:model-b"
+    conversation_archive.archive_turns(THREAD, first)
+
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    assert ordinals == [0, 1]
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    assert len(found[1]) == len({source["text"] for source in found[1]})
