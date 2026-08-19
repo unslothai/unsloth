@@ -3796,8 +3796,7 @@ def test_an_unfinished_local_tool_call_is_not_replayed_at_all():
     assert [message.get("role") for message in wire] == ["assistant"]
     assert "tool_calls" not in wire[0]
     assert not any(
-        isinstance(part, dict) and part.get("type") == "tool-call"
-        for part in wire[0]["content"]
+        isinstance(part, dict) and part.get("type") == "tool-call" for part in wire[0]["content"]
     ), "an unreplayable call was rebuilt into the wire form"
 
 
@@ -3844,6 +3843,7 @@ def test_two_completed_local_tool_calls_replay_as_two_rounds():
 
 def test_a_new_local_tool_round_starts_a_new_group():
     """`startsNewCodexToolRound`: same round batches, a different round flushes."""
+
     def _call(identifier, round_id):
         return {
             "type": "tool-call",
@@ -3899,19 +3899,22 @@ def test_a_topped_up_copy_keeps_the_transcript_span(conn):
         for row in conn.execute("SELECT sha256 FROM documents WHERE scope=?", (scope,)).fetchall()
     ][0]
 
-    assert conversation_archive._write_copy(
-        conn,
-        scope = scope,
-        thread_id = THREAD,
-        roles = "assistant",
-        digest = digest,
-        identity = "test-embedder",
-        group = archivable,
-        span = len(group),
-        chunks = [],
-        vectors = [],
-        seats = [0, 1],
-    ) is True
+    assert (
+        conversation_archive._write_copy(
+            conn,
+            scope = scope,
+            thread_id = THREAD,
+            roles = "assistant",
+            digest = digest,
+            identity = "test-embedder",
+            group = archivable,
+            span = len(group),
+            chunks = [],
+            vectors = [],
+            seats = [0, 1],
+        )
+        is True
+    )
     conn.commit()
 
     spans = [

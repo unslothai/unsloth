@@ -679,9 +679,7 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         if identifier is None:
             return [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
         if identifier not in rendered:
-            rendered[identifier] = [
-                _normalise_cased(_probe_text(m)) for m in _as_wire([record])
-            ]
+            rendered[identifier] = [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
         return rendered[identifier]
 
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
