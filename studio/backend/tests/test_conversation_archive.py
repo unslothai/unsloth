@@ -3422,3 +3422,53 @@ def test_a_bare_identifier_query_also_reaches_past_the_cap(conn):
     assert "9999" in found[0]
     # The oldest end stays reachable, the invariant the ends-first ordering exists for.
     assert "note 000" in conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 256)[0]
+
+
+def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
+    """The ordinary agent turn: call, result, then the model's final answer.
+
+    Bucketing the whole message as call, text, result put the answer in the middle, so
+    `_scan_probes` advanced past it to find the result and could not find it again. The
+    document rendered from the request said call, result, answer, and an unchanged evicted
+    tool exchange was classified off-branch: measured end to end, recall came back with
+    the user's question alone and the document holding the answer was filtered out.
+    """
+    stored = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "terminal",
+                    "args": {"command": "cat deploy.yml"},
+                    "result": "token ZQX-5150",
+                },
+                {"type": "text", "text": "The deploy token is ZQX-5150."},
+            ],
+        }
+    ]
+    wire = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "function": {"name": "terminal", "arguments": '{"command": "cat deploy.yml"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "token ZQX-5150"},
+        {"role": "assistant", "content": "The deploy token is ZQX-5150."},
+    ]
+    rendered = conversation_archive.render_turn(wire)
+    text = rendered[1] if isinstance(rendered, tuple) else rendered
+
+    assert conversation_archive._document_matches_one_run(
+        [{"text": text}], conversation_archive.branch_message_texts(stored), 3
+    ) is True
+    # The wire-shaped branch, which every live caller supplies, is unchanged.
+    assert conversation_archive._document_matches_one_run(
+        [{"text": text}], conversation_archive.branch_message_texts(wire), 3
+    ) is True
