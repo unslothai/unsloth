@@ -7,15 +7,18 @@
   var maxSnapshotAgeMs = 10 * 1000;
   var overlay = null;
   var removalTimer = null;
-  // Appearance customization reaches the page as inline custom properties on
-  // <html> plus these gate attributes (applyCustomizationToDocument in
-  // src/features/settings/stores/appearance-custom-store.ts). theme-boot.js
-  // resolves only mode and palette, so without carrying them across the reload
-  // the restored shell paints in stock colors and restyles once React runs.
+  // Appearance reaches the page as inline custom properties on <html> plus
+  // these gate attributes (theme-boot.js for the palette,
+  // applyCustomizationToDocument in
+  // src/features/settings/stores/appearance-custom-store.ts for the rest).
+  // theme-boot.js resolves only mode and palette, so without carrying them
+  // across the reload the restored shell paints in stock colors and restyles
+  // once React runs.
   var appearanceAttributes = [
     "data-chat-font",
     "data-code-font-size",
     "data-contrast-adjust",
+    "data-palette",
     "data-ui-font",
     "data-ui-font-size",
   ];
@@ -56,6 +59,22 @@
     return hrefs;
   }
 
+  // Design tokens the app defines through `:root` do not reach a shadow tree:
+  // `:root` matches only a document's root element, and Tailwind's `:host`
+  // block redeclares some of them on the host. Freeze the computed set and put
+  // it on the copy's own root instead.
+  function readTokens() {
+    var style = getComputedStyle(document.documentElement);
+    var tokens = {};
+    for (var index = 0; index < style.length; index += 1) {
+      var name = style[index];
+      if (name.slice(0, 2) === "--") {
+        tokens[name] = style.getPropertyValue(name);
+      }
+    }
+    return tokens;
+  }
+
   function readAppearance() {
     var root = document.documentElement;
     var variables = {};
@@ -73,6 +92,15 @@
     return { variables: variables, attributes: attributes };
   }
 
+  function applyAppearanceAttributes(element, appearance) {
+    var attributes = (appearance && appearance.attributes) || {};
+    appearanceAttributes.forEach(function (name) {
+      if (typeof attributes[name] === "string") {
+        element.setAttribute(name, attributes[name]);
+      }
+    });
+  }
+
   // React re-applies every one of these once it mounts, so writing them onto
   // the live <html> only brings that forward; nothing here has to be undone
   // when the overlay goes.
@@ -85,12 +113,7 @@
         root.style.setProperty(name, variables[name]);
       }
     });
-    var attributes = appearance.attributes || {};
-    appearanceAttributes.forEach(function (name) {
-      if (typeof attributes[name] === "string") {
-        root.setAttribute(name, attributes[name]);
-      }
-    });
+    applyAppearanceAttributes(root, appearance);
   }
 
   function restoreSnapshot() {
@@ -127,17 +150,44 @@
       link.onerror = removeOverlay;
       shell.appendChild(link);
     });
-    // Selectors do not cross the shadow boundary, so the copy carries both the
-    // <html> classes it was styled by (dark mode, cursors, font smoothing) and
-    // the marker index.css hangs the shell's own rules off.
-    var shellRoot = document.createElement("div");
+    // Selectors do not cross the shadow boundary, and 80-odd rules are anchored
+    // on `html` (light/dark theming above all), so the copy is rooted in an
+    // <html> element carrying the classes and gate attributes it was styled by,
+    // plus the marker index.css hangs the shell's own rules off.
+    var shellRoot = document.createElement("html");
     shellRoot.className =
       "reload-snapshot-shell " +
       (typeof snapshot.rootClass === "string" ? snapshot.rootClass : "");
+    applyAppearanceAttributes(shellRoot, snapshot.appearance);
+    var tokens = snapshot.tokens || {};
+    Object.keys(tokens).forEach(function (name) {
+      if (name.slice(0, 2) === "--" && typeof tokens[name] === "string") {
+        shellRoot.style.setProperty(name, tokens[name]);
+      }
+    });
     shellRoot.innerHTML = snapshot.html;
     shell.appendChild(shellRoot);
     document.documentElement.appendChild(overlay);
     removalTimer = setTimeout(removeOverlay, 5000);
+  }
+
+  // React drives value/checked/selected as DOM properties and cloneNode copies
+  // attributes, so a populated composer or a ticked box would come back empty.
+  // A password field renders dots rather than its value, so it is the one thing
+  // on screen the copy must not carry.
+  function mirrorFieldState(original, cloned) {
+    var tag = original.tagName;
+    if (tag === "TEXTAREA") {
+      cloned.textContent = original.value;
+    } else if (tag === "INPUT") {
+      if (original.type === "password") return;
+      cloned.setAttribute("value", original.value);
+      if (original.checked) cloned.setAttribute("checked", "");
+      else cloned.removeAttribute("checked");
+    } else if (tag === "OPTION") {
+      if (original.selected) cloned.setAttribute("selected", "");
+      else cloned.removeAttribute("selected");
+    }
   }
 
   function saveSnapshot() {
@@ -167,6 +217,8 @@
               bounds.left >= innerWidth))
         ) {
           cloned.remove();
+        } else {
+          mirrorFieldState(original, cloned);
         }
       }
       clone
@@ -196,6 +248,7 @@
           path: location.pathname + location.search,
           html: html,
           appearance: readAppearance(),
+          tokens: readTokens(),
           styles: readStyleSheets(),
           rootClass: document.documentElement.className,
         }),

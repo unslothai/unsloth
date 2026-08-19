@@ -24,6 +24,10 @@ type Listener = (event: Record<string, unknown>) => void;
 /** A node of the fake #root subtree the capture walks. */
 interface ElementSpec {
   tag: string;
+  /** Live DOM state React writes as a property rather than an attribute. */
+  value?: string;
+  checked?: boolean;
+  type?: string;
   display?: string;
   visibility?: string;
   /** [top, right, bottom, left]. Ignored for a `display: contents` box. */
@@ -41,6 +45,12 @@ interface ShadowStub {
 interface StubElement {
   tagName: string;
   spec: ElementSpec;
+  value: string;
+  checked: boolean;
+  type: string;
+  textContent: string;
+  attributeOverrides: Record<string, string>;
+  setAttribute(name: string, value: string): void;
   children: StubElement[];
   parent: StubElement | null;
   attributes: Array<{ name: string }>;
@@ -64,6 +74,10 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
   const element = {
     tagName: spec.tag.toUpperCase(),
     spec,
+    value: spec.value ?? "",
+    checked: spec.checked ?? false,
+    type: spec.type ?? "text",
+    textContent: "",
     children: [] as StubElement[],
     parent,
     attributes: [] as Array<{ name: string }>,
@@ -91,8 +105,12 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
       );
       element.parent = null;
     },
-    removeAttribute() {
-      // Attribute scrubbing is covered by the browser, not this stub.
+    attributeOverrides: {} as Record<string, string>,
+    setAttribute(name: string, value: string) {
+      element.attributeOverrides[name] = value;
+    },
+    removeAttribute(name: string) {
+      delete element.attributeOverrides[name];
     },
     querySelectorAll(selector: string) {
       const wanted = selector.split(",").map((name) => name.trim());
@@ -120,11 +138,14 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     get innerHTML() {
       return element.children
         .map((child) => child.outerHTML)
-        .concat(spec.text ?? "")
+        .concat(element.textContent || spec.text || "")
         .join("");
     },
     get outerHTML() {
-      return `<${spec.tag}>${element.innerHTML}</${spec.tag}>`;
+      const attributes = Object.entries(element.attributeOverrides)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+      return `<${spec.tag}${attributes}>${element.innerHTML}</${spec.tag}>`;
     },
   } as StubElement;
   element.children = (spec.children ?? []).map((child) =>
@@ -221,9 +242,17 @@ function createEnvironment(options: {
       selector === 'link[rel="stylesheet"]'
         ? (options.styleSheets ?? []).map((href) => ({ href }))
         : [],
-    createElement: () => {
+    createElement: (tag?: string) => {
       const element = {
+        tagName: (tag ?? "div").toUpperCase(),
         className: "",
+        attributes: {} as Record<string, string>,
+        style: {
+          values: {} as Record<string, string>,
+          setProperty(name: string, value: string) {
+            element.style.values[name] = value;
+          },
+        },
         rel: "",
         href: "",
         inert: false,
@@ -242,8 +271,8 @@ function createEnvironment(options: {
           element.shadow = shadow;
           return shadow;
         },
-        setAttribute() {
-          // DOM stub.
+        setAttribute(name: string, value: string) {
+          element.attributes[name] = value;
         },
         remove() {
           element.removed = true;
@@ -262,10 +291,15 @@ function createEnvironment(options: {
       // Timer bookkeeping is outside this lifecycle test.
     },
     document,
-    getComputedStyle: (element: StubElement) => ({
-      display: element.spec?.display ?? "block",
-      visibility: element.spec?.visibility ?? "visible",
-    }),
+    getComputedStyle: (element: StubElement) =>
+      // <html> resolves to its own declaration block, which is where the
+      // design tokens the copy has to carry are read from.
+      (element as unknown) === documentElement
+        ? documentElement.style
+        : {
+            display: element.spec?.display ?? "block",
+            visibility: element.spec?.visibility ?? "visible",
+          },
     innerHeight: options.viewport?.height ?? 900,
     innerWidth: options.viewport?.width ?? 1440,
     location: { pathname: "/chat", search: "" },
@@ -304,6 +338,14 @@ function createEnvironment(options: {
           .map((child) => child.href as string),
         html: (children[children.length - 1]?.innerHTML ?? "") as string,
         rootClass: (children[children.length - 1]?.className ?? "") as string,
+        rootTag: (children[children.length - 1]?.tagName ?? "") as string,
+        rootAttributes: (children[children.length - 1]?.attributes ??
+          {}) as Record<string, string>,
+        rootTokens: ((
+          children[children.length - 1]?.style as
+            | { values?: Record<string, string> }
+            | undefined
+        )?.values ?? {}) as Record<string, string>,
       };
     },
     dispatch(name: string, event: Record<string, unknown> = {}) {
@@ -327,6 +369,7 @@ function storedSnapshot(storage: Map<string, string>) {
     html: string;
     styles?: string[];
     rootClass?: string;
+    tokens?: Record<string, string>;
     appearance?: {
       variables: Record<string, string>;
       attributes: Record<string, string>;
@@ -495,6 +538,104 @@ test("builds the retained shell inside a closed shadow tree", () => {
   ]);
   // The shell's own rules live in that stylesheet and hang off this marker.
   assert.match(incoming.shell?.rootClass ?? "", /^reload-snapshot-shell /);
+});
+
+test("roots the copy in an html element so html-anchored rules still match", () => {
+  // 80-odd rules in the app stylesheet are anchored on `html`, light/dark
+  // theming above all, and a selector cannot reach across the shadow boundary
+  // to the real document element.
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    htmlAttributes: { "data-palette": "classic", "data-contrast-adjust": "" },
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.equal(incoming.shell?.rootTag, "HTML");
+  assert.deepEqual(incoming.shell?.rootAttributes, {
+    "data-palette": "classic",
+    "data-contrast-adjust": "",
+  });
+});
+
+test("freezes the design tokens onto the copy's own root", () => {
+  // `:root` matches a document's root element only, so tokens declared there
+  // never reach a shadow tree; the copy carries the resolved set instead.
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    htmlVariables: { "--font-heading": '"Hellix"', "--tracking-normal": "0em" },
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+  assert.deepEqual(storedSnapshot(outgoing.storage).tokens, {
+    "--font-heading": '"Hellix"',
+    "--tracking-normal": "0em",
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.equal(incoming.shell?.rootTokens["--font-heading"], '"Hellix"');
+  assert.equal(incoming.shell?.rootTokens["--tracking-normal"], "0em");
+});
+
+test("carries live form state, except what a password field hides", () => {
+  // React writes value/checked as DOM properties; cloneNode copies attributes,
+  // so a typed composer would come back empty. A password field renders dots
+  // rather than its value, so its value is the one thing that stays behind.
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      rect: [0, 1440, 900, 0],
+      children: [
+        {
+          tag: "textarea",
+          rect: [0, 1440, 200, 0],
+          value: "half-written prompt",
+        },
+        {
+          tag: "input",
+          rect: [0, 1440, 240, 0],
+          type: "search",
+          value: "gemma",
+        },
+        {
+          tag: "input",
+          rect: [0, 1440, 280, 0],
+          type: "checkbox",
+          checked: true,
+        },
+        {
+          tag: "input",
+          rect: [0, 1440, 320, 0],
+          type: "password",
+          value: "hunter2",
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /half-written prompt/);
+  assert.match(html, /value="gemma"/);
+  assert.match(html, /checked=""/);
+  assert.doesNotMatch(html, /hunter2/);
 });
 
 test("skips the shell when the snapshot carries no stylesheets", () => {
