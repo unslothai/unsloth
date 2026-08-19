@@ -4,7 +4,7 @@
 import type { ChatModelSummary } from "../types/runtime";
 
 import type { MmprojFallbackReason } from "../types/api";
-import { isTextOnlyMmprojFallback } from "./mmproj-fallback";
+import { isTextOnlyMmprojFallback } from "./mmproj-fallback.ts";
 
 function textOnlyMmprojUnavailableReason(
   activeModel: ChatModelSummary | undefined,
