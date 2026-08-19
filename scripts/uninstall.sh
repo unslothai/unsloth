@@ -526,6 +526,21 @@ _unsloth_uninstall_main() {
     echo "Stopping any running Unsloth Studio servers..."
     _pkill_studio
 
+    _remove_systemd_user_service() {
+        _sd_unit_dir="$(_xdg_dir "${XDG_CONFIG_HOME:-}" "$HOME/.config")/systemd/user"
+        _sd_unit="$_sd_unit_dir/unsloth-studio.service"
+        [ -f "$_sd_unit" ] || return 0
+        grep -q 'unsloth-studio-managed-systemd' "$_sd_unit" 2>/dev/null || return 0
+        if command -v systemctl >/dev/null 2>&1 \
+                && systemctl --user show-environment >/dev/null 2>&1; then
+            systemctl --user disable --now unsloth-studio.service 2>/dev/null || true
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
+        _remove_path "$_sd_unit"
+        echo "Removed systemd user service (unsloth-studio.service)."
+    }
+    _remove_systemd_user_service
+
     echo "Removing data and install directories..."
     _custom_studio_roots | while IFS= read -r _custom_root; do
         [ -n "$_custom_root" ] || continue

@@ -1,0 +1,21 @@
+# unsloth-studio-managed-systemd
+# Installed by Unsloth Studio (install.sh). Safe to edit; re-running the installer
+# overwrites this file when you opt in again.
+[Unit]
+Description=Unsloth Studio inference server
+Documentation=https://github.com/unslothai/unsloth
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+@@ENVIRONMENT_LINES@@
+ExecStart=@@EXEC_START@@
+ExecStop=@@EXEC_STOP@@
+Restart=on-failure
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target
