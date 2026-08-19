@@ -41,6 +41,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
         <InlineField label="API key">
           <Input
             className="nodrag h-8 w-full text-xs"
+            data-reload-snapshot-sensitive
             placeholder="Optional"
             value={props.config.api_key ?? ""}
             onChange={(event) =>

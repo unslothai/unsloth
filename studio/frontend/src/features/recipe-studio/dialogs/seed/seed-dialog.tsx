@@ -1004,6 +1004,7 @@ export function SeedDialog({
                 <Input
                   id={tokenId}
                   className="nodrag"
+                  data-reload-snapshot-sensitive
                   placeholder="hf_..."
                   value={config.hf_token ?? ""}
                   onChange={(event) =>

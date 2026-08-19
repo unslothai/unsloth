@@ -119,7 +119,7 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     naturalHeight: spec.naturalHeight ?? 0,
     videoWidth: spec.videoWidth ?? 0,
     videoHeight: spec.videoHeight ?? 0,
-    textContent: "",
+    textContent: spec.text ?? "",
     children: [] as StubElement[],
     parent,
     attributeOverrides: {
@@ -194,7 +194,7 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     get innerHTML() {
       return element.children
         .map((child) => child.outerHTML)
-        .concat(element.textContent || spec.text || "")
+        .concat(element.textContent)
         .join("");
     },
     get outerHTML() {
@@ -742,6 +742,13 @@ test("carries live form state, except what sensitive fields hide", () => {
             "data-reload-snapshot-sensitive": "",
           },
         },
+        {
+          tag: "textarea",
+          rect: [0, 1440, 440, 0],
+          value: "Authorization: Bearer secret-header",
+          text: "Authorization: Bearer stale-header",
+          attributes: { "data-reload-snapshot-sensitive": "" },
+        },
       ],
     },
   });
@@ -756,6 +763,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.doesNotMatch(html, /hunter2/);
   assert.doesNotMatch(html, /revealed-password/);
   assert.doesNotMatch(html, /revealed-api-key/);
+  assert.doesNotMatch(html, /secret-header|stale-header/);
 });
 
 test("preserves IDs that the isolated copy references internally", () => {

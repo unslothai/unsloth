@@ -200,14 +200,14 @@
   // attributes, so a populated composer or a ticked box would come back empty.
   // Secret inputs must be identified independently of their presentation type:
   // password and token fields can temporarily become type=text when revealed.
-  function isSensitiveInput(input) {
+  function isSensitiveField(field) {
     var autocomplete =
-      typeof input.autocomplete === "string"
-        ? input.autocomplete.toLowerCase()
+      typeof field.autocomplete === "string"
+        ? field.autocomplete.toLowerCase()
         : "";
     return (
-      input.type === "password" ||
-      input.hasAttribute("data-reload-snapshot-sensitive") ||
+      field.hasAttribute("data-reload-snapshot-sensitive") ||
+      field.type === "password" ||
       autocomplete.indexOf("password") !== -1 ||
       autocomplete.indexOf("one-time-code") !== -1 ||
       autocomplete.indexOf("cc-csc") !== -1
@@ -216,15 +216,16 @@
 
   function mirrorFieldState(original, cloned) {
     var tag = original.tagName;
+    if (isSensitiveField(original)) {
+      // cloneNode can retain either an input value attribute or textarea text
+      // from an earlier controlled render.
+      cloned.removeAttribute("value");
+      if (tag === "TEXTAREA") cloned.textContent = "";
+      return;
+    }
     if (tag === "TEXTAREA") {
       cloned.textContent = original.value;
     } else if (tag === "INPUT") {
-      if (isSensitiveInput(original)) {
-        // cloneNode may retain a value attribute from an earlier controlled
-        // render, so remove it as well as declining to mirror the live value.
-        cloned.removeAttribute("value");
-        return;
-      }
       cloned.setAttribute("value", original.value);
       if (original.checked) cloned.setAttribute("checked", "");
       else cloned.removeAttribute("checked");
