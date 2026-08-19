@@ -124,9 +124,7 @@ def sao_policy_loss(
 
 
 def sao_value_loss(
-    values: torch.Tensor,
-    returns: torch.Tensor,
-    action_mask: torch.Tensor,
+    values: torch.Tensor, returns: torch.Tensor, action_mask: torch.Tensor
 ) -> torch.Tensor:
     """`L_VF = E[(V_phi(q, y_<t) - R)^2]` over action tokens."""
     mask = action_mask.to(values.dtype)
@@ -187,8 +185,7 @@ def skip_observation_gae(
 
 
 def freeze_critic_attention(
-    model: nn.Module,
-    attention_keywords: Sequence[str] = ("attention", "attn"),
+    model: nn.Module, attention_keywords: Sequence[str] = ("attention", "attn")
 ) -> int:
     """Freeze the critic's attention parameters (paper Sec 3.2).
 
@@ -277,7 +274,11 @@ class SAOConfig(_SAOConfigBase):
 class SAOValueModel(nn.Module):
     """A backbone plus a scalar value head, one value per token position."""
 
-    def __init__(self, backbone: nn.Module, hidden_size: Optional[int] = None):
+    def __init__(
+        self,
+        backbone: nn.Module,
+        hidden_size: Optional[int] = None,
+    ):
         super().__init__()
         self.backbone = backbone
         if hidden_size is None:
@@ -290,7 +291,12 @@ class SAOValueModel(nn.Module):
             )
         self.value_head = nn.Linear(hidden_size, 1, bias = False)
 
-    def forward(self, input_ids, attention_mask = None, **kwargs):
+    def forward(
+        self,
+        input_ids,
+        attention_mask = None,
+        **kwargs,
+    ):
         outputs = self.backbone(
             input_ids = input_ids,
             attention_mask = attention_mask,
@@ -423,9 +429,9 @@ class SAOTrainer(_SAOTrainerBase):
         # no separate pi_theta_old snapshot is ever taken.
         rollout_logprobs = torch.stack(
             [
-                torch.log_softmax(score.float(), dim = -1).gather(
-                    1, completion_ids[:, step : step + 1]
-                ).squeeze(1)
+                torch.log_softmax(score.float(), dim = -1)
+                .gather(1, completion_ids[:, step : step + 1])
+                .squeeze(1)
                 for step, score in enumerate(generated.scores)
             ],
             dim = 1,
@@ -444,12 +450,8 @@ class SAOTrainer(_SAOTrainerBase):
 
     def _policy_logprobs(self, sequences, attention_mask, completion_ids):
         prompt_length = sequences.shape[1] - completion_ids.shape[1]
-        full_mask = torch.cat(
-            [attention_mask, torch.ones_like(completion_ids)], dim = 1
-        )
-        logits = self.model(
-            input_ids = sequences, attention_mask = full_mask, return_dict = True
-        ).logits
+        full_mask = torch.cat([attention_mask, torch.ones_like(completion_ids)], dim = 1)
+        logits = self.model(input_ids = sequences, attention_mask = full_mask, return_dict = True).logits
         logits = logits[:, prompt_length - 1 : -1, :] / max(self.sao_args.temperature, 1e-7)
         logprobs = torch.log_softmax(logits.float(), dim = -1)
         return logprobs.gather(2, completion_ids.unsqueeze(-1)).squeeze(-1), full_mask
@@ -464,16 +466,10 @@ class SAOTrainer(_SAOTrainerBase):
             accepted = inspect.signature(reward_func).parameters
             has_var_kw = any(p.kind == p.VAR_KEYWORD for p in accepted.values())
             passed = {
-                key: value
-                for key, value in extra_columns.items()
-                if has_var_kw or key in accepted
+                key: value for key, value in extra_columns.items() if has_var_kw or key in accepted
             }
-            values = reward_func(
-                prompts = prompt_texts, completions = completion_texts, **passed
-            )
-            totals = totals + torch.tensor(
-                values, dtype = torch.float32, device = self.args.device
-            )
+            values = reward_func(prompts = prompt_texts, completions = completion_texts, **passed)
+            totals = totals + torch.tensor(values, dtype = torch.float32, device = self.args.device)
         return totals
 
     def _observation_mask(self, batch, completion_mask) -> torch.Tensor:
@@ -494,7 +490,12 @@ class SAOTrainer(_SAOTrainerBase):
                     action_mask[row, position] = 0
         return action_mask
 
-    def training_step(self, model, inputs, num_items_in_batch = None):
+    def training_step(
+        self,
+        model,
+        inputs,
+        num_items_in_batch = None,
+    ):
         batch = list(inputs)
         args = self.sao_args
         tokenizer = self.processing_class
@@ -518,9 +519,9 @@ class SAOTrainer(_SAOTrainerBase):
         full_mask = torch.cat([prompt_mask, torch.ones_like(completion_ids)], dim = 1)
         prompt_length = sequences.shape[1] - completion_ids.shape[1]
         with torch.no_grad():
-            values = self.value_model(
-                input_ids = sequences, attention_mask = full_mask
-            )[:, prompt_length - 1 : -1].float()
+            values = self.value_model(input_ids = sequences, attention_mask = full_mask)[
+                :, prompt_length - 1 : -1
+            ].float()
         advantages, returns = skip_observation_gae(
             token_rewards, values, action_mask, gamma = args.gamma, lam = args.lam
         )
@@ -539,9 +540,9 @@ class SAOTrainer(_SAOTrainerBase):
         # K critic steps per policy step ("faster value update", paper Sec 3.2).
         value_losses = []
         for _ in range(args.value_updates_per_policy_update):
-            predicted = self.value_model(
-                input_ids = sequences, attention_mask = full_mask
-            )[:, prompt_length - 1 : -1].float()
+            predicted = self.value_model(input_ids = sequences, attention_mask = full_mask)[
+                :, prompt_length - 1 : -1
+            ].float()
             value_loss = sao_value_loss(predicted, returns, action_mask)
             self.value_optimizer.zero_grad(set_to_none = True)
             value_loss.backward()
@@ -558,7 +559,11 @@ class SAOTrainer(_SAOTrainerBase):
         }
         return loss.detach()
 
-    def log(self, logs, start_time = None):
+    def log(
+        self,
+        logs,
+        start_time = None,
+    ):
         metrics = getattr(self, "_sao_metrics", None)
         if metrics is not None:
             logs = {**logs, **metrics}

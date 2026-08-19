@@ -9,6 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+
 def _load_sao():
     """Import the SAO core, falling back to a by-path load.
 
@@ -17,7 +18,6 @@ def _load_sao():
     """
     try:
         from unsloth.models import sao
-
         return sao
     except Exception:
         import importlib.util
