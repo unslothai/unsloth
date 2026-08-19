@@ -363,6 +363,7 @@ export const ru = {
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
+        openAudioAction: "Открыть Аудио",
         voiceLabel: "Голос",
         voiceDescription: "Лучшие голоса на этом устройстве",
         speedLabel: "Скорость",
@@ -372,6 +373,7 @@ export const ru = {
         previewDescription: "Воспроизвести короткий пример",
         previewFailed: "Не удалось воспроизвести пример синтеза речи",
         previewAction: "Прослушать",
+        preparingAction: "Генерация…",
         stopAction: "Остановить",
         ttsLabel: "Синтез речи",
         notSupported: "Не поддерживается в этом браузере",

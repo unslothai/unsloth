@@ -1288,6 +1288,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
+      // A task with no model is a mode intent from Settings; without it the page keeps
+      // whatever mode it was left in.
+      const task = routeSearch.task;
+      if (!task) return;
+      const intended =
+        task === "automatic-speech-recognition" ? "transcribe" : "speak";
+      // Left in the URL when the switch is refused, so it retries once busy releases.
+      if (intended !== mode && !transitionMode(intended)) return;
+      void navigateSelf({ to: "/audio", search: {}, replace: true });
       return;
     }
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}`;
@@ -1310,12 +1319,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, [
     active,
     busy,
+    mode,
     routeSearch.model,
     routeSearch.quant,
     routeSearch.ggufQuant,
     routeSearch.task,
     handleModelSelect,
     navigateSelf,
+    transitionMode,
   ]);
 
   // --- Speak --------------------------------------------------------------

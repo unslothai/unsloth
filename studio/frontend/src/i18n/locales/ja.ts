@@ -362,6 +362,7 @@ export const ja = {
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
+        openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
         speedLabel: "速度",
@@ -370,6 +371,7 @@ export const ja = {
         previewLabel: "音声を試聴",
         previewDescription: "短いサンプルを再生します",
         previewAction: "試聴",
+        preparingAction: "生成中…",
         previewFailed: "TTS のプレビューに失敗しました",
         stopAction: "停止",
         ttsLabel: "音声合成",
