@@ -1590,3 +1590,31 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     ) and "Never quote an internal price." not in checkpoint._block_items(
         system
     ), "the caller's bullets were adopted as carried-forward user history"
+
+
+def test_a_block_that_arrives_in_the_system_turn_is_dropped_when_it_will_not_fit():
+    """Dropping X has to drop the one already in the prompt, not just the one being built.
+
+    A tool loop refits a conversation an earlier iteration rewrote, so the system turn
+    arrives WITH a block. `_project` merges that block's items with the new ones and
+    re-caps them against a budget that is a tenth of the prompt target, so on a small
+    window everything is capped away and it returns an empty block -- and
+    `_append_to_system` returns early on an empty block, leaving the arriving one in
+    place. The recount then still carried X and the request was refused although the base
+    system prompt plus the newest turn fits with room to spare.
+    """
+    block = render_checkpoint(["Always end every reply with STATUS::ZQX " + "w" * 600])
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    for index in range(6):
+        messages += [
+            {"role": "user", "content": f"section {index} " + "x" * 600},
+            {"role": "assistant", "content": f"noted {index}"},
+        ]
+    messages += [{"role": "user", "content": "the newest question " + "q" * 200}]
+
+    fitted, truncation = _fit(messages, context_length = 220, max_tokens = 60)
+
+    assert truncation["fits"] is True, truncation
+    assert [message["role"] for message in fitted] == ["system", "user"]
+    assert "<carried_forward>" not in str(fitted[0]["content"])
+    assert truncation["prompt_tokens_after"] < truncation["prompt_tokens_before"] // 10

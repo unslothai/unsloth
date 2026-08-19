@@ -224,6 +224,25 @@ def _recap(items: list[str], *, max_tokens: int, max_items: int) -> list[str]:
     return list(reversed(chosen))
 
 
+def _without_block(messages: list[dict]) -> list[dict]:
+    """``messages`` with any block Studio rendered removed from the system turn.
+
+    The no-X fallback drops the block and re-measures before refusing. Handing it
+    `fitted` alone did not drop anything when the INCOMING system message already carried
+    a block, which is the ordinary case in a tool loop: an earlier iteration appended one
+    and the refit sees it again. The recount then still included X, so a request whose
+    base system prompt plus newest turn fits comfortably was refused, or pushed back to
+    rolling. Measured at a 160-token target: 381 counted where 59 was due.
+    """
+    out = list(messages)
+    for index, message in enumerate(out):
+        if message.get("role") in ("system", "developer"):
+            text = _BLOCK.sub("", _text_of(message)).rstrip()
+            out[index] = {**message, "content": text}
+            return out
+    return out
+
+
 def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     """Rewrite the leading system/developer message with the block appended.
 
@@ -306,8 +325,15 @@ def fit_checkpoint_context(
         if prior:
             items = _recap(prior + items, max_tokens = budget, max_items = MAX_ITEMS)
         if not items:
-            # Nothing to carry, so nothing to claim: do not pay for the probe.
-            return _append_to_system(kept, ""), ""
+            # Nothing to carry, so nothing to claim: do not pay for the probe. The old
+            # block still has to GO, though: `_append_to_system` returns early on an empty
+            # block, so a system turn that arrived carrying one kept it while the code
+            # believed X had been dropped. In a tool loop that is the ordinary case -- an
+            # earlier iteration appended a block and the refit sees it again -- and with
+            # a small budget the merged items are re-capped away, so the recount stayed
+            # over budget and the request was refused or pushed back to rolling even
+            # though the base system prompt plus the newest turn fits with room to spare.
+            return _without_block(kept), ""
         text = render_checkpoint(items, searchable = _resolved(searchable))
         return _append_to_system(kept, text), text
 
@@ -363,7 +389,7 @@ def fit_checkpoint_context(
         # One turn plus X still does not fit: drop X and re-measure before giving up, since
         # X is a convenience and the user's actual message is not.
         if block:
-            projected = fitted
+            projected = _without_block(fitted)
             block = ""
             current_tokens = count_tokens(projected)
     if current_tokens > prompt_target:
