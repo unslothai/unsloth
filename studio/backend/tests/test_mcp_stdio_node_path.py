@@ -86,7 +86,9 @@ def test_stdio_argv_resolves_managed_npx(managed_node):
 
 
 def test_stdio_argv_keeps_unresolvable_command(managed_node):
-    argv = mcp_client._stdio_argv(["definitely-not-on-path-9304", "-y"], mcp_client._stdio_env(None))
+    argv = mcp_client._stdio_argv(
+        ["definitely-not-on-path-9304", "-y"], mcp_client._stdio_env(None)
+    )
     assert argv == ["definitely-not-on-path-9304", "-y"]
 
 
