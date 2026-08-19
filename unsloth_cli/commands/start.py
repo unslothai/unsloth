@@ -369,6 +369,7 @@ _OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
 _OPENCODE_V2_SUBCOMMANDS = frozenset(
     "acp api debug console auth mcp plugin models export import mini run service pair serve".split()
 )
+_OPENCODE_V2_STANDALONE_SUBCOMMANDS = frozenset("api models export import mini run".split())
 _OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
     "-h --help -v --version --print-logs --pure --mdns --standalone --wizard".split()
 )
@@ -378,9 +379,8 @@ _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_command(launch: bool = True) -> tuple[str, bool]:
-    resolver = _which_with_install_dirs if launch else shutil.which
-    if resolver("opencode2"):
+def _opencode_command() -> tuple[str, bool]:
+    if _which_with_install_dirs("opencode2"):
         return "opencode2", True
     return "opencode", False
 
@@ -470,7 +470,10 @@ def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
     ):
         return routed
     subcommand = _opencode_subcommand(routed)
-    if subcommand in _OPENCODE_V2_SUBCOMMANDS and subcommand not in {"run", "mini"}:
+    if (
+        subcommand in _OPENCODE_V2_SUBCOMMANDS
+        and subcommand not in _OPENCODE_V2_STANDALONE_SUBCOMMANDS
+    ):
         return routed
     routed.insert(separator, "--standalone")
     return routed
@@ -2800,28 +2803,25 @@ def _opencode_subagent_inline_config(
                 provider for provider in disabled if provider != _OPENCODE_PROVIDER
             ]
 
-    # The inherited inline layer is already highest priority. Merge it even when
-    # OpenCode is not installed yet, as in fresh-install and --no-launch flows.
+    # Keep an inherited inline allowlist usable by the local provider. V2 turns these
+    # filters into policies where global/project rules still intentionally outrank this
+    # content; the message at launch makes that boundary explicit.
     merge_provider_filters(inline)
     effective = inline
 
     executable = None if v2 else _which_with_install_dirs(command)
     if v2:
-        experimental = inline.get("experimental")
-        if not isinstance(experimental, dict):
-            experimental = {}
-        policies = experimental.get("policies")
-        if not isinstance(policies, list):
-            policies = []
-        experimental["policies"] = [
-            *policies,
-            {"action": "provider.use", "resource": _OPENCODE_PROVIDER, "effect": "allow"},
-        ]
-        depth = experimental.get("subagent_depth", inline.pop("subagent_depth", None))
-        experimental["subagent_depth"] = (
-            depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
-        )
-        inline["experimental"] = experimental
+        legacy_depth = inline.pop("subagent_depth", None)
+        if (
+            isinstance(legacy_depth, int)
+            and not isinstance(legacy_depth, bool)
+            and legacy_depth > 0
+        ):
+            experimental = inline.get("experimental")
+            if not isinstance(experimental, dict):
+                experimental = {}
+            experimental.setdefault("subagent_depth", legacy_depth)
+            inline["experimental"] = experimental
     elif executable is None:
         typer.echo(
             f"Warning: OpenCode is not installed, so provider filters could not be checked. "
@@ -4669,7 +4669,7 @@ def opencode(
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
-    command_name, opencode_v2 = _opencode_command(launch)
+    command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
     _require_agent_for_launch(command_name, install_hint, launch)
     base, key, entry = _connect(
@@ -4691,6 +4691,11 @@ def opencode(
             presence_penalty = presence_penalty,
         ),
     )
+    if opencode_v2:
+        typer.echo(
+            f"OpenCode V2 provider policies must allow '{_OPENCODE_PROVIDER}'.",
+            err = True,
+        )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
@@ -4794,16 +4799,9 @@ def opencode(
         # outranks project config; the API key stays in the private file, never the env.
         # Only the config fallback carries a permission. Native --auto omits it (auto-approve
         # asks, keep explicit denies); a non-yolo session omits it too, honoring project rules.
-        # opencode filters every provider (a config-defined custom one included) through
-        # its enabled_providers allowlist and disabled_providers denylist, and a model pin
-        # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
-        # To guarantee the session model loads without reading or modifying the user's real
-        # config, scope THIS session to our provider alone: allowlist _OPENCODE_PROVIDER and
-        # clear the denylist. These arrays are replaced (not merged) by higher layers, so
-        # setting them in the highest-priority inline overlay neutralizes any user allowlist
-        # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
-        # for this invocation and never touches the user's config files, so their normal
-        # `opencode` is unchanged; only this session is limited to the Unsloth provider.
+        # V1 filters are ordinary overlays, so scope that session to our provider. V2 turns
+        # filters into security policies where global/project rules intentionally win; keep
+        # those policies intact and tell the user above that they must allow our provider.
         # small_model is opencode's separate model for lightweight tasks; pin it to the
         # session model too, or a user/project small_model on another (now filtered)
         # provider would resolve a not-found error mid-session. The session serves one
@@ -4811,9 +4809,10 @@ def opencode(
         inline_config: dict = {
             "model": opencode_model,
             "small_model": opencode_model,
-            "enabled_providers": [_OPENCODE_PROVIDER],
-            "disabled_providers": [],
         }
+        if not opencode_v2:
+            inline_config["enabled_providers"] = [_OPENCODE_PROVIDER]
+            inline_config["disabled_providers"] = []
         if session_permission:
             inline_config["permission"] = session_permission
         env = {

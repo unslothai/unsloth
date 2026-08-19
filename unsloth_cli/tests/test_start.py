@@ -1267,7 +1267,7 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi"])
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -1289,6 +1289,30 @@ def test_no_launch_skips_agent_resolution(agent, monkeypatch):
 
     assert result.exit_code == 1
     assert isinstance(result.exception, RuntimeError)
+
+
+def test_opencode_no_launch_resolves_generation_without_installing(monkeypatch):
+    resolved = []
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: resolved.append(name)
+        or ("/home/me/.opencode/bin/opencode2" if name == "opencode2" else None),
+    )
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda *args: pytest.fail("--no-launch must not install an agent"),
+    )
+    monkeypatch.setattr(
+        start, "_connect", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError)
+    )
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert resolved == ["opencode2"]
 
 
 def test_missing_pi_subagent_extension_fails_before_install_or_connect(monkeypatch, tmp_path):
@@ -4481,16 +4505,17 @@ def test_opencode_v2_subagent_uses_native_depth_without_debug_probe(monkeypatch,
 
     assert "subagent_depth" not in inline
     assert inline["enabled_providers"] == ["anthropic", start._OPENCODE_PROVIDER]
-    assert inline["experimental"] == {
-        "subagent_depth": 2,
-        "policies": [
-            {
-                "action": "provider.use",
-                "resource": start._OPENCODE_PROVIDER,
-                "effect": "allow",
-            }
-        ],
-    }
+    assert inline["experimental"] == {"subagent_depth": 2}
+
+
+def test_opencode_v2_subagent_does_not_override_configured_depth(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising = False)
+
+    inline = start._opencode_subagent_inline_config(
+        tmp_path / "opencode.json", {}, command = "opencode2", v2 = True
+    )
+
+    assert "experimental" not in inline
 
 
 def _opencode_inline_config(output: str) -> dict:
@@ -4591,6 +4616,18 @@ def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypa
     assert _opencode_inline_config(result.output)["model"] == (
         f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     )
+    assert "enabled_providers" not in _opencode_inline_config(result.output)
+    assert "disabled_providers" not in _opencode_inline_config(result.output)
+    assert f"provider policies must allow '{start._OPENCODE_PROVIDER}'" in result.output
+
+
+def test_connect_opencode_v2_models_uses_private_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "models"])
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode2", "models", "--standalone"]
 
 
 def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
