@@ -19156,6 +19156,11 @@ class LlamaCppBackend:
         """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
             return False
+        # A custom-path save leaves the model intent unchanged, but the
+        # resident process still belongs to the previously selected runtime.
+        if self._binary_changed_since_launch():
+            logger.info("llama-server selection changed since launch; forcing a reload")
+            return False
         intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
         # the CPU-pinned rewrite, not the request. Apply the same rewrite here
