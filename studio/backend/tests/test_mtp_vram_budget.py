@@ -355,6 +355,74 @@ class TestOverheadTotal:
         pred = b._estimate_mtp_overhead_bytes(ctx) / MIB
         assert pred == pytest.approx(measured_draft_kv_mib, abs = 2)
 
+    @pytest.mark.parametrize(
+        "ctx,target_kv_mib,draft_kv_mib",
+        [
+            (4096, 256, 16),
+            (16384, 1024, 64),
+            (65536, 4096, 256),
+            (131072, 8192, 512),
+        ],
+    )
+    def test_hybrid_mtp_matches_target_and_draft_context_across_lengths(
+        self, ctx, target_kv_mib, draft_kv_mib
+    ):
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        target = b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = 4)
+        draft_kv = b._mtp_draft_kv_bytes(ctx, n_parallel = 4)
+
+        assert base / MIB == pytest.approx(598.5)
+        assert target == base + target_kv_mib * MIB
+        assert draft_kv == draft_kv_mib * MIB
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                ctx,
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+
+    def test_a_separate_drafter_pays_the_same_target_rollback_state(self, monkeypatch):
+        # The rollback copies live in the TARGET context, and llama.cpp sizes them
+        # from --spec-draft-n-max for every draft-model type (need_n_rs_seq), so a
+        # sidecar drafter costs the Hybrid Mamba target exactly what an embedded
+        # head does. draft-simple is the one engaged mode that gets none, which is
+        # what the caller reports through target_rollback.
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        stub = _StubDrafter(kv_per_token = 2000)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        draft_kv = stub._estimate_kv_cache_bytes(4096, n_parallel = 4)
+        assert base > 0
+
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+                target_rollback = False,
+            )
+            == draft_kv
+        )
+
 
 # ---------------------------------------------------------------------------
 # _fit_context_to_vram: MTP reserve lowers the chosen context
@@ -1044,10 +1112,17 @@ class TestExtraArgsMtpDetection:
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
         # tensor reserve must be suppressed like the layer path -- else tensor mode
         # subtracts a phantom flat MTP reserve and under-advertises context (#6312).
+        # The flat fraction is the part that must stay suppressed outright; the
+        # byte reserve now has one exception, a Hybrid Mamba target's own rollback
+        # state, which the CPU pin does not move off the GPU.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_mtp_will_engageandnot_draft_cpu_no_embedded" in load
-        assert "ifnot_mtp_reserves_gpu:" in load
+        assert "if(_flat_mtp_engagesandnot_draft_cpu_no_embedded)" in load
+        assert "_mtp_reserves_gpu=_mtp_will_engageandnot_draft_cpu_no_embedded" in load
         assert "mtp_engaged=_mtp_reserves_gpu" in load
+        # The tensor floor asks the narrower question, so the target state it keeps
+        # is held there without also re-charging the CPU-resident draft graph.
+        assert "_mtp_gpu_bytes_remain=_mtp_reserves_gpuormtp_overhead_fnisnotNone" in load
+        assert "ifnot_mtp_gpu_bytes_remain:" in load
 
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,

@@ -6073,6 +6073,8 @@ def write_prebuilt_metadata(
         # their next refresh.
         "gfx_target": choice.gfx_target,
         "mapped_targets": list(choice.mapped_targets or []),
+        # CUDA analog of mapped_targets: SM coverage for the same runtime gate.
+        "supported_sms": [str(s) for s in (choice.supported_sms or [])],
         "install_fingerprint": fingerprint,
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -6207,6 +6209,9 @@ def _marker_selection_patch(
     ):
         patch["gfx_target"] = choice.gfx_target
         patch["mapped_targets"] = targets
+    sms = [str(s).strip() for s in (choice.supported_sms or []) if str(s).strip()]
+    if sms and marker.get("supported_sms") != sms:
+        patch["supported_sms"] = sms
     return patch
 
 
