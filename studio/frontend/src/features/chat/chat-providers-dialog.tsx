@@ -1156,7 +1156,16 @@ export function ChatProvidersSettings({
       return;
     }
     if (provider.authKind === "chatgpt_oauth") {
-      await applyCodexSubscriptionModels(provider.id, provider.models, provider.authStatus);
+      // The form is already on screen and the reset emptied the catalog, so this fetch
+      // needs the same spinner the manual reload has. Without it the editor looks like a
+      // connection with no models, and Save answers "load available models first".
+      setModelsLoading(true);
+      const applied = await applyCodexSubscriptionModels(
+        provider.id,
+        provider.models,
+        provider.authStatus,
+      ).catch(() => true);
+      if (applied) setModelsLoading(false);
       return;
     }
     const entry = registryByType.get(provider.providerType);
