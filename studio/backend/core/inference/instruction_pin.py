@@ -87,7 +87,12 @@ _CONTINUATIONS = frozenset(
         "then",
     }
 )
-_PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—]+")
+# U+2026 and U+2025 alongside the ASCII spellings: every editor and phone keyboard
+# autocorrects "..." to a single ellipsis character, and it survived here, so `continue…`
+# matched neither `_CONTINUATIONS` nor the function-word test. `is_thin_query` then called
+# it substantive, `build_conversation_recall` dropped the anchor, and recall searched the
+# archive for the word "continue".
+_PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—\u2025\u2026]+")
 
 # What "anaphoric" means, as a closed list rather than a word count: function words and
 # pronouns, none of which can name the subject of a request. A message made only of these

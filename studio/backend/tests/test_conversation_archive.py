@@ -3363,3 +3363,62 @@ def test_a_tool_result_cut_exactly_on_a_line_stays_on_its_branch(conn):
         assert (
             conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True
         ), f"cut {where}"
+
+
+def test_an_empty_tool_result_still_produces_a_tool_message():
+    """Only an ABSENT result is absent.
+
+    `serializeToolResultPart` skips exactly `undefined` and `null`, and emits a `tool`
+    message for everything else: a `{"result": ""}` sentinel for an empty string, since
+    the ChatMessage validator rejects an empty `tool` content, and JSON for containers.
+    Treating "" / {} / [] as nothing dropped a message the wire carries, so the
+    reconstructed run was shorter than the archived one and branch validation could filter
+    the turn out of every recall.
+    """
+
+    def _row(result, *, present = True):
+        call = {"type": "tool-call", "toolCallId": "c1", "toolName": "terminal", "args": {}}
+        if present:
+            call["result"] = result
+        return [{"role": "assistant", "content": [call]}]
+
+    emitted = {
+        result: [
+            message["content"]
+            for message in conversation_archive._as_wire(_row(result))
+            if message["role"] == "tool"
+        ]
+        for result in ("", "ok")
+    }
+    assert emitted[""] == ['{"result": ""}']
+    assert emitted["ok"] == ["ok"]
+
+    for container, expected in (({}, "{}"), ([], "[]")):
+        wire = conversation_archive._as_wire(_row(container))
+        assert [message["content"] for message in wire if message["role"] == "tool"] == [expected]
+
+    # A result that is genuinely not there stays not there, matching the serializer.
+    for row in (_row(None), _row(None, present = False)):
+        assert [message for message in conversation_archive._as_wire(row) if message["role"] == "tool"] == []
+
+
+def test_a_bare_identifier_query_also_reaches_past_the_cap(conn):
+    """A query that is ONLY an identifier shapes to ONE expression.
+
+    Its focused and permissive spellings coincide, and the single-expression path returned
+    the plain one-ended fetch, so the query most likely to tie on the IDF floor got the
+    oldest rows and the newest assignment was never a candidate. The two-expression case
+    was already covered, which is why this went unnoticed.
+    """
+    count = conversation_archive._BRANCH_FILTER_MAX_CANDIDATES + 40
+    for index in range(count - 1):
+        _archive(_turn(f"note {index:03d} about ZQXVARA123", "noted"))
+    _archive(_turn("set ZQXVARA123 to 9999", "done"))
+
+    assert len(store.conversation_match_queries("ZQXVARA123")) == 1
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+
+    assert found is not None
+    assert "9999" in found[0]
+    # The oldest end stays reachable, the invariant the ends-first ordering exists for.
+    assert "note 000" in conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 256)[0]

@@ -672,6 +672,24 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
+def _EMPTY_TOOL_RESULT() -> str:
+    """The serializer's sentinel for a legitimately empty tool output."""
+    return json.dumps({"result": ""})
+
+
+def _tool_result_content(result) -> str:
+    """A persisted tool result in the string the replay serializer would have sent.
+
+    An empty string becomes `{"result": ""}` there, because the backend's ChatMessage
+    validator rejects a `tool` message with empty content; containers are JSON. Rendering
+    it any other way makes the reconstructed message differ from the one that was actually
+    archived, which is the whole point of this module comparing the two.
+    """
+    if isinstance(result, str):
+        return result if result else _EMPTY_TOOL_RESULT()
+    return json.dumps(result)
+
+
 def _as_wire(messages: list[dict]) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
@@ -737,14 +755,19 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 ]
             wire.append(entry)
             for call in pending_calls:
-                result = call.get("result")
-                if result in (None, "", {}, []):
+                if "result" not in call or call.get("result") is None:
+                    # Only an ABSENT result is absent. The serializer skips exactly
+                    # `undefined` and `null` and emits a `tool` message for everything
+                    # else, so treating "" / {} / [] as nothing dropped a message the wire
+                    # carries: the reconstructed run was shorter than the archived one, and
+                    # branch validation could filter the turn out of every recall while
+                    # occurrence matching gave it the wrong ordinal.
                     continue
                 wire.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.get("toolCallId"),
-                        "content": result if isinstance(result, str) else json.dumps(result),
+                        "content": _tool_result_content(call.get("result")),
                     }
                 )
             pending_calls.clear()
@@ -1686,10 +1709,13 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     expressions = (
         store.conversation_match_queries(query) if config.CONVERSATION_QUERY_FOCUS else [None]
     )
-    if len(expressions) < 2:
-        return _lexical_pass(
-            conn, scope, query, model, fetch, expressions[0] if expressions else None
-        )
+    # Only the kill switch takes the plain path. A query made ONLY of an identifier
+    # ("ZQXVARA123") shapes to a single expression because its focused and permissive
+    # spellings coincide, and returning here handed that case the one-ended fetch the
+    # comment below exists to prevent: the very query most likely to tie on the IDF floor
+    # got the oldest `fetch` rows and the newest assignment was never a candidate.
+    if not expressions or expressions[0] is None:
+        return _lexical_pass(conn, scope, query, model, fetch, None)
     # Fetched from BOTH ENDS of the tied run, not just the front. The IDF floor above
     # means every hit on the conversation's own identifier scores the same, and SQLite
     # returns a fully tied run in rowid order, so `LIMIT 256` is "the oldest 256": past
@@ -1720,6 +1746,10 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
             ),
         ),
     )
+    # One expression means the two passes would run the same query twice: the filter pass
+    # already IS the ranking pass, and it is ends-first over both halves.
+    if len(expressions) < 2:
+        return strict
     # The ranking pass is fetched to the same bound as the filter pass, not to `fetch`.
     # It ranks the ELIGIBLE chunks, and at `fetch` rows its window can be spent entirely
     # on chunks that never name the identifier: a question's content word ("current") is

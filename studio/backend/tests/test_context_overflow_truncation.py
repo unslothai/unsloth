@@ -1165,9 +1165,16 @@ def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
     assert instruction_pin.is_thin_query("continue")
     assert instruction_pin.is_thin_query("yes")
     assert instruction_pin.is_thin_query("ok!")
+    # Every editor and phone keyboard autocorrects "..." to one ellipsis character, and it
+    # used to survive the punctuation strip: `continue…` was then called substantive and
+    # recall searched the archive for the word "continue" instead of using the anchor.
+    assert instruction_pin.is_thin_query("continue…")
+    assert instruction_pin.is_thin_query("and then…")
+    assert instruction_pin.is_thin_query("continue...")
     # Short, but it names the thing it wants: replacing this with an older instruction
     # would answer a question the user did not ask.
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")
+    assert not instruction_pin.is_thin_query("what is ZQXVARA123 now…")
 
 
 def test_a_self_contained_two_word_request_is_not_thin():
