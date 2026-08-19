@@ -1294,6 +1294,9 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        # Keep the managed install discoverable by unsloth-zoo without making
+        # Studio's own default look like a user-supplied environment override.
+        os.environ["UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"] = "1"
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
 # does) so its lazy submodule imports (export, hardware, mlx) and the

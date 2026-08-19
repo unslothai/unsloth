@@ -4836,13 +4836,14 @@ class LlamaCppBackend:
         Search order:
         1.  LLAMA_SERVER_PATH environment variable (direct path to binary)
         1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
-        2.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
-        3.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
-        4.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
-        5.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
-        6.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
-        7.  llama-server on PATH                     (system install)
-        8.  ./bin/llama-server                       (legacy: extracted binary)
+        2.  Studio's custom llama.cpp folder setting
+        3.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
+        4.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
+        5.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
+        6.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
+        7.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
+        8.  llama-server on PATH                     (system install)
+        9.  ./bin/llama-server                       (legacy: extracted binary)
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
@@ -4864,11 +4865,11 @@ class LlamaCppBackend:
             return _file_status(p) == "file"
 
         def _layout_candidates(d: Path) -> list:
-            # build layouts probed under a llama.cpp dir, highest priority first
-            cands = [d / binary_name, d / "build" / "bin" / binary_name]
-            if sys.platform == "win32":
-                cands.append(d / "build" / "bin" / "Release" / binary_name)
-            return cands
+            # Keep Settings validation and runtime discovery on one layout
+            # contract so a folder accepted by the UI is always launchable.
+            from utils.llama_cpp_path_settings import llama_server_candidates
+
+            return list(llama_server_candidates(d))
 
         def _unavailable(p: object) -> None:
             # a pinned or managed binary that exists but is access-denied: report
@@ -4904,14 +4905,38 @@ class LlamaCppBackend:
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-        if custom_llama_cpp:
+        managed_path_marker = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+        if custom_llama_cpp and not managed_path_marker:
             hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
                 return hit
 
-        # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
+        # 2. Studio setting: a deliberate pin, so a missing or inaccessible
+        # selected build must not silently fall through to the bundled runtime.
+        # The user would otherwise see their custom path selected while another
+        # llama-server actually ran.
+        try:
+            from utils.llama_cpp_path_settings import get_stored_custom_llama_cpp_path
+
+            studio_custom_llama_cpp = get_stored_custom_llama_cpp_path()
+        except Exception:
+            studio_custom_llama_cpp = None
+        if studio_custom_llama_cpp is not None:
+            hit, locked = _scan_pinned(_layout_candidates(studio_custom_llama_cpp))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
+            logger.warning(
+                "The custom llama.cpp folder selected in Studio no longer contains "
+                "%s; not falling back to another runtime",
+                binary_name,
+            )
+            return None
+
+        # 3-5. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
         legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
         _resolved_sr, _is_legacy = LlamaCppBackend._resolved_studio_root_and_is_legacy()
@@ -19788,6 +19813,19 @@ class LlamaCppBackend:
             custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
             if custom_dir:
                 install_roots.append(Path(custom_dir))
+
+            # Studio's persisted custom folder has the same ownership scope as
+            # UNSLOTH_LLAMA_CPP_PATH. External links are still filtered below,
+            # so selecting a linked source checkout never authorizes broad
+            # process cleanup inside that checkout.
+            try:
+                from utils.llama_cpp_path_settings import get_stored_custom_llama_cpp_path
+
+                stored_custom_dir = get_stored_custom_llama_cpp_path()
+            except Exception:
+                stored_custom_dir = None
+            if stored_custom_dir is not None:
+                install_roots.append(stored_custom_dir)
 
             # LLAMA_SERVER_PATH env var (exact binary path)
             exact_binaries: list[Path] = []
