@@ -67,6 +67,7 @@ _FINAL_PATH_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
     "Remove-StudioStalePrivateTempDirectories",
+    "Get-StudioPrivateTempRoots",
     "New-StudioPrivateTempDirectory",
     "Initialize-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
@@ -101,6 +102,7 @@ def _mutex_helpers(source: str) -> str:
             # PowerShell resolver when the native helper did not compile (#9140).
             "Test-StudioDirectoryUsable",
             "Remove-StudioStalePrivateTempDirectories",
+            "Get-StudioPrivateTempRoots",
             "New-StudioPrivateTempDirectory",
             "Initialize-StudioTempEnvironment",
             "Write-StudioFinalPathDegraded",
@@ -132,6 +134,7 @@ def _process_helpers(source: str) -> str:
             "Write-StudioLine",
             "Test-StudioDirectoryUsable",
             "Remove-StudioStalePrivateTempDirectories",
+            "Get-StudioPrivateTempRoots",
             "New-StudioPrivateTempDirectory",
             "Initialize-StudioTempEnvironment",
             "Write-StudioFinalPathDegraded",

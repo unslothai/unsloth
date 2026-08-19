@@ -57,6 +57,7 @@ LOCK_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
     "Remove-StudioStalePrivateTempDirectories",
+    "Get-StudioPrivateTempRoots",
     "New-StudioPrivateTempDirectory",
     "Initialize-StudioTempEnvironment",
     "Restore-StudioTempEnvironment",
@@ -317,6 +318,7 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
                 "Write-StudioLine",
                 "Test-StudioDirectoryUsable",
                 "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
                 "New-StudioPrivateTempDirectory",
                 "Initialize-StudioTempEnvironment",
                 "Restore-StudioTempEnvironment",
@@ -569,6 +571,7 @@ Write-Output "TMP:[$env:TMP]"
                 "Test-StudioDirectoryUsable",
                 "Remove-StudioStalePrivateTempDirectories",
                 "Set-StudioPrivateTempOwner",
+                "Get-StudioPrivateTempRoots",
                 "New-StudioPrivateTempDirectory",
                 "Initialize-StudioTempEnvironment",
                 "Restore-StudioTempEnvironment",
@@ -711,6 +714,47 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
 
 
 @requires_pwsh
+def test_a_healthy_temp_still_sweeps_what_an_earlier_degraded_run_left(tmp_path: Path):
+    """The allocator is the only thing that sweeps, and a healthy host skips it.
+
+    Once the host's own temp is fixed (an ACL correction, a cleaned environment)
+    no further run allocates a private directory, so whatever the degraded runs
+    left would age in place until an uninstall.
+    """
+    good = tmp_path / "good"
+    good.mkdir()
+    local_app_data = tmp_path / "localappdata"
+    root = local_app_data / "Unsloth Studio" / "temp"
+    root.mkdir(parents = True)
+    abandoned = root / f"ust-{_DEAD_PID}-old"
+    abandoned.mkdir()
+    (abandoned / "leftover.bin").write_text("half a download", encoding = "utf-8")
+    aged = time.time() - 3 * 24 * 3600
+    os.utime(abandoned, (aged, aged))
+
+    env = os.environ.copy()
+    env.update({"TMP": str(good), "TEMP": str(good), "LOCALAPPDATA": str(local_app_data)})
+    env.pop("USERPROFILE", None)
+
+    result = _run_powershell(
+        _script(
+            """
+Initialize-StudioTempEnvironment
+Write-Output "TMP:$env:TMP"
+Write-Output "OVERRIDE:$($null -ne $script:StudioTempOverride)"
+""",
+            sabotage = False,
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not abandoned.exists()
+    # And the healthy path is still the healthy path: nothing was redirected.
+    assert _lines(result, "TMP:") == [f"TMP:{good}"]
+    assert _lines(result, "OVERRIDE:") == ["OVERRIDE:False"]
+
+
+@requires_pwsh
 def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
@@ -782,6 +826,7 @@ Write-Output "TEMP:$env:TEMP"
                 "Exit-InstallFailure",
                 "Test-StudioDirectoryUsable",
                 "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
                 "New-StudioPrivateTempDirectory",
                 "Initialize-StudioTempEnvironment",
                 "Restore-StudioTempEnvironment",
@@ -799,7 +844,7 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     """It outlives the install, so it has to sit where the uninstaller looks."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
-    roots = _extract(r"    function New-StudioPrivateTempDirectory \{.*?\n    \}\n", source)
+    roots = _extract(r"    function Get-StudioPrivateTempRoots \{.*?\n    \}\n", source)
 
     # LOCALAPPDATA\"Unsloth Studio" is the data dir uninstall.ps1 removes wholesale.
     assert 'Join-Path $env:LOCALAPPDATA "Unsloth Studio\\temp"' in roots

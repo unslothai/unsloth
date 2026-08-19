@@ -426,7 +426,7 @@ function Install-UnslothStudio {
         } catch {}
     }
 
-    function New-StudioPrivateTempDirectory {
+    function Get-StudioPrivateTempRoots {
         # Only under paths scripts/uninstall.ps1 already reclaims (LOCALAPPDATA\
         # "Unsloth Studio", ~\.unsloth\.cache): anywhere else would survive an
         # uninstall, and a leftover directly under ~\.unsloth would be worse, since
@@ -444,7 +444,11 @@ function Install-UnslothStudio {
         if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
             $roots += (Join-Path $env:USERPROFILE ".unsloth\.cache\temp")
         }
-        foreach ($root in $roots) {
+        return $roots
+    }
+
+    function New-StudioPrivateTempDirectory {
+        foreach ($root in @(Get-StudioPrivateTempRoots)) {
             # Short leaf: the .NET Framework compiler 5.1 shells out to is still
             # bound by the legacy path limit.
             $leaf = "ust-" + $PID + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -481,6 +485,13 @@ function Install-UnslothStudio {
             try { $absolute = [System.IO.Path]::GetFullPath($inherited) } catch { $absolute = $inherited }
         }
         if (Test-StudioDirectoryUsable -Path $absolute) {
+            # A host whose temp was fixed since the last run never allocates another
+            # private directory, and the allocator is the only thing that sweeps.
+            # Without this, whatever an earlier degraded run left behind ages in
+            # place until an uninstall. Each root that does not exist is a no-op.
+            foreach ($root in @(Get-StudioPrivateTempRoots)) {
+                Remove-StudioStalePrivateTempDirectories -Root $root
+            }
             # Pin what was probed. A relative value (temp, or the drive-relative
             # C:temp) is resolved by whoever reads it, and the install relocates
             # out of a Windows system directory further down, so the same value
