@@ -182,6 +182,8 @@ export const ar = {
       closeAriaLabel: "إغلاق الإعدادات",
       searchPlaceholder: "ابحث في الإعدادات…",
       searchNoResults: "لم يُعثر على أي إعداد.",
+      panelFailed: "تعذر تحميل هذا القسم.",
+      panelReload: "إعادة التحميل",
     },
     tabs: {
       general: "عام",
@@ -1110,6 +1112,9 @@ export const ar = {
       archivedVideos: "الفيديوهات المؤرشفة",
       archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
       manageAction: "إدارة",
+      manageChats: "إدارة المحادثات",
+      manageChatsDescription:
+        "حدد عدة محادثات لنقلها أو تثبيتها أو أرشفتها أو تصديرها أو حذفها.",
       exportArchivedChats: "تصدير",
       exportingArchivedChats: "جارٍ التصدير...",
       exportedOneArchivedChat: "تم تصدير محادثة مؤرشفة واحدة",
