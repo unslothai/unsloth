@@ -834,7 +834,9 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
             logger.warning(
                 "HTTP %s fetching tokenizer_config.json for '%s' from %s; "
                 "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
-                exc.code, model_name, url,
+                exc.code,
+                model_name,
+                url,
             )
         _tokenizer_class_cache[cache_key] = False
         return False
@@ -842,7 +844,9 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         logger.warning(
             "Connection error fetching tokenizer_config.json for '%s' from %s: %s; "
             "if HF_ENDPOINT is set to a mirror, verify it is reachable",
-            model_name, url, exc,
+            model_name,
+            url,
+            exc,
         )
         _tokenizer_class_cache[cache_key] = False
         return False
@@ -957,7 +961,9 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         logger.warning(
             "HTTP %s fetching config.json for '%s' from %s; "
             "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
-            exc.code, model_name, url,
+            exc.code,
+            model_name,
+            url,
         )
         return _config_json_from_hf_cache(model_name)
     except Exception as exc:

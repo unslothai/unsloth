@@ -25,6 +25,7 @@ def _isolate_env(monkeypatch):
     monkeypatch.delenv("HF_ENDPOINT", raising = False)
     monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
     import utils.hf_endpoint as _mod
+
     monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
     yield
 
@@ -38,12 +39,15 @@ class TestGetHfEndpoint:
         monkeypatch.setenv("HF_ENDPOINT", blank)
         assert get_hf_endpoint() == OFFICIAL_HF
 
-    @pytest.mark.parametrize("mirror", [
-        "https://hf-mirror.com",
-        "https://hf-mirror.com/",  # trailing slash stripped
-        "hf-mirror.com",           # scheme-less gets https://
-        "hf-mirror.com/",          # scheme-less + trailing slash
-    ])
+    @pytest.mark.parametrize(
+        "mirror",
+        [
+            "https://hf-mirror.com",
+            "https://hf-mirror.com/",  # trailing slash stripped
+            "hf-mirror.com",  # scheme-less gets https://
+            "hf-mirror.com/",  # scheme-less + trailing slash
+        ],
+    )
     def test_mirror_forms_normalised(self, monkeypatch, mirror):
         monkeypatch.setenv("HF_ENDPOINT", mirror)
         assert get_hf_endpoint() == "https://hf-mirror.com"
@@ -68,11 +72,14 @@ class TestGetHfDatasetsServer:
         monkeypatch.setenv("HF_DATASETS_SERVER", raw)
         assert get_hf_datasets_server() == OFFICIAL_DS
 
-    @pytest.mark.parametrize("raw", [
-        "https://ds.example.com/",
-        "ds.example.com",          # scheme-less gets https://
-        "ds.example.com/",         # scheme-less + trailing slash
-    ])
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "https://ds.example.com/",
+            "ds.example.com",  # scheme-less gets https://
+            "ds.example.com/",  # scheme-less + trailing slash
+        ],
+    )
     def test_forms_normalised(self, monkeypatch, raw):
         monkeypatch.setenv("HF_DATASETS_SERVER", raw)
         assert get_hf_datasets_server() == "https://ds.example.com"
