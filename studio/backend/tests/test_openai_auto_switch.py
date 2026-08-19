@@ -725,10 +725,7 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
 
 
 def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(monkeypatch):
-    # _pending records a request blocked on the unload gate so the idle loop never frees a
-    # model out from under it. The pin setting is a SQLite read and now runs off the loop, so a
-    # chat request can register while it is in flight -- after _is_idle already answered. The
-    # loop has to take the idle question again before it tears anything down.
+    # A chat may register _pending during the off-loop pin read, invalidating prior idleness.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -739,10 +736,7 @@ def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(mo
     monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
     monkeypatch.setattr(kw, "_last_unloaded_model", None)
 
-    # keep_kv is read once per tick, after _is_idle has already passed and immediately before
-    # the guard's pin read, so it marks exactly the stretch the request has to land in. The
-    # pre-idle pin check earlier in the tick must not fire, or _is_idle would answer False
-    # there and the tick would never reach the window at all.
+    # Mark the interval after the first idle check and before the guarded pin read.
     inside_the_unload_block = {"flag": False}
     landed = []
 

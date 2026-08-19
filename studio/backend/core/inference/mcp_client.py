@@ -843,8 +843,7 @@ _tool_cache: dict[str, list[dict]] = {}
 # eviction.
 _probe_cooloff_until: dict[str, float] = {}
 
-# Token counting reads SQLite in a worker, so an async guard coordinates that snapshot with
-# the event-loop mutations that commit a row and then invalidate its cached schemas.
+# Coordinate off-loop token-count snapshots with row and schema-cache mutations.
 _mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
     WeakKeyDictionary()
 )

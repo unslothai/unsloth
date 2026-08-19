@@ -48,15 +48,14 @@ class _Case(NamedTuple):
     method: str
     path: str
     body: dict | None
-    module: object  # the route module under test
-    store: str  # the storage module it imported
-    read: str  # the first store call the handler makes
-    result: object  # what that call returns
-    status: int  # the status the request ends with once that call is stubbed
+    module: object
+    store: str
+    read: str
+    result: object
+    status: int
 
 
-# The stubbed call is the first store touch in each handler, so a 401/404 right after it is all
-# this needs: the thread the handler runs on is already decided by then.
+# The first store call is enough to identify the handler's dispatch thread.
 _MUTATIONS = {
     "mcp-import": _Case(
         "post",
@@ -161,7 +160,7 @@ def _drive(monkeypatch, case: _Case):
     loop_threads: list[int] = []
 
     @app.get("/loop-thread")
-    async def _loop_thread():  # an async route runs on the loop, so this ident is the loop's
+    async def _loop_thread():  # Reference event-loop thread.
         loop_threads.append(threading.get_ident())
         return {}
 

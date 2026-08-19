@@ -12258,8 +12258,7 @@ async def _proxy_to_external_provider(
     saved_provider_snapshot: Optional[dict] = None
 
     if payload.provider_id and not payload.encrypted_api_key:
-        # Off the event loop thread: every chat routed to a saved provider reads it, and a
-        # stalled read stops the loop returning to accept(). See auth/authentication.py.
+        # Saved-provider SQLite reads must not block the event loop.
         config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
             raise HTTPException(

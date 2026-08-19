@@ -364,10 +364,7 @@ def test_a_ttl_raised_during_the_step_spares_the_next_teardown(media, monkeypatc
 
 
 def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(media, monkeypatch):
-    # The pin lookup is a SQLite read and now runs off the event loop, so a generation can be
-    # admitted while it is in flight: it registers and parks on the gate, which is exactly what
-    # _pending records. is_idle counts _pending so the loop never frees a model a waiter is
-    # already queued for, and the idle answer taken before that read no longer holds.
+    # A request may register _pending during the off-loop pin read, invalidating prior idleness.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
 
     def _pinned_while_a_request_lands(owner, *_args, **_kwargs):
@@ -375,7 +372,7 @@ def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(me
         return False
 
     monkeypatch.setattr(mk, "_user_pinned", _pinned_while_a_request_lands)
-    _step()  # the loop has now seen both models, so only the TTL is left
+    _step()  # Both models are seen; only the TTL remains.
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0

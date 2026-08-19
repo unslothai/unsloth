@@ -102,7 +102,6 @@ def test_the_token_count_reads_the_cached_tools_off_the_event_loop_thread(tmp_pa
     payload = _count_request(
         [{"role": "user", "content": "hello"}], mcp_enabled = True, enabled_tools = []
     )
-    # asyncio.run uses the current thread for the event loop.
     loop_thread = threading.get_ident()
     asyncio.run(inference_routes.chat_count_tokens(payload, "tester"))
 

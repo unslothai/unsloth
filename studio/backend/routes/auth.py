@@ -417,8 +417,7 @@ def identity(nonce: str, request: Request) -> dict:
     return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
-# Read-only handlers are sync, so FastAPI runs them in its threadpool. The rest stay async:
-# the loop is what keeps login's check-then-record and refresh's consume-then-reissue atomic.
+# FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/status", response_model = AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
     """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""

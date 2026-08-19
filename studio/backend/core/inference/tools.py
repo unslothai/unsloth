@@ -9378,10 +9378,8 @@ async def get_enabled_mcp_tools() -> list[dict]:
             ),
             return_exceptions = True,
         )
-        # An edit/delete can land while we await a probe; re-read and drop a
-        # result whose server changed or was removed mid-probe, else a stale
-        # tool list (or cool-off on a just-fixed server) persists. It guards the cache writes
-        # below, so it stays on the loop: awaiting it lets an edit invalidate between them.
+        # Keep this re-read on-loop so an edit cannot invalidate between it and
+        # the cache writes below. Drop results for changed or removed servers.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])

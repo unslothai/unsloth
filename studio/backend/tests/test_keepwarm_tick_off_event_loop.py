@@ -49,7 +49,6 @@ def test_the_chat_half_reads_off_the_event_loop_thread(monkeypatch):
 
     async def _drive():
         tick = asyncio.create_task(llama_keepwarm.idle_unload_loop(poll_seconds = 0.001))
-        # Wait for the first iteration without asserting its duration.
         for _ in range(2000):
             if threads:
                 break

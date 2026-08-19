@@ -456,7 +456,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
         except Exception as exc:
             logger.debug("media idle_unload_step failed: %s", exc)
         try:
-            # Keep SQLite-backed settings reads off the event loop.
+            # Keep SQLite-backed setting reads off the event loop.
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
@@ -502,10 +502,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if manifest and not await asyncio.to_thread(get_auto_unload_keep_kv):
                         _delete_resume_files(manifest)
                         manifest = None
-                    # Last word before the teardown. Every settings read above is SQLite off
-                    # this loop, so a request can register _pending and park on the gate while
-                    # one runs; _is_idle counts _pending precisely so the loop never unloads
-                    # out from under a waiter.
+                    # A request may register _pending while an off-loop setting read runs.
+                    # Recheck idleness before unloading.
                     if not _is_idle(ttl):
                         if manifest:
                             _delete_resume_files(manifest)

@@ -49,11 +49,11 @@ def test_the_saved_provider_row_is_read_off_the_event_loop_thread(monkeypatch):
 
     def _get_provider(_provider_id):
         threads.append(threading.get_ident())
-        return None  # a missing row 404s right after the read, which is all this needs
+        return None
 
     monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
 
-    # run_until_complete drives the loop on this thread, so this ident is the loop's.
+    # run_until_complete drives the loop on this thread.
     loop_thread = threading.get_ident()
     with pytest.raises(HTTPException) as excinfo:
         asyncio.new_event_loop().run_until_complete(
@@ -149,7 +149,7 @@ def test_the_container_resolver_reads_on_the_event_loop_thread(monkeypatch):
 
     def _get_provider(_provider_id):
         threads.append(threading.get_ident())
-        return None  # a missing row 404s inside the resolver, before either read matters
+        return None
 
     monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
 
