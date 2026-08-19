@@ -938,6 +938,11 @@ def test_a_root_that_fails_its_probe_is_not_left_behind(tmp_path: Path):
     user_profile = tmp_path / "userprofile"
     user_profile.mkdir()
 
+    # Pre-existing content under one of the same parents: the unwind must stop.
+    keep = local_app_data / "Unsloth Studio" / "studio.port"
+    keep.parent.mkdir(parents = True)
+    keep.write_text("41343", encoding = "utf-8")
+
     env = os.environ.copy()
     env["LOCALAPPDATA"] = str(local_app_data)
     env["USERPROFILE"] = str(user_profile)
@@ -967,8 +972,15 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
-    assert not list(local_app_data.rglob("ust-*")), list(local_app_data.rglob("*"))
+    # Not just the ust-* leaf: -Force built the whole chain, so "Unsloth Studio"
+    # and "temp" were conjured too and a run that gave up must not leave a data
+    # directory tree on a machine Studio was never installed on.
+    # ~\.unsloth itself is shared and stays; everything the probe made under it goes.
+    assert not (user_profile / ".unsloth" / ".cache").exists()
     assert not list(user_profile.rglob("ust-*")), list(user_profile.rglob("*"))
+    assert keep.exists()
+    assert not list(local_app_data.rglob("ust-*")), list(local_app_data.rglob("*"))
+    assert not (local_app_data / "Unsloth Studio" / "temp").exists()
 
 
 @requires_pwsh

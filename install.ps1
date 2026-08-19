@@ -491,17 +491,25 @@ function Install-UnslothStudio {
                 Remove-StudioStalePrivateTempDirectories -Root $root
                 return $candidate
             }
-            # The probe creates the candidate before it tests it, so a root that
-            # fails leaves a directory behind, and on a host where every root
-            # fails that is a whole "Unsloth Studio" tree conjured by an install
-            # that then gave up. Take back only what could not be used, and only
-            # if it is empty, so a directory that already had something in it is
-            # never touched.
-            try {
-                if (Test-Path -LiteralPath $candidate -PathType Container) {
-                    [System.IO.Directory]::Delete($candidate, $false)
-                }
-            } catch {}
+            # The probe creates the candidate before it tests it, and -Force builds
+            # the whole chain, so a root that fails leaves "Unsloth Studio\temp\ust-x"
+            # behind; on a host where every root fails that is a data directory tree
+            # conjured by an install that then gave up. Walk back up, but only through
+            # the directories this path is made of and only while each one is EMPTY,
+            # so a tree that already held something is never touched and neither is
+            # ~\.unsloth itself, which is shared and is not ours to remove.
+            $ours = @("temp", "Unsloth Studio", ".cache")
+            $unwind = $candidate
+            for ($depth = 0; $depth -lt 4; $depth++) {
+                try {
+                    if (-not (Test-Path -LiteralPath $unwind -PathType Container)) { break }
+                    if (@(Get-ChildItem -LiteralPath $unwind -Force -ErrorAction Stop).Count -gt 0) { break }
+                    [System.IO.Directory]::Delete($unwind, $false)
+                } catch { break }
+                $unwind = [System.IO.Path]::GetDirectoryName($unwind)
+                if ([string]::IsNullOrEmpty($unwind)) { break }
+                if ($ours -notcontains [System.IO.Path]::GetFileName($unwind)) { break }
+            }
         }
         return $null
     }
