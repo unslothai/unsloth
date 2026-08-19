@@ -20,6 +20,7 @@ MENU_JS, DELETE_JS, REOPEN_JS, PAINT_FLOOR_JS) with `window.__heavyThread` repla
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -691,6 +692,39 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
 
 # ── 12. image upload ────────────────────────────────────────────────
 
+#: What the page can tell us when the attachments button cannot be found. Reads geometry, style,
+#: hit-testing and the surrounding chrome, so the three explanations that look identical from a
+#: `not_run` string look different here.
+IMAGE_BUTTON_DIAGNOSTIC = """() => {
+    const sel = 'button[aria-label="Tools and attachments"]';
+    const all = [...document.querySelectorAll(sel)];
+    return {
+        in_dom: all.length,
+        boxes: all.map((b) => {
+            const r = b.getBoundingClientRect();
+            const cs = getComputedStyle(b);
+            const top = r.width && r.height
+                ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+            return {
+                w: Math.round(r.width), h: Math.round(r.height),
+                x: Math.round(r.left), y: Math.round(r.top),
+                in_viewport: r.top >= 0 && r.bottom <= window.innerHeight,
+                display: cs.display, visibility: cs.visibility, opacity: cs.opacity,
+                pointer_events: cs.pointerEvents,
+                mounted: b.offsetParent !== null,
+                hit_self: top === b || (top !== null && b.contains(top)),
+            };
+        }),
+        composers: document.querySelectorAll('textarea[aria-label="Message input"]').length,
+        open_dialogs: document.querySelectorAll('[role="dialog"]').length,
+        popper_layers: document.querySelectorAll('[data-radix-popper-content-wrapper]').length,
+        body_pointer_events: getComputedStyle(document.body).pointerEvents,
+        model_loaded_hint: (document.body.innerText || "").includes("Load a model"),
+        viewport: {w: window.innerWidth, h: window.innerHeight},
+    };
+}"""
+
+
 @register_action(name = "image_upload", default_budget_ms = 12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
@@ -721,7 +755,15 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     except Exception:                                               # noqa: BLE001
         plus = None
     if plus is None:
-        return not_run("no visible attachments button on the composer")
+        # WHY, not just THAT. A bare "not visible" is the opaque zero of the action layer: it
+        # conflates a button that is absent, a button that is present and covered, and a locator
+        # that disagrees with the page, and it has already cost three wrong hypotheses. A direct
+        # probe found the control at 36x36, fully opaque and hit-testable, on a fresh chat and
+        # after a settings round trip and under a 20,000-character composer fill, so whatever
+        # this is, it is none of those. Carrying the state into the row means the NEXT run
+        # answers it instead of the next investigation.
+        return not_run("no visible attachments button on the composer: "
+                       + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {}))
     before = _ev(ctx, "() => document.querySelectorAll('.aui-composer-attachment, "
                       "[data-slot=\"composer-attachment\"]').length")
     started = time.monotonic()

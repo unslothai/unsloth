@@ -105,7 +105,7 @@ def readings_by_arm(records: list[dict]) -> dict[str, dict[int, dict]]:
     Deferred import: `scoring` pulls in the anchor table and this module is imported by the CLI
     before a run, where that cost buys nothing.
     """
-    from ..scoring.from_payload import measures_from_records
+    from ..scoring.from_payload import measures_by_cell
 
     arms: dict[str, list[dict]] = {}
     cell_ids: dict[str, set[str]] = {}
@@ -123,7 +123,7 @@ def readings_by_arm(records: list[dict]) -> dict[str, dict[int, dict]]:
         ]
         arms[arm] = subset
 
-    return {arm: measures_from_records(rows) for arm, rows in arms.items()}
+    return {arm: measures_by_cell(rows) for arm, rows in arms.items()}
 
 
 def compare_arms(
@@ -140,15 +140,14 @@ def compare_arms(
     is_null_control: bool = False,
 ) -> Any:
     """Build the A/B result for one pair of arms out of an already-recorded payload."""
-    from ..scoring.ab import DEFAULT_NOISE_FLOOR_PCT, RunIdentity, compare, pairs_from_cells
-    from ..scoring.anchors import weights_id
-    from ..scoring.score import log_rung_weights                       # noqa: F401
+    from ..scoring.ab import DEFAULT_NOISE_FLOOR_PCT, Pair, RunIdentity, compare
+    from ..scoring.anchors import METRIC_BY_KEY, weights_id
 
     by_arm = readings_by_arm(records)
     base = by_arm.get(base_label, {})
     treatment = by_arm.get(treatment_label, {})
 
-    rung_ladder_id = _ladder_id(sorted(set(base) | set(treatment)))
+    rung_ladder_id = _ladder_id(sorted({rung for rung, _rep in set(base) | set(treatment)}))
     identity_kwargs = dict(
         bench_version=bench_version,
         corpus_hash=corpus_hash,
@@ -156,7 +155,21 @@ def compare_arms(
         weights_id=weights_id() if callable(weights_id) else str(weights_id),
         session_id=session_id,
     )
-    pairs = pairs_from_cells(base, treatment)
+    # Paired PER REPETITION, matching (rung, rep) on both sides. Repetition r of the base and
+    # repetition r of the treatment ran adjacent in time, so pairing them is what makes the
+    # comparison paired at all; pooling reps into one reading per rung throws away every
+    # observation but the first and leaves the bootstrap with nothing to resample.
+    pairs = []
+    for key in sorted(set(base) & set(treatment)):
+        rung, _rep = key
+        for metric_key in METRIC_BY_KEY:
+            base_measure = base[key].get(metric_key)
+            treatment_measure = treatment[key].get(metric_key)
+            if base_measure is None or treatment_measure is None:
+                continue
+            pairs.append(Pair(rung_tokens=int(rung), metric_key=metric_key,
+                              base=base_measure, treatment=treatment_measure))
+
     return compare(
         label,
         pairs,

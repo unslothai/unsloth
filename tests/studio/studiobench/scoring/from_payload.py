@@ -210,3 +210,32 @@ def measures_from_records(
         by_rung.setdefault(rung, readings)
 
     return by_rung
+
+
+def measures_by_cell(
+    records: Sequence[Mapping[str, Any]],
+    metric_keys: Iterable[str] | None = None,
+) -> dict[tuple[int, int], dict[str, Measure]]:
+    """`{(rung_tokens, rep): {metric_key: Measure}}` -- one entry per CELL, not per rung.
+
+    `measures_from_records` collapses repetitions because a score is per rung. An A/B must not:
+    every repetition is an independent paired observation, and with them collapsed a run with
+    `--reps 4` produces one pair per metric, the bootstrap reports "too few pairs", and the
+    confidence interval that decides whether a difference is real never has anything to work with.
+    """
+    keys = list(metric_keys) if metric_keys is not None else list(METRIC_BY_KEY)
+    out: dict[tuple[int, int], dict[str, Measure]] = {}
+
+    for cell in _cell_rows(records):
+        cell_id = cell.get("cell_id")
+        tokens = cell.get("target_tokens")
+        if cell_id is None or tokens is None:
+            continue
+        rep = int((cell.get("cell") or {}).get("rep") or 0)
+        single = measures_from_records([cell] + [
+            r for r in records
+            if r.get("row_type") in {"action", "window"} and r.get("cell_id") == cell_id
+        ], keys)
+        for readings in single.values():
+            out[(int(tokens), rep)] = readings
+    return out

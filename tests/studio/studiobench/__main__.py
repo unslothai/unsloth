@@ -390,11 +390,19 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
             except ValueError:
                 continue
 
+    # Detected, not declared. `--ab main` against the same Studio IS a null control whether or not
+    # the caller says so, and a null control that renders as an ordinary A/B invites somebody to
+    # quote "7.7% faster" from a build compared with itself.
+    is_null = (sides[0]["ref"] == sides[1]["ref"]
+               and sides[0]["base_url"] == sides[1]["base_url"])
+    label = (f"null control: {sides[0]['ref']} vs itself" if is_null
+             else f"{sides[0]['ref']} -> {sides[1]['ref']}")
+
     try:
         result = compare_arms(
             records, sides[0]["label"], sides[1]["label"],
             bench_version = TOOL_VERSION, corpus_hash = corpus_hash, session_id = session_id,
-            label = f"{sides[0]['ref']} -> {sides[1]['ref']}")
+            label = label, is_null_control = is_null)
     except Exception as exc:                                        # noqa: BLE001
         _log(f"\nA/B table could not be built: {type(exc).__name__}: {exc}")
         return
@@ -404,8 +412,17 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     out = paths.out / "ab.md"
     out.write_text(text, encoding = "utf-8")
     _log(f"A/B table written to {out}")
-    _log("NOTE: no null control (base vs base) was run, so the noise floor here is the declared "
-         "default and not this machine's. A win inside that floor is not a win.")
+    if is_null:
+        from .scoring.ab import noise_floor_from_null_control
+        try:
+            floor, source = noise_floor_from_null_control(result)
+            _log(f"THIS MACHINE'S NOISE FLOOR: {floor:.1f}% ({source}). Pass it to a real A/B; "
+                 f"a difference smaller than this is not a difference.")
+        except Exception as exc:                                    # noqa: BLE001
+            _log(f"could not derive a noise floor from the null control: {exc}")
+    else:
+        _log("NOTE: no null control (base vs base) was run, so the noise floor here is the "
+             "declared default and not this machine's. A win inside that floor is not a win.")
 
 
 def _resume_set(paths) -> set:

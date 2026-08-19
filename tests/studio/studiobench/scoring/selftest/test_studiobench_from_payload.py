@@ -184,3 +184,37 @@ def test_real_payload_shape_round_trips(tmp_path):
     # keystroke + menu + the three frame metrics = 85% of the weight, over the 60% floor, so the
     # rung scores despite scroll being legitimately unavailable at this size.
     assert rung.usable is True
+
+
+# ── per-cell readings, which is what makes an A/B paired ─────────────────────────────────────
+
+def test_measures_by_cell_keeps_every_repetition():
+    """Collapsing reps leaves the bootstrap with one pair per metric and nothing to resample."""
+    from studiobench.scoring.from_payload import measures_by_cell
+
+    rows = []
+    for rep in (0, 1):
+        cid = f"c{rep}"
+        cell = _cell(cid)
+        cell["cell"] = {"rep": rep}
+        rows.append(cell)
+        rows.append(_action(cid, "keystroke", timings={"p95_ms": 30.0 + rep}))
+
+    by_cell = measures_by_cell(rows)
+    assert sorted(by_cell) == [(10_000, 0), (10_000, 1)]
+    assert by_cell[(10_000, 0)]["keystroke_p95_ms"].value == pytest.approx(30.0)
+    assert by_cell[(10_000, 1)]["keystroke_p95_ms"].value == pytest.approx(31.0)
+
+
+def test_measures_by_cell_does_not_mix_readings_between_cells():
+    """Each cell must see only its own action rows, or rep 0 inherits rep 1's timings."""
+    from studiobench.scoring.from_payload import measures_by_cell
+
+    a, b = _cell("cA"), _cell("cB")
+    a["cell"], b["cell"] = {"rep": 0}, {"rep": 1}
+    rows = [a, b,
+            _action("cA", "menu_open" if False else "message_menu", timings={"open_ms": 10.0}),
+            _action("cB", "message_menu", timings={"open_ms": 900.0})]
+    by_cell = measures_by_cell(rows)
+    assert by_cell[(10_000, 0)]["menu_open_ms"].value == pytest.approx(10.0)
+    assert by_cell[(10_000, 1)]["menu_open_ms"].value == pytest.approx(900.0)
