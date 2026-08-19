@@ -347,6 +347,51 @@ class DeleteImpactResponse(BaseModel):
     )
 
 
+class LocalDeleteImpactResponse(BaseModel):
+    """What deleting a discovered (non-HF-cache) model would do, so the dialog can say it.
+
+    Shaped around what these sources actually cost: ``removed_paths`` because a delete here takes
+    support files the row never showed, and ``retained_bytes`` because an Ollama blob shared with
+    another tag stays on disk however much the row appears to weigh.
+    """
+
+    load_id: str
+    source: str = "unknown"
+    target_path: Optional[str] = None
+    display_name: str = ""
+    reclaimed_bytes: int = Field(0, description = "Bytes this delete actually frees")
+    retained_bytes: int = Field(
+        0, description = "Shared bytes that stay on disk because something else still names them"
+    )
+    retained_for: List[str] = Field(
+        default_factory = list,
+        description = "What keeps the retained bytes alive, e.g. other Ollama tags",
+    )
+    removed_paths: List[str] = Field(
+        default_factory = list,
+        description = "Everything the delete would remove, support files included",
+    )
+    blocked_by: List[str] = Field(
+        default_factory = list,
+        description = "Reasons this delete cannot run; non-empty means the button stays disabled",
+    )
+    notes: List[str] = Field(
+        default_factory = list,
+        description = "Caveats worth showing, e.g. blobs kept because a manifest was unreadable",
+    )
+
+
+class DeleteLocalModelResponse(BaseModel):
+    status: str
+    load_id: str
+    source: str = "unknown"
+    display_name: str = ""
+    freed_bytes: int = 0
+    retained_bytes: int = 0
+    removed_paths: List[str] = Field(default_factory = list)
+    notes: List[str] = Field(default_factory = list)
+
+
 class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0

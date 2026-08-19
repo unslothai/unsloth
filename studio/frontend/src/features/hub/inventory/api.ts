@@ -319,6 +319,55 @@ export async function fetchDeleteImpact(
   }
 }
 
+/** What deleting a discovered (non-HF-cache) model would do. */
+export interface LocalDeleteImpact {
+  load_id: string;
+  source: string;
+  target_path?: string | null;
+  display_name: string;
+  reclaimed_bytes: number;
+  retained_bytes: number;
+  retained_for: string[];
+  removed_paths: string[];
+  blocked_by: string[];
+  notes: string[];
+}
+
+/** Preview a local delete. Never throws: the confirm dialog still has to open if the preview is
+ * unavailable, it just falls back to the plain wording. */
+export async function fetchLocalDeleteImpact(
+  loadId: string,
+  source?: string | null,
+): Promise<LocalDeleteImpact | null> {
+  try {
+    const response = await authFetch("/api/hub/local-delete-impact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ load_id: loadId, source: source ?? null }),
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as LocalDeleteImpact;
+  } catch {
+    return null;
+  }
+}
+
+/** Delete a model Studio discovered rather than downloaded: an Ollama tag, an LM Studio folder,
+ * or anything under a scan folder. The server re-derives what to remove, so a preview this call
+ * was based on going stale costs a 400, never the wrong files. */
+export async function deleteLocalModel(
+  loadId: string,
+  source?: string | null,
+): Promise<void> {
+  const response = await authFetch("/api/hub/delete-local", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ load_id: loadId, source: source ?? null }),
+  });
+  await throwIfNotOk(response);
+  bumpInventoryVersion();
+}
+
 export interface OrphanCompanion {
   repo_id: string;
   size_bytes: number;

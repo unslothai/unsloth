@@ -119,7 +119,9 @@ export {
 } from "./catalog/download-card";
 export {
   DeleteImpactSummary,
+  LocalDeleteImpactSummary,
   useDeleteImpact,
+  useLocalDeleteImpact,
 } from "./catalog/delete-impact";
 export { HubOptionMenu, type HubOption } from "./catalog/hub-option-menu";
 export { DotTag } from "./catalog/dot-tag";

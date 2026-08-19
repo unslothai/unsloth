@@ -27,8 +27,10 @@ from hub.schemas.inventory import (
     CachedModelsResponse,
     DeleteCachedModelResponse,
     DeleteImpactResponse,
+    DeleteLocalModelResponse,
     GgufVariantsResponse,
     HiddenModelsResponse,
+    LocalDeleteImpactResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
     OrphanCompanionsResponse,
@@ -42,6 +44,7 @@ from hub.services.models import (
     deletion,
     downloads,
     gguf_variants,
+    local_deletion,
     local_inventory,
 )
 
@@ -254,3 +257,30 @@ async def delete_cached_model(
     return await deletion.delete_cached_model_response(
         repo_id, variant, hf_token, cache_path, only_if_orphan
     )
+
+
+@router.post("/local-delete-impact", response_model = LocalDeleteImpactResponse)
+async def local_delete_impact(
+    load_id: str = Body(...),
+    source: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview deleting a discovered model: what goes, what stays, and what blocks it.
+
+    POST because a load id is a path-shaped value; it reads the filesystem and mutates nothing.
+    """
+    return await local_deletion.local_delete_impact_response(load_id, source)
+
+
+@router.delete("/delete-local", response_model = DeleteLocalModelResponse)
+async def delete_local_model(
+    load_id: str = Body(...),
+    source: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Delete a model Studio discovered rather than downloaded (Ollama, LM Studio, a scan folder).
+
+    Cached Hugging Face repos keep their own endpoint: they are a refcounted blob store, and the
+    guards that make deleting one safe do not generalize to a folder on disk.
+    """
+    return await local_deletion.delete_local_model_response(load_id, source)
