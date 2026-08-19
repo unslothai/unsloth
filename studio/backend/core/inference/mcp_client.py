@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from functools import wraps
 from typing import Any, Optional
 from weakref import WeakKeyDictionary
 
@@ -852,6 +853,17 @@ _mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio
 def mcp_server_snapshot_guard() -> asyncio.Lock:
     loop = asyncio.get_running_loop()
     return _mcp_server_snapshot_locks.setdefault(loop, asyncio.Lock())
+
+
+def serialize_mcp_server_mutation(handler):
+    """Run an MCP mutation from validation through row/cache commit as one snapshot."""
+
+    @wraps(handler)
+    async def _serialized(*args, **kwargs):
+        async with mcp_server_snapshot_guard():
+            return await handler(*args, **kwargs)
+
+    return _serialized
 
 
 # MCP server fields whose change invalidates a server's discovered tools: the

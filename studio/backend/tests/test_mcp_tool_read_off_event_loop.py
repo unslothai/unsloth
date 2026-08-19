@@ -10,6 +10,8 @@ import sys
 import threading
 from pathlib import Path
 
+from fastapi import HTTPException
+
 import core.inference.tools as tools
 import core.inference.mcp_client as mcp_client
 import routes.inference as inference_routes
@@ -176,3 +178,54 @@ def test_the_cached_row_and_tools_are_one_snapshot_during_an_edit(monkeypatch):
     assert specs == [("https://old.example/mcp", "old_tool")]
     assert state["row"]["url"] == "https://new.example/mcp"
     assert state["cache"] == {}
+
+
+def test_queued_updates_recheck_the_stdio_api_key_gate(monkeypatch):
+    state = {
+        "row": {
+            "id": "s1",
+            "display_name": "Saved",
+            "url": "https://old.example/mcp",
+            "headers_json": None,
+            "is_enabled": True,
+            "use_oauth": False,
+        }
+    }
+
+    def _update_server(_server_id, changes):
+        state["row"].update(changes)
+        return True
+
+    monkeypatch.setattr(mcp_routes, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(mcp_routes.mcp_servers_db, "get_server", lambda _id: dict(state["row"]))
+    monkeypatch.setattr(mcp_routes.mcp_servers_db, "update_server", _update_server)
+    monkeypatch.setattr(mcp_routes, "invalidate_tool_cache", lambda _server_id: None)
+    monkeypatch.setattr(mcp_routes, "close_stdio_sessions", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_routes, "_row_to_response", lambda row: row)
+
+    async def _drive():
+        async with mcp_client.mcp_server_snapshot_guard():
+            ui_update = asyncio.create_task(
+                mcp_routes.update_mcp_server(
+                    "s1",
+                    McpServerUpdate(url = "npx local-server"),
+                    current_subject = "u",
+                    via_api_key = False,
+                )
+            )
+            api_update = asyncio.create_task(
+                mcp_routes.update_mcp_server(
+                    "s1",
+                    McpServerUpdate(headers = {"API_KEY": "secret"}),
+                    current_subject = "u",
+                    via_api_key = True,
+                )
+            )
+            await asyncio.sleep(0)
+        return await asyncio.gather(ui_update, api_update, return_exceptions = True)
+
+    _ui_result, api_result = asyncio.run(_drive())
+    assert isinstance(api_result, HTTPException)
+    assert api_result.status_code == 403
+    assert state["row"]["url"] == "npx local-server"
+    assert state["row"]["headers_json"] is None

@@ -23,11 +23,11 @@ from core.inference.mcp_client import (
     invalidate_tool_cache,
     is_stdio,
     list_tools_async,
-    mcp_server_snapshot_guard,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
     record_probe_failure,
+    serialize_mcp_server_mutation,
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
 )
@@ -202,6 +202,7 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
 
 
 @router.put("/{server_id}", response_model = McpServerResponse)
+@serialize_mcp_server_mutation
 async def update_mcp_server(
     server_id: str,
     payload: McpServerUpdate,
@@ -250,10 +251,9 @@ async def update_mcp_server(
     invalidates_tools = any(
         changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
     )
-    async with mcp_server_snapshot_guard():
-        mcp_servers_db.update_server(server_id, changes)
-        if invalidates_tools:
-            invalidate_tool_cache(server_id)
+    mcp_servers_db.update_server(server_id, changes)
+    if invalidates_tools:
+        invalidate_tool_cache(server_id)
     if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
@@ -262,15 +262,15 @@ async def update_mcp_server(
 
 
 @router.delete("/{server_id}", status_code = 204)
+@serialize_mcp_server_mutation
 async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
-    async with mcp_server_snapshot_guard():
-        mcp_servers_db.delete_server(server_id)
-        invalidate_tool_cache(server_id)
+    mcp_servers_db.delete_server(server_id)
+    invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
 
 
