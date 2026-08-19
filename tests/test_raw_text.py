@@ -374,6 +374,61 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
     return True
 
 
+def test_negative_stride_is_rejected():
+    """chunk_size > 0 and stride < chunk_size both pass for a negative stride, but
+    `start_idx += chunk_size - stride` then advances by MORE than chunk_size, so the
+    tokens between one chunk's end and the next chunk's start are never emitted.
+    Nothing raises and nothing is logged, so the caller trains on a corpus with holes
+    in it: chunk_size = 10 with stride = -5 emits 70 of a 100 token document."""
+
+    class CharTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(32 + (t % 90)) for t in token_ids)
+
+    tokenizer = CharTokenizer()
+    text = "x" * 100
+
+    # Both entry points validate stride, so both need the lower bound.
+    try:
+        RawTextDataLoader(tokenizer, chunk_size = 10, stride = -5)
+        assert False, "the constructor should reject a negative stride"
+    except ValueError as e:
+        assert "stride" in str(e) and "non-negative" in str(e), str(e)
+
+    loader = RawTextDataLoader(tokenizer, chunk_size = 10, stride = 0)
+    try:
+        loader.smart_chunk_text(text, chunk_size = 10, stride = -5)
+        assert False, "smart_chunk_text should reject a negative stride"
+    except ValueError as e:
+        assert "stride" in str(e) and "non-negative" in str(e), str(e)
+
+    # stride = 0 stays valid: it just means the chunks do not overlap.
+    chunks = loader.smart_chunk_text(text, chunk_size = 10, stride = 0)
+    assert len(chunks) > 0, "stride = 0 should still produce chunks"
+
+    print("test_negative_stride_is_rejected passed")
+    return True
+
+
 def test_load_from_files_all_empty_raises():
     """All-empty file list must raise (like load_from_file) instead of returning
     a 0-row text-column dataset in return_tokenized mode."""
@@ -633,6 +688,7 @@ if __name__ == "__main__":
     success = test_load_from_file_skips_non_object_json_lines() and success
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
     success = test_load_from_files_all_empty_raises() and success
+    success = test_negative_stride_is_rejected() and success
     success = test_validate_dataset_handles_tokenized_and_text_columns() and success
     success = test_validate_dataset_accepts_objects_without_column_names() and success
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
