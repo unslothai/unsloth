@@ -1586,25 +1586,6 @@ function VideoGenerator({
     }
   }, [ensureSrc]);
 
-  useEffect(() => {
-    if (!active || initialReadySent.current) return;
-    let cancelled = false;
-    void (async () => {
-      await loadGallery();
-      const initialSelection =
-        galleryCache.videos.find(
-          (video) => video.id === galleryCache.selectedId,
-        ) ?? galleryCache.videos[0];
-      if (initialSelection) await ensureSrc(initialSelection);
-      if (cancelled || initialReadySent.current) return;
-      initialReadySent.current = true;
-      onInitialReady?.();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [active, ensureSrc, loadGallery, onInitialReady]);
-
   // WebM/GIF go through a server-side transcode that can take seconds (and 501s when the codec is missing), so wrap the helper with toasts.
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
@@ -1948,11 +1929,28 @@ function VideoGenerator({
 
   // Re-sync model status when the tab becomes active again: while off-tab the video model may have been evicted.
   useEffect(() => {
-    if (!active) return;
+    if (!active || initialReadySent.current) return;
+    let cancelled = false;
     void (async () => {
-      await refreshStatus();
+      await Promise.all([
+        refreshStatus(),
+        (async () => {
+          await loadGallery();
+          const initialSelection =
+            galleryCache.videos.find(
+              (video) => video.id === galleryCache.selectedId,
+            ) ?? galleryCache.videos[0];
+          if (initialSelection) await ensureSrc(initialSelection);
+        })(),
+      ]);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
     })();
-  }, [active, refreshStatus]);
+    return () => {
+      cancelled = true;
+    };
+  }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
 
   // Ejected from the loaded models indicator, which does not run handleUnload:
   // without this the controls keep offering to generate on a freed runtime, and

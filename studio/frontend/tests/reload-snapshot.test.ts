@@ -47,6 +47,7 @@ interface ElementSpec {
   /** Live DOM state React writes as a property rather than an attribute. */
   value?: string;
   checked?: boolean;
+  selected?: boolean;
   type?: string;
   autocomplete?: string;
   attributes?: Record<string, string>;
@@ -84,6 +85,7 @@ interface StubElement {
   spec: ElementSpec;
   value: string;
   checked: boolean;
+  selected: boolean;
   type: string;
   autocomplete: string;
   scrollTop: number;
@@ -130,6 +132,7 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     spec,
     value: spec.value ?? "",
     checked: spec.checked ?? false,
+    selected: spec.selected ?? false,
     type: spec.type ?? "text",
     autocomplete: spec.autocomplete ?? "",
     scrollTop: spec.scrollTop ?? 0,
@@ -611,15 +614,15 @@ test("media pages retire the shell only after gallery and preview hydration", ()
   );
   assert.match(
     imagesPageSource,
-    /await loadGallery\(\)[\s\S]*?await ensureSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
+    /Promise\.all\(\[\s*refreshStatus\(\)[\s\S]*?await loadGallery\(\)[\s\S]*?await ensureSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
   );
   assert.match(
     videoPageSource,
-    /await loadGallery\(\)[\s\S]*?await ensureSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
+    /Promise\.all\(\[\s*refreshStatus\(\)[\s\S]*?await loadGallery\(\)[\s\S]*?await ensureSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
   );
   assert.match(
     audioPageSource,
-    /await refreshGallery\(\)[\s\S]*?await ensureClipSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
+    /Promise\.all\(\[\s*refreshGallery\(\),\s*refreshStatus\(\),\s*refreshSttStatus\(\)[\s\S]*?await ensureClipSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
   );
 });
 
@@ -962,6 +965,48 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.doesNotMatch(html, /revealed-api-key/);
   assert.doesNotMatch(html, /secret-header|stale-header/);
   assert.doesNotMatch(html, /rendered-api-key/);
+});
+
+test("keeps native select options that paint the closed control label", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "select",
+          rect: [100, 420, 140, 200],
+          children: [
+            {
+              tag: "option",
+              rect: [0, 0, 0, 0],
+              text: "GPU 0",
+            },
+            {
+              tag: "optgroup",
+              rect: [0, 0, 0, 0],
+              children: [
+                {
+                  tag: "option",
+                  rect: [0, 0, 0, 0],
+                  text: "GPU 1",
+                  selected: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /<option>GPU 0<\/option>/);
+  assert.match(html, /<optgroup><option selected="">GPU 1<\/option><\/optgroup>/);
 });
 
 test("preserves IDs that the isolated copy references internally", () => {

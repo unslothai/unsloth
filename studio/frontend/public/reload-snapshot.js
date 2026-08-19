@@ -497,7 +497,14 @@
         // A `display: contents` wrapper generates no box, so its rectangle is
         // empty however much of the viewport its children fill. Judging it by
         // that rectangle takes the whole visible subtree with it.
-        var laidOut = style.display !== "contents";
+        // Native select descendants normally have empty rectangles while the
+        // closed select still paints the selected option's label. Treat that
+        // content as part of its owning control rather than as an offscreen box.
+        var paintsThroughSelect =
+          (original.tagName === "OPTION" ||
+            original.tagName === "OPTGROUP") &&
+          original.closest("select");
+        var laidOut = !paintsThroughSelect && style.display !== "contents";
         var bounds = laidOut ? original.getBoundingClientRect() : null;
         // Removing children from a scroll container changes its scroll geometry
         // and can shift the visible slice. Keep that subtree intact and restore
