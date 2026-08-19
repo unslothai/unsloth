@@ -417,6 +417,16 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             except Exception:
                 conn.rollback()
                 raise
+            # Surplus only, NOT a restamp. The re-embed path never reaches the
+            # already-archived branch where copies are retired, so a repeat archived twice
+            # and then rewound kept its extra copy: measured after a rewind plus an
+            # embedder change, three documents for two turns with the recall quoting the
+            # repeated turn twice. Re-stamping here would be wrong for exactly the reason
+            # the re-embed keeps `archive_ordinal` and `created_at` -- a turn archived
+            # before the column existed must stay unnumbered, or it moves to the end of its
+            # own conversation and the header calls it the latest word. Runs after the new
+            # row exists, so the count is what the scope actually holds.
+            _retire_surplus(conn, scope, digest, seats)
             conn.commit()
             written += 1
             if _INGEST_FAILED:
@@ -466,6 +476,121 @@ def degraded() -> bool:
 _ARCHIVED = "archived"
 
 
+def _active_chain(messages: list[dict]) -> list[dict]:
+    """The rows on ONE branch, oldest first, rather than the whole stored DAG.
+
+    `list_chat_messages` is an unfiltered SELECT ordered by time, but a thread is a tree:
+    `parent_id` is a real column and Retry leaves the replaced reply in place as a sibling.
+    Read as a flat list, an abandoned sibling lands between two live turns and the grouper
+    glues it onto whichever turn precedes it, so the regenerated turn matches no position
+    at all and falls back to MAX + 1. Measured on five turns with one Retry: the
+    regenerated turn 2 came back numbered 5 out of 4 live turns, colliding with live turn
+    3, under the header that says the higher number supersedes. The cumulative archive is
+    what makes MAX + 1 land past everything -- the abandoned branch has already taken the
+    high numbers -- so this does not depend on the eviction order.
+
+    Walked newest leaf back to root, the same shape the frontend's `orderBySelectedBranch`
+    uses to decide what the model is actually shown. `parent_id` is missing on rows written
+    before that column, so the previous row stands in for it, which is exactly a flat list
+    when nothing branches.
+    """
+    if not messages:
+        return []
+    by_id: dict = {}
+    parent_of: dict = {}
+    previous = None
+    for message in messages:
+        identifier = message.get("id")
+        if identifier is None:
+            continue
+        by_id[identifier] = message
+        parent_of[identifier] = message.get("parentId") or message.get("parent_id") or previous
+        previous = identifier
+    if not by_id:
+        return list(messages)
+    chain: list[dict] = []
+    seen: set = set()
+    current = messages[-1].get("id")
+    while current is not None and current not in seen:
+        seen.add(current)
+        record = by_id.get(current)
+        if record is None:
+            break
+        chain.append(record)
+        current = parent_of.get(current)
+    chain.reverse()
+    return chain or list(messages)
+
+
+def _as_wire(messages: list[dict]) -> list[dict]:
+    """Persisted chat rows in the shape the inference layer sends them.
+
+    The store keeps a tool call as a ``tool-call`` CONTENT PART carrying its own result,
+    while the wire form is three messages: the assistant's `tool_calls`, a `tool` result,
+    then the assistant's reply. Nothing put them back, and everything here reads the
+    persisted rows as if they were wire messages, so an agent turn was invisible twice
+    over. `group_turns` splits on `tool_calls`, which a persisted row never has, so the
+    whole exchange folded into the preceding user group and the evicted tool group found
+    no position of its own -- measured, seats came back empty and the exchange took
+    MAX + 1, the number its own opening question already had. And `_live_transcript`
+    probes these rows in the same shape, so the branch check compared a call/result/reply
+    render against a row reading call/reply/result: measured, the archived agent turn
+    failed the live-branch filter and NO query could return it, on every tool-using turn.
+
+    The result is stripped from the call part and carried by the `tool` message instead,
+    so `_probe_text` renders each piece exactly once and in the order `render_turn` wrote
+    it. Only the id goes into `tool_calls`: the arguments stay on the content part, where
+    `_probe_text` already offers both JSON spellings, and `_is_injected` still sees the id
+    it filters our own injections by.
+    """
+    wire: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        parts = content if isinstance(content, list) else None
+        calls = [
+            part
+            for part in (parts or [])
+            if isinstance(part, dict) and part.get("type") == "tool-call"
+        ]
+        if not calls:
+            wire.append(
+                {
+                    "role": message.get("role"),
+                    "content": content,
+                    "tool_calls": message.get("tool_calls"),
+                }
+            )
+            continue
+        rest = [
+            part
+            for part in parts
+            if not (isinstance(part, dict) and part.get("type") == "tool-call")
+        ]
+        wire.append(
+            {
+                "role": message.get("role"),
+                "content": [
+                    {key: value for key, value in call.items() if key != "result"} for call in calls
+                ],
+                "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
+            }
+        )
+        for call in calls:
+            result = call.get("result")
+            if result in (None, "", {}, []):
+                continue
+            wire.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("toolCallId"),
+                    "content": result if isinstance(result, str) else json.dumps(result),
+                }
+            )
+        if rest:
+            wire.append({"role": message.get("role"), "content": rest})
+    return wire
+
+
 def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     """The thread's saved messages as normalised probe text, in the order they were said.
 
@@ -494,14 +619,7 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # Grouped with the evictor's own grouper, so a position is a TURN's index and not a
     # message's: the ordinal is compared against other turns, and `archive_messages`
     # already records how many messages a turn holds.
-    wire = [
-        {
-            "role": message.get("role"),
-            "content": message.get("content"),
-            "tool_calls": message.get("tool_calls"),
-        }
-        for message in messages
-    ]
+    wire = _as_wire(_active_chain(messages))
     return [
         [_normalise(_probe_text(message)) for message in group]
         for group in group_turns(wire)
@@ -534,11 +652,61 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     texts = [_normalise(_probe_text(message)) for message in group]
     if not texts or not texts[0]:
         return []
+    calls = [bool(message.get("tool_calls")) for message in group]
+
+    def _same(stored: str, live: str, is_call: bool) -> bool:
+        # A tool call is compared as needle in haystack, never for equality. The store
+        # keeps the arguments as an OBJECT and the request carries the model's raw string,
+        # so `_probe_text` offers both JSON spellings for the stored copy and exactly one
+        # for the live one. Those two can only ever meet this way. Every other message is
+        # compared exactly.
+        if is_call:
+            return bool(live) and live in stored
+        return stored == live
+
     return [
         index
         for index, position in enumerate(positions)
-        if position and position[: len(texts)] == texts[: len(position)]
+        if position
+        # A position SHORTER than the turn may only match the trailing one. `zip` stops at
+        # the shorter side, so a persisted turn missing its reply prefix-matched anywhere,
+        # and a thread carrying an orphan user row -- a deleted assistant reply, or a
+        # reload before the reply was appended -- gave the later, answered turn two seats.
+        # Measured: seats [0, 1] where only [1] is real, a second copy of the same turn
+        # written at the next compaction, and the recall quoting one turn twice.
+        # `>=` rather than `==`: a position legitimately runs LONGER, because `_archivable`
+        # strips our injections from the group while the transcript keeps them, and
+        # `_as_wire` expands one persisted tool row into two or three messages.
+        and (len(position) >= len(texts) or index == len(positions) - 1)
+        and all(
+            _same(stored, live, is_call) for stored, live, is_call in zip(position, texts, calls)
+        )
     ]
+
+
+def _retire_surplus(conn, scope: str, digest: str, seats: list[int], *, rows = None) -> bool:
+    """Delete copies of this turn the conversation no longer holds. True if any went.
+
+    More copies than occurrences means a rewind removed one. The survivors are
+    byte-identical, so the branch filter validates every copy against the single remaining
+    occurrence and `recall` dedups on chunk id, which differs: measured, a recall slot went
+    on quoting one turn twice, and the surplus kept an ordinal a genuinely later turn had
+    since taken.
+
+    Does nothing without seats, so a turn that failed to match its occurrences at all --
+    an unreconstructable transcript, a thread with no persisted rows -- never loses a copy.
+    """
+    if not seats:
+        return False
+    try:
+        copies = rows if rows is not None else store.documents_by_hash(conn, scope, digest)
+        surplus = copies[len(seats) :]
+        for copy in surplus:
+            store.delete_document(conn, copy["id"], commit = False)
+        return bool(surplus)
+    except Exception:  # noqa: BLE001 -- tidying an archive is not worth a chat
+        logger.debug("conversation_archive.retire_surplus_failed", exc_info = True)
+        return False
 
 
 def _restamp(
@@ -574,6 +742,7 @@ def _restamp(
             if copy.get("archive_ordinal") != seat:
                 store.set_archive_ordinal(conn, copy["id"], seat)
                 moved = True
+        moved = _retire_surplus(conn, scope, digest, seats, rows = rows) or moved
         if moved and commit:
             conn.commit()
     except Exception:  # noqa: BLE001 -- ordering an old archive is not worth a chat
@@ -670,7 +839,10 @@ def _live_transcript(thread_id: str) -> Optional[list[str]]:
         return None
     if not messages:
         return None
-    texts = [_normalise(_probe_text(message)) for message in messages]
+    # Through the same reconstruction: a persisted tool call read as ONE message renders
+    # its pieces in a different order from the archived copy, and the branch check matches
+    # in order, so every archived agent turn failed it and became unrecallable.
+    texts = [_normalise(_probe_text(message)) for message in _as_wire(messages)]
     return [text for text in texts if text] or None
 
 
@@ -1240,7 +1412,17 @@ def recall(
             # of it would spend the refilled slots on the oldest turns. That is the exact
             # failure `_ends_first_within_ties` exists to prevent, reintroduced one level
             # up. The block is re-ordered chronologically below either way.
-            fresh.sort(key = lambda source: -(source.get("score") or 0.0))
+            # By retrieval rank first, score second. The score in a source is rounded for
+            # display and is identical across a tied run, so sorting on it alone preserved
+            # whatever order the list arrived in -- which is chronological, so the refill
+            # spent its slots on the oldest turns and the anchor made the recall worse than
+            # not having it.
+            fresh.sort(
+                key = lambda source: (
+                    source.get("rank") if source.get("rank") is not None else 1 << 30,
+                    -(source.get("score") or 0.0),
+                )
+            )
             for source in fresh[:room]:
                 seen_ids.add(source["chunkId"])
                 merged.append(source)
@@ -1331,11 +1513,21 @@ def recall(
         if not hits:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
+            # Retrieval rank, kept before the chronological sort throws it away. The
+            # two-query merge refills its slots out of these sources, and score alone
+            # cannot order them: `format_conversation_recall` rounds it to four places, and
+            # on a tied archive every candidate carries the SAME score, so the refill's
+            # stable sort left them in the chronological order imposed here and took the
+            # oldest. Measured: eight tied revisions all scoring 1.6297, where the single
+            # query returned the newest and the same query plus an anchor did not.
+            rank_of = {hit.chunk_id: rank for rank, hit in enumerate(hits)}
             # AFTER the top-k slice, never before. Sorting first would make the slice take
             # the OLDEST turns rather than the most relevant ones, which is a different
             # feature and a worse one.
             hits.sort(key = lambda hit: _conversation_order(rows.get(hit.chunk_id)))
             text, sources = tool.format_conversation_recall(rows, hits)
+            for source in sources:
+                source["rank"] = rank_of.get(source.get("chunkId"))
         else:
             text, sources = tool._format(rows, hits)
         return (text, sources) if sources else None

@@ -2373,3 +2373,337 @@ def test_an_archive_numbered_by_the_old_allocator_converges_on_the_next_compacti
     assert ordinals() == [0, 1]
     text, _sources = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
     assert text.index("alpha") < text.index("beta")
+
+
+def _persist_agent_thread():
+    """A thread whose newest turn is a tool exchange, stored the way the UI stores one."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    rows = [
+        ("user", [{"type": "text", "text": "what is the capital of peru"}]),
+        ("assistant", [{"type": "text", "text": "Lima."}]),
+        ("user", [{"type": "text", "text": "list the files in the repo"}]),
+        (
+            "assistant",
+            [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "terminal",
+                    "args": {"command": "ls"},
+                    "result": "main.py readme.md",
+                },
+                {"type": "text", "text": "the repo has two files."},
+            ],
+        ),
+    ]
+    for index, (role, content) in enumerate(rows):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-{index}",
+                "threadId": THREAD,
+                "role": role,
+                "content": content,
+                "createdAt": index + 2,
+            }
+        )
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "the repo has two files."},
+    ]
+
+
+def test_an_archived_tool_exchange_is_still_reachable_by_a_query(conn):
+    """The persisted shape of a tool call is not the wire shape, and both readers assumed it was.
+
+    The store keeps a call as one `tool-call` content PART carrying its result, while the
+    request carries three messages: the call, the result, the reply. `_probe_text` renders
+    the stored row as call/reply/result and the archived copy as call/result/reply, and
+    the branch check matches IN ORDER, so every archived agent turn failed it. Measured:
+    the exchange was indexed and then filtered out of every recall, so no query could
+    return it. That is archived content the model can never get back, on every tool-using
+    turn.
+    """
+    tool_turn = _persist_agent_thread()
+    conversation_archive.archive_turns(THREAD, tool_turn)
+
+    found = conversation_archive.recall(THREAD, "terminal ls repo files", top_k = 4)
+
+    assert found is not None
+    assert any("terminal" in source["text"] for source in found[1])
+
+
+def test_a_tool_exchange_is_numbered_where_the_conversation_put_it(conn):
+    """`group_turns` splits on tool_calls, which a persisted row never carries.
+
+    So the whole exchange folded into the preceding user group, the evicted tool group
+    found no seat of its own, and it fell back to MAX + 1 -- the same number its own
+    opening question takes from the transcript. Measured: two documents at ordinal 1, with
+    created_at breaking the tie in favour of the ANSWER, under a header telling the model
+    the later turn supersedes.
+    """
+    tool_turn = _persist_agent_thread()
+    # The order eviction really produces: the oldest turn, then the tool groups, and the
+    # user turn that opened them only once it stops being the newest.
+    conversation_archive.archive_turns(
+        THREAD,
+        [
+            {"role": "user", "content": "what is the capital of peru"},
+            {"role": "assistant", "content": "Lima."},
+        ],
+    )
+    conversation_archive.archive_turns(THREAD, tool_turn)
+    conversation_archive.archive_turns(
+        THREAD,
+        [
+            {"role": "user", "content": "list the files in the repo"},
+        ],
+    )
+
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+            (scope,),
+        ).fetchall()
+    ]
+
+    assert ordinals == [0, 1, 2]
+    text, _sources = conversation_archive.recall(THREAD, "repo files peru ls", top_k = 4)
+    assert text.index("capital of peru") < text.index("list the files")
+    assert text.index("list the files") < text.index("called terminal")
+
+
+def test_an_anchor_query_cannot_cost_the_newest_revision_its_slot(conn):
+    """The refill has to keep RETRIEVAL rank, which the chronological sort throws away.
+
+    Every candidate in a tied archive carries the same score, and the score a source
+    carries is rounded for display on top of that, so sorting the refill by score alone
+    left the list in the order it arrived: chronological. The refill then spent its slots
+    on the oldest turns, and adding the anchor that exists to rescue a thin message made
+    the recall worse than not adding it. Measured on eight revisions at top_k 4: the single
+    query returned the newest, the same query plus an anchor did not.
+    """
+    values = _revisions(8, distractors = 0)
+
+    alone = conversation_archive.recall(THREAD, f"{VARIABLE}", top_k = 4)
+    merged = conversation_archive.recall(THREAD, f"{VARIABLE}", top_k = 4, extra_queries = ["timeout"])
+
+    assert alone is not None and merged is not None
+    assert values[-1] in alone[0]
+    assert values[-1] in merged[0], "the anchor cost the newest revision its slot"
+
+
+def test_an_orphan_user_row_does_not_lend_its_seat_to_a_later_turn(conn):
+    """A position SHORTER than the turn may only match the trailing one.
+
+    `zip` stops at the shorter side, so a persisted turn missing its reply prefix-matched
+    anywhere in the transcript. A thread carrying an orphan user row -- an assistant reply
+    deleted from the thread, or a reload before the reply was appended -- therefore handed
+    the later, answered turn two seats, and the next compaction wrote a second copy of it.
+    Measured: seats [0, 1] where only [1] is real, two documents with one sha, and the
+    recall quoting the same turn twice.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    rows = [
+        ("user", "set ZQXVARA123 to 1"),  # orphan: its reply is gone
+        ("user", "set ZQXVARA123 to 1"),
+        ("assistant", "done, ZQXVARA123 is 1"),
+    ]
+    for index, (role, text) in enumerate(rows):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-{index}",
+                "threadId": THREAD,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": index + 2,
+            }
+        )
+    answered = [
+        {"role": "user", "content": "set ZQXVARA123 to 1"},
+        {"role": "assistant", "content": "done, ZQXVARA123 is 1"},
+    ]
+
+    positions = conversation_archive._transcript_positions(THREAD)
+    assert conversation_archive._occurrences(positions, answered) == [1]
+
+    written = [
+        conversation_archive.archive_turns(THREAD, answered),
+        conversation_archive.archive_turns(THREAD, answered),
+    ]
+    scope = store.conversation_archive_scope(THREAD)
+
+    assert written == [1, 0]
+    assert len(store.list_documents(conn, scope)) == 1
+
+
+def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
+    """The stored rows are a tree, and reading them as a list numbers an abandoned sibling.
+
+    Retry leaves the replaced reply in place, so a flat read drops it between two live
+    turns and the grouper glues it onto whichever turn precedes it. The regenerated turn
+    then matches no position and takes MAX + 1, which the cumulative archive has already
+    pushed past every live turn: measured, a regenerated turn 2 came back numbered 5 out of
+    4 live turns, colliding with live turn 3 under the header that says the higher number
+    supersedes.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    rows = [
+        ("m0", None, "user", "turn 1 about ZQXVARA123"),
+        ("m1", "m0", "assistant", "answer 1"),
+        ("m2", "m1", "user", "turn 2 about ZQXVARA123"),
+        ("m3", "m2", "assistant", "answer 2 attempt one"),  # abandoned sibling
+        ("m4", "m2", "assistant", "answer 2 attempt two"),  # the live reply
+        ("m5", "m4", "user", "turn 3 about ZQXVARA123"),
+        ("m6", "m5", "assistant", "answer 3"),
+    ]
+    for index, (identifier, parent, role, text) in enumerate(rows):
+        studio_db.upsert_chat_message(
+            {
+                "id": identifier,
+                "threadId": THREAD,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": index + 2,
+            }
+        )
+
+    live = [
+        {"role": "user", "content": "turn 1 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "turn 2 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 2 attempt two"},
+        {"role": "user", "content": "turn 3 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 3"},
+    ]
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert len(positions) == 3, positions
+    assert conversation_archive._occurrences(positions, live[2:4]) == [1]
+
+    conversation_archive.archive_turns(THREAD, live)
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    assert ordinals == [0, 1, 2]
+
+
+def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(conn):
+    """A repeat that is rewound away leaves more copies than occurrences.
+
+    Both copies are byte-identical, so the branch filter validates each against the single
+    surviving occurrence and `recall` dedups on chunk id, which differs. Measured: a recall
+    slot went on quoting one turn twice, and the surplus kept an ordinal that a genuinely
+    later turn had since taken.
+    """
+    first = _turn("set ZQXVARA123 to 1", "ok")
+    second = _turn("set ZQXVARA123 to 2", "ok")
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    for group in (first, second, repeat):
+        _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    assert len(store.list_documents(conn, scope)) == 3
+
+    # Rewind past the repeat, through the same sync the PUT route uses.
+    _save_thread(THREAD, first + second)
+    conversation_archive.archive_turns(THREAD, first)
+
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    assert ordinals == [0, 1]
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    assert len(found[1]) == len({source["text"] for source in found[1]})
+
+
+def test_an_incidental_number_does_not_take_over_the_filter(conn):
+    """A bare number needs length to be a name, which is the bar the capitals rule had.
+
+    Treating any digit-bearing token as an identifier made "answer in 2 sentences" filter
+    the archive on "2". Measured on an archive whose filler mentions small numbers in
+    ordinary prose, at top_k 1, the focused pass returned the staging-environments turn
+    where both the previous build and the rollback knob returned the billing turn.
+    """
+    assert store.conversation_match_queries("answer in 2 sentences") == [
+        '"answer" OR "2" OR "sentences"'
+    ]
+    assert store.conversation_match_queries("which python, 3.11 or 3.12") == [
+        '"python" OR "3" OR "11" OR "12"'
+    ]
+    # A name is still a name, at any length, and a long number still qualifies.
+    assert store.conversation_match_queries("what about v2 of the plan")[0] == '"v2"'
+    assert store.conversation_match_queries("we talked about 2024 revenue")[0] == '"2024"'
+    assert store.conversation_match_queries("What is the current value of 9134?")[0] == '"9134"'
+
+
+def test_a_re_embed_after_a_rewind_retires_the_surplus_copy_too(conn, monkeypatch):
+    """The re-embed path never reaches the branch where surplus copies are retired.
+
+    A repeated turn archived twice and then rewound leaves one copy more than the
+    conversation holds. Replacing one copy's vectors under a new embedder writes a fresh
+    document and returns, so the surplus is never looked at: measured, three documents for
+    two turns after the rewind, with the recall quoting the repeated turn twice and the
+    surplus still holding a position a later turn had taken.
+    """
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings, "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    first = _turn("set ZQXVARA123 to 1", "ok")
+    second = _turn("set ZQXVARA123 to 2", "ok")
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    for group in (first, second, repeat):
+        _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    assert len(store.list_documents(conn, scope)) == 3
+
+    # Rewind past the repeat, and the embedder changes underneath the thread.
+    _save_thread(THREAD, first + second)
+    identity["name"] = "st:model-b"
+    conversation_archive.archive_turns(THREAD, first)
+
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    assert ordinals == [0, 1]
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    assert len(found[1]) == len({source["text"] for source in found[1]})
