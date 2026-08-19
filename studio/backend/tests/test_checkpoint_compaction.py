@@ -1686,6 +1686,6 @@ def test_a_healthy_probe_is_not_trusted_on_the_next_request(monkeypatch):
 
     monkeypatch.setattr(embeddings, "encode", _broken_encode)
 
-    assert conversation_archive.reachable() is False, (
-        "a stale yes let the next request reset into an archive that cannot be written"
-    )
+    assert (
+        conversation_archive.reachable() is False
+    ), "a stale yes let the next request reset into an archive that cannot be written"
