@@ -46,8 +46,13 @@ def test_the_server_list_is_read_off_the_event_loop_thread(monkeypatch):
     assert threads[0] != loop_thread, "list_servers ran on the event loop thread"
 
 
-def test_the_post_probe_re_read_is_also_off_the_event_loop_thread(monkeypatch):
-    """The race-protection re-read must also leave the event loop."""
+def test_the_post_probe_re_read_stays_on_the_event_loop_thread(monkeypatch):
+    """The race-protection re-read must NOT leave the event loop.
+
+    It is the guard for the cache_tools / record_probe_failure writes right after it: awaiting
+    it lets an MCP edit invalidate the cache in between, and the stale probe result then
+    overwrites the invalidation and is served indefinitely.
+    """
     server = {"id": "s1", "url": "http://127.0.0.1:1/mcp", "is_enabled": True, "use_oauth": False}
     threads: list[int] = []
 
@@ -71,7 +76,8 @@ def test_the_post_probe_re_read_is_also_off_the_event_loop_thread(monkeypatch):
     loop_thread = asyncio.run(_drive())
 
     assert len(threads) == 2, f"expected the read and the post-probe re-read, got {len(threads)}"
-    assert loop_thread not in threads, "an mcp_servers read ran on the event loop thread"
+    assert threads[0] != loop_thread, "the first list_servers ran on the event loop thread"
+    assert threads[1] == loop_thread, "the post-probe re-read left the event loop thread"
 
 
 def test_the_token_count_reads_the_cached_tools_off_the_event_loop_thread(tmp_path, monkeypatch):

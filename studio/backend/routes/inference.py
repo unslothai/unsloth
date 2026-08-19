@@ -12910,6 +12910,10 @@ def _resolve_openai_cloud_client(
     below. The shell tool only exists on api.openai.com, so rejecting non-cloud
     bases up front prevents confusing 404s on ollama / llama.cpp / vLLM /
     custom presets.
+
+    Callers run this on the event loop, not in a worker: the row read and the
+    credential read have to see one provider, or an edit landing between them
+    pairs the old base URL with the new key.
     """
     base_url = body.provider_base_url or get_base_url("openai")
     if body.provider_id and not body.encrypted_api_key:
@@ -12986,9 +12990,7 @@ async def list_openai_containers(
     current_subject: str = Depends(get_current_subject),
 ) -> ListOpenAIContainersResponse:
     """List the user's OpenAI shell-tool containers."""
-    client = await asyncio.to_thread(
-        _resolve_openai_cloud_client, body, allow_saved_key = not _request_has_api_key(request)
-    )
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             raw = await client.list_openai_containers()
@@ -13030,9 +13032,7 @@ async def create_openai_container(
     _current_subject: str = Depends(get_current_subject),
 ) -> OpenAIContainerSummary:
     """Create a named container with the user-chosen idle TTL."""
-    client = await asyncio.to_thread(
-        _resolve_openai_cloud_client, body, allow_saved_key = not _request_has_api_key(request)
-    )
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             raw = await client.create_openai_container(
@@ -13076,9 +13076,7 @@ async def delete_openai_container(
         body.container_id,
         body.provider_base_url,
     )
-    client = await asyncio.to_thread(
-        _resolve_openai_cloud_client, body, allow_saved_key = not _request_has_api_key(request)
-    )
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             await client.delete_openai_container(body.container_id)

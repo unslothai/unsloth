@@ -63,3 +63,36 @@ def test_the_saved_provider_row_is_read_off_the_event_loop_thread(monkeypatch):
     assert excinfo.value.status_code == 404
     assert threads, "the proxy never looked the saved provider up"
     assert loop_thread not in threads, "the provider row was read on the event loop thread"
+
+
+def _container_body():
+    from models.inference import OpenAIContainerRequest
+    return OpenAIContainerRequest(provider_id = "saved-1")
+
+
+def test_the_container_resolver_reads_on_the_event_loop_thread(monkeypatch):
+    """The container routes resolve the row and the credential as one snapshot.
+
+    _resolve_openai_cloud_client reads the provider row for the base URL and then reads the
+    saved key. Run in a worker, an edit landing between the two pairs the old base URL with
+    the new key, so the routes call it on the loop where nothing interleaves.
+    """
+    threads: list[int] = []
+
+    def _get_provider(_provider_id):
+        threads.append(threading.get_ident())
+        return None  # a missing row 404s inside the resolver, before either read matters
+
+    monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
+
+    loop_thread = threading.get_ident()
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.new_event_loop().run_until_complete(
+            inference_routes.list_openai_containers(
+                _container_body(), _request(), current_subject = "t"
+            )
+        )
+
+    assert excinfo.value.status_code == 404
+    assert threads, "the container route never looked the saved provider up"
+    assert threads[0] == loop_thread, "the container resolver ran off the event loop thread"
