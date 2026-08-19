@@ -276,7 +276,14 @@ jobs:
             cp "$f" logs/ 2>/dev/null || true
             tail -60 "$f"
             # The two fields the bug report turned on.
-            grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
             dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
@@ -520,7 +527,14 @@ jobs:
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
             echo "=== $f ==="; cp "$f" logs/ 2>/dev/null || true; tail -60 "$f"
-            grep -E "disposition=|can_auto_repair=|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
             dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
@@ -801,7 +815,9 @@ jobs:
               Write-Host "=== $f ==="
               Copy-Item $f logs/ -ErrorAction SilentlyContinue
               Get-Content $f -Tail 60
-              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|ModuleNotFoundError' `
+              # See the Linux job: the reason line is what explains a disposition,
+              # and Get-Content -Tail 60 above scrolls it away.
+              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError' `
                 -ErrorAction SilentlyContinue
               $found = $true
               $hits = @(Select-String -Path $f -Pattern 'desktop_preflight completed disposition=(\w+)')
