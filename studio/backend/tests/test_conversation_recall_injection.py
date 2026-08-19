@@ -1600,6 +1600,8 @@ def test_a_single_recalled_turn_makes_no_ordering_claim(archived):
 
     assert built is not None
     assert "supersedes" not in built["prefix"]
+
+
 def test_a_dense_ascii_result_is_priced_by_the_callers_tokenizer(archived, monkeypatch):
     """Four characters per token is optimistic for code, minified JSON and hashes.
 
