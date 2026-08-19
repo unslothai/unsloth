@@ -1021,11 +1021,9 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
 
 # --- Keeping the user's standing instruction when everything else is evicted ---
 #
-# `truncate_oldest_messages` protects system and developer groups, the final group, and
-# the newest USER group. So an instruction is safe only while it IS the newest user turn:
-# one "continue" later it is the oldest evictable thing in the conversation, and the first
-# to go. These cover the pin that holds it, and the bounds that stop the pin itself
-# becoming the problem.
+# `truncate_oldest_messages` protects the newest USER group, so an instruction is safe only
+# while it IS that group: one "continue" later it is the first thing evicted. These cover
+# the pin that holds it and the bounds that stop the pin becoming the problem.
 
 
 def _instruction(text = None):
@@ -1165,14 +1163,12 @@ def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
     assert instruction_pin.is_thin_query("continue")
     assert instruction_pin.is_thin_query("yes")
     assert instruction_pin.is_thin_query("ok!")
-    # Every editor and phone keyboard autocorrects "..." to one ellipsis character, and it
-    # used to survive the punctuation strip: `continue…` was then called substantive and
-    # recall searched the archive for the word "continue" instead of using the anchor.
+    # Keyboards autocorrect "..." to one ellipsis character, which used to survive the
+    # punctuation strip, so `continue…` was called substantive.
     assert instruction_pin.is_thin_query("continue…")
     assert instruction_pin.is_thin_query("and then…")
     assert instruction_pin.is_thin_query("continue...")
-    # Short, but it names the thing it wants: replacing this with an older instruction
-    # would answer a question the user did not ask.
+    # Short, but it names what it wants, so an older instruction must not replace it.
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now…")
 
@@ -1191,8 +1187,7 @@ def test_a_self_contained_two_word_request_is_not_thin():
     for request in ("review billing", "restart nginx", "fix authentication", "ZQXVARA123?"):
         assert not instruction_pin.is_thin_query(request), request
 
-    # Still thin, because every word of these is a function word or a nudge: there is
-    # genuinely nothing in them to search an archive for.
+    # Still thin: every word is a function word or a nudge, so there is nothing to search.
     for nudge in ("what about it", "and then?", "do it", "yes please", "why?", "???"):
         assert instruction_pin.is_thin_query(nudge), nudge
 
@@ -1245,8 +1240,7 @@ def test_a_pin_charges_token_dense_text_at_its_real_rate():
 
     # Its real cost is over the ceiling, so it is not pinned at all rather than partially.
     assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
-    # A ceiling that can actually afford it still pins it, so this is a charge and not a
-    # blanket refusal of dense text.
+    # A ceiling that can afford it still pins it, so this is a charge and not a refusal.
     assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096) == {
         id(dense_instruction)
     }
@@ -1287,8 +1281,7 @@ def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
     assert not any(message is tool_result for message in kept)
     assert dropped == 2
 
-    # The reply that shares the instruction's own group is still charged, so the ceiling
-    # keeps working on the thing it does hold.
+    # The reply sharing the instruction's group is still charged, so the ceiling holds.
     with_reply = [
         {"role": "system", "content": "you are helpful"},
         instruction,

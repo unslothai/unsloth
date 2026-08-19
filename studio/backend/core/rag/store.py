@@ -76,16 +76,11 @@ def _match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks)
 
 
-# Function words only, and a closed list rather than anything corpus-derived, so the
-# behaviour is reviewable and identical on every install. Nothing here can carry the
-# subject of a question.
+# A closed list of function words, so behaviour is identical on every install. Nothing
+# here can carry the subject of a question.
 #
-# `no` and `not` are deliberately NOT here. They are function words, but they are the
-# only words that carry the difference in "what did I say not to delete?", and dropping
-# them leaves `say` and `delete` -- terms a long archive has in most of its turns, whose
-# BM25 IDF FTS5 then floors at 1e-6, so they order nothing. Keeping the negation costs
-# nothing where it is common (the same floor applies to it) and is the whole query where
-# it is rare.
+# `no` and `not` are deliberately NOT here: they carry the whole difference in "what did I
+# say not to delete?", where dropping them leaves only terms BM25 floors at 1e-6.
 _ARCHIVE_STOPWORDS = frozenset(
     """
 a about all am an and any are as at be been being but by can could did do does doing
@@ -95,17 +90,11 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
-# Identifier-ish: a token CONTAINING a digit (ZQXVARA123, 9134), one containing an
-# underscore, or one the user WROTE in capitals and that is long enough not to be an "I"
-# or an "OK". These are the tokens a person uses when they mean one specific thing.
-#
-# Containing, not mixing. A purely numeric subject ("what is the current value of 9134")
-# used to qualify only through the capitals rule, since "9134".upper() is itself, so
-# requiring a letter as well left it with no shape at all once that rule was made to
-# need contrast. In a shouted question it then stopped being an identifier, the focused
-# pass was dropped, and the single slot went to a turn about a retry budget instead of
-# the number asked about. For any ordinary-case query this is the same answer the
-# capitals rule already gave, so nothing else moves.
+# Identifier-ish: a token containing a digit (ZQXVARA123, 9134) or an underscore, or one
+# written in capitals and long enough not to be an "I" or an "OK". These are the tokens a
+# person uses when they mean one specific thing. Containing a digit, not mixing one with a
+# letter: a purely numeric subject ("the current value of 9134") otherwise has no shape at
+# all once the capitals rule needs contrast.
 _HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
@@ -126,14 +115,9 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     if "_" in token:
         return True
     if _HAS_DIGIT.search(token):
-        # A bare number needs LENGTH to be a name, the same bar the capitals rule always
-        # carried. Dropping it made "answer in 2 sentences" filter the archive on "2" and
-        # "3.11 or 3.12" filter on "3" OR "11" OR "12": measured on a realistic archive at
-        # top_k 1, the focused pass then returned a turn about how many staging
-        # environments we keep instead of the billing turn the question asked for, which
-        # both the previous build and the rollback knob got right. A token mixing letters
-        # and digits is a name at any length, and a long number still qualifies exactly as
-        # it did before.
+        # A bare number needs LENGTH to be a name, the same bar the capitals rule carries.
+        # Without it "answer in 2 sentences" filters the archive on "2". A token mixing
+        # letters and digits is a name at any length.
         return bool(_HAS_LETTER.search(token)) or len(token) >= 3
     return len(token) >= 3 and token.upper() in raw_tokens
 
@@ -174,24 +158,15 @@ def conversation_match_queries(query: str) -> list[str]:
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    # The capitals rule needs CONTRAST to mean anything. In a line with no lower case at
-    # all, every word passes it, so the filter ORs in "what" and "the" and stops filtering
-    # anything: measured, "WHAT IS THE CURRENT VALUE OF ZQXVARA123?" produced
-    # '"what" OR "the" OR "current" OR "value" OR "zqxvara123"' where the same question in
-    # ordinary case produced '"zqxvara123"', and at top_k 1 the single slot went to a turn
-    # about a retry budget instead of the variable. Shape still decides, so ZQXVARA123 is
-    # an identifier either way; only the shouted-prose case changes, and a pure-letter
-    # name in a shouted question falls back to the permissive pass exactly as the
-    # lower-case spelling of that question already does.
+    # The capitals rule needs CONTRAST: in an all-caps line every word passes it, so the
+    # filter ORs in "what" and "the" and filters nothing. Shape still decides, so
+    # ZQXVARA123 is an identifier either way; only shouted prose changes.
     raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
-    # A QUOTED word is the subject, whatever the stopword list thinks of it. `What did I
-    # say about "this"?` reduces to '"say"' once the list has had it, and an archived
-    # `Use this endpoint` is then unreachable: it never contains "say", and if unrelated
-    # chunks fill the fetch window `_candidates` never reaches its hybrid fallback. Quotes
-    # are the one signal a user has for naming a word rather than using it, so the tokens
-    # inside them are exempt. They stay out of `identifiers` -- a quoted function word is
-    # not shaped like a name -- so this widens the permissive pass only.
+    # A QUOTED word is the subject whatever the stopword list thinks: `What did I say about
+    # "this"?` otherwise reduces to '"say"' and an archived `Use this endpoint` is
+    # unreachable. Quoted tokens stay out of `identifiers`, so this widens only the
+    # permissive pass.
     quoted = frozenset(
         token
         for match in _QUOTED.findall(query.lower())
@@ -604,11 +579,9 @@ def search_lexical(
         # matched row BEFORE the LIMIT, so it costs more the commoner the query terms are.
         # With nothing linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # The mirror of `newest_first`, and needed for the same reason: the default
-            # ordering is rowid, a re-embed deletes and reinserts a chunk while keeping
-            # its ordinal, and the oldest turn can therefore be pushed out of the front
-            # window while the newest-first leg deliberately skips it. NULLs first here,
-            # since a row archived before the column existed is the oldest there is.
+            # The mirror of `newest_first`, for the same reason: rowid ordering is
+            # scrambled by a re-embed, which can push the oldest turn out of the window.
+            # NULLs first, since a row archived before the column existed is the oldest.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -617,11 +590,9 @@ def search_lexical(
                 f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC LIMIT ?"
             )
         elif newest_first:
-            # Ordered by the archive ordinal, not by rowid. Rowid is insertion order, and
-            # a re-embed deletes and reinserts a chunk while keeping its ordinal, so rowid
-            # scrambles exactly the rows this leg exists to reach: measured, a rowid DESC
-            # window returned ordinals 70, 193, 116, ... and still missed the newest turn.
-            # NULLs (rows archived before the column) sort last here, which is oldest.
+            # Ordered by archive ordinal, not rowid: rowid is insertion order, and a
+            # re-embed reinserts a chunk, so a rowid DESC window returned ordinals
+            # 70, 193, 116, ... and missed the newest turn. NULLs sort last, as oldest.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "

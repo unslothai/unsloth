@@ -41,14 +41,12 @@ CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K"
 CONVERSATION_RECALL_RESERVE_TOKENS = int(
     os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
 )
-# Shape the archive's lexical query: require the identifier-like tokens first, drop
-# function words from the fallback. Off restores the plain OR-of-every-token that every
-# other RAG scope uses, and the candidate set is then identical to before.
+# Shape the archive's lexical query: require identifier-like tokens first, drop function
+# words from the fallback. Off restores the plain OR-of-every-token other scopes use.
 CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
-# "chronological" presents recalled turns oldest first, labelled with their position, and
-# says a later turn supersedes an earlier one. "relevance" restores the previous
-# rendering byte for byte. Presentation only: neither setting changes which turns are
-# selected, which is what keeps "what did I originally say" working.
+# "chronological" presents recalled turns oldest first, labelled, with later superseding
+# earlier; "relevance" restores the previous rendering. Presentation only: neither changes
+# which turns are selected.
 CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}

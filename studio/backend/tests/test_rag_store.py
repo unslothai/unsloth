@@ -373,8 +373,8 @@ def test_a_pasted_log_does_not_make_the_archive_query_quadratic(monkeypatch):
     expressions = store.conversation_match_queries(question)
 
     assert expressions and expressions[0].startswith('"zqxvara123"')
-    # Once for the lower-cased tokens, once for the raw ones. Anything that grows with
-    # the token count is the quadratic coming back.
+    # Once for the lower-cased tokens, once for the raw ones. Anything that grows with the
+    # token count is the quadratic coming back.
     assert scans["n"] <= 2, f"tokenized the question {scans['n']} times"
 
 
@@ -408,6 +408,5 @@ def test_a_quoted_function_word_survives_the_stopword_filter():
 
     assert quoted == ['"say" OR "this"']
     assert plain == ['"say"']
-    # Quoting a function word does not make it look like an identifier, so the focused
-    # pass is unchanged and this widens the permissive one only.
+    # A quoted function word is not an identifier, so only the permissive pass widens.
     assert len(quoted) == 1
