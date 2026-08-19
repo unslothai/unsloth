@@ -99,6 +99,7 @@ class CachedDatasetItem(BaseModel):
     processed_cache: bool = False
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
 
 
 class CachedDatasetsResponse(BaseModel):

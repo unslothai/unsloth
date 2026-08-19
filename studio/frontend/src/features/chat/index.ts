@@ -112,6 +112,7 @@ export {
 } from "./utils/prompt-queue-boundary";
 export {
   adoptPreStreamRunReservation,
+  cancelPreStreamRunReservations,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -120,6 +121,11 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
+export {
+  confirmStopRunningChatsIfNeeded,
+  type StopRunningChatsDecision,
+} from "./utils/confirm-stop-running-chats";
 export {
   promptQueueActiveItemChanged,
   reorderPromptQueueItems,

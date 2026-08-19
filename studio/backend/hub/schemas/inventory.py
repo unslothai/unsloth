@@ -45,8 +45,15 @@ class GgufVariantDetail(BaseModel):
         None,
         description = (
             'Transport recorded for the partial state ("http" or '
-            '"xet"), or null if not partial / unknown. Frontend uses '
-            "this to pick Resume (http) vs Redownload (xet) labels."
+            '"xet"), or null if not partial / unknown.'
+        ),
+    )
+    partial_resumable: bool = Field(
+        False,
+        description = (
+            "Whether THIS partial can be continued byte for byte, which is what picks "
+            "Resume over Continue. False for a Xet partial, and for an HTTP one no "
+            "installed writer can reopen."
         ),
     )
     dependency_key: Optional[str] = Field(
@@ -177,6 +184,10 @@ class LocalModelInfo(BaseModel):
             '"xet"), or null if not partial / unknown.'
         ),
     )
+    partial_resumable: bool = Field(
+        False,
+        description = "Whether THIS partial can be continued byte for byte.",
+    )
 
 
 class LocalModelListResponse(BaseModel):
@@ -210,6 +221,7 @@ class CachedRepoBase(BaseModel):
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
