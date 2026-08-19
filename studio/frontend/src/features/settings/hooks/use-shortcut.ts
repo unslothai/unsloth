@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   type ShortcutId,
+  formatBindingLabel,
   matchesBinding,
   parseBinding,
 } from "../lib/keyboard-shortcuts";
@@ -72,4 +73,20 @@ export function useShortcut(
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [binding, enabled, owned, skipInTextFields]);
+}
+
+/**
+ * Label for the chord `id` is bound to right now, in the platform's own
+ * notation, or null when the action is unassigned. Hints that render the
+ * shipped default instead would tell the user to press a chord that stopped
+ * working the moment they rebound or cleared the action in Settings.
+ */
+export function useShortcutLabel(id: ShortcutId): string | null {
+  const value = useKeyboardShortcutsStore((s) =>
+    resolveBinding(s.overrides, id),
+  );
+  return useMemo(() => {
+    const binding = parseBinding(value);
+    return binding ? formatBindingLabel(binding) : null;
+  }, [value]);
 }

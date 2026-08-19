@@ -57,7 +57,6 @@ import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
   DesktopTitlebarNavigation,
-  getClientPlatform,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
@@ -179,6 +178,7 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
+  useShortcutLabel,
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
@@ -722,8 +722,11 @@ export function AppSidebar() {
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
-  // Mac uses Cmd, others use Ctrl. Not Tauri-gated, so it's right on web too.
-  const [isMacPlatform] = useState(() => getClientPlatform().includes("mac"));
+  // Read from the shortcuts store, not the shipped default: a rebound or
+  // cleared action must not leave the hint advertising a dead chord. Both
+  // already render in the platform's own notation.
+  const searchShortcutLabel = useShortcutLabel("searchChats");
+  const settingsShortcutLabel = useShortcutLabel("openSettings");
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -2903,9 +2906,11 @@ export function AppSidebar() {
                     hidden={isMobile}
                   >
                     {t("shell.navigation.search")}
-                    <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
-                      {isMacPlatform ? "⌘K" : "Ctrl+K"}
-                    </kbd>
+                    {searchShortcutLabel && (
+                      <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
+                        {searchShortcutLabel}
+                      </kbd>
+                    )}
                   </TooltipContent>
                 </Tooltip>
                 {!isMobile && !usesDesktopTitlebar && (
@@ -3794,7 +3799,11 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
-                    <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
+                    {settingsShortcutLabel && (
+                      <DropdownMenuShortcut>
+                        {settingsShortcutLabel}
+                      </DropdownMenuShortcut>
+                    )}
                   </DropdownMenuItem>
                   {/* Optional items follow the order and visibility set in
                       Appearance settings; Settings above and the block after

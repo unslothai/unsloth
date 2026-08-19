@@ -58,7 +58,7 @@ export type {
   PersonalizationAppearance,
   PersonalizationProfile,
 } from "./api/personalization";
-export { useShortcut } from "./hooks/use-shortcut";
+export { useShortcut, useShortcutLabel } from "./hooks/use-shortcut";
 export {
   currentBinding,
   useKeyboardShortcutsStore,

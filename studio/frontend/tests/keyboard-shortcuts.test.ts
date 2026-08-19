@@ -327,3 +327,35 @@ test("a Super chord off macOS records nothing rather than a different chord", ()
   assert.ok(mac);
   assert.equal(formatBindingValue(mac), "Mod+Alt+KeyK");
 });
+
+// The sidebar search tooltip and the Settings menu row are the two hints a
+// user sees outside the shortcuts tab. Hard-coded, they keep advertising the
+// shipped chord after a rebind, and a dead one after a clear.
+test("the sidebar hints render the bound chord, not the shipped default", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const literal of ['"⌘K"', '"Ctrl+K"', "<DropdownMenuShortcut>⌘,"]) {
+    assert.ok(
+      !source.includes(literal),
+      `app-sidebar still hard-codes ${literal}`,
+    );
+  }
+  assert.ok(source.includes('useShortcutLabel("searchChats")'));
+  assert.ok(source.includes('useShortcutLabel("openSettings")'));
+  // Unassigned actions must drop the hint rather than render an empty key cap.
+  assert.ok(source.includes("{searchShortcutLabel && ("));
+  assert.ok(source.includes("{settingsShortcutLabel && ("));
+});
+
+test("a hint label follows the override and disappears when cleared", () => {
+  const label = (overrides: Parameters<typeof resolveBinding>[0], id: "searchChats" | "openSettings") => {
+    const binding = parseBinding(resolveBinding(overrides, id));
+    return binding ? formatBindingLabel(binding, false) : null;
+  };
+  assert.equal(label({}, "searchChats"), "Ctrl+K");
+  assert.equal(label({ searchChats: "Mod+Shift+KeyF" }, "searchChats"), "Ctrl+Shift+F");
+  assert.equal(label({ searchChats: null }, "searchChats"), null);
+  assert.equal(label({}, "openSettings"), "Ctrl+,");
+});
