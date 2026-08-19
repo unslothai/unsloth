@@ -72,7 +72,9 @@ def test_envelope_carries_the_template_and_its_seed_data():
     flat = _flatten_result(_result(_text("cpu 12%"), structured = {"cpu": 12}), UI)
     assert flat.startswith("cpu 12%\n")
     assert _envelope(flat) == {
-        "resourceUri": UI, "text": "cpu 12%", "structuredContent": {"cpu": 12},
+        "resourceUri": UI,
+        "text": "cpu 12%",
+        "structuredContent": {"cpu": 12},
     }
 
 
