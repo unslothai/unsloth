@@ -380,13 +380,14 @@ _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
 def _opencode_command() -> tuple[str, bool]:
-    if _which_with_install_dirs("opencode2"):
-        return "opencode2", True
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
     return "opencode", False
 
 
 def _opencode_supports_native_auto(command: str = "opencode") -> bool:
-    if command == "opencode2":
+    if Path(command).stem.lower() == "opencode2":
         return True
     executable = _which_with_install_dirs(command)
     if executable is None:
@@ -409,13 +410,13 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
     )
 
 
-def _opencode_subcommand(args: list[str]) -> Optional[str]:
-    """Return an explicit OpenCode subcommand after supported global options."""
+def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
+    """Return an explicit OpenCode subcommand and its index after global options."""
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--":
-            return None
+            return None, None
         if arg in _OPENCODE_GLOBAL_BOOLEAN_OPTIONS:
             index += 1
             continue
@@ -428,9 +429,9 @@ def _opencode_subcommand(args: list[str]) -> Optional[str]:
         # A non-global option (e.g. --session) is a TUI flag; stop before its value is
         # mistaken for a subcommand.
         if arg.startswith("-"):
-            return None
-        return arg
-    return None
+            return None, None
+        return arg, index
+    return None, None
 
 
 def _opencode_native_auto_args(
@@ -443,7 +444,7 @@ def _opencode_native_auto_args(
     routed = list(args)
     if not yolo:
         return routed, False
-    subcommand = _opencode_subcommand(routed)
+    subcommand, _ = _opencode_subcommand(routed)
     if v2 and subcommand in _OPENCODE_V2_SUBCOMMANDS and subcommand != "run":
         return routed, False
     if not v2 and subcommand in _OPENCODE_NON_AUTO_SUBCOMMANDS:
@@ -469,13 +470,16 @@ def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
         or any(arg.startswith("--server=") for arg in head)
     ):
         return routed
-    subcommand = _opencode_subcommand(routed)
+    subcommand, subcommand_index = _opencode_subcommand(routed)
     if (
         subcommand in _OPENCODE_V2_SUBCOMMANDS
         and subcommand not in _OPENCODE_V2_STANDALONE_SUBCOMMANDS
     ):
         return routed
-    routed.insert(separator, "--standalone")
+    insert_at = (
+        subcommand_index + 1 if subcommand in _OPENCODE_V2_STANDALONE_SUBCOMMANDS else separator
+    )
+    routed.insert(insert_at, "--standalone")
     return routed
 
 

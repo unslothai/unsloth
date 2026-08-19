@@ -729,7 +729,7 @@ def test_opencode_command_prefers_installed_v2(monkeypatch):
         "_which_with_install_dirs",
         lambda name: "/usr/local/bin/opencode2" if name == "opencode2" else None,
     )
-    assert start._opencode_command() == ("opencode2", True)
+    assert start._opencode_command() == ("/usr/local/bin/opencode2", True)
 
 
 def test_opencode_command_falls_back_to_v1(monkeypatch):
@@ -745,7 +745,7 @@ def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path / "existing"))
     monkeypatch.setattr(start.shutil, "which", _path_aware_which({"opencode2": install_dir}))
 
-    assert start._opencode_command() == ("opencode2", True)
+    assert start._opencode_command() == (str(install_dir / "opencode2"), True)
 
 
 def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
@@ -4621,6 +4621,22 @@ def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypa
     assert f"provider policies must allow '{start._OPENCODE_PROVIDER}'" in result.output
 
 
+def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(
+    fake_studio, monkeypatch, tmp_path
+):
+    binary = tmp_path / ".opencode" / "bin" / "opencode2"
+    monkeypatch.setattr(
+        start,
+        "_opencode_command",
+        lambda: (str(binary), True),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == [str(binary), "--standalone"]
+
+
 def test_connect_opencode_v2_models_uses_private_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
 
@@ -5096,8 +5112,8 @@ def test_yolo_opencode_v2_run_uses_standalone_and_native_auto(fake_studio, monke
     assert _launch_command(result.output) == [
         "opencode2",
         "run",
-        "hello",
         "--standalone",
+        "hello",
         "--auto",
     ]
     assert "permission" not in _opencode_inline_config(result.output)
