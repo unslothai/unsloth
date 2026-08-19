@@ -3078,13 +3078,13 @@ def test_text_said_before_a_tool_call_rides_on_the_call_message():
     )
 
     assert [message["role"] for message in before] == ["assistant", "tool"]
-    assert "let me check." in conversation_archive._normalise(
+    assert "Let me check." in conversation_archive._normalise(
         conversation_archive._probe_text(before[0])
     )
     assert [message["role"] for message in after] == ["assistant", "tool", "assistant"]
     assert conversation_archive._normalise(
         conversation_archive._probe_text(after[2])
-    ) == "two files."
+    ) == "Two files."
 
 
 def test_turns_differing_only_in_case_do_not_share_a_seat(conn):
@@ -3266,10 +3266,10 @@ def test_two_sequential_tool_rounds_replay_as_two_exchanges():
     ]
     # The text before the second call rides ON it, exactly as the flush builds it.
     second = conversation_archive._normalise(conversation_archive._probe_text(wire[2]))
-    assert "pytest" in second and "now the tests." in second
+    assert "pytest" in second and "Now the tests." in second
     assert conversation_archive._normalise(
         conversation_archive._probe_text(wire[4])
-    ) == "all green."
+    ) == "All green."
 
 
 def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn):
