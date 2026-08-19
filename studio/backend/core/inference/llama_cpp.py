@@ -411,8 +411,9 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
     version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
     The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
-    system HIP/ROCR risks missing symbols. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure
-    bundle (for a host whose system ROCm lacks this arch); no-op on WSL / non-Linux.
+    system HIP/ROCR risks missing symbols, and when it does load_model retries once
+    with the bundle only. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 skips the prepend up front,
+    for a host whose system ROCm lacks this arch. No-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
@@ -7694,8 +7695,14 @@ class LlamaCppBackend:
         return path_dirs
 
     @staticmethod
-    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
-        """Build a subprocess env that lets llama-server resolve native libs."""
+    def _llama_server_env_for_binary(
+        binary: str, *, use_system_rocm: bool = True
+    ) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs.
+
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        WSL's librocdxg prepend is independent and is not gated by this flag.
+        """
         env = child_env_without_native_path_secret()
         # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
         binary_dir = str(_llama_lib_dir(binary))
@@ -7737,8 +7744,9 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver.
-            lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+            # which can be incompatible with the host amdkfd driver (#7233).
+            if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
+                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -11997,6 +12005,18 @@ class LlamaCppBackend:
         # LLAMA_SERVER_PATH), and what a "symbol lookup error" from a mismatched
         # runtime exits with. Name both causes instead of blaming a distro
         # package -- but still keep it off the GGUF and off memory.
+        # A ROCm symbol lookup is also 127, but the generic text below would send
+        # the user to reinstall a binary Vulkan and a shell launch both run fine.
+        _rocm_miss = LlamaCppBackend._bundled_hip_symbol_miss(output or "")
+        if _rocm_miss:
+            _miss_obj, _miss_sym = _rocm_miss
+            return (
+                f"llama-server could not start: bundled {_short(os.path.basename(_miss_obj))} "
+                f"looked up {_short(_miss_sym)} in a different ROCm than it was built "
+                "against. That is a HIP/ROCR version mix, not a missing "
+                "binary and not out of VRAM. Try the Vulkan backend, or "
+                f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
         if returncode == 127:
             # Same provenance split as the library branches: the updater cannot
             # touch a pinned binary, so do not send its owner there.
@@ -12650,6 +12670,59 @@ class LlamaCppBackend:
             return False
         # the split-axis enum token, unique to this assert (not the source file).
         return "split_axis" in text
+
+    # The prepend covers the whole system ROCm dir, so any lib in it can be the
+    # one that fails to resolve, not just HIP. Matched on the basename so a path
+    # component (/opt/librocm-custom/...) cannot stand in for the object.
+    _ROCM_OBJECT_HINTS = ("libamdhip", "libamd_comgr", "libhsa-runtime", "libhip", "libroc")
+
+    # Build dirs where a bundle-only launch has come up healthy after the mix
+    # crashed, paired with the binary revision that proved it. The installer
+    # swaps a new runtime into the same path, so the revision prevents an old
+    # proof from suppressing the system ROCm prepend for the new build.
+    _bundle_only_rocm_dirs: dict[str, tuple] = {}
+    _bundle_only_rocm_lock = threading.Lock()
+
+    @staticmethod
+    def _remember_bundle_only_rocm(binary: str) -> None:
+        resolved = _resolve_llama_binary(binary)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._bundle_only_rocm_lock:
+            LlamaCppBackend._bundle_only_rocm_dirs[str(resolved.parent)] = revision
+
+    @staticmethod
+    def _prefers_bundle_only_rocm(binary: str) -> bool:
+        resolved = _resolve_llama_binary(binary)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._bundle_only_rocm_lock:
+            return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
+
+    @staticmethod
+    def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
+        """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
+
+        glibc prints ``symbol lookup error: <object>: undefined symbol: <sym>[,
+        version <v>]``. A ggml symbol, or an absent .so (``error while loading
+        shared libraries``), is a different failure. The object is echoed
+        verbatim, so split on the ": undefined symbol:" that follows it rather
+        than on whitespace, the same way the missing-library branch above keeps
+        "/opt/My Runtime/libfoo.so" whole.
+        """
+        match = re.search(
+            r"symbol lookup error:[ \t]*([^\r\n]{1,4096}?):"
+            r"[ \t]*undefined symbol:[ \t]*([^\s,]+)",
+            output or "",
+        )
+        if not match:
+            return None
+        obj = os.path.basename(match.group(1)).lower()
+        if not obj.startswith(LlamaCppBackend._ROCM_OBJECT_HINTS):
+            return None
+        return match.group(1), match.group(2)
+
+    @staticmethod
+    def _is_bundled_hip_rocr_mismatch(output: str) -> bool:
+        return LlamaCppBackend._bundled_hip_symbol_miss(output) is not None
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
@@ -17406,20 +17479,27 @@ class LlamaCppBackend:
                 # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
                 _spawn_cwd: Optional[str] = None
+                # Load-scoped, not per call: the correction edits the shared env,
+                # so it outlives this spawn, and the launch that finally comes up
+                # healthy is often a later one (drafterless, no-flash, arch
+                # fallback). A per-call flag left those successes unrecorded.
+                _did_rocm_retry = False
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
-                    Retries once with --fit off when the first attempt
-                    crashes during startup and run_cmd is eligible (see
-                    _fit_off_retry_eligible).
+                    Up to three launches: the first, one ROCm env correction,
+                    and one --fit recovery. Separate flags, so a library mix
+                    does not spend the fit slot and a VRAM crash after the
+                    correction can still fit-retry.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
-                    nonlocal _last_spawn_cmd, _mem_host_resident
+                    nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
-                    for _spawn_attempt in (0, 1):
+                    _did_fit_retry = False
+                    for _spawn_attempt in (0, 1, 2):
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
@@ -17475,20 +17555,52 @@ class LlamaCppBackend:
                         )
                         self._stdout_thread.start()
                         if self._wait_for_health(timeout = 600.0):
+                            if _did_rocm_retry:
+                                # Proved on this host: every later child skips the
+                                # prepend instead of crashing into it first.
+                                self._remember_bundle_only_rocm(binary)
                             return True
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
                         # A split-axis abort (#6415) is fit-independent: skip the
                         # --fit off retry and let the caller latch it.
-                        _split_axis_crash = self._is_tensor_split_assert(
-                            "\n".join(self._stdout_lines[-50:])
-                        )
+                        _startup_output = "\n".join(self._stdout_lines[-50:])
+                        _split_axis_crash = self._is_tensor_split_assert(_startup_output)
+                        _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         if (
-                            _spawn_attempt == 0
+                            not _did_rocm_retry
+                            and _startup_crashed
+                            and not _split_axis_crash
+                            and _hip_rocr_mismatch
+                        ):
+                            # The prepend is what a shell launch does not do, which
+                            # is why the same binary runs from a terminal. Drop
+                            # those dirs only: the rest of env holds the pooling
+                            # and memory scrubs.
+                            _bundle_only = self._llama_server_env_for_binary(
+                                binary, use_system_rocm = False
+                            )
+                            _retry_ld = _bundle_only.get("LD_LIBRARY_PATH", "")
+                            # "" on a host that never had the var: nothing to undo.
+                            if _retry_ld and _retry_ld != env.get("LD_LIBRARY_PATH"):
+                                logger.warning(
+                                    "llama-server crashed during startup (exit code %s) "
+                                    "because a bundled ROCm library could not resolve a "
+                                    "symbol against the system ROCm; retrying once "
+                                    "with the bundled runtime only. Crash log: %s",
+                                    self._process.returncode,
+                                    self._llama_log_path,
+                                )
+                                env["LD_LIBRARY_PATH"] = _retry_ld
+                                _did_rocm_retry = True
+                                continue
+                        if (
+                            not _did_fit_retry
                             and fully_gpu_offloaded
                             and _startup_crashed
                             and not _split_axis_crash
+                            and not _hip_rocr_mismatch
                         ):
                             # We forced --fit off because Unsloth's (conservative) VRAM
                             # math placed the model fully on GPU. A startup crash here
@@ -17532,12 +17644,14 @@ class LlamaCppBackend:
                                 )
                             run_cmd = _run
                             self._memory_state = resolve_effective_memory_state(_run, env)
+                            _did_fit_retry = True
                             continue
                         if (
-                            _spawn_attempt == 0
+                            not _did_fit_retry
                             and _fit_retry_allowed
                             and _startup_crashed
                             and not _split_axis_crash
+                            and not _hip_rocr_mismatch
                         ):
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
@@ -17581,6 +17695,7 @@ class LlamaCppBackend:
                                         "the --fit off retry; it offloads every layer."
                                     )
                                 self._memory_state = resolve_effective_memory_state(run_cmd, env)
+                            _did_fit_retry = True
                             continue
                         return False
 
