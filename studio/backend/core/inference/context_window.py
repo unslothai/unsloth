@@ -117,8 +117,8 @@ def truncate_oldest_messages(
     for index, group in enumerate(groups):
         if index not in dropped_groups:
             if kept and kept[-1].get("role") == "user" and group and group[0].get("role") == "user":
-                # Strict chat templates reject adjacent user turns. This occurs when
-                # an internal tool re-prompt follows an evicted exchange.
+                # Strict chat templates reject adjacent user turns, which an internal
+                # tool re-prompt after an evicted exchange would produce.
                 kept.append({"role": "assistant", "content": _OMITTED_TOOL_EXCHANGE})
             kept.extend(group)
     return kept, dropped
@@ -132,11 +132,9 @@ def messages_have_media(messages: list[dict]) -> bool:
         for part in content:
             if not isinstance(part, dict):
                 continue
-            # `input_video` is llama.cpp's own part type, written by `_inject_video_part`
-            # into the same message list this fit then sees. Missing from the list, a video
-            # prompt ran the rolling preflight even though `/apply-template` does not count
-            # the sampled video tokens, so it could be certified as fitting when it does
-            # not, or lose history it did not need to lose.
+            # `input_video` is llama.cpp's own part type (written by `_inject_video_part`);
+            # missing it here would let a video prompt take the rolling preflight, whose
+            # `/apply-template` count omits the sampled video tokens.
             if part.get("type") in (
                 "image_url",
                 "input_audio",
