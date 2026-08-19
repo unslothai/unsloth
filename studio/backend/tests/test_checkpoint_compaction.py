@@ -557,6 +557,30 @@ def test_an_unreachable_archive_stops_the_epoch_on_the_TURN_IT_BREAKS(monkeypatc
     assert llama_cpp._archive_is_degraded() is True
 
 
+def test_the_reachability_probe_is_no_for_an_embedder_that_cannot_initialize(monkeypatch):
+    """A tokenizer that is merely CONSTRUCTED proves nothing.
+
+    `embedding_identity` is string formatting over resolver metadata and touches no model,
+    and the llama backend's `token_counter` hands back a lazy closure that starts no
+    server, so both reported a healthy archive while the embedder could not initialize at
+    all. The reset was then committed with a block saying the dropped turns are
+    searchable, and the write failed afterwards and swallowed it.
+    """
+    from core.rag import conversation_archive, embeddings
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(
+        conversation_archive.rag_db, "get_connection", lambda *a, **k: object()
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("embedding backend failed to initialize")
+
+    monkeypatch.setattr(embeddings, "_get_backend", _boom)
+
+    assert conversation_archive.reachable() is False
+
+
 def test_the_reachability_probe_is_no_for_a_store_that_cannot_be_opened(monkeypatch):
     """A probe, not a promise: it answers no rather than raising into the chat."""
     from core.rag import conversation_archive
@@ -709,9 +733,15 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
 
 
 def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(monkeypatch):
-    """`/v1/messages` is the live case: `_select_anthropic_server_tools` never adds
-    `search_conversation`, so an Anthropic-compatible request carrying a Studio thread_id
-    would reset an epoch behind a tool absent on every turn."""
+    """A request that NAMED its tools is the live case, on either surface.
+
+    `_select_anthropic_server_tools` returns the caller's list verbatim once tools are
+    named, and `tool_choice: "none"` does the same on the OpenAI path, so such a request
+    would reset an epoch behind a tool absent on every turn.
+
+    NOT `/v1/messages` as a route, which this docstring used to claim: that route never
+    passes `context_overflow`, so it reaches no checkpoint fit at all, and its default
+    catalogue is ALL_TOOLS, which does contain `search_conversation`."""
     from core.inference import llama_cpp
 
     monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: True)
@@ -977,7 +1007,7 @@ def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
     )
 
 
-def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_away():
+def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_away(monkeypatch):
     """The worst of both was the old behaviour: a request that may not reset fell through
     to the rolling window, which replays the checkpoint-sized boundary (a near-total
     eviction) WITHOUT rebuilding the block that made it survivable. Measured before the
@@ -985,6 +1015,10 @@ def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_aw
     gone from the prompt entirely, one turn after the user was told the conversation was
     compacted and searchable."""
     from core.inference import llama_cpp
+
+    # This is about what an epoch KEEPS, not about archive health, and the reachability
+    # probe now really starts the embedder -- which no test host here has.
+    monkeypatch.setattr("core.rag.conversation_archive.reachable", lambda: True)
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
     _, first = llama_cpp._fit_context(

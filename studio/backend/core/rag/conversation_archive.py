@@ -534,12 +534,22 @@ def reachable() -> bool:
     A probe rather than a promise. It cannot see a failure that begins after it returns,
     which leaves the same one-turn window for a store that dies mid-request; the turns are
     still recovered, because the client re-sends the branch and the write is idempotent.
+    Nor does a tokenizer that answers guarantee that an encode will.
+
+    The counter is CALLED, not merely constructed. `embedding_identity` is string
+    formatting over resolver metadata and touches no model, and the llama backend's
+    `token_counter` hands back a lazy closure that starts no server, so both reported a
+    healthy archive while the embedder could not initialize at all. Calling it forces the
+    load. The work is not extra: `archive_turns` makes the identical call moments later on
+    the same request, and this runs only on an overflowing checkpoint-eligible request.
     """
     if not enabled():
         return False
     try:
         rag_db.get_connection()
-        embeddings.embedding_identity(config.effective_embedding_model())
+        model = config.effective_embedding_model()
+        embeddings.embedding_identity(model)
+        embeddings.token_counter(model)("")
         return True
     except Exception:  # noqa: BLE001 -- an unreachable archive is "no", never an error
         logger.debug("conversation_archive.unreachable", exc_info = True)

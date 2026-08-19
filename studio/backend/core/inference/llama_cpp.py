@@ -102,11 +102,16 @@ def _memory_tool_withheld(thread_id, tools) -> bool:
     """Whether this request carries no `search_conversation` although its thread has one.
 
     The tool-loop paths know their own catalogue, so they can answer the question the
-    process policy cannot: will THIS request be able to reach the archive. `/v1/messages`
-    is the case that matters -- `_select_anthropic_server_tools` never adds
-    `search_conversation`, so an Anthropic-compatible request carrying a Studio
-    `thread_id` would otherwise reset an epoch behind a tool that is absent on every turn,
-    which is the one outcome checkpoint compaction must never produce.
+    process policy cannot: will THIS request be able to reach the archive. A request that
+    NAMED its tools is the case that matters, on either surface: `_select_anthropic_server_tools`
+    returns the caller's list verbatim once tools are named, and `tool_choice: "none"` does
+    the same on the OpenAI path, so such a request would otherwise reset an epoch behind a
+    tool that is absent on every turn, which is the one outcome checkpoint compaction must
+    never produce.
+
+    Not `/v1/messages` as a route, which an earlier version of this comment claimed: that
+    route never passes `context_overflow`, so it reaches no checkpoint fit at all, and its
+    default catalogue is ALL_TOOLS, which does contain `search_conversation`.
 
     Gated on the thread ALREADY having an archive, and that gate is load-bearing rather
     than an optimisation: the archive is written during the first compaction, so on the
