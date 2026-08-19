@@ -1707,10 +1707,16 @@ def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
     rendered = conversation_archive.render_turn(wire)
     text = rendered[1] if isinstance(rendered, tuple) else rendered
 
-    assert conversation_archive._document_matches_one_run(
-        [{"text": text}], conversation_archive.branch_message_texts(stored), 3
-    ) is True
+    assert (
+        conversation_archive._document_matches_one_run(
+            [{"text": text}], conversation_archive.branch_message_texts(stored), 3
+        )
+        is True
+    )
     # The wire-shaped branch, which every live caller supplies, is unchanged.
-    assert conversation_archive._document_matches_one_run(
-        [{"text": text}], conversation_archive.branch_message_texts(wire), 3
-    ) is True
+    assert (
+        conversation_archive._document_matches_one_run(
+            [{"text": text}], conversation_archive.branch_message_texts(wire), 3
+        )
+        is True
+    )
