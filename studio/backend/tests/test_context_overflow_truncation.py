@@ -240,6 +240,11 @@ def test_rolling_media_detection_covers_image_and_audio_parts():
     assert messages_have_media(
         [{"role": "user", "content": [{"type": "input_audio", "input_audio": {}}]}]
     )
+    # llama.cpp's own part type; missing it would send a video prompt through a
+    # preflight that does not count its tokens.
+    assert messages_have_media(
+        [{"role": "user", "content": [{"type": "input_video", "input_video": {"data": "AAAA"}}]}]
+    )
     assert not messages_have_media([{"role": "user", "content": "text only"}])
 
 

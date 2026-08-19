@@ -3195,3 +3195,81 @@ def test_the_deleted_conversation_goes_even_when_its_id_comes_back(conn):
     )
     assert "5150" not in remaining
     assert "8080" in remaining
+
+
+def _branch_switch_thread():
+    """Branch A, a later sibling branch B, and the user back on A. Returns A's messages."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    rows = [
+        ("m0", None, "user", "turn 1 about ZQXVARA123", 2),
+        ("m1", "m0", "assistant", "answer 1", 3),
+        ("m2", "m1", "user", "turn 2 on A about ZQXVARA123", 4),
+        ("m3", "m2", "assistant", "answer 2 on A", 5),
+        ("m4", "m3", "user", "turn 3 on A about ZQXVARA123", 6),
+        ("m5", "m4", "assistant", "answer 3 on A", 7),
+        # The user rewinds to m1, takes branch B, and continues there, so B's rows are
+        # the newest in the thread. Then the branch picker takes them back to A.
+        ("m6", "m1", "user", "turn 2 on B about ZQXVARA123", 8),
+        ("m7", "m6", "assistant", "answer 2 on B", 9),
+    ]
+    for identifier, parent, role, text, created in rows:
+        studio_db.upsert_chat_message(
+            {
+                "id": identifier,
+                "threadId": THREAD,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": created,
+            }
+        )
+    return [
+        {"role": "user", "content": "turn 1 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "turn 2 on A about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 2 on A"},
+        {"role": "user", "content": "turn 3 on A about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 3 on A"},
+    ]
+
+
+def test_positions_follow_the_request_branch_not_the_newest_stored_row(conn):
+    """The newest stored row is not the branch the request is on.
+
+    Switching to a sibling branch, continuing there, and then switching BACK leaves the
+    abandoned branch holding the greatest created_at. Seeding the ancestry walk from the
+    last stored row therefore read the branch the user had left: turns being evicted from
+    the request's own branch matched no position, took MAX + 1 over a cumulative archive
+    the other branch had already pushed up, and `format_conversation_recall` presented an
+    older statement as the one that supersedes.
+    """
+    live = _branch_switch_thread()
+
+    positions = conversation_archive._transcript_positions(THREAD, branch = live)
+
+    assert len(positions) == 3, positions
+    assert conversation_archive._occurrences(positions, live[2:4]) == [1]
+    assert conversation_archive._occurrences(positions, live[4:6]) == [2]
+
+
+def test_the_branch_seed_falls_back_when_nothing_matches(conn):
+    """No branch, or a branch that matches nothing, has to leave today's behaviour alone.
+
+    An API-only caller passes none, and a zero-match seed must not collapse `positions`:
+    an empty chain empties every seat and sends every turn to MAX + 1, which is strictly
+    worse than reading the newest row.
+    """
+    _branch_switch_thread()
+
+    seeded = conversation_archive._transcript_positions(THREAD)
+    unmatched = conversation_archive._transcript_positions(
+        THREAD, branch = [{"role": "user", "content": "nothing in this thread says this"}]
+    )
+
+    # Branch B is the newest stored row, so both fall back to it: two turns, not three.
+    assert len(seeded) == 2, seeded
+    assert unmatched == seeded

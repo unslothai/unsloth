@@ -15687,8 +15687,8 @@ async def openai_chat_completions(
                             or int(_choice_context_truncation.get("dropped_messages") or 0)
                             >= int(_context_truncation.get("dropped_messages") or 0)
                         ):
-                            # Choices share the original prompt. Keep the shortest
-                            # choice's cumulative fit instead of summing choices.
+                            # Choices share one prompt: report the choice that dropped
+                            # the most, rather than summing across choices.
                             _context_truncation = _choice_context_truncation
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
