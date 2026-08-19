@@ -304,7 +304,9 @@ def test_the_manifest_records_the_venvs_own_requirements_not_the_installers(inst
     So the two roots are made deliberately different here, and the manifest must
     describe the one the verifier will read.
     """
-    installed = _fake_venv(install_root, {"studio.txt": "pytest\n", "extras.txt": "openai==3.2.0\n"})
+    installed = _fake_venv(
+        install_root, {"studio.txt": "pytest\n", "extras.txt": "openai==3.2.0\n"}
+    )
     # The installer's tree, as an older bundle would carry it.
     (req_root / "studio.txt").write_text("pytest\n", encoding = "utf-8")
     (req_root / "extras.txt").write_text("openai>=2.7.2\n", encoding = "utf-8")
