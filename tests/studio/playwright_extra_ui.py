@@ -436,7 +436,11 @@ with sync_playwright() as p:
     if not compare_opened:
         # Which of the two was missing, because "Compare nav not found" sent the
         # last reader looking for a removed menu item that was never removed.
-        missing = "the composer's Tools and attachments button" if plus_btn is None else "the Compare chat menu item"
+        missing = (
+            "the composer's Tools and attachments button"
+            if plus_btn is None
+            else "the Compare chat menu item"
+        )
         soft_fail(f"Compare nav not found: {missing} never appeared")
     else:
         page.wait_for_timeout(1500)

@@ -125,7 +125,7 @@ def test_the_helper_binds_playwrights_own_timeout_error() -> None:
     """
     source = (Path(__file__).resolve().parent / "_playwright_robust.py").read_text(encoding = "utf-8")
     assert "from playwright.sync_api import TimeoutError as PlaywrightTimeoutError" in source
-    body = source[source.index("def wait_for_first")           :]
+    body = source[source.index("def wait_for_first") :]
     body = body[: body.index("\ndef ")]
     assert "from playwright.sync_api import" in body, (
         "the playwright import moved out of wait_for_first(); at module scope it "
