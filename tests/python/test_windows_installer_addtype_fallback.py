@@ -657,7 +657,7 @@ def test_final_normalization_strips_every_extended_prefix():
     # The two sides have to agree about which prefixes come off, and there are
     # exactly two rules on the Python side.
     assert 'resolved.startswith("\\\\\\\\?\\\\UNC\\\\")' in gate
-    assert 'resolved = resolved[4:]' in gate
+    assert "resolved = resolved[4:]" in gate
     assert "Volume{" not in gate
 
 
@@ -692,11 +692,12 @@ def test_the_installer_and_the_runtime_gate_normalize_alike(resolved: str, expec
         )
     )
     assert result.returncode == 0, result.stderr
-    got = _lines(result, "OUT:")[0][len("OUT:"):]
+    got = _lines(result, "OUT:")[0][len("OUT:") :]
     assert got == expected
 
     # And the same input through the Python gate's own rules.
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
         "_studio_runtime_gate", REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py"
     )
@@ -1118,7 +1119,7 @@ def test_the_uninstaller_reclaims_the_temp_tree_at_both_spellings(tmp_path: Path
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    dirs = [line[len("DIR:"):] for line in _lines(result, "DIR:")]
+    dirs = [line[len("DIR:") :] for line in _lines(result, "DIR:")]
     assert len(dirs) == 2, dirs
     assert any(d.startswith(dead) for d in dirs), dirs
     # The temp tree, not the data directory.
