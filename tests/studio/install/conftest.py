@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,17 @@ import pytest
 _STUDIO_DIR = Path(__file__).resolve().parents[3] / "studio"
 if str(_STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(_STUDIO_DIR))
+
+# UNSLOTH_NO_TORCH cannot go in the per-test fixture below: install_python_stack reads it
+# once at module scope into NO_TORCH, and for a test module that import happens during
+# collection, before any fixture runs. A shell that exports it (install.sh does) would
+# otherwise return every routing plan early and fail the suite on the environment rather
+# than on the code. Recompute the constant too, since a whole-tree run collects other
+# directories first and may already have imported the module.
+os.environ.pop("UNSLOTH_NO_TORCH", None)
+_ips = sys.modules.get("install_python_stack")
+if _ips is not None and hasattr(_ips, "_infer_no_torch"):
+    _ips.NO_TORCH = _ips._infer_no_torch()
 
 
 # Every variable here steers torch routing, so a developer or a CI runner that exports
