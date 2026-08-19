@@ -200,6 +200,50 @@ export const ja = {
       data: "データ",
       agents: "エージェント",
       debugging: "ログ",
+      keyboardShortcuts: "ショートカット",
+    },
+    keyboardShortcuts: {
+      title: "キーボードショートカット",
+      description:
+        "ショートカットを変更したり、消してブラウザや OS にそのキーを譲ったりできます。",
+      searchPlaceholder: "ショートカットを検索…",
+      noResults: "該当するショートカットはありません。",
+      unassigned: "未割り当て",
+      recording: "キーを押してください…",
+      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
+      needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
+      conflict: "別のショートカットでも使われています",
+      conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
+      edit: "ショートカットを変更",
+      clear: "ショートカットを削除",
+      reset: "既定値に戻す",
+      resetAll: "すべて既定値に戻す",
+      groups: {
+        general: "一般",
+        chat: "チャット",
+      },
+      actions: {
+        newChat: {
+          label: "新しいチャット",
+          description: "新しいチャットを開始します",
+        },
+        searchChats: {
+          label: "チャットを検索",
+          description: "チャット検索ダイアログを開きます",
+        },
+        toggleSidebar: {
+          label: "サイドバーの表示切り替え",
+          description: "サイドバーを表示または非表示にします",
+        },
+        openSettings: {
+          label: "設定を開く",
+          description: "設定ダイアログを開きます",
+        },
+        openKeyboardShortcuts: {
+          label: "キーボードショートカット",
+          description: "このショートカット一覧を開きます",
+        },
+      },
     },
     debugging: {
       logSection: "ログファイル",
@@ -362,6 +406,7 @@ export const ja = {
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
+        openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
         speedLabel: "速度",
@@ -370,6 +415,7 @@ export const ja = {
         previewLabel: "音声を試聴",
         previewDescription: "短いサンプルを再生します",
         previewAction: "試聴",
+        preparingAction: "生成中…",
         previewFailed: "TTS のプレビューに失敗しました",
         stopAction: "停止",
         ttsLabel: "音声合成",

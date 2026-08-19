@@ -3661,6 +3661,16 @@ class TestGGUFSafetensorsHealingParity:
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not all direct intent.
             "I will know the answer after I search the web",
+            # the sign-offs only count when nothing follows them; named work keeps the plan reading.
+            "I'll dig into the source now and report back.",
+            "I'll dig in and search the web for the latest numbers.",
+            "I'll dig in, then run the numbers.",
+            "I'll dig in. Starting with a web search.",
+            "I'll dig in.\nStarting with a web search.",
+            "I'll help analyze the sales data now.",
+            # "let me assist" names work without a "to", so only the sign-offs skip that gate.
+            "Let me assist by searching the web now.",
+            "Let me assist with checking the documentation.",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3678,6 +3688,10 @@ class TestGGUFSafetensorsHealingParity:
             "I'll never call that tool.",
             # Hands control back rather than announcing an action.
             "Let me know if you need anything else.",
+            # #8907: a question to the user, signed off with an action that names no work.
+            "Let me know what you're after and I'll dig in.",
+            'Could you clarify what "it" means? Let me know and I\'ll help analyze!',
+            "Tell me what you are after and let me dig in.",
             "First, the answer is 42",
             "First, the result is 3.",
             "First, it is 42",

@@ -683,6 +683,13 @@ class _InferenceRuntimeFields(BaseModel):
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    has_video_input: bool = Field(
+        False,
+        description = (
+            "Whether llama-server accepts video input for this model, from its /props "
+            "modalities. False unless the mmproj, the build and ffmpeg all support it."
+        ),
+    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -717,7 +724,11 @@ class _InferenceRuntimeFields(BaseModel):
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
+        description = "Whether the template understands the optional preserve_thinking kwarg",
+    )
+    preserve_thinking_default: bool = Field(
+        False,
+        description = "Default preserve_thinking value resolved for the active model family",
     )
     supports_tools: bool = Field(
         False,
@@ -1488,6 +1499,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    video_base64: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Base64-encoded video (mp4/mov/webm/mkv/avi) for video-input "
+            "models. GGUF only: llama-server samples frames with ffmpeg."
+        ),
+    )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -1533,7 +1551,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
-            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. External "
             "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
             "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
             "OpenAI Responses. If None, all local tools are enabled and no "
@@ -1550,7 +1568,7 @@ class ChatCompletionRequest(BaseModel):
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     permission_mode: Optional[str] = Field(
         None,

@@ -63,10 +63,9 @@ import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
 // The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is
-// truthy, so the fork-count badge really does fire one GET per assistant message. Answering them
-// here, before anything mounts, keeps that off the wire entirely; answering them from the
-// Playwright side instead would put a round trip to another process inside a timed region, once
-// per assistant message.
+// truthy, so the fork-count badges really do ask the backend. Answering them here, before anything
+// mounts, keeps that off the wire entirely; answering them from the Playwright side instead would
+// put a round trip to another process inside a timed region.
 // An explicit allowlist, never a blanket `/api/` match. A blanket match resolves EVERY request the
 // measured interactions make before Playwright emits it, so `stray_api_requests` stays at zero and
 // the fan-out this harness exists to detect becomes invisible to it. Narrowing it is what made the
@@ -76,11 +75,20 @@ import "./src/index.css";
 // returns, so no round trip lands inside a timed region. Anything NOT listed here goes to the
 // network and trips the stray counter, which is the point.
 const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [
-  // One GET per assistant message: the synthetic `__LOCALID_...` remoteId is truthy, so the badge
-  // really does ask. `{ count: 0 }`, not `{}`: getForkCount returns `data.count`, and
-  // `undefined <= 0` is false, so an empty body renders a badge reading "undefined forks" on every
-  // assistant message and adds DOM in proportion to thread size, the axis being measured.
-  [/\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/, '{"count":0}'],
+  // The fork-count badges. One GET per THREAD, not per message: fork-count-store subscribes once
+  // per rendered thread and refreshes on CHAT_HISTORY_UPDATED_EVENT, which the delete action
+  // fires, so the harness provokes it during seeding and again inside the measured actions.
+  //
+  // The endpoint used to be per message, `/threads/{id}/messages/{id}/forks` answering
+  // `{"count":n}`, and that is the shape this allowlist was written against. The per-thread
+  // endpoint replaced it and this entry was not moved with it, so every one of these went to the
+  // dev server and the run failed its own stray-request check. Match the shape the app actually
+  // requests, and answer with the body it actually returns: `getThreadForkCounts` reads
+  // `data.counts` and builds a Map from it, so `{"counts":{}}` is "no message has forks" and
+  // renders no badge on any message. An empty `{}` body would leave the same empty Map today, but
+  // it is not what the endpoint returns, and a stub that answers a shape the endpoint never sends
+  // is how this drifted in the first place.
+  [/\/api\/chat\/threads\/[^/]+\/forks$/, '{"counts":{}}'],
   // The delete action's own persistence. deleteThreadMessage syncs the exported repository
   // whenever remoteId is truthy, which the synthetic id always is, so this is the fixture
   // maintaining itself rather than app fan-out. Left on the wire it is 3 round trips inside the

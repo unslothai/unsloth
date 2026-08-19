@@ -57,6 +57,42 @@ inputs:
 runs:
   using: composite
   steps:
+    # This step is the single largest cost in CI: 92s median across 39 job runs
+    # in one sample, which is more total time than any test. All of it is uv
+    # resolving and DOWNLOADING the same wheels, in every job, every run, because
+    # uv's cache is per-runner and nothing carried it between them.
+    #
+    # A download cache is the safest kind there is. uv's is content-addressed by
+    # URL and hash, so a stale entry cannot serve wrong content -- the worst it can
+    # do is miss. Nothing about which packages get installed changes; they just are
+    # not fetched twice. That is the difference between this and caching the venv,
+    # which would have to reason about an editable overlay, a moving
+    # `unsloth-zoo @ git+main`, and absolute paths baked into console scripts.
+    #
+    # UV_CACHE_DIR is set explicitly rather than relying on ~/.cache/uv, so the
+    # path is the same on Linux and macOS and one cache config covers both. It is
+    # exported into the environment so install.sh, studio/setup.sh and every uv
+    # call underneath inherit it.
+    - name: Point uv's cache somewhere cacheable
+      shell: bash
+      run: |
+        echo "UV_CACHE_DIR=${{ github.workspace }}/.uv-cache" >> "$GITHUB_ENV"
+        mkdir -p "${{ github.workspace }}/.uv-cache"
+
+    # Keyed on what decides the resolution, with a prefix fallback: a near-miss
+    # still supplies almost every wheel, which is most of the win. A download cache
+    # wants restore-keys for exactly this reason, where a venv cache must not have
+    # them.
+    - name: Restore the uv download cache
+      id: uv-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ github.workspace }}/.uv-cache
+        key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}
+        restore-keys: |
+          uv-${{ runner.os }}-
+
     - name: Install Unsloth (--local, --no-torch)
       shell: bash
       env:
@@ -90,3 +126,30 @@ runs:
           | while IFS= read -r line || [ -n "$line" ]; do
               printf '[%4ds] %s\n' "$SECONDS" "$line"
             done
+
+    # Save on main only, like every other cache in this repo, and for the reason
+    # the HF and Playwright caches record: a PR-scoped entry can only be restored
+    # by re-runs of that same PR, while every PR can restore from the default
+    # branch. Saving on PRs would spend the 50 GiB budget -- measured at 99.3% full
+    # once already -- evicting main's copy, which is the one everyone reads.
+    #
+    # `uv cache prune --ci` first: uv keeps built wheels AND unpacked source
+    # artifacts, and only the former are worth carrying between runners. Without it
+    # this key grows without bound across 39 jobs and re-opens the eviction thrash
+    # the GGUF caches were fixed for.
+    - name: Save the uv download cache
+      if: always() && github.ref == 'refs/heads/main' && steps.uv-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        # Best effort: an older uv without `prune --ci` must not fail the install
+        # that has already succeeded.
+        uv cache prune --ci 2> /dev/null || true
+        du -sh "${{ github.workspace }}/.uv-cache" 2> /dev/null || true
+
+    - name: Save the uv download cache (upload)
+      if: always() && github.ref == 'refs/heads/main' && steps.uv-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ github.workspace }}/.uv-cache
+        key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}
