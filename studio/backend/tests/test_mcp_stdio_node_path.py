@@ -15,12 +15,33 @@ from core.inference import mcp_client
 from utils import node_runtime
 
 
+@pytest.fixture(autouse = True)
+def _reset_managed_node_memo():
+    node_runtime._reset_managed_node_check()
+    yield
+    node_runtime._reset_managed_node_check()
+
+
 @pytest.fixture
 def managed_node(tmp_path, monkeypatch):
+    """A managed install that clears the version floor (the probe is stubbed: these
+    tests cover PATH assembly, not `node -v`)."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     bin_dir = tmp_path / "studio" / "node" / ("" if os.name == "nt" else "bin")
     bin_dir.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
+    monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
+    return bin_dir
+
+
+@pytest.fixture
+def managed_node_install(tmp_path, monkeypatch):
+    """The real locator + a stub node binary, so managed_node_usable() is exercised."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    bin_dir = tmp_path / "studio" / "node" / ("" if os.name == "nt" else "bin")
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    binary = node_runtime.managed_node_binary()
+    binary.write_text("")
     return bin_dir
 
 
@@ -111,3 +132,32 @@ def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_p
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     client = mcp_client._client("npx -y @modelcontextprotocol/server-filesystem /tmp", None)
     assert os.path.samefile(client.transport.command, npx)
+
+
+def test_stale_managed_node_is_not_prepended(managed_node_install, monkeypatch):
+    """A dir left behind after the host moved to a system Node must not win the lookup."""
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: False)
+    assert node_runtime.managed_node_usable() is False
+    assert node_runtime.path_with_managed_node("/usr/bin") == "/usr/bin"
+
+
+def test_usable_managed_node_is_prepended(managed_node_install, monkeypatch):
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
+    assert node_runtime.managed_node_usable() is True
+    expected = f"{managed_node_install}{os.pathsep}/usr/bin"
+    assert node_runtime.path_with_managed_node("/usr/bin") == expected
+
+
+def test_stale_managed_node_leaves_stdio_env_alone(managed_node_install, monkeypatch):
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert mcp_client._stdio_env(None)["PATH"] == "/usr/bin"
+
+
+def test_managed_node_check_is_memoized_on_success(managed_node_install, monkeypatch):
+    """One probe per process once usable: _stdio_env runs on every client build."""
+    calls = []
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: calls.append(executable) or True)
+    assert node_runtime.managed_node_usable() is True
+    assert node_runtime.managed_node_usable() is True
+    assert len(calls) == 1

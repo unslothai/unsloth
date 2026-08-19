@@ -82,15 +82,43 @@ def managed_node_bin_dir() -> Path | None:
         return None
 
 
+# Memoize ONLY a usable managed Node, mirroring _resolved_node: the installer may
+# finish after the first probe, so a negative result must not stick until restart.
+_managed_node_ok: bool = False
+
+
+def _reset_managed_node_check() -> None:
+    """Clear the memoized managed-Node verdict (used by tests)."""
+    global _managed_node_ok
+    _managed_node_ok = False
+
+
+def managed_node_usable() -> bool:
+    """Whether the managed Node clears the version floor. ``decide_node_source``
+    leaves an existing install in place when it picks the system runtime, so a dir
+    left over from before a floor raise must not win the lookup over a good system
+    Node. Mirrors the managed branch of resolve_node_executable()."""
+    global _managed_node_ok
+    if _managed_node_ok:
+        return True
+    binary = managed_node_binary()
+    try:
+        present = binary.is_file()
+    except OSError:
+        return False
+    _managed_node_ok = present and _node_version_ok(str(binary))
+    return _managed_node_ok
+
+
 def path_with_managed_node(base_path: str | None = None) -> str:
     """``base_path`` (default: this process's PATH) with the managed Node bin dir
-    prepended, unchanged when there is no managed install or it is already there.
+    prepended, unchanged when there is no usable managed install or it is already there.
 
     The installer only puts the isolated Node on PATH for the setup process, so
     subprocesses that need ``node``/``npx`` must be handed it explicitly."""
     current = os.environ.get("PATH", "") if base_path is None else base_path
     bin_dir = managed_node_bin_dir()
-    if bin_dir is None:
+    if bin_dir is None or not managed_node_usable():
         return current
     bin_str = str(bin_dir)
     entries = [entry for entry in current.split(os.pathsep) if entry]
