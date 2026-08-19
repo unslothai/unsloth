@@ -242,7 +242,6 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         # is open, and the chat gate only refetches a catalog it does not already have.
         # Imported here because the client module imports this one at load time.
         from core.inference.openai_codex_client import forget_subscription_models
-
         forget_subscription_models(provider_id)
 
 
