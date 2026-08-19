@@ -1046,9 +1046,9 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
-        # `conversation` is the fitted prompt, so it says which repeats of a turn the
-        # model can still read. Without it a turn said twice, only one of them evicted,
-        # gets archived twice and spends two recall slots on text already in the prompt.
+        # `conversation` is the fitted prompt, so it says which repeats of a turn the model
+        # can still read. Without it a twice-said turn is archived twice and spends two
+        # recall slots on text already in the prompt.
         archived = (
             conversation_archive.archive_turns(
                 thread_id, gone, live = conversation, branch = branch_messages or conversation

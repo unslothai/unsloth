@@ -259,15 +259,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # for older archives, which fall back to counting role labels in the rendered text.
     if "archive_messages" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_messages INTEGER")
-    # An archived turn group's position in its conversation. NULL for everything that is
-    # not an archived turn, and for archives written before this column existed, which
-    # fall back to created_at ordering: those rows genuinely predate it, so sorting them
-    # first is not a guess. Not backfilled, because a backfill from created_at would
-    # invent an order it cannot know within a compaction epoch.
+    # An archived turn group's position in its conversation. NULL elsewhere and for older
+    # archives, which fall back to created_at ordering. Not backfilled: created_at cannot
+    # recover the order within a compaction epoch.
     if "archive_ordinal" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
-    # Partial, so it is empty on an install that has never compacted a chat, and the
-    # MAX() that allocates the next ordinal is an index probe rather than a scan.
+    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the
+    # next ordinal is an index probe rather than a scan.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"

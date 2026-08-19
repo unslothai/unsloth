@@ -10632,15 +10632,9 @@ def build_conversation_recall(
     query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
     if not query:
         return None
-    # When the latest message is a nudge rather than a request -- "continue", "yes", "go
-    # on" -- searching for it retrieves nothing, and the turn that most needs the archive
-    # is the one that gets least from it. The user's last real instruction is asked for as
-    # a SECOND query, so the standing instruction can come back even though the words in
-    # front of us say nothing about it.
-    #
-    # Deliberately not applied to the model's own `search_conversation` calls: there the
-    # model wrote the query, and overriding it would be answering a different question
-    # from the one it asked.
+    # A nudge ("continue", "yes") retrieves nothing, so the user's last real instruction is
+    # asked for as a SECOND query. Not applied to the model's own `search_conversation`
+    # calls: the model wrote that query, and overriding it answers a different question.
     anchor = None
     thin = False
     try:

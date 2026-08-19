@@ -1585,19 +1585,16 @@ def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
 # --- The subject of a conversation must not be the least findable thing in its archive ---
 #
 # Measured on the pre-fix build with `scripts/fact_update/retrieval_probe.py`: a variable
-# assigned then revised seven times was archived 8/8 and retrieved 0/5, because BM25 gives
-# almost no weight to a term present in half the chunks and a great deal to an incidental
-# word from the question present in one. `zqxvara123` scored 0.16; `value`, from "what is
-# the current value of X", scored 4.755.
+# revised seven times was archived 8/8 and retrieved 0/5, because BM25 gives almost no
+# weight to a term present in half the chunks. `zqxvara123` scored 0.16; `value`, from the
+# question itself, scored 4.755.
 
 VARIABLE = "ZQXVARA123"
 
 
-# Filler that VARIES. This matters more than it looks: the defect is an IDF collapse, so
-# it only reproduces when the question's incidental word ("value") is rare in the archive.
-# A first version of this fixture repeated one distractor, which made "value" as common as
-# the variable and cancelled the very effect under test -- the tests passed against the
-# unfixed build.
+# Filler that VARIES. The defect is an IDF collapse, so it only reproduces while the
+# question's incidental word ("value") is rare: a fixture repeating one distractor made
+# "value" as common as the variable and passed against the unfixed build.
 _DISTRACTORS = [
     (
         "What is a good default value for a retry budget?",
@@ -1670,8 +1667,7 @@ def test_the_newest_revision_is_recalled_when_there_is_room(conn):
     assert found is not None
     text, _sources = found
     assert values[-1] in text
-    # Chronological presentation is the point: the LAST assignment the model reads is the
-    # current one, which is not true of relevance order.
+    # Chronological presentation is the point: the LAST assignment read is the current one.
     assert max(text.index(value) for value in values if value in text) == text.index(values[-1])
 
 
@@ -1701,8 +1697,8 @@ def test_the_archive_query_requires_the_rare_token_and_drops_filler():
     assert focused[0] == f'"{VARIABLE.lower()}"'
     assert '"current"' in focused[1] and '"value"' in focused[1]
     assert '"what"' not in focused[1] and '"the"' not in focused[1]
-    # A question made entirely of function words must still search for something: an
-    # empty expression makes search_lexical return [] and the recall silently vanishes.
+    # An all-function-word question must still search for something: an empty expression
+    # makes search_lexical return [] and the recall silently vanishes.
     filler = store.conversation_match_queries("what about it")
     assert filler and '"about"' in filler[0]
     assert store.conversation_match_queries("!!!") == []
@@ -1747,9 +1743,8 @@ def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
     entire conversation into the order its vectors were rebuilt."""
     from core.rag import embeddings
 
-    # `embedding_identity` too, not only the encode: `archive_turns` short-circuits on
-    # the EXPECTED identity before it embeds anything, so patching the encode alone
-    # leaves the re-embed path unreached and this test passing on any implementation.
+    # `embedding_identity` too, not only the encode: `archive_turns` short-circuits on the
+    # expected identity, so patching the encode alone never reaches the re-embed path.
     identity = {"name": "st:model-a"}
     real = embeddings.encode_with_identity
     monkeypatch.setattr(
@@ -1825,8 +1820,7 @@ def test_relevance_order_is_restored_when_the_knobs_are_off(conn, monkeypatch):
 
     assert found is not None
     text, _sources = found
-    # The claim is the RENDERING, not a particular order: no position labels, no header,
-    # nothing the previous build did not emit.
+    # The claim is the RENDERING, not the order: nothing the previous build did not emit.
     assert "111111" in text and "222222" in text
     assert "turn=" not in text
     assert "supersedes" not in text
@@ -1920,9 +1914,8 @@ def test_the_newest_revision_survives_a_strict_pass_that_hit_its_cap(conn, monke
 
 
 # Ordinary turns of a long engineering chat: each uses the question's content words the
-# way a person would, and none of them names the variable, so none can ever be a correct
-# answer. "current" and "value" are plain English, which is the point -- a real thread
-# says them about other things.
+# way a person would and none names the variable, so none can be a correct answer.
+# "current" and "value" are plain English, which is the point.
 _CONTENT_WORD_TURNS = [
     ("What is the current value of the retry budget?", "Three attempts, by default."),
     ("Is the timeout value still 30 seconds?", "Yes, that is the current setting."),
@@ -1954,8 +1947,8 @@ def test_the_ranking_pass_is_widened_until_it_has_eligible_chunks_to_order(conn)
                 f"{VARIABLE} is a config knob, remark {index} about how {VARIABLE} behaves",
             )
         )
-    # A normal-length answer, not a one-liner: the length normalisation is what puts it
-    # below the short distractors in the content-word pass.
+    # A normal-length answer, not a one-liner: length normalisation is what puts it below
+    # the short distractors in the content-word pass.
     _archive(
         _turn(
             f"please update {VARIABLE}",
@@ -2026,18 +2019,16 @@ def test_re_embedding_a_turn_archived_before_ordinals_leaves_it_unnumbered(conn,
     identity["name"] = "st:model-b"
     assert _archive([dict(message) for message in oldest]) == 1
 
-    # By created_at, because the re-embed keeps the turn's original timestamp rather than
-    # stamping the moment its vectors were rebuilt: the unnumbered turn is still the
-    # oldest row in the scope, which is what the ordering of an upgraded archive rests on.
+    # By created_at, because the re-embed keeps the turn's original timestamp: the
+    # unnumbered turn is still the oldest row in the scope.
     ordinals = [
         row["archive_ordinal"]
         for row in conn.execute(
             "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY created_at", (scope,)
         ).fetchall()
     ]
-    # 1, not 0: the ordinal is the turn's POSITION in the conversation, and the newest
-    # question is its second turn. The old allocator said 0 here only because it counted
-    # from MAX over a column holding one NULL, which is the numbering this replaced.
+    # 1, not 0: the ordinal is the turn's POSITION, and the newest question is the second
+    # turn. The old allocator said 0 by counting from MAX over a column holding one NULL.
     assert ordinals == [None, 1]
     text, _sources = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
     assert text.index("oldest statement") < text.index("newest statement")
@@ -2075,8 +2066,8 @@ def test_a_re_embed_that_stops_partway_does_not_reorder_a_legacy_archive(conn, m
     conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
     conn.commit()
 
-    # The embedder changes, so every turn is stale and the whole archive is rewritten --
-    # and the rewrite dies on the third turn.
+    # The embedder changes, so the whole archive is rewritten, and the rewrite dies on the
+    # third turn.
     identity["name"] = "st:model-b"
     real_add = store.add_chunks
     calls = {"n": 0}
@@ -2268,8 +2259,7 @@ def test_the_newest_revision_survives_a_tied_run_LONGER_than_the_cap(conn):
 
     assert found is not None
     assert "9999" in found[0]
-    # And the oldest end is still reachable, which is the invariant the ends-first
-    # ordering exists for: a fix that just returns the newest turns fails here.
+    # The oldest end is still reachable: a fix that just returns the newest turns fails.
     oldest = conversation_archive.recall(THREAD, "what was ZQXVARA123 originally", top_k = 4)
     assert oldest is not None
     assert "note 000" in oldest[0]
@@ -2469,8 +2459,7 @@ def test_a_turn_repeated_later_is_archived_again_at_its_own_position(conn):
     found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
     assert found is not None
     turns = [source.get("turn") for source in found[1]]
-    # Rendered oldest first, and the repeat is LAST, which is what makes the supersedes
-    # rule in the header true.
+    # Rendered oldest first with the repeat LAST, which makes the header's rule true.
     assert turns == sorted(turns)
     assert "set ZQXVARA123 to 1" in found[1][-1]["text"]
 
@@ -2494,8 +2483,7 @@ def test_a_repeat_still_in_the_prompt_is_not_archived_early(conn):
     conversation = repeat + middle + list(repeat) + tail
     _save_thread(THREAD, conversation)
 
-    # Only the OLDEST copy has crossed the boundary. The newer one is still in the prompt,
-    # along with everything after it.
+    # Only the OLDEST copy has crossed the boundary; the newer one is still in the prompt.
     live = list(repeat) + tail
     conversation_archive.archive_turns(THREAD, repeat, live = live)
     conversation_archive.archive_turns(THREAD, repeat, live = live)
@@ -2551,9 +2539,8 @@ def test_a_re_embed_does_not_swallow_a_repeat_evicted_later(conn, monkeypatch):
     live = list(repeat) + tail
     conversation_archive.archive_turns(THREAD, repeat + middle, live = live)
 
-    # The embedder changes, and only then does the repeat itself get evicted. Handed over
-    # ALONE, which is what four of the five call sites do: the tool-loop and respawn
-    # refits pass the already-fitted list, so only the newly evicted turns are in it.
+    # The embedder changes, and only then is the repeat evicted. Handed over ALONE, as four
+    # of the five call sites do: they pass the already-fitted list.
     identity["name"] = "st:model-b"
     conversation_archive.archive_turns(THREAD, list(repeat), live = tail)
 
@@ -2569,8 +2556,7 @@ def test_a_re_embed_does_not_swallow_a_repeat_evicted_later(conn, monkeypatch):
 
     found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
     assert found is not None
-    # The conversation's last word on the identifier is 1, and the block is rendered
-    # oldest first under a header saying the later turn supersedes.
+    # The last word on the identifier is 1, rendered last under the supersedes header.
     assert "set ZQXVARA123 to 1" in found[1][-1]["text"]
 
 
@@ -2648,7 +2634,7 @@ def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
     )
     assert archive._write_budget([["a"], ["a"]], [], archive._live_positions(one_live), group) == 1
     # Live occurrences are COUNTED, not tested for membership: three seats with one copy
-    # still in the prompt owes two writes, not one.
+    # still in the prompt owe two writes, not one.
     assert (
         archive._write_budget(
             [["a"], ["a"], ["a"]], [0, 1, 2], archive._live_positions(one_live), group
@@ -2846,8 +2832,8 @@ def test_a_tool_exchange_is_numbered_where_the_conversation_put_it(conn):
     the later turn supersedes.
     """
     tool_turn = _persist_agent_thread()
-    # The order eviction really produces: the oldest turn, then the tool groups, and the
-    # user turn that opened them only once it stops being the newest.
+    # The order eviction really produces: the oldest turn, then the tool groups, then the
+    # user turn that opened them once it stops being the newest.
     conversation_archive.archive_turns(
         THREAD,
         [
@@ -3207,8 +3193,8 @@ def _branch_switch_thread():
         ("m3", "m2", "assistant", "answer 2 on A", 5),
         ("m4", "m3", "user", "turn 3 on A about ZQXVARA123", 6),
         ("m5", "m4", "assistant", "answer 3 on A", 7),
-        # The user rewinds to m1, takes branch B, and continues there, so B's rows are
-        # the newest in the thread. Then the branch picker takes them back to A.
+        # The user rewinds to m1 and continues on branch B, so B's rows are the newest in
+        # the thread. Then the branch picker takes them back to A.
         ("m6", "m1", "user", "turn 2 on B about ZQXVARA123", 8),
         ("m7", "m6", "assistant", "answer 2 on B", 9),
     ]
@@ -3449,8 +3435,7 @@ def test_an_empty_tool_result_still_produces_a_tool_message():
         for result in ("", "ok")
     }
     # Byte for byte what `JSON.stringify({ result: "" })` produces: no space after the
-    # colon. `json.dumps` adds one, and every comparison downstream is exact, so the
-    # spaced spelling emits the message and still fails the match.
+    # colon, which `json.dumps` adds, and every comparison downstream is exact.
     assert emitted[""] == ['{"result":""}']
     assert emitted["ok"] == ["ok"]
 
@@ -3464,8 +3449,8 @@ def test_an_empty_tool_result_still_produces_a_tool_message():
             message for message in conversation_archive._as_wire(row) if message["role"] == "tool"
         ] == []
 
-    # And the reconstructed row actually matches the document archived from the request,
-    # which is the point: emitting the message and still failing the match looks fixed.
+    # And the reconstructed row matches the document archived from the request, which is
+    # the point: emitting the message and still failing the match only looks fixed.
     wire = [
         {
             "role": "assistant",
@@ -3602,8 +3587,7 @@ def test_a_provider_side_builtin_is_replayed_the_way_the_frontend_replays_it():
             ],
         }
     ]
-    # A USER function that merely shares the name is untouched: the name alone never
-    # decides, which is the same guarantee the frontend makes.
+    # A USER function that merely shares the name is untouched: the name never decides.
     homonym = [
         {
             "role": "assistant",
@@ -3669,8 +3653,8 @@ def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
     assert _tool_content(_row("python", mcp_image)) == ["chart rendered"]
     # An empty wrapper text still takes the sentinel, as the adapter does.
     assert _tool_content(_row("terminal", {**sandbox, "text": ""})) == ['{"result":""}']
-    # Someone else's result that merely has text and a session is NOT unwrapped, or every
-    # other field it returned would be dropped. The name gates it, as on the frontend.
+    # Someone else's result with text and a session is NOT unwrapped, or its other fields
+    # would be dropped. The name gates it, as on the frontend.
     assert _tool_content(_row("lookup", sandbox)) == [
         '{"text":"token ZQX-5150","images":[],"sessionId":"project-7",'
         '"files":[{"name":"out.csv","size":12}]}'
@@ -4173,3 +4157,51 @@ def test_a_long_tool_exchange_stays_on_branch_across_a_chunk_boundary():
     for count in (lambda t: max(1, len(t) // 4), lambda t: max(1, len(t.split()))):
         missed = [lines for lines in range(1, 90) if not _matches(lines, count)]
         assert not missed, f"unedited turns retired as off-branch at question lengths {missed}"
+
+
+def test_one_pass_holding_both_spans_widens_the_window_too(conn):
+    """The window has to grow on the LOCKED duplicate path as well.
+
+    Both turns can arrive in one compaction: the pre-check runs before either is written,
+    so it clears both, and the shorter one is written first. The longer one then meets the
+    re-check under the write lock, which rolls back and moves on without touching the
+    span. The stored window stays at three, the four-message occurrence is bounded by it,
+    and the turn is unsearchable -- the same failure as the unlocked path, one lock down.
+    """
+    short = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    long = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+
+    # One call, both turns, shortest first.
+    _archive(short + [{"role": "user", "content": "and again please"}] + long)
+
+    scope = store.conversation_archive_scope(THREAD)
+    spans = [
+        row["archive_messages"]
+        for row in conn.execute(
+            "SELECT archive_messages FROM documents WHERE scope=? AND archive_messages >= 3",
+            (scope,),
+        ).fetchall()
+    ]
+    assert spans == [4], spans

@@ -1575,9 +1575,8 @@ def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(ar
         {"role": "user", "content": "and one about otters"},
         {"role": "assistant", "content": "There once was an otter with tools"},
     ]
-    # Saved as well as archived: the branch filter checks recalled turns against the
-    # thread's stored transcript, so an archived turn nobody saved is filtered right back
-    # out and the block ends up with a single passage.
+    # Saved as well as archived: the branch filter checks recalled turns against the stored
+    # transcript, so an archived turn nobody saved is filtered right back out.
     for index, message in enumerate(extra):
         studio_db.upsert_chat_message(
             {

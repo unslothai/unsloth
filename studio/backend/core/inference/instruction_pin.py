@@ -37,20 +37,17 @@ import re
 
 from core.inference.context_window import estimate_messages_tokens_dense, group_turns
 
-# 80 characters. Objective, and there is no way to trip it accidentally in either
-# direction that a reasonable person would argue with: someone who typed a paragraph
-# wrote an instruction. Nothing here inspects meaning, mood or keywords, because those
-# are exactly the heuristics a user trips by accident and cannot predict.
+# 80 characters: someone who typed a paragraph wrote an instruction. Nothing inspects
+# meaning or keywords, which are the heuristics a user trips by accident.
 INSTRUCTION_MIN_CHARS = int(os.environ.get("ROLLING_INSTRUCTION_MIN_CHARS", "80"))
 PIN_GROUPS = int(os.environ.get("ROLLING_INSTRUCTION_PIN_GROUPS", "0"))
 PIN_MAX_TOKENS = int(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_TOKENS", "1024"))
-# ... and never more than this share of the prompt budget, so the floor stays a minority
-# of the window on a small model as well as a large one.
+# ... and never more than this share of the prompt budget, so the pin stays a minority of
+# the window on a small model as well as a large one.
 PIN_MAX_FRACTION = float(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_FRACTION", "0.10"))
 
 # A pure REJECT list: it can only stop something being treated as an instruction, never
-# promote one. Deleting it changes nothing except which side of the line a long-winded
-# "okay, please keep going with that" falls on.
+# promote one.
 _CONTINUATIONS = frozenset(
     {
         "continue",
@@ -87,23 +84,14 @@ _CONTINUATIONS = frozenset(
         "then",
     }
 )
-# U+2026 and U+2025 alongside the ASCII spellings: every editor and phone keyboard
-# autocorrects "..." to a single ellipsis character, and it survived here, so `continue…`
-# matched neither `_CONTINUATIONS` nor the function-word test. `is_thin_query` then called
-# it substantive, `build_conversation_recall` dropped the anchor, and recall searched the
-# archive for the word "continue".
+# U+2026 and U+2025 as well as the ASCII spellings: keyboards autocorrect "..." to one
+# ellipsis character, so `continue…` matched nothing and recall searched for "continue".
 _PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—\u2025\u2026]+")
 
-# What "anaphoric" means, as a closed list rather than a word count: function words and
-# pronouns, none of which can name the subject of a request. A message made only of these
-# ("what about it", "and then") has nothing to search an archive for; a message with one
-# word outside them ("review billing") names its own subject and must keep its own
-# retrieval slots. Same shape and the same reason as `_CONTINUATIONS`: reviewable, and
-# identical on every install.
-#
-# Negation is left out on purpose, matching `store._ARCHIVE_STOPWORDS`: "not that" is the
-# conservative side of the line, and being conservative here only costs an anchor, while
-# being wrong the other way costs the answer.
+# "Anaphoric" as a closed list rather than a word count: words that cannot name the
+# subject of a request. "what about it" has nothing to search for; "review billing" names
+# its own subject and keeps its retrieval slots. Negation is left out on purpose, as in
+# `store._ARCHIVE_STOPWORDS`: a missed anchor is cheaper than a wrong one.
 _FUNCTION_WORDS = frozenset(
     """
 a about all also am an and another any anything are as at be been being both but by can
@@ -196,12 +184,10 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
     normalised = _PUNCTUATION.sub(" ", stripped.lower()).strip()
     if normalised in _CONTINUATIONS:
         return True
-    # Short AND anaphoric. A short question that names something ("what is ZQXVARA123?")
-    # is a perfectly good query and must not be replaced by an older instruction.
+    # Short AND anaphoric: "what is ZQXVARA123?" names something and stays the query.
     words = normalised.split()
     if not words:
-        # Punctuation only ("???"). Nothing survives tokenisation, so the archive query
-        # would be empty and the recall would return nothing at all.
+        # Punctuation only ("???"): nothing survives tokenisation, so the query is empty.
         return True
     return all(word in _FUNCTION_WORDS or word in _CONTINUATIONS for word in words)
 
@@ -224,11 +210,8 @@ def _protected_cost(turns: list[list[dict]], index: int) -> int:
     small instruction its pin over tokens the pin never keeps -- which is the case the pin
     exists for, since an agent run is exactly where the filler follow-up appears.
     """
-    # Dense, because this decides whether a turn may be pinned at all. Four characters
-    # per token undercharges CJK and emoji by roughly 2x or more, so a turn that really
-    # costs 1056 was charged 276 and cleared a 1024 ceiling it was nowhere near: the pin
-    # then held far more than the budget allows and the fitter evicted recent turns to pay
-    # for it. Over-charging only ever refuses the pin, which is the safe direction here.
+    # Dense: 4 chars per token undercharges CJK and emoji ~2x, so a 1056-token turn was
+    # charged 276 and cleared a 1024 ceiling. Over-charging only refuses the pin.
     return estimate_messages_tokens_dense(turns[index])
 
 
@@ -263,9 +246,8 @@ def pinned_instruction_ids(
         return set()
 
     turns = group_turns(messages)
-    # The newest user group is already protected by the window itself, and pinning it
-    # would be worse than pointless: the inline recall path REPLACES that message with a
-    # new dict, so its id would go stale and silently protect nothing.
+    # The newest user group is already protected by the window, and the inline recall path
+    # replaces that message with a new dict, so its id would go stale anyway.
     newest_user = next(
         (
             index
