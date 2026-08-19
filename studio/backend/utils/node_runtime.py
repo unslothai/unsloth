@@ -121,9 +121,11 @@ def path_with_managed_node(base_path: str | None = None) -> str:
     if bin_dir is None or not managed_node_usable():
         return current
     bin_str = str(bin_dir)
-    entries = [entry for entry in current.split(os.pathsep) if entry]
+    # Keep empty components: on POSIX one means the working directory, so dropping
+    # it would silently remove a lookup location the server config asked for.
+    entries = current.split(os.pathsep) if current else []
     normalized = os.path.normcase(os.path.normpath(bin_str))
-    if any(os.path.normcase(os.path.normpath(entry)) == normalized for entry in entries):
+    if any(entry and os.path.normcase(os.path.normpath(entry)) == normalized for entry in entries):
         return current
     return os.pathsep.join([bin_str, *entries])
 
