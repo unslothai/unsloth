@@ -16,6 +16,8 @@ export function DocumentStatusChip({
   error,
   onRemove,
   shared = false,
+  selected = false,
+  onOpen,
 }: {
   filename: string;
   status: DocumentStatus;
@@ -25,6 +27,11 @@ export function DocumentStatusChip({
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
+  /** Highlight only. Bulk selection is all-or-nothing via the panel's Select
+   * all, so the chip shows the state but never owns a per-file toggle: the chip
+   * body is reserved for opening the source. */
+  selected?: boolean;
+  onOpen?: () => void;
 }) {
   const processing = status === "pending" || status === "running";
   return (
@@ -40,6 +47,8 @@ export function DocumentStatusChip({
       className={cn(
         "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",
         status === "failed" && "border-destructive/40 text-destructive",
+        selected &&
+          "border-primary/60 bg-primary/10 text-foreground ring-1 ring-primary/30",
       )}
     >
       {/* file, or folder when the doc is a project-wide source */}
@@ -48,7 +57,17 @@ export function DocumentStatusChip({
         strokeWidth={2}
         className="size-3 shrink-0"
       />
-      <span className="truncate">{filename}</span>
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="min-w-0 truncate text-left underline-offset-2 hover:underline"
+        >
+          {filename}
+        </button>
+      ) : (
+        <span className="truncate">{filename}</span>
+      )}
       {/* spinner while indexing, else close button */}
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">

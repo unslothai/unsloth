@@ -24,6 +24,8 @@ export interface RagDocument {
   linkedFolderId?: string | null;
   managed: boolean;
   createdAt?: string | null;
+  /** Size of the stored bytes; null when the file behind the row is gone. */
+  sizeBytes?: number | null;
 }
 
 export function isLinkedFolderManaged(document: RagDocument): boolean {
@@ -32,7 +34,6 @@ export function isLinkedFolderManaged(document: RagDocument): boolean {
 
 /** RagDocument enriched for the global uploaded-files list (settings Data tab). */
 export interface UploadedDocument extends RagDocument {
-  sizeBytes?: number | null;
   kbName?: string | null;
   projectName?: string | null;
 }
@@ -178,6 +179,26 @@ export interface PreviewTarget {
   targetPage?: number | null;
   pdfRegions: PdfRegion[];
   text?: string | null;
+}
+
+/** A source opened in the preview modal. The backend decides how to render it
+ * and whether it may be edited, so the client keeps no list of file extensions
+ * and the two can never disagree about what is editable. */
+export interface DocumentContent {
+  documentId: string;
+  filename: string;
+  /** "pdf" renders from the signed file URL and carries no text. */
+  mediaKind: "pdf" | "text";
+  /** What the View tab shows. "source" has no richer view, so the modal shows
+   * the text alone with no toggle; the rest pair a View with an Edit. */
+  preview: "source" | "markdown" | "html" | "extracted";
+  text?: string | null;
+  editable: boolean;
+  /** Text was cut off at the size cap, or is not a faithful copy of the file, so
+   * it is shown but not editable. */
+  truncated: boolean;
+  /** Why editing is unavailable; shown in the footer. Null when editable. */
+  readOnlyReason?: string | null;
 }
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";

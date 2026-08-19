@@ -22,9 +22,13 @@ import {
 import {
   type UploadedDocument,
   deleteDocument,
+  fileTypeLabel,
+  formatSize,
+  formatUploadedAt,
   getDocumentFileUrl,
   isLinkedFolderManaged,
   listAllDocuments,
+  toSortTime,
 } from "@/features/rag";
 import { isTauri } from "@/lib/api-base";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -39,33 +43,6 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-function formatUploadedAt(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "-";
-  // Chat attachments carry ms epoch numbers; RAG documents carry SQLite
-  // ISO-ish strings (no timezone). Unparseable strings fall through raw.
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value);
-  return parsed.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
-
-function formatSize(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined) return "-";
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB"];
-  let value = bytes;
-  let unit = "B";
-  for (const next of units) {
-    if (value < 1024) break;
-    value /= 1024;
-    unit = next;
-  }
-  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${unit}`;
-}
-
 function ragLocationLabel(doc: UploadedDocument): string {
   if (doc.kbId) return doc.kbName ? `KB · ${doc.kbName}` : "Knowledge base";
   if (doc.projectId) {
@@ -73,19 +50,6 @@ function ragLocationLabel(doc: UploadedDocument): string {
   }
   if (doc.threadId) return "Chat files (RAG)";
   return "-";
-}
-
-/** Short uppercase file-type label from the filename extension, falling back
- *  to the content-type subtype (e.g. "image/webp" gives WEBP). */
-function fileTypeLabel(
-  name: string,
-  contentType?: string | null,
-): string | null {
-  const dot = name.lastIndexOf(".");
-  const ext = dot > 0 ? name.slice(dot + 1).trim() : "";
-  if (ext && ext.length <= 5) return ext.toUpperCase();
-  const subtype = contentType?.split("/")[1]?.split("+")[0]?.trim();
-  return subtype && subtype.length <= 10 ? subtype.toUpperCase() : null;
 }
 
 /** Lazy image thumbnail for a chat attachment; a file icon until it loads.
@@ -181,12 +145,6 @@ interface UploadedFileRow {
   open: () => Promise<void>;
   remove?: () => Promise<void>;
   deleteDescription?: string;
-}
-
-function toSortTime(value: string | number | null | undefined): number {
-  if (value === null || value === undefined || value === "") return 0;
-  const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 // Safari and Firefox block window.open after an await (the user gesture is
