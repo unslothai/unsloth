@@ -985,9 +985,7 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _cancel_generation():
-            task = asyncio.create_task(
-                helper(_run_gen, "msg_1", "m", cancel_event = cancel_event)
-            )
+            task = asyncio.create_task(helper(_run_gen, "msg_1", "m", cancel_event = cancel_event))
             assert await asyncio.to_thread(generator_started.wait, 1.0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

@@ -20847,6 +20847,7 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
 async def _collect_anthropic_events(run_gen, cancel_event = None) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500."""
+
     def _drain():
         return list(run_gen())
 
@@ -20986,7 +20987,10 @@ async def _anthropic_tool_non_streaming(
 
 
 async def _anthropic_plain_non_streaming(
-    run_gen, message_id, model_name, cancel_event = None
+    run_gen,
+    message_id,
+    model_name,
+    cancel_event = None,
 ):
     """Non-streaming response for the no-tool path."""
     text_parts = []
