@@ -762,7 +762,12 @@ def install_wall_clock_watchdog(
     return timer
 
 
-def click_forced(locator: Any, *, timeout_ms: int = 5_000, **click_kwargs: Any) -> None:
+def click_forced(
+    locator: Any,
+    *,
+    timeout_ms: int = 5_000,
+    **click_kwargs: Any,
+) -> None:
     """Scroll into view, then click with actionability checks off.
 
     `click(force = True)` skips Playwright's actionability checks, which is what you
