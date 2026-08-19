@@ -175,6 +175,16 @@ def inference_lifecycle_gate():
     return _unload_gate()
 
 
+def acquire_inference_lifecycle_gate_nowait() -> bool:
+    """Claim the process-wide lifecycle gate without queueing a load."""
+    return _lifecycle_lock.acquire(blocking = False)
+
+
+def release_inference_lifecycle_gate() -> None:
+    """Release a gate claim made by acquire_inference_lifecycle_gate_nowait."""
+    _lifecycle_lock.release()
+
+
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
