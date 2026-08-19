@@ -1053,6 +1053,12 @@ def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
     assert "_client_disabled_tool_calls" in predicate
     assert "payload.max_tool_calls_per_message == 0" in predicate
     assert "_wants_multiple_choices(payload)" in predicate
+    # And a confirmation gate with nowhere to ask. The first overflowing turn would open
+    # an epoch, and the next identical request would enter the checkpoint repair, enable
+    # the tool, and be refused 400 by the stream guard, permanently: the epoch is replayed
+    # from the boundary, so the thread never recovers on its own.
+    assert "_confirm_gate_needs_stream(payload)" in predicate
+    assert "not payload.stream" in predicate
     # And the epoch gate is what it feeds, so the reset is refused rather than the
     # catalogue narrowed: it must never reach `_select_request_tools`.
     assert "tools_withheld = _tool_loop_unusable," in route
@@ -1337,3 +1343,39 @@ def test_the_block_says_the_newest_message_outranks_it():
     assert "newest message outranks" in block
     assert "follow the newest message" in block
     assert "not as instructions" in block
+
+
+def test_the_reachability_probe_encodes_rather_than_only_tokenizing(monkeypatch):
+    """The tokenizer is not the forward pass.
+
+    A runtime encode failure with no llama binary to fall back to left the probe
+    answering yes while `archive_turns` was about to raise and swallow it. The reset would
+    already have dropped the history and told the model it was searchable, and the epoch
+    is replayed from the boundary, so the loss is durable rather than one turn.
+    """
+    from core.rag import conversation_archive, embeddings
+
+    conversation_archive._REACHABLE_MEMO.clear()
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: "st:model-a")
+    monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: (lambda _text: 1))
+
+    def _broken_encode(*_args, **_kwargs):
+        raise RuntimeError("CUDA error: out of memory")
+
+    monkeypatch.setattr(embeddings, "encode", _broken_encode)
+    assert conversation_archive.reachable() is False
+
+    conversation_archive._REACHABLE_MEMO.clear()
+    calls = []
+    monkeypatch.setattr(
+        embeddings, "encode", lambda texts, **kwargs: calls.append(texts) or [[0.0]]
+    )
+    assert conversation_archive.reachable() is True
+    # Not the empty string: an empty input is documented to upset the llama embed server.
+    assert calls == [["x"]]
+
+    # And the probe is memoised, since it is asked per fit and a tool loop refits per
+    # iteration.
+    assert conversation_archive.reachable() is True
+    assert len(calls) == 1

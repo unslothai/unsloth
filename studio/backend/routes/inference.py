@@ -14089,6 +14089,17 @@ async def openai_chat_completions(
         _client_disabled_tool_calls
         or payload.max_tool_calls_per_message == 0
         or _wants_multiple_choices(payload)
+        # A confirmation gate with nowhere to ask. The first overflowing turn would open
+        # an epoch, and the NEXT identical request would enter the checkpoint repair,
+        # enable the tool, and be refused 400 by the stream guard below, permanently:
+        # the epoch is replayed from the boundary, so the thread never recovers on its
+        # own. Measured on a non-streaming request with permission_mode ask, and equally
+        # on auto and on a bare confirm_tool_calls, which the validator folds to ask.
+        or (
+            _confirm_gate_needs_stream(payload)
+            and not payload.bypass_permissions
+            and not payload.stream
+        )
     )
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
