@@ -365,6 +365,84 @@ def test_a_declared_template_is_fetched(tmp_path, monkeypatch):
     assert res.text == "<p/>" and res.mime_type == "text/html;profile=mcp-app"
 
 
+def test_a_cold_cache_rediscovers_the_declaration(tmp_path, monkeypatch):
+    """Reopening a stored chat never runs the chat path, so after a restart the
+    declaration cache is empty and the widget would 404 without a rediscovery."""
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True
+    )
+    import routes.mcp_servers as routes_mcp
+
+    probes = []
+
+    async def fake_list_tools(url, headers, timeout, use_oauth):
+        probes.append(url)
+        return [_DASH_TOOL]
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", fake_list_tools)
+    monkeypatch.setattr(
+        routes_mcp,
+        "read_resource_sync",
+        lambda url, headers, uri, **kwargs: {
+            "uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<p/>", "ui": {},
+        },
+    )
+    assert asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u")).text == "<p/>"
+    # The rediscovery warms the cache, so a second open does not re-probe.
+    asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u"))
+    assert len(probes) == 1
+
+
+def test_a_rediscovery_still_refuses_an_undeclared_resource(tmp_path, monkeypatch):
+    """The cold-cache probe must widen nothing: only what the server declares."""
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True
+    )
+    import routes.mcp_servers as routes_mcp
+
+    async def fake_list_tools(url, headers, timeout, use_oauth):
+        return [_DASH_TOOL]
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", fake_list_tools)
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            routes_mcp.read_mcp_ui_resource("s1", "ui://evil/other", current_subject = "u")
+        )
+    assert excinfo.value.status_code == 404
+
+
+def test_a_failed_rediscovery_does_not_500_the_fetch(tmp_path, monkeypatch):
+    """An unreachable server reads as 'nothing declared', not a crash."""
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True
+    )
+    import routes.mcp_servers as routes_mcp
+
+    async def boom(url, headers, timeout, use_oauth):
+        raise RuntimeError("unreachable")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", boom)
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u"))
+    assert excinfo.value.status_code == 404
+
+
 @pytest.mark.parametrize(
     "uri",
     [

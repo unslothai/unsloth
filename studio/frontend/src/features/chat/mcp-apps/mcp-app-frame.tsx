@@ -66,6 +66,8 @@ export interface McpAppFrameProps {
   toolArgs?: Record<string, unknown>;
   /** The text the tool returned, replayed as the view's result content. */
   resultText?: string;
+  /** Images the tool returned, replayed alongside that text. */
+  resultImages?: { data: string; mimeType: string }[];
   /** Scopes stdio sessions to the conversation's own server process. */
   threadId?: string;
   sessionId?: string;
@@ -78,6 +80,7 @@ export function McpAppFrame({
   ui,
   toolArgs,
   resultText,
+  resultImages,
   threadId,
   sessionId,
   className,
@@ -158,9 +161,18 @@ export function McpAppFrame({
       method: "ui/notifications/tool-input",
       params: { arguments: toolArgs ?? {} },
     });
-    const content = resultText
+    // The view is sent the tool's whole result: dropping the images would show
+    // it a different result than the card beside it renders.
+    const content: Record<string, unknown>[] = resultText
       ? [{ type: "text", text: resultText }]
       : [];
+    for (const image of resultImages ?? []) {
+      content.push({
+        type: "image",
+        data: image.data,
+        mimeType: image.mimeType,
+      });
+    }
     postToView({
       jsonrpc: "2.0",
       method: "ui/notifications/tool-result",
@@ -172,7 +184,7 @@ export function McpAppFrame({
         ...(ui._meta ? { _meta: ui._meta } : {}),
       },
     });
-  }, [postToView, toolArgs, resultText, ui.structuredContent, ui._meta]);
+  }, [postToView, toolArgs, resultText, resultImages, ui.structuredContent, ui._meta]);
 
   const onLoad = useCallback(() => {
     if (!pendingPostRef.current || !html) return;

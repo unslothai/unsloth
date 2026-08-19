@@ -424,11 +424,32 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
     return server
 
 
-def _declared_ui_resources(server_id: str) -> dict:
+async def _declared_ui_resources(server: dict) -> dict:
     """tool name -> ui:// template, from this server's discovered tools. The uri
-    arrives from the browser, so only what the server declared is fetchable."""
-    from core.inference.mcp_client import get_cached_tools
-    return ui_resource_uris_for_tools(get_cached_tools(server_id) or [])
+    arrives from the browser, so only what the server declared is fetchable.
+
+    Rediscovers once on a cold cache: reopening a stored conversation never runs
+    the chat path, so after a restart a persisted widget would otherwise 404
+    until an unrelated send warmed the cache."""
+    from core.inference.mcp_client import get_cached_tools, in_failure_cooloff
+
+    server_id = server["id"]
+    tools = get_cached_tools(server_id)
+    if tools is None and not in_failure_cooloff(server_id):
+        use_oauth = bool(server.get("use_oauth"))
+        try:
+            tools = await list_tools_async(
+                url = server["url"],
+                headers = parse_server_headers(server),
+                timeout = probe_timeout(server["url"], use_oauth),
+                use_oauth = use_oauth,
+            )
+        except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
+            record_probe_failure(server_id, use_oauth)
+            tools = None
+        else:
+            cache_tools(server_id, tools)
+    return ui_resource_uris_for_tools(tools or [])
 
 
 def _config_check_for(server_id: str, url: str, headers: Optional[dict]):
@@ -471,7 +492,7 @@ async def read_mcp_ui_resource(
     uri = (uri or "").strip()
     if not uri.startswith(UI_RESOURCE_SCHEME):
         raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
-    declared = _declared_ui_resources(server_id)
+    declared = await _declared_ui_resources(server)
     if uri not in set(declared.values()):
         raise HTTPException(
             status_code = 404,
