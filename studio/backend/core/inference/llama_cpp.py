@@ -557,9 +557,7 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
 def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
     """The branch as ``_branch_boundary`` counts it: system and developer turns removed."""
     return [
-        message
-        for message in (branch or ())
-        if message.get("role") not in ("system", "developer")
+        message for message in (branch or ()) if message.get("role") not in ("system", "developer")
     ]
 
 
@@ -21409,9 +21407,7 @@ class LlamaCppBackend:
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(openai_messages, _before_fit),
-                        "boundary_anchor": _branch_boundary_anchor(
-                            openai_messages, _before_fit
-                        ),
+                        "boundary_anchor": _branch_boundary_anchor(openai_messages, _before_fit),
                     }
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
@@ -23467,9 +23463,7 @@ class LlamaCppBackend:
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(conversation, _request_branch),
-                        "boundary_anchor": _branch_boundary_anchor(
-                            conversation, _request_branch
-                        ),
+                        "boundary_anchor": _branch_boundary_anchor(conversation, _request_branch),
                     }
                 # `fits` False too: it carries the diagnosis the client needs to explain
                 # WHY. Otherwise the user only sees llama-server's error, which reports
