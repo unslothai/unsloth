@@ -197,29 +197,35 @@ test("readAttachmentText reads a bounded slice of a large text file", async () =
 });
 
 test("readAttachmentText reads a bounded slice of a large html file", async () => {
-  const parsed: number[] = [];
-  const { label, text, truncated } = await withStubDom(
-    (source) => {
-      parsed.push(source.length);
-      return element("body", element("p", textNode(source)));
-    },
-    () => {
-      const oversized = new File(
-        [`<p>${"b".repeat(2_000_000)}</p>`],
-        "huge.html",
-        { type: "text/html" },
-      );
-      return readAttachmentText(oversized, oversized.name, oversized.type);
-    },
+  const oversized = new File(
+    [`<p>${"b".repeat(2_000_000)}</p>`],
+    "huge.html",
+    { type: "text/html" },
+  );
+  const { label, text, truncated } = await readAttachmentText(
+    oversized,
+    oversized.name,
+    oversized.type,
   );
 
-  assert.equal(label, "HTML");
+  assert.equal(label, null);
   assert.equal(truncated, true);
-  assert.deepEqual(parsed, [1_000_000]);
-  assert.equal(text.length <= 1_000_000, true);
+  assert.equal(text.length, 1_000_000);
 });
 
-/** textContent runs a whole page onto one line, which is what the model was sent as well as what the preview showed. */
+// the adapter sends the extraction; the preview shows the markup unextracted
+test("readAttachmentText previews an html file as its markup", async () => {
+  const markup = "<p>Drag to rotate<br>Scroll to zoom</p>";
+  const file = new File([markup], "page.html", { type: "text/html" });
+
+  assert.deepEqual(await readAttachmentText(file, file.name, file.type), {
+    label: null,
+    text: markup,
+    truncated: false,
+  });
+});
+
+/** textContent runs a whole page onto one line, and this extraction is what the html adapter sends the model. */
 test("extractHtmlAttachmentText keeps the line structure of the page", async () => {
   const extracted = await withStubDom(
     () =>
@@ -254,26 +260,6 @@ test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment("clip", "audio/webm"), true);
   assert.equal(isAudioAttachment("notes.txt", "text/plain"), false);
   assert.equal(isAudioAttachment(undefined, undefined), false);
-});
-
-// A bounded HTML read can extract almost nothing when the slice ends inside a
-// script block, so the flag, not the text length, is what discloses the cut.
-test("readAttachmentText reports truncation even when the slice extracts no text", async () => {
-  const { text, truncated } = await withStubDom(
-    (source) => element("body", element("script", textNode(source))),
-    () => {
-      const oversized = new File(
-        [`<script>${"c".repeat(2_000_000)}`],
-        "big.html",
-        { type: "text/html" },
-      );
-      return readAttachmentText(oversized, oversized.name, oversized.type);
-    },
-  );
-
-  assert.equal(text, "");
-  assert.equal(truncated, true);
-  assert.equal(truncateAttachmentPreviewText(text).truncated, false);
 });
 
 // CompositeAttachmentAdapter checks TextAttachmentAdapter before the
@@ -879,8 +865,17 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("train.py", null), "python");
   assert.equal(attachmentTextLanguage("Chart.YAML", null), "yaml");
+  assert.equal(attachmentTextLanguage("page.html", null), "html");
   assert.equal(attachmentTextLanguage("notes.txt", null), null);
   assert.equal(attachmentTextLanguage("script.py", "PDF"), null);
+  // the label parsed from the adapter's wrapper keeps a sent extraction unhighlighted
+  assert.equal(
+    attachmentTextLanguage(
+      "page.html",
+      parseAttachmentText("[HTML: page.html]\nDrag to rotate").label,
+    ),
+    null,
+  );
   assert.equal(attachmentTextLanguage(undefined, null), null);
 });
 

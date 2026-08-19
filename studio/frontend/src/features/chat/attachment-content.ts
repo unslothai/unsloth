@@ -155,7 +155,7 @@ const HTML_BLOCK_TAGS = new Set([
   "tr",
   "ul",
 ]);
-/** The extensions TextAttachmentAdapter accepts, mapped to shiki ids; one missing here previews unstyled. */
+/** The extensions the text and html previews colour, mapped to shiki ids; one missing here previews unstyled. */
 const CODE_ATTACHMENT_LANGUAGES: Record<string, string> = {
   astro: "astro",
   bash: "shellscript",
@@ -181,6 +181,8 @@ const CODE_ATTACHMENT_LANGUAGES: Record<string, string> = {
   graphql: "graphql",
   h: "c",
   hpp: "cpp",
+  htm: "html",
+  html: "html",
   ini: "ini",
   java: "java",
   jl: "julia",
@@ -644,8 +646,7 @@ function normalizeExtractedText(text: string): string {
     .trim();
 }
 
-// Reads the same text the matching adapter would send, so a composer preview
-// shows what the model will receive.
+// reads what the matching adapter would send, except html, which previews as raw markup
 export async function readAttachmentText(
   file: File,
   name: string,
@@ -668,13 +669,9 @@ export async function readAttachmentText(
       truncated: false,
     };
   }
+  // raw markup, not the extraction; kept before opendocument to match the adapters
   if (isHtmlAttachment(name, contentType)) {
-    const { text, truncated } = await readBoundedText(file);
-    return {
-      label: "HTML",
-      text: extractHtmlAttachmentText(text),
-      truncated,
-    };
+    return { label: null, ...(await readBoundedText(file)) };
   }
   if (isOpenDocumentAttachment(name, contentType)) {
     const { label, text } = await readOpenDocumentAttachmentContent(
