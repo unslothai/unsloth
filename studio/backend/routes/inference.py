@@ -3439,13 +3439,29 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         # loop and can newly fail the n > 1 and non-streaming guards. Same filter the
         # sticky boundary applies, and for the same reason.
         branch = conversation_archive.branch_message_texts(branch_messages, ("assistant",))
-        for message in reversed(studio_db.list_chat_messages(str(thread_id)) or []):
-            if message.get("role") != "assistant":
-                continue
-            if branch and not conversation_archive.content_on_branch(
-                message.get("content"), branch
-            ):
-                continue
+        live = set(branch or ())
+        rows = [
+            message
+            for message in reversed(studio_db.list_chat_messages(str(thread_id)) or [])
+            if message.get("role") == "assistant"
+        ]
+        if branch:
+            # Exact matches where any exist, substring only as the fallback. The branch
+            # check is textual, so an abandoned short reply rides in on a longer live one
+            # -- the sticky boundary already prefers exact matches for exactly this
+            # collision, "Done" against "Not done yet". Without it a checkpoint recorded on
+            # a discarded sibling still reopens the loop on the live branch.
+            exact = [
+                message
+                for message in rows
+                if conversation_archive.message_text(message.get("content")) in live
+            ]
+            rows = exact or [
+                message
+                for message in rows
+                if conversation_archive.content_on_branch(message.get("content"), branch)
+            ]
+        for message in rows:
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
                 continue

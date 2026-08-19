@@ -982,13 +982,13 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
 
     from routes import inference as inference_routes
 
-    def _thread(truncation):
+    def _thread(truncation, reply = "the epoch reply, written out in full"):
         module = types.SimpleNamespace(
             list_chat_messages = lambda thread_id: [
                 {"role": "user", "content": "q"},
                 {
                     "role": "assistant",
-                    "content": "the epoch reply, written out in full",
+                    "content": reply,
                     "metadata": {"custom": {"contextTruncation": truncation}},
                 },
             ]
@@ -1015,6 +1015,33 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     ]
     assert inference_routes._thread_has_checkpoint("t1", on_branch) is True
     assert inference_routes._thread_has_checkpoint("t1", off_branch) is False
+
+    # And the branch check is textual, so a SHORT abandoned reply rides in on a longer
+    # live one. The sticky boundary prefers exact matches for this exact collision;
+    # without the same preference here, a checkpoint recorded on a discarded sibling
+    # reopens the loop on the branch that never reset.
+    import sys as _sys
+
+    siblings = types.SimpleNamespace(
+        list_chat_messages = lambda thread_id: [
+            {"role": "user", "content": "q"},
+            # The abandoned sibling, which is the one that reset.
+            {"role": "assistant", "content": "Done",
+             "metadata": {"custom": {"contextTruncation": {
+                 "fits": True, "dropped_messages": 12, "checkpoint": True}}}},
+            # The live reply, which never did.
+            {"role": "assistant", "content": "Not done yet, still working",
+             "metadata": {"custom": {"contextTruncation": {
+                 "fits": True, "dropped_messages": 12}}}},
+        ]
+    )
+    package = types.ModuleType("storage")
+    package.studio_db = siblings
+    monkeypatch.setitem(_sys.modules, "storage", package)
+    monkeypatch.setitem(_sys.modules, "storage.studio_db", siblings)
+    swallowed = [{"role": "user", "content": "q"},
+                 {"role": "assistant", "content": "Not done yet, still working"}]
+    assert inference_routes._thread_has_checkpoint("t1", swallowed) is False
 
     # The same thread shape after a ROLLING compaction: archived, never reset.
     _thread({"fits": True, "dropped_messages": 12})
