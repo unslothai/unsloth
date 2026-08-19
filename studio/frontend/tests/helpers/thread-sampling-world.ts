@@ -149,12 +149,12 @@ async function drain(tick: (ms: number) => void): Promise<void> {
 /**
  * Run one ordering against a fresh store and return every invariant it broke.
  *
- * `tick` advances the mocked clock, so the 400ms settings debounce and the 400ms
- * snapshot debounce both settle between ops instead of bleeding into the next scenario.
+ * `tick` advances the mocked clock so the 400ms settings and snapshot debounces settle
+ * between ops instead of bleeding into the next scenario.
  *
- * `strict` turns on the shadow-model check (I1/I4/I6): every value a chat is owed is
- * still what the chat shows. Orderings that hydrate in the middle run without it,
- * because a chat opened before the server answered is following a cache, not a choice.
+ * `strict` turns on the shadow-model check (I1/I4/I6): every value a chat is owed is still
+ * what it shows. Orderings that hydrate in the middle run without it, because a chat opened
+ * before the server answered is following a cache, not a choice.
  */
 export async function runScenario(
   ops: readonly Op[],
@@ -341,10 +341,8 @@ export async function runScenario(
     live.setParams({ ...live.params, ...patch } as never);
     const who = actor();
     if (who === "") {
-      // Only once hydration has answered. An inference param edited before it does is
-      // deliberately not written (setParams gates its HTTP write on settingsHydrated,
-      // as it did before any of this was per-chat); it is fenced so hydration cannot
-      // undo it, and it reaches the server on the next edit, not on this one.
+      // Only once hydration answered: setParams gates its HTTP write on settingsHydrated,
+      // so an earlier edit is fenced instead and reaches the server on the NEXT edit.
       if (live.settingsHydrated) Object.assign(globalEdits, patch);
       return;
     }
@@ -378,8 +376,7 @@ export async function runScenario(
         );
         break;
       case "qwenPostLoad":
-        // The same table the toggle applies, but published by the load rather than
-        // asked for, so it is marked and must not be pinned.
+        // The toggle's table, but published by the load, so it is marked and never pinned.
         live.setParams(
           {
             ...live.params,

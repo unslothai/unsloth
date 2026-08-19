@@ -137,9 +137,8 @@ test("an empty snapshot reads as no snapshot", () => {
   assert.equal(hasThreadScopedSettings({ toolsEnabled: false }), true);
 });
 
-// The reported gap: returning to a chat started under one system prompt showed
-// whichever prompt the last chat had. These live under `params` rather than as
-// store fields of their own, which is the only thing that makes them special.
+// The reported gap: returning to a chat started under one system prompt showed whichever
+// prompt the last chat had. These live under `params`, which is all that makes them special.
 test("the sampling params and the system prompt travel with the chat", () => {
   const settings = sanitizeThreadScopedSettings({
     temperature: 0.2,
@@ -188,9 +187,8 @@ test("a sampling value outside the slider range is dropped", () => {
   );
 });
 
-// -1 disables top-k. default.yaml falls back to it and whole model families resolve
-// to it, so dropping it means those chats cannot keep the value they actually run,
-// and reopening one silently takes whatever top-k the installation last saw.
+// -1 disables top-k, and default.yaml and whole model families resolve to it, so dropping
+// it means reopening such a chat silently takes whatever top-k the installation last saw.
 test("the disabled top-k value is kept, and it is the floor", () => {
   assert.deepEqual(sanitizeThreadScopedSettings({ topK: -1 }), { topK: -1 });
   assert.deepEqual(sanitizeThreadScopedSettings({ topK: -2 }), {});

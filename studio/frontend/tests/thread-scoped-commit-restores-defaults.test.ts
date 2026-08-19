@@ -2,14 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Leaving a chat while its settings read is still out writes the edits made in it to that
-// chat's row. The store is still showing them at that point, so unless the installation
-// values go back over them the next chat takes them: a chat with no snapshot captures the
-// store as the defaults and is pinned with another chat's temperature and system prompt.
+// chat's row. The store is still showing them, so unless the installation values go back
+// over them the next chat takes them: a chat with no snapshot captures the store as the
+// defaults and is pinned with another chat's temperature and system prompt.
 //
-// The same commit runs when a failed read is about to be retried and when a chat is
-// forked, both with the chat still open, and there the edit must stay on screen.
-//
-// Drives the real store through both orders.
+// The same commit runs when a failed read is retried and when a chat is forked, both with
+// the chat still open, and there the edit must stay on screen. Drives both orders.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

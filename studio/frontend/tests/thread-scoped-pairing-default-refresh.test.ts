@@ -9,11 +9,8 @@
 // That sample goes stale if a model finishes loading inside the window: setParams
 // publishes the new model's recommendation, marked fromModelDefaults, so it is NOT
 // captured as a chat edit and IS written to /api/chat/settings. Restoring the pre-window
-// sample over it then leaves this session's in-memory copy of the defaults behind the
-// server's, and the next chat opened with no snapshot of its own is pinned with the old
-// value until the page is reloaded.
-//
-// Drives the real store through that order.
+// sample over it leaves this session's in-memory defaults behind the server's, pinning the
+// old value onto the next snapshot-less chat until reload. Drives that order.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

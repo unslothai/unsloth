@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The eight sampling keys became per-chat, and unlike every other thread-scoped setting
-// they live under `params` rather than as store fields of their own. That one difference
-// is enough to lose an edit or leak it, and neither shows up until a chat is reopened,
-// so this drives the real store through every ordering of the operations that touch them
-// and checks after EVERY step that:
+// they live under `params` rather than as store fields of their own. That difference is
+// enough to lose an edit or leak it, and neither shows until a chat is reopened, so this
+// drives the real store through every ordering of the ops that touch them, checking after
+// EVERY step that:
 //
 //   I1  a value the user set in a chat is still what that chat shows when it is reopened
 //   I2  it reaches neither another chat nor the installation-wide settings
@@ -164,9 +164,9 @@ test("A4: every four-step interleaving over the wider alphabet", async (t) => {
 
 test("A5: hydration interleaved -- nothing leaks, whatever the order", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  // Without the shadow model: a chat opened before the server answered is following
-  // this browser's cache, so what it is "owed" is not yet decided. The leak and
-  // usability invariants still hold, and they are the ones that matter here.
+  // Without the shadow model: a chat opened before the server answered follows this
+  // browser's cache, so what it is "owed" is not yet decided. The leak and usability
+  // invariants still hold, and they are the ones that matter here.
   const orderings = permutations<Op>([
     "hydrate",
     "openA",
@@ -463,12 +463,10 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
   assert.doesNotMatch(JSON.stringify(settingsHttp.puts), /HELD EDIT/);
   assert.doesNotMatch(JSON.stringify(settingsHttp.puts), /1\.37/);
 
-  // What B shows is NOT asserted here. Leaving a chat mid-read leaves the store holding
-  // that chat's edits, and B's applyThreadScopedSettings captures the store as the
-  // in-memory installation defaults, so B opens on A's values and pins them. That is
-  // long-standing behaviour of the held-edit path rather than anything the sampling
-  // keys introduced: `ragTopK`, thread-scoped since well before this, leaks through the
-  // same line. Asserting either value here would freeze one of them in place.
+  // What B shows is NOT asserted here. Leaving a chat mid-read leaves the store holding its
+  // edits, and B's applyThreadScopedSettings captures the store as the in-memory defaults,
+  // so B opens on A's values and pins them. Long-standing behaviour of the held-edit path,
+  // not new: `ragTopK` leaks through the same line. Asserting it would freeze it in place.
 });
 
 test("B4: a model load landing during the pairing window does not take the chat's edit", async (t) => {

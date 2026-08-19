@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The thread row, in memory. The store PATCHes a chat's snapshot through
-// updateStoredChatThread, so recording the calls is how a test sees what a chat
-// was actually saved as, and `rows` is what a reopen would read back.
+// The thread row, in memory. Recorded writes are how a test sees what a chat was saved
+// as, and `rows` is what a reopen would read back.
 
 export interface RecordedThreadWrite {
   threadId: string;
@@ -26,7 +25,7 @@ export const threadRows = {
     threadRows.rows.clear();
     threadRows.failNext = false;
   },
-  /** Every write recorded for one chat, oldest first. */
+  /** Oldest first. */
   writesFor(threadId: string): RecordedThreadWrite[] {
     return threadRows.writes.filter((write) => write.threadId === threadId);
   },
@@ -48,8 +47,7 @@ export async function updateStoredChatThread(
   }
   threadRows.writes.push({ threadId, ...update });
   const row = threadRows.rows.get(threadId) ?? {};
-  // A replacement write replaces settings_json; a patch merges into it. Same as
-  // PATCH /api/chat/threads/{id} does server side.
+  // Replacement replaces settings_json, patch merges into it, as the server's PATCH does.
   threadRows.rows.set(
     threadId,
     update.settings !== undefined

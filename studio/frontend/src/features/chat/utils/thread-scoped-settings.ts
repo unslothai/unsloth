@@ -48,8 +48,7 @@ export interface ThreadScopedSettings {
   systemVariables?: string;
 }
 
-/** The subset living under `params` rather than as a store field of its own, so
- * the read and apply paths know where to look for them. */
+/** The subset living under `params` rather than as a store field of its own. */
 export const THREAD_SCOPED_PARAM_KEYS = [
   "temperature",
   "topP",
@@ -101,8 +100,7 @@ const THREAD_SCOPED_NUMBER_BOUNDS = {
   // Same ranges as the sampling sliders, and as the ge/le on the same fields.
   temperature: { min: 0, max: 2, integer: false },
   topP: { min: 0, max: 1, integer: false },
-  // -1 disables top-k and is what default.yaml and several model families
-  // resolve to, so the floor is -1 rather than 0, matching the inference schema.
+  // -1 disables top-k and is what default.yaml resolves to, so the floor is -1, not 0.
   topK: { min: -1, max: 100, integer: true },
   minP: { min: 0, max: 1, integer: false },
   repetitionPenalty: { min: 1, max: 2, integer: false },
@@ -114,8 +112,7 @@ const THREAD_SCOPED_NUMBER_BOUNDS = {
   >
 >;
 
-// Not length-capped: truncating a prompt here would silently change what the chat
-// runs with, and the installation-wide copy is not capped either.
+// Not length-capped: truncating a prompt would silently change what the chat runs with.
 const THREAD_SCOPED_STRING_KEYS = [
   "systemPrompt",
   "systemVariables",

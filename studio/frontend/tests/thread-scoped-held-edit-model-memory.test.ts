@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The pairing window again, from the model side. An edit made while a saved chat's
-// snapshot read is still out lives in heldThreadScopedEdits, not in a snapshot, and
+// The pairing window from the model side. An edit made while a saved chat's snapshot read
+// is still out lives in heldThreadScopedEdits, not in a snapshot, and
 // threadScopedSettingsThreadId is still null because nothing has been applied yet.
 //
 // Every outgoing-model snapshot runs through withoutActiveThreadParams, which used to
 // return early on that null id alone. A model switch inside the window therefore
-// snapshotted the chat's sampling and system prompt into the OUTGOING model's memory,
-// which is shared with every other chat: with the per-model memory on (the default),
-// the next chat opened on that model replays the first chat's prompt and sliders, and
-// a model that had no entry yet also gets that snapshot persisted.
-//
-// Drives the real store through that order.
+// snapshotted the chat's sampling and prompt into the OUTGOING model's memory, shared with
+// every other chat: the next chat opened on that model replays the first chat's prompt and
+// sliders. Drives the real store through that order.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -74,13 +71,11 @@ test("an edit held for an unpaired chat stays out of the outgoing model's memory
   await state().hydratePersistedSettings();
   state().setCheckpoint(QWEN as never, null as never);
 
-  // A saved chat is on screen and its snapshot read has not answered yet, so the
-  // provider has opened the pairing window and nothing has been applied.
+  // A saved chat is on screen, its read unanswered: the pairing window is open.
   state().setActiveThreadId(CHAT_A as never);
   beginThreadScopedPairing(CHAT_A);
 
-  // The user drags temperature and rewrites the system prompt in that window. Both
-  // are held for chat A rather than written to the installation.
+  // The user drags temperature and rewrites the prompt: both held for chat A.
   state().setParams({
     ...state().params,
     temperature: EDITED_TEMPERATURE,

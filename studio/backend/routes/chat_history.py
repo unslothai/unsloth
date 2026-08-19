@@ -80,9 +80,8 @@ class ChatRagKnowledgeBaseSource(BaseModel):
 class ChatThreadSettings(BaseModel):
     """The chat settings captured per thread; a thread storing none uses the global ones."""
 
-    # allow_inf_nan for the same reason as ChatInferenceSettings: json.loads and
-    # pydantic both take a bare NaN, and it is stored as a token no strict reader
-    # can parse back.
+    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take
+    # a bare NaN, which is then stored as a token no strict reader can parse back.
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     reasoningEnabled: Optional[bool] = None
@@ -113,14 +112,13 @@ class ChatThreadSettings(BaseModel):
     # The sampling params a chat runs with. Ranges match the sliders that set them.
     temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
     topP: Optional[float] = Field(default = None, ge = 0, le = 1)
-    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml
-    # fallback, so a chat can keep it the way any other model's value is kept.
+    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
     topK: Optional[int] = Field(default = None, ge = -1, le = 100)
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
-    # Not length-capped, matching the installation-wide copy: truncating here
-    # would silently change what the chat runs with.
+    # Not length-capped, like the installation-wide copy: truncating here would
+    # silently change what the chat runs with.
     systemPrompt: Optional[str] = None
     systemVariables: Optional[str] = None
 

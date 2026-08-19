@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Rows written by a Studio that did not have per-chat sampling, rows written by one that
-// has more of it than this build does, and the values at the edges of what the sanitizer
-// accepts. Every chat in an existing installation is the first case, so nothing here is
-// hypothetical: the snapshot is read back through sanitizeThreadScopedSettings on every
-// open, and anything it drops is a setting the user watched themselves choose.
+// Rows written by a Studio without per-chat sampling, rows written by one that has more of
+// it than this build, and the values at the edges of what the sanitizer accepts. Every chat
+// in an existing installation is the first case: the snapshot is re-read through
+// sanitizeThreadScopedSettings on every open, and anything it drops is a setting the user
+// watched themselves choose.
 //
-// The falsy set is the one to keep an eye on. temperature 0, minP 0, topP 0, topK -1 and
-// an empty system prompt are all deliberate choices and all falsy or negative, so a `||`
-// where a `??` belongs, or an `if (value)` guard, silently reverts them to whatever the
-// installation last saw. MDN is explicit that ?? only defers to the right-hand side for
-// null and undefined, which is why the store's fallbacks have to use it:
+// The falsy set is the one to watch: temperature 0, minP 0, topP 0, topK -1 and an empty
+// prompt are deliberate choices and all falsy or negative, so a `||` where a `??` belongs,
+// or an `if (value)` guard, silently reverts them. ?? only defers for null and undefined,
+// which is why the store's fallbacks have to use it:
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Nullish_coalescing
 
 import assert from "node:assert/strict";
@@ -171,10 +170,9 @@ test("C1: a legacy row opens on the installation sampling, and nothing is zeroed
   assert.deepEqual(threadRows.rows.get("L"), LEGACY_ROW);
 });
 
-// The behaviour a live review item asks about. Reported as observed, not as desired:
-// a legacy chat stored no sampling, so it follows the installation defaults, and a
-// model load moves those. Nothing the user chose is lost, because nothing was chosen;
-// but the chat does not show the same numbers on the second visit as on the first.
+// The behaviour a live review item asks about, reported as observed, not as desired: a
+// legacy chat stored no sampling, so it follows the installation defaults and a model load
+// moves those. Nothing chosen is lost, but the second visit shows different numbers.
 test("C1b: a legacy chat follows the installation defaults, which a model load moves", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const w = await world({ L: { ...LEGACY_ROW } });
@@ -203,8 +201,7 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
   await settle((ms) => t.mock.timers.tick(ms));
   const onSecondVisit = w.sampling();
   assertUsable(onSecondVisit, "legacy reopen");
-  // OBSERVED: the reopened legacy chat shows the model's sampling, not what it showed
-  // the first time. It stored none, so there is nothing of the user's to lose; the
+  // OBSERVED: the reopened legacy chat shows the model's sampling. It stored none, so the
   // fallback is the installation default, and the load moved that.
   assert.equal(onSecondVisit.temperature, 0.31);
   assert.notEqual(onSecondVisit.temperature, onFirstVisit.temperature);
@@ -220,9 +217,8 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle((ms) => t.mock.timers.tick(ms));
 
-  // The write for a chat that already had a snapshot is a full replacement built from
-  // the store, so the other seven keys are pinned alongside the edited one and the
-  // chat stops drifting with the installation from here on.
+  // The write for a chat that already had a snapshot is a full replacement built from the
+  // store, so all seven other keys are pinned too and the chat stops drifting.
   const row = threadRows.rows.get("L") as Record<string, unknown>;
   assert.equal(row.temperature, 1.37);
   for (const key of SAMPLING_KEYS) {
@@ -398,10 +394,9 @@ test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
   assert.deepEqual(w.sampling(), INSTALLATION);
 });
 
-// A model recommendation the sanitizer refuses. Nothing ships one today -- the one
-// that did, Llasa's top_p: 1.2, was brought back to 1.0 -- but the load path applies a
-// recommendation to the live params without clamping, so the case is reachable from a
-// custom model_defaults yaml or a backend that starts sending one.
+// A model recommendation the sanitizer refuses. Nothing ships one today (Llasa's top_p:
+// 1.2 was brought back to 1.0), but the load path applies a recommendation to the live
+// params unclamped, so a custom model_defaults yaml still reaches this.
 test("C3e: an out-of-range recommendation never reaches a chat that pinned that key", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const w = await world();
@@ -416,9 +411,8 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle((ms) => t.mock.timers.tick(ms));
 
-  // A pinned every key when it opened, so the chat keeps its own in-range value and
-  // the recommendation the row could not have stored never reaches it. Pinning on
-  // open is what makes this safe: an unpinned chat has nothing to put back.
+  // A pinned every key when it opened, so it keeps its own in-range value. Pinning on open
+  // is what makes this safe: an unpinned chat has nothing to put back.
   assert.equal(w.store().params.topP, INSTALLATION.topP);
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.topP, INSTALLATION.topP);
@@ -448,9 +442,8 @@ test("C3f: an out-of-range recommendation taken with no chat open cannot be pinn
   assert.equal(w.store().params.topP, 1.2);
   assert.match(JSON.stringify(settingsHttp.puts), /"topP":1\.2/);
 
-  // a chat opened on it pins what it can, and the row silently omits topP rather than
-  // sending a body PATCH /api/chat/threads/{id} would refuse whole, which would have
-  // cost the chat all seven of the other keys with it
+  // a chat opened on it pins what it can, omitting topP rather than sending a body the
+  // PATCH would refuse whole, which would cost the chat all seven other keys
   w.open("A");
   await settle((ms) => t.mock.timers.tick(ms));
   const row = threadRows.rows.get("A") as Record<string, unknown>;
