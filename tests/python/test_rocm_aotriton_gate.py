@@ -20,7 +20,10 @@ from pathlib import Path
 
 from unsloth._rocm_attention import AOTRITON_ENV, enable_rocm_aotriton_attention
 
-_INIT = Path(__file__).resolve().parents[2] / "unsloth" / "__init__.py"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_INIT = _REPO_ROOT / "unsloth" / "__init__.py"
+_INSTALL_PS1 = _REPO_ROOT / "install.ps1"
+_INSTALL_SH = _REPO_ROOT / "install.sh"
 
 
 def test_opens_the_gate_when_unset():
@@ -76,3 +79,25 @@ def test_init_imports_the_helper_from_the_package():
     the O(N^2) path with every test above still green."""
     source = _INIT.read_text(encoding = "utf-8")
     assert "from ._rocm_attention import enable_rocm_aotriton_attention" in source
+
+
+def test_install_ps1_persists_the_gate_for_pinned_rocm_indexes_too():
+    """UNSLOTH_TORCH_INDEX_URL/_FAMILY pinned to a gfx*/rocm* index skips the auto-reroute
+    block entirely and resolves $ROCmIndexUrl in the pinned branch below it. Persisting from
+    inside the auto-reroute would leave those installs on the MATH path."""
+    source = _INSTALL_PS1.read_text(encoding = "utf-8")
+    persist = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
+    pinned_route = source.index('if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {')
+    assert pinned_route < persist, "the AOTriton persistence must follow the pinned-index routing"
+    # And it only fires once a ROCm index actually won, not on every install.
+    guard = source.rindex("if ($ROCmIndexUrl) {", 0, persist)
+    assert guard > pinned_route
+
+
+def test_install_sh_persists_the_gate_off_the_resolved_index_leaf():
+    """The shell side classifies the FINAL resolved TORCH_INDEX_URL, so a pinned index is
+    already covered; keep the call there rather than in any one reroute arm."""
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    classify = source.index('if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then')
+    call = source.index("_persist_rocm_aotriton_env ||", classify)
+    assert call - classify < 400
