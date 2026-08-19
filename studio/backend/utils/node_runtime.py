@@ -108,28 +108,33 @@ def _reset_managed_node_check() -> None:
     _usable_node_cache.clear()
 
 
-def _path_has_usable_node(path: str) -> bool:
-    """Whether ``path`` provides the runtime the installers would accept: a node and an
-    npm that both clear their floors, plus an npx to launch with. decide_node_source()
-    installs the managed runtime otherwise, so a weaker test here would skip it."""
+def _path_has_usable_node(path: str, require_npm: bool = True) -> bool:
+    """Whether ``path`` provides the runtime a stdio command needs. A direct ``node``
+    server needs only a floor-clearing node; ``npm``/``npx`` also need the npm the
+    installers gate on, so the two cases cannot share one verdict."""
     try:
         node = shutil.which("node", path = path)
-        npm = shutil.which("npm", path = path)
-        npx = shutil.which("npx", path = path)
+        npm = shutil.which("npm", path = path) if require_npm else None
+        npx = shutil.which("npx", path = path) if require_npm else None
     except OSError:
         return False
-    if not node or not npm or not npx:
+    if not node:
         return False
-    if _IS_WINDOWS:
-        # npm's npx.cmd runs the node.exe beside it when there is one, so that is the
-        # runtime to validate, not whatever ``node`` happens to resolve to first.
-        sibling = os.path.join(os.path.dirname(npx), "node.exe")
-        try:
-            if os.path.isfile(sibling):
-                node = sibling
-        except OSError:
+    if require_npm:
+        if not npm or not npx:
             return False
-    return _probe_ok(node, _node_version_ok) and _probe_ok(npm, _npm_version_ok)
+        if _IS_WINDOWS:
+            # npm's npx.cmd runs the node.exe beside it when there is one, so that is
+            # the runtime to validate, not whatever ``node`` resolves to first.
+            sibling = os.path.join(os.path.dirname(npx), "node.exe")
+            try:
+                if os.path.isfile(sibling):
+                    node = sibling
+            except OSError:
+                return False
+    if not _probe_ok(node, _node_version_ok):
+        return False
+    return _probe_ok(npm, _npm_version_ok) if require_npm else True
 
 
 def _probe_ok(executable: str, check) -> bool:
@@ -158,7 +163,7 @@ def managed_node_usable() -> bool:
     return _managed_node_ok
 
 
-def path_with_managed_node(base_path: str | None = None) -> str:
+def path_with_managed_node(base_path: str | None = None, require_npm: bool = True) -> str:
     """``base_path`` (default: this process's PATH) with the managed Node bin dir
     moved to the front, unchanged when it is unusable or the PATH already resolves a
     runtime. The installer puts it on PATH for setup only, so subprocesses need it."""
@@ -167,7 +172,7 @@ def path_with_managed_node(base_path: str | None = None) -> str:
     if bin_dir is None:
         return current
     # Never shadow a runtime the PATH already reaches (resolve_node_executable order).
-    if _path_has_usable_node(current):
+    if _path_has_usable_node(current, require_npm = require_npm):
         return current
     if not managed_node_usable():
         return current

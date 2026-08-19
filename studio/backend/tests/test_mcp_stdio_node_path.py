@@ -32,7 +32,9 @@ def managed_node(tmp_path, monkeypatch):
     bin_dir.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
-    monkeypatch.setattr(node_runtime, "_path_has_usable_node", lambda path: False)
+    monkeypatch.setattr(
+        node_runtime, "_path_has_usable_node", lambda path, require_npm = True: False
+    )
     return bin_dir
 
 
@@ -421,3 +423,54 @@ def test_npm_floor_matches_the_installers():
     assert node_runtime._npm_meets_floor("v12.1.2")
     assert not node_runtime._npm_meets_floor("10.9.3")
     assert not node_runtime._npm_meets_floor("")
+
+
+def _node_only_dir(tmp_path):
+    """Debian/Ubuntu ship nodejs and npm as separate packages, so this is ordinary."""
+    nodeonly = tmp_path / "nodeonly"
+    nodeonly.mkdir()
+    _make_executable(nodeonly, "node")
+    return nodeonly
+
+
+def test_direct_node_server_keeps_a_node_only_path(managed_node_install, monkeypatch, tmp_path):
+    nodeonly = _node_only_dir(tmp_path)
+    _patch_floors(monkeypatch, lambda executable: True)
+    assert node_runtime.path_with_managed_node(str(nodeonly), require_npm = False) == str(nodeonly)
+
+
+def test_npx_server_still_needs_npm_on_a_node_only_path(
+    managed_node_install, monkeypatch, tmp_path
+):
+    nodeonly = _node_only_dir(tmp_path)
+    _patch_floors(monkeypatch, lambda executable: True)
+    expected = f"{managed_node_install}{os.pathsep}{nodeonly}"
+    assert node_runtime.path_with_managed_node(str(nodeonly)) == expected
+
+
+def test_stdio_env_does_not_shadow_node_for_a_direct_node_server(
+    managed_node_install, monkeypatch, tmp_path
+):
+    nodeonly = _node_only_dir(tmp_path)
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(nodeonly))
+    assert mcp_client._stdio_env(None, "node")["PATH"] == str(nodeonly)
+
+
+def test_stdio_env_still_augments_for_npx_on_a_node_only_path(
+    managed_node_install, monkeypatch, tmp_path
+):
+    nodeonly = _node_only_dir(tmp_path)
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(nodeonly))
+    env = mcp_client._stdio_env(None, "npx")
+    assert env["PATH"] == f"{managed_node_install}{os.pathsep}{nodeonly}"
+
+
+def test_command_needs_npm_only_for_launchers():
+    assert not mcp_client._command_needs_npm("node")
+    assert not mcp_client._command_needs_npm("/usr/bin/node")
+    assert not mcp_client._command_needs_npm("node.exe")
+    assert mcp_client._command_needs_npm("npx")
+    assert mcp_client._command_needs_npm("npm.cmd")
+    assert mcp_client._command_needs_npm(None)

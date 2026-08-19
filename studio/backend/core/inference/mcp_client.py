@@ -247,15 +247,25 @@ _NODE_COMMANDS = frozenset({"node", "npm", "npx"})
 _WINDOWS_LAUNCHER_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
 
 
-def _is_node_command(command: str) -> bool:
-    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a
-    Python or other stdio server keeps the toolchain its own env pinned."""
+def _launcher_name(command: str) -> str:
+    """argv[0] reduced to its bare launcher name, Windows suffix stripped."""
     name = os.path.basename(command).lower()
     for suffix in _WINDOWS_LAUNCHER_SUFFIXES:
         if name.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    return name in _NODE_COMMANDS
+            return name[: -len(suffix)]
+    return name
+
+
+def _is_node_command(command: str) -> bool:
+    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a
+    Python or other stdio server keeps the toolchain its own env pinned."""
+    return _launcher_name(command) in _NODE_COMMANDS
+
+
+def _command_needs_npm(command: Optional[str]) -> bool:
+    """A direct ``node`` server needs no npm or npx, so requiring them would shadow a
+    perfectly good Node its PATH already provides."""
+    return command is None or _launcher_name(command) != "node"
 
 
 def _path_key(env: dict) -> str:
@@ -283,7 +293,7 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
         base = os.environ.get("PATH", "")
     try:
         from utils.node_runtime import path_with_managed_node
-        patched = path_with_managed_node(base)
+        patched = path_with_managed_node(base, require_npm = _command_needs_npm(command))
     except (ImportError, OSError, ValueError):
         patched = base
     if patched and patched != env.get(key):
