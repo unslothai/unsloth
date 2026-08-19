@@ -851,8 +851,8 @@ def _kv_quant_status(requested_bits, model, is_vlm):
 
 PROMPT_CACHE_MEMORY_FRACTION = 0.15
 PROMPT_CACHE_FALLBACK_BYTES = 2 * 1024**3
-MLX_VLM_PREFILL_STEP_SIZE = 2048
 MLX_VLM_BLOCK_CACHE_PREFILL_STEP_SIZE = 256
+MLX_VLM_EXACT_CACHE_PREFILL_STEP_SIZE = 256
 MLX_VLM_PROMPT_CACHE_MIN_VERSION = "0.6.12"
 MLX_VLM_EXACT_PROMPT_CACHE_MIN_VERSION = "0.6.13"
 
@@ -1130,6 +1130,11 @@ def _trim_vlm_state_to_prompt(state, prompt_tokens):
     return True
 
 
+def _vlm_shape_stable_prefix_limit(token_count, boundary):
+    """Largest cold chunk boundary leaving more than one warm chunk."""
+    return max(0, (token_count - boundary - 1) // boundary * boundary)
+
+
 class _ShapeStableVLMPromptCacheState:
     """Align reuse so warm prefill follows the cold chunk sequence."""
 
@@ -1137,6 +1142,7 @@ class _ShapeStableVLMPromptCacheState:
         self._state = state
         self._boundary = boundary
         self.reused_prefix_length = 0
+        self.full_token_ids = []
 
     @property
     def cache(self):
@@ -1156,12 +1162,13 @@ class _ShapeStableVLMPromptCacheState:
 
     def find_prefix_length(self, new_ids):
         prefix = self._state.find_prefix_length(new_ids)
+        self.full_token_ids = list(new_ids)
         boundary = self._boundary
         aligned = prefix // boundary * boundary
         # mlx-vlm reserves the final prompt token only when the remaining input
         # is larger than the prefill step. Cap reuse at an earlier cold boundary
         # so the warm suffix takes the same chunked path.
-        max_prefix = max(0, (len(new_ids) - boundary - 1) // boundary * boundary)
+        max_prefix = _vlm_shape_stable_prefix_limit(len(new_ids), boundary)
         self.reused_prefix_length = min(aligned, max_prefix)
         return self.reused_prefix_length
 
@@ -1170,19 +1177,14 @@ class _ShapeStableVLMPromptCacheState:
 
 
 @contextmanager
-def _temporary_vlm_full_position_metadata(model, cache_state):
-    """Keep upstream full-prompt positions when a visual prefix is reused."""
+def _temporary_vlm_full_prompt_metadata(model, cache_state):
+    """Keep absolute auxiliary prompt state when a visual prefix is reused."""
     get_embeddings = getattr(model, "get_input_embeddings", None)
     instance_attributes = getattr(model, "__dict__", {})
     had_instance_override = "get_input_embeddings" in instance_attributes
     instance_override = instance_attributes.get("get_input_embeddings")
     language_model = getattr(model, "language_model", None)
-    if (
-        cache_state is None
-        or not callable(get_embeddings)
-        or language_model is None
-        or not callable(getattr(language_model, "get_rope_index", None))
-    ):
+    if cache_state is None or not callable(get_embeddings):
         yield
         return
 
@@ -1191,19 +1193,29 @@ def _temporary_vlm_full_position_metadata(model, cache_state):
         prefix = int(getattr(cache_state, "reused_prefix_length", 0) or 0)
         pixel_values = kwargs.get("pixel_values", args[1] if len(args) > 1 else None)
         input_ids = kwargs.get("input_ids", args[0] if args else None)
-        full_positions = getattr(language_model, "_position_ids", None)
         suffix_length = int(getattr(input_ids, "shape", (0, 0))[-1])
-        if (
-            prefix > 0
-            and pixel_values is None
-            and getattr(features, "position_ids", None) is not None
-            and full_positions is not None
-            and int(full_positions.shape[-1]) >= prefix + suffix_length
-        ):
-            features.position_ids = full_positions
-            full_rope_deltas = getattr(language_model, "_rope_deltas", None)
-            if full_rope_deltas is not None and hasattr(features, "rope_deltas"):
-                features.rope_deltas = full_rope_deltas
+        if prefix > 0 and pixel_values is None:
+            full_positions = getattr(language_model, "_position_ids", None)
+            if (
+                getattr(features, "position_ids", None) is not None
+                and full_positions is not None
+                and int(full_positions.shape[-1]) >= prefix + suffix_length
+            ):
+                features.position_ids = full_positions
+                full_rope_deltas = getattr(language_model, "_rope_deltas", None)
+                if full_rope_deltas is not None and hasattr(features, "rope_deltas"):
+                    features.rope_deltas = full_rope_deltas
+            full_token_ids = getattr(cache_state, "full_token_ids", None)
+            if getattr(features, "per_layer_inputs", None) is not None and full_token_ids:
+                import mlx.core as mx
+
+                full_features = get_embeddings(mx.array([full_token_ids]), None)
+                full_per_layer_inputs = getattr(full_features, "per_layer_inputs", None)
+                if (
+                    full_per_layer_inputs is not None
+                    and int(full_per_layer_inputs.shape[1]) >= prefix + suffix_length
+                ):
+                    features.per_layer_inputs = full_per_layer_inputs
         return features
 
     try:
@@ -1302,16 +1314,17 @@ class _MLXVLMPromptCacheHistory:
 class _StudioVLMNativeExactManager:
     """Apply Studio's memory cap around mlx-vlm's native exact APC manager."""
 
-    def __init__(self, manager, max_bytes, clone):
+    def __init__(self, manager, max_bytes, clone, reuse_boundary):
         self._manager = manager
         self._max_bytes = max_bytes
         self._clone = clone
+        self._reuse_boundary = reuse_boundary
         self._request_reused = False
         self._request_stored = False
+        self._request_store_boundary = 0
         self._pending_stores = []
-        # Upstream keeps a safe pre-generation checkpoint beside the full
-        # prompt. Both are needed because a continued chat can replace the
-        # original assistant boundary instead of literally extending it.
+        self.reused_prefix_length = 0
+        self.full_token_ids = []
         self._manager._exact_cache_max = 2
 
     def __getattr__(self, name):
@@ -1320,10 +1333,27 @@ class _StudioVLMNativeExactManager:
     def begin_request(self):
         self._request_reused = False
         self._request_stored = False
+        self._request_store_boundary = 0
+        self.reused_prefix_length = 0
+        self.full_token_ids = []
         self._pending_stores.clear()
 
     def lookup_exact_cache(self, token_ids, **kwargs):
+        self.full_token_ids = list(token_ids)
+        boundary = self._reuse_boundary
+        target = _vlm_shape_stable_prefix_limit(len(token_ids), boundary)
+        requested_max = kwargs.get("max_prefix_tokens")
+        if requested_max is not None and int(requested_max) > 0:
+            target = min(int(requested_max), target) // boundary * boundary
+        self._request_store_boundary = target
+        if target <= 0:
+            return None, 0
+        self._manager.exact_cache_guard_tokens = len(token_ids) - target
+        kwargs["max_prefix_tokens"] = target
         result = self._manager.lookup_exact_cache(token_ids, **kwargs)
+        if result[1] > target or result[1] % boundary:
+            return None, 0
+        self.reused_prefix_length = int(result[1] or 0)
         self._request_reused = self._request_reused or result[1] > 0
         return result
 
@@ -1334,13 +1364,15 @@ class _StudioVLMNativeExactManager:
         *,
         extra_hash = 0,
     ):
+        if len(token_ids) != self._request_store_boundary:
+            return False
         if _vlm_prompt_cache_clone_expands(prompt_cache):
             logger.debug("MLX VLM exact cache: skipping clone-expanding quantized state")
             return False
         state = SimpleNamespace(token_ids = token_ids, cache = prompt_cache)
         source_nbytes = _vlm_prompt_cache_state_nbytes(state)
-        # Bound two published snapshots, two staged replacements, and the one
-        # transient clone made by native store_exact_cache during publication.
+        # Conservatively bound the published snapshot, staged replacement, and
+        # transient clones made while native APC takes ownership.
         if source_nbytes is None or source_nbytes > self._max_bytes // 5:
             logger.debug("MLX VLM exact cache: skipping unbounded or over-budget state")
             return False
@@ -1353,7 +1385,7 @@ class _StudioVLMNativeExactManager:
             logger.debug("MLX VLM exact cache: skipping expanded or over-budget clone")
             return False
         self._pending_stores.append((list(token_ids), copied, extra_hash))
-        del self._pending_stores[:-2]
+        del self._pending_stores[:-1]
         return True
 
     def finish_request(self):
@@ -1578,7 +1610,12 @@ class MLXInferenceBackend:
         if cache_mode == "exact":
             if self._vlm_apc_manager is None:
                 native = apc_cls(num_blocks = 1, block_size = 16)
-                self._vlm_apc_manager = _StudioVLMNativeExactManager(native, max_bytes, clone)
+                self._vlm_apc_manager = _StudioVLMNativeExactManager(
+                    native,
+                    max_bytes,
+                    clone,
+                    MLX_VLM_EXACT_CACHE_PREFILL_STEP_SIZE,
+                )
             self._vlm_apc_manager.begin_request()
             return None, None, [], self._vlm_apc_manager
         media_fingerprint = _vlm_media_fingerprint(image)
@@ -2433,7 +2470,7 @@ class MLXInferenceBackend:
                 if exact_manager is not None:
                     request_kwargs["apc_manager"] = exact_manager
                     request_kwargs["apc_tenant"] = f"adapter:{_adapter_state!r}"
-                    request_kwargs["prefill_step_size"] = MLX_VLM_PREFILL_STEP_SIZE
+                    request_kwargs["prefill_step_size"] = MLX_VLM_EXACT_CACHE_PREFILL_STEP_SIZE
                 final_response = None
                 cached_n = 0
                 completed = False
@@ -2451,9 +2488,9 @@ class MLXInferenceBackend:
                         nonlocal cache_abandoned
                         yielded = False
                         try:
-                            with _temporary_vlm_full_position_metadata(
+                            with _temporary_vlm_full_prompt_metadata(
                                 self._model,
-                                cache_state,
+                                cache_state or exact_manager,
                             ):
                                 for response in vlm_stream(
                                     self._model,

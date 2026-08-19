@@ -1271,6 +1271,7 @@ def _fake_vlm_cache_backend(monkeypatch):
     )
     backend = mlx_inference.MLXInferenceBackend()
     monkeypatch.setattr(mlx_inference, "MLX_VLM_BLOCK_CACHE_PREFILL_STEP_SIZE", 2)
+    monkeypatch.setattr(mlx_inference, "MLX_VLM_EXACT_CACHE_PREFILL_STEP_SIZE", 1)
     backend._model = SimpleNamespace(
         config = SimpleNamespace(image_token_id = 99),
         language_model = SimpleNamespace(),
@@ -1289,7 +1290,8 @@ def _cached_vlm_turn(backend, prompt, image, **overrides):
     return list(stream) if consume else stream
 
 
-def test_mlx_vlm_cache_preserves_cold_partition_and_full_positions():
+def test_mlx_vlm_cache_preserves_cold_partition_and_full_metadata(monkeypatch):
+    _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference as module
 
     native = SimpleNamespace(cache = [], token_ids = [])
@@ -1318,11 +1320,30 @@ def test_mlx_vlm_cache_preserves_cold_partition_and_full_positions():
     model.language_model = language_model
     state.reused_prefix_length = 1024
     input_ids = SimpleNamespace(shape = (1, 480))
-    with module._temporary_vlm_full_position_metadata(model, state):
+    with module._temporary_vlm_full_prompt_metadata(model, state):
         features = model.get_input_embeddings(input_ids, None)
         assert features.position_ids is full_positions
         assert features.rope_deltas is full_rope
     assert "get_input_embeddings" not in vars(model)
+
+    full_per_layer, suffix_per_layer = SimpleNamespace(shape = (1, 1504)), object()
+    full_ids = SimpleNamespace(shape = (1, 1504), is_full_prompt = True)
+    sys.modules["mlx.core"].array = lambda _values: full_ids
+
+    def metadata_embeddings(ids, *_args, **_kwargs):
+        return SimpleNamespace(
+            position_ids = None,
+            per_layer_inputs = (
+                full_per_layer if getattr(ids, "is_full_prompt", False) else suffix_per_layer
+            ),
+        )
+
+    model.get_input_embeddings = metadata_embeddings
+    state.full_token_ids = [0] * 1504
+    with module._temporary_vlm_full_prompt_metadata(model, state):
+        features = model.get_input_embeddings(input_ids, None)
+        assert features.per_layer_inputs is full_per_layer
+    assert model.get_input_embeddings is metadata_embeddings
 
 
 def test_mlx_vlm_padding_rejection_retries_cold(monkeypatch):
@@ -1506,14 +1527,16 @@ def test_mlx_vlm_exact_manager_delegates_to_upstream_with_a_memory_cap():
                 target.nbytes += 1
         return copied
 
-    manager = module._StudioVLMNativeExactManager(native, max_bytes = 100, clone = clone)
+    manager = module._StudioVLMNativeExactManager(native, 100, clone, reuse_boundary = 1)
     small = [SimpleNamespace(nbytes = 4)]
     manager.begin_request()
+    manager._request_store_boundary = 2
     assert manager.store_exact_cache([1, 2], small, extra_hash = 9)
     assert not stored
     manager.abort_request()
     assert not manager._pending_stores
     manager.begin_request()
+    manager._request_store_boundary = 2
     assert manager.store_exact_cache([1, 2], small, extra_hash = 9)
     manager.finish_request()
     assert stored[0][0::2] == ([1, 2], 9)
@@ -1587,14 +1610,14 @@ def test_mlx_vlm_exact_cache_uses_upstream_manager_and_adapter_tenant(monkeypatc
     _cached_vlm_turn(backend, _VLM_TURN2, image, _adapter_state = False)
     assert backend._vlm_prompt_cache_history is None
     assert backend._vlm_apc_manager is control["manager"]
-    assert control["tenant"] == "adapter:False" and control["prefill_step_size"] == 2048
-    assert backend.last_generation_stats["timings"]["cache_n"] == len(_VLM_TURN1)
+    assert control["tenant"] == "adapter:False" and control["prefill_step_size"] == 1
+    assert backend.last_generation_stats["timings"]["cache_n"] == 1
     assert not backend._vlm_apc_manager._manager.entries
     turn3, turn4 = _VLM_TURN2 + " A2 P3", _VLM_TURN2 + " A2 P3 A3 P4"
     _cached_vlm_turn(backend, turn3, image, _adapter_state = False)
     assert backend.last_generation_stats["timings"]["cache_n"] == 0
     _cached_vlm_turn(backend, turn4, image, _adapter_state = False)
-    assert backend.last_generation_stats["timings"]["cache_n"] == len(turn3)
+    assert backend.last_generation_stats["timings"]["cache_n"] == len(turn3) - 2
 
 
 def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
