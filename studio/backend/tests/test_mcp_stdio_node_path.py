@@ -562,3 +562,28 @@ def test_npm_probe_runs_with_the_candidate_path(managed_node_install, monkeypatc
     # the managed install must be usable, or the function returns before the npm probe
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
     assert node_runtime.path_with_managed_node(str(toolchain)) == str(toolchain)
+
+
+def test_windows_npm_sibling_runtime_is_validated(managed_node_install, monkeypatch, tmp_path):
+    """npm.cmd prefers the node.exe beside it just as npx.cmd does."""
+    good = tmp_path / "good"
+    good.mkdir()
+    _make_executable(good, "node")
+    old = tmp_path / "old"
+    old.mkdir()
+    _make_executable(old, "npm")
+    (old / "node.exe").write_text("")
+    monkeypatch.setattr(node_runtime, "_IS_WINDOWS", True)
+    checked = []
+
+    def _record(executable, path = None):
+        checked.append(str(executable))
+        return not str(executable).startswith(str(old))
+
+    _patch_floors(monkeypatch, lambda executable: _record(executable))
+    configured = f"{good}{os.pathsep}{old}"
+    result = node_runtime.path_with_managed_node(
+        configured, require_npm = True, require_npx = False
+    )
+    assert any(c.endswith("node.exe") for c in checked), checked
+    assert result == f"{managed_node_install}{os.pathsep}{configured}"

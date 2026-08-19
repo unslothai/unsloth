@@ -126,18 +126,19 @@ def _path_has_usable_node(
         return False
     if require_npm and not npm:
         return False
-    if require_npx:
-        if not npx:
+    if require_npx and not npx:
+        return False
+    launcher = npx if require_npx else npm
+    if _IS_WINDOWS and launcher:
+        # npm's generated npm.cmd and npx.cmd both run the node.exe beside them when
+        # there is one, so that is the runtime to validate, not whatever ``node``
+        # resolves to first.
+        sibling = os.path.join(os.path.dirname(launcher), "node.exe")
+        try:
+            if os.path.isfile(sibling):
+                node = sibling
+        except OSError:
             return False
-        if _IS_WINDOWS:
-            # npm's npx.cmd runs the node.exe beside it when there is one, so that is
-            # the runtime to validate, not whatever ``node`` resolves to first.
-            sibling = os.path.join(os.path.dirname(npx), "node.exe")
-            try:
-                if os.path.isfile(sibling):
-                    node = sibling
-            except OSError:
-                return False
     if not _probe_ok(node, _node_version_ok, path):
         return False
     return _probe_ok(npm, _npm_version_ok, path) if require_npm else True
