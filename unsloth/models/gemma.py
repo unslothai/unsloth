@@ -284,7 +284,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         for device in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
                 seq_len = self.current_rope_size,
-                device = torch.device(device),
+                device = torch.device(DEVICE_TYPE_TORCH, device),
                 dtype = torch.get_default_dtype(),
             )
 
@@ -351,7 +351,9 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         for device in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
-                self.current_rope_size, device = torch.device(device), dtype = x.dtype
+                self.current_rope_size,
+                device = torch.device(DEVICE_TYPE_TORCH, device),
+                dtype = x.dtype,
             )
 
 
