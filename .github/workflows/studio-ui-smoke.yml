@@ -255,17 +255,63 @@ jobs:
         # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
         # lock wait, which still leaves the job's 30 room for the work it exists to
         # do. Three attempts here would not.
-        timeout-minutes: 18
+        # Two helper calls now, not one: the CDN download and the apt transaction
+        # are separated, and each carries its own retry budget. 2 x 300s plus a lock
+        # wait, twice over, is 24m of worst case against the job's 30 -- which is
+        # why the per-attempt cap comes down from 420. Healthy is ~2 minutes for the
+        # download and seconds for the probe, so 300 is still 2.5x headroom.
+        timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
-          RETRY_ATTEMPT_TIMEOUT: '420'
+          RETRY_ATTEMPT_TIMEOUT: '300'
         run: |
-          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            set -- install-deps chromium firefox webkit
-          else
-            set -- install --with-deps chromium firefox webkit
+          # The browsers first, and WITHOUT --with-deps. That flag makes playwright
+          # run its own `apt-get update` internally, which is the one apt call this
+          # repo cannot restructure: on 2026-08-19 it spent 16m14s here against a
+          # dead azure.archive.ubuntu.com while every other apt step in CI had
+          # already been taught to skip the update entirely. A CDN download and an
+          # apt transaction are two different failures and they are separated here.
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install chromium firefox webkit
           fi
-          bash .github/scripts/retry-with-apt-lock.sh python -m playwright "$@"
+
+          # Then ask whether the system libraries are actually missing, instead of
+          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # nearly all of them; when it does, `install-deps` is a full apt update
+          # and transaction to install nothing. Launching each engine is the honest
+          # test of that -- it is exactly what the suites are about to do.
+          probe() {
+            python - "$@" <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          missing = []
+          with sync_playwright() as p:
+              for name in sys.argv[1:]:
+                  try:
+                      browser = getattr(p, name).launch()
+                      browser.close()
+                  except Exception as exc:
+                      missing.append(f"{name}: {type(exc).__name__}")
+          if missing:
+              print("engines that will not start: " + "; ".join(missing))
+              sys.exit(1)
+          print("all three engines launch; system libraries are present")
+          PY
+          }
+
+          if probe chromium firefox webkit; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium firefox webkit
+            # Fail loudly rather than proceeding into suites that cannot launch a
+            # browser: without this the real error surfaces later as an opaque
+            # per-test timeout in whichever suite happens to run first.
+            probe chromium firefox webkit
+          fi
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
@@ -746,17 +792,63 @@ jobs:
         # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
         # lock wait, which still leaves the job's 30 room for the work it exists to
         # do. Three attempts here would not.
-        timeout-minutes: 18
+        # Two helper calls now, not one: the CDN download and the apt transaction
+        # are separated, and each carries its own retry budget. 2 x 300s plus a lock
+        # wait, twice over, is 24m of worst case against the job's 30 -- which is
+        # why the per-attempt cap comes down from 420. Healthy is ~2 minutes for the
+        # download and seconds for the probe, so 300 is still 2.5x headroom.
+        timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
-          RETRY_ATTEMPT_TIMEOUT: '420'
+          RETRY_ATTEMPT_TIMEOUT: '300'
         run: |
-          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            set -- install-deps chromium firefox webkit
-          else
-            set -- install --with-deps chromium firefox webkit
+          # The browsers first, and WITHOUT --with-deps. That flag makes playwright
+          # run its own `apt-get update` internally, which is the one apt call this
+          # repo cannot restructure: on 2026-08-19 it spent 16m14s here against a
+          # dead azure.archive.ubuntu.com while every other apt step in CI had
+          # already been taught to skip the update entirely. A CDN download and an
+          # apt transaction are two different failures and they are separated here.
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install chromium firefox webkit
           fi
-          bash .github/scripts/retry-with-apt-lock.sh python -m playwright "$@"
+
+          # Then ask whether the system libraries are actually missing, instead of
+          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # nearly all of them; when it does, `install-deps` is a full apt update
+          # and transaction to install nothing. Launching each engine is the honest
+          # test of that -- it is exactly what the suites are about to do.
+          probe() {
+            python - "$@" <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          missing = []
+          with sync_playwright() as p:
+              for name in sys.argv[1:]:
+                  try:
+                      browser = getattr(p, name).launch()
+                      browser.close()
+                  except Exception as exc:
+                      missing.append(f"{name}: {type(exc).__name__}")
+          if missing:
+              print("engines that will not start: " + "; ".join(missing))
+              sys.exit(1)
+          print("all three engines launch; system libraries are present")
+          PY
+          }
+
+          if probe chromium firefox webkit; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium firefox webkit
+            # Fail loudly rather than proceeding into suites that cannot launch a
+            # browser: without this the real error surfaces later as an opaque
+            # per-test timeout in whichever suite happens to run first.
+            probe chromium firefox webkit
+          fi
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
