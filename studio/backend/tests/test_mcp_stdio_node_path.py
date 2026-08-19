@@ -32,6 +32,7 @@ def managed_node(tmp_path, monkeypatch):
     bin_dir.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
+    monkeypatch.setattr(node_runtime, "_path_has_usable_node", lambda path: False)
     return bin_dir
 
 
@@ -197,17 +198,62 @@ def test_absent_path_still_inherits(managed_node, monkeypatch):
 
 
 def test_path_preserves_trailing_empty_component(managed_node):
-    """An empty component means the working directory on POSIX; keep it."""
-    assert (
-        node_runtime.path_with_managed_node("/usr/bin:")
-        == f"{managed_node}{os.pathsep}/usr/bin{os.pathsep}"
-    )
+    """An empty component means the working directory on POSIX; keep it verbatim."""
+    configured = f"/usr/bin{os.pathsep}"
+    expected = f"{managed_node}{os.pathsep}{configured}"
+    assert node_runtime.path_with_managed_node(configured) == expected
 
 
 def test_path_preserves_bare_empty_components(managed_node):
-    assert node_runtime.path_with_managed_node(":") == f"{managed_node}{os.pathsep}{os.pathsep}"
+    expected = f"{managed_node}{os.pathsep}{os.pathsep}"
+    assert node_runtime.path_with_managed_node(os.pathsep) == expected
 
 
 def test_stdio_env_preserves_empty_component_from_config(managed_node):
-    env = mcp_client._stdio_env({"PATH": "/usr/bin:"})
-    assert env["PATH"] == f"{managed_node}{os.pathsep}/usr/bin{os.pathsep}"
+    configured = f"/usr/bin{os.pathsep}"
+    env = mcp_client._stdio_env({"PATH": configured})
+    assert env["PATH"] == f"{managed_node}{os.pathsep}{configured}"
+
+
+def _system_node_dir(tmp_path):
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    _make_executable(sysbin, "node")
+    return sysbin
+
+
+def test_adequate_system_node_is_not_shadowed(managed_node_install, monkeypatch, tmp_path):
+    """A leftover managed install must not override a Node the PATH already provides."""
+    sysbin = _system_node_dir(tmp_path)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
+    assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
+
+
+def test_managed_node_used_when_system_node_is_below_floor(
+    managed_node_install, monkeypatch, tmp_path
+):
+    sysbin = _system_node_dir(tmp_path)
+    monkeypatch.setattr(
+        node_runtime, "_node_version_ok", lambda executable: "sysbin" not in str(executable)
+    )
+    expected = f"{managed_node_install}{os.pathsep}{sysbin}"
+    assert node_runtime.path_with_managed_node(str(sysbin)) == expected
+
+
+def test_managed_node_used_when_path_has_no_node(managed_node_install, monkeypatch, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
+    expected = f"{managed_node_install}{os.pathsep}{empty}"
+    assert node_runtime.path_with_managed_node(str(empty)) == expected
+
+
+def test_system_node_probe_is_memoized(managed_node_install, monkeypatch, tmp_path):
+    sysbin = _system_node_dir(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        node_runtime, "_node_version_ok", lambda executable: calls.append(executable) or True
+    )
+    assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
+    assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
+    assert len(calls) == 1

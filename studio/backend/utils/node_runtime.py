@@ -87,10 +87,31 @@ def managed_node_bin_dir() -> Path | None:
 _managed_node_ok: bool = False
 
 
+# Memoized per resolved executable, success only (same reason as _resolved_node).
+_usable_node_cache: dict[str, bool] = {}
+
+
 def _reset_managed_node_check() -> None:
-    """Clear the memoized managed-Node verdict (used by tests)."""
+    """Clear the memoized Node verdicts (used by tests)."""
     global _managed_node_ok
     _managed_node_ok = False
+    _usable_node_cache.clear()
+
+
+def _path_has_usable_node(path: str) -> bool:
+    """Whether ``path`` already resolves a ``node`` that clears the version floor."""
+    try:
+        node = shutil.which("node", path = path)
+    except OSError:
+        return False
+    if not node:
+        return False
+    if _usable_node_cache.get(node):
+        return True
+    ok = _node_version_ok(node)
+    if ok:
+        _usable_node_cache[node] = True
+    return ok
 
 
 def managed_node_usable() -> bool:
@@ -118,7 +139,13 @@ def path_with_managed_node(base_path: str | None = None) -> str:
     subprocesses that need ``node``/``npx`` must be handed it explicitly."""
     current = os.environ.get("PATH", "") if base_path is None else base_path
     bin_dir = managed_node_bin_dir()
-    if bin_dir is None or not managed_node_usable():
+    if bin_dir is None:
+        return current
+    # resolve_node_executable() prefers an adequate system Node, so a leftover managed
+    # install must not shadow one the configured PATH already reaches.
+    if _path_has_usable_node(current):
+        return current
+    if not managed_node_usable():
         return current
     bin_str = str(bin_dir)
     # Keep empty components: on POSIX one means the working directory, so dropping
