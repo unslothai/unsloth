@@ -424,6 +424,53 @@ def test_link_targets_of_every_windows_powershell_5_1_shape(
     assert _same_path(got[0][len("TARGET:[") : -1], expected)
 
 
+def _dead_pid() -> int:
+    """A PID that is not running, so a ust-<pid>- directory reads as abandoned."""
+    for candidate in range(4_000_000, 4_000_400):
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            return candidate
+        except (OSError, PermissionError):
+            continue
+    return 4_000_000
+
+
+_DEAD_PID = _dead_pid()
+
+
+@requires_pwsh
+def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path):
+    """A Studio autostarted by an earlier install owns one of these as its %TEMP%.
+
+    It can outlive the one-day cutoff without ever writing to the directory, and
+    the sweep runs before the runtime mutex is taken, so age alone must not be
+    read as proof that nothing is using it.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    live = root / f"ust-{os.getpid()}-old"
+    live.mkdir()
+    (live / "in-use.txt").write_text("a live process owns this", encoding = "utf-8")
+    abandoned = root / f"ust-{_DEAD_PID}-old"
+    abandoned.mkdir()
+
+    aged = time.time() - 3 * 24 * 3600
+    os.utime(live, (aged, aged))
+    os.utime(abandoned, (aged, aged))
+
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert (live / "in-use.txt").exists()
+    assert not abandoned.exists()
+
+
 @requires_pwsh
 def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     root = tmp_path / "root"
@@ -431,12 +478,15 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     precious = tmp_path / "precious"
     precious.mkdir()
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
-    stale = root / "ust-1-old"
+    # A dead owner PID, or the sweep keeps the directory for the live process that
+    # its name says still owns it -- which is what _DEAD_PID exists to avoid and
+    # what the test below this one measures on purpose.
+    stale = root / f"ust-{_DEAD_PID}-old"
     stale.mkdir()
     (stale / "junk").write_text("x", encoding = "utf-8")
-    fresh = root / "ust-2-new"
+    fresh = root / f"ust-{_DEAD_PID}-new"
     fresh.mkdir()
-    link = root / "ust-3-link"
+    link = root / f"ust-{_DEAD_PID}-link"
     try:
         link.symlink_to(precious, target_is_directory = True)
     except (OSError, NotImplementedError):

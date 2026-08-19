@@ -367,6 +367,19 @@ function Install-UnslothStudio {
             $cutoff = (Get-Date).AddDays(-1)
             foreach ($stale in @(Get-ChildItem -LiteralPath $Root -Directory -Filter "ust-*" -ErrorAction Stop)) {
                 if ($stale.LastWriteTime -ge $cutoff) { continue }
+                # Age alone is not proof it is unused. A Studio autostarted by an
+                # earlier install inherited one of these as its own %TEMP% and can
+                # outlive the cutoff without writing to it, and this sweep runs
+                # before the runtime mutex is taken, so it would delete the
+                # directory out from under a live process. The owner PID is in the
+                # name; if that PID is still alive, leave it alone. PID reuse only
+                # ever costs a directory its cleanup, never a live one its files.
+                $ownerPid = 0
+                if ([int]::TryParse(($stale.Name -split '-')[1], [ref]$ownerPid) -and $ownerPid -gt 0) {
+                    $owner = $null
+                    try { $owner = Get-Process -Id $ownerPid -ErrorAction Stop } catch { $owner = $null }
+                    if ($owner) { continue }
+                }
                 # Nothing this script creates here is a reparse point, so anything
                 # that is gets the link itself removed and its target left alone.
                 # Remove-Item is no use for that on Windows PowerShell 5.1: without
@@ -917,6 +930,11 @@ public static class UnslothStudioFinalPathV2
             Write-StudioLine "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-StudioLine "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-StudioLine "       or unset the env var for default desktop installs." -ForegroundColor Yellow
+            # Resolving the two roots above can redirect TMP/TEMP, and this throw is
+            # well before the try/finally that owns the locks. Under `irm | iex` those
+            # variables belong to the caller's own session and would stay pointed at an
+            # installer-owned directory for everything they run afterwards.
+            Restore-StudioTempEnvironment
             throw "$envOverrideVar is not supported with --tauri."
         }
     }
@@ -2390,8 +2408,11 @@ exit 0
     if ($ShortcutsOnly) {
         # `unsloth studio update` reaches the installer only through this branch, and
         # it returns before the try/finally that owns the locks, so the temp
-        # redirection has to be undone here too.
-        if ($TauriMode) { Restore-StudioTempEnvironment; return }
+        # redirection has to be undone here too -- on every way out, including the
+        # throw below. Under `irm | iex` these variables belong to the caller's own
+        # session, so leaving them redirected outlives the install.
+        try {
+        if ($TauriMode) { return }
         # The launcher runs the interpreter, so that is what has to be there. Checking
         # unsloth.exe instead would refuse to regenerate shortcuts on exactly the
         # machines that need them, where the console script is present but denied.
@@ -2431,8 +2452,10 @@ exit 0
             }
         }
         New-StudioShortcuts -ManagedPythonPath $ShortcutPython
-        Restore-StudioTempEnvironment
         return
+        } finally {
+            Restore-StudioTempEnvironment
+        }
     }
 
     # ── Leave Windows system directories before installing ──
@@ -2795,9 +2818,26 @@ exit 0
             [switch]$Exact
         )
         try {
-            $resolvedPath = (Get-StudioFinalPath -Path $VenvPath).TrimEnd('\', '/')
+            $venvInfo = Resolve-StudioFinalPathInfo -Path $VenvPath
+            $resolvedPath = $venvInfo.Path.TrimEnd('\', '/')
         } catch {
             throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
+        }
+        # Without the native resolver an alias the lexical walk cannot canonicalize
+        # -- a SUBST drive, an 8.3 short name -- keeps its own spelling, while a
+        # running process reports its image under the physical one. The prefix test
+        # below would then find nothing and let the install overwrite a venv Studio
+        # has open. So when the identity is inexact, compare the paths below their
+        # roots as well: fail closed, the way an unresolved identity does elsewhere.
+        $rootRelaxed = -not $venvInfo.Exact
+        $resolvedBelowRoot = $null
+        if ($rootRelaxed) {
+            try {
+                $venvRoot = [System.IO.Path]::GetPathRoot($resolvedPath)
+                if ($venvRoot -and $resolvedPath.Length -gt $venvRoot.Length) {
+                    $resolvedBelowRoot = $resolvedPath.Substring($venvRoot.Length).TrimStart('\', '/')
+                }
+            } catch { $resolvedBelowRoot = $null }
         }
 
         # Block only confirmed executable identities: a command line or working
@@ -2807,7 +2847,18 @@ exit 0
             try { $executable = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
-            if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
+            $matched = Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact
+            if (-not $matched -and $resolvedBelowRoot) {
+                try {
+                    $candidateRoot = [System.IO.Path]::GetPathRoot($executable)
+                    if ($candidateRoot -and $executable.Length -gt $candidateRoot.Length) {
+                        $candidateBelowRoot = $executable.Substring($candidateRoot.Length).TrimStart('\', '/')
+                        $matched = Test-StudioProtectedPathMatch `
+                            -Candidate $candidateBelowRoot -ProtectedPath $resolvedBelowRoot -Exact:$Exact
+                    }
+                } catch {}
+            }
+            if ($matched) {
                 [pscustomobject]@{
                     ProcessName = $process.ProcessName
                     Id = $process.Id
