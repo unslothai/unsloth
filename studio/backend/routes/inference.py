@@ -12459,11 +12459,29 @@ async def _proxy_to_external_provider(
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
         capabilities = info.get("model_capabilities", {})
+        image_requested = any(
+            isinstance(message.content, list)
+            and any(part.type == "image_url" for part in message.content)
+            for message in payload.messages
+        )
+        listed_model = (
+            None if model in capabilities
+            else offered_subscription_model(payload.provider_id, model)
+        )
+        if image_requested and model not in capabilities and listed_model is None:
+            # Admitted straight off the saved row, so no catalog read happened this
+            # process and nothing here knows the modalities. Defaulting to text-only
+            # would refuse an image for a model the picker offered as capable. Only an
+            # actual image is worth the fetch; a text turn should not pay for one.
+            try:
+                await ensure_subscription_models(payload.provider_id)
+            except Exception:
+                pass
+            listed_model = offered_subscription_model(payload.provider_id, model)
         if model in capabilities:
             model_supports_vision = bool(capabilities[model].get("vision"))
         else:
             # A slug the registry never listed: the plan's own entry is all we know.
-            listed_model = offered_subscription_model(payload.provider_id, model)
             model_supports_vision = bool(listed_model and listed_model.get("vision"))
         if not model_supports_vision:
             for message in payload.messages:

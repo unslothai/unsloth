@@ -7,6 +7,7 @@ import { createServer, type ViteDevServer } from "vite";
 
 interface SubscriptionModels {
   models: { id: string }[];
+  known?: string[];
   source: "subscription" | "curated";
 }
 
@@ -149,4 +150,34 @@ test("another connection's learned slug survives this one's catalog", async () =
   );
   assert.deepEqual(capabilities?.["gpt-5.7-nova"], { vision: false });
   assert.deepEqual(capabilities?.["gpt-5.7-eos"], { vision: true });
+});
+
+
+test("a saved slug the plan still returns survives losing its picker slot", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const resolve = loaded.resolveCodexPickerModels as Resolve;
+  // "hide" retires a model from the picker; it does not revoke one already in use, and
+  // dropping it here would make the next save delete it from the connection.
+  const { catalog, selected } = resolve(
+    CURATED,
+    ["gpt-5.7-nova"],
+    {
+      models: [{ id: "gpt-5.4" }],
+      known: ["gpt-5.4", "gpt-5.7-nova"],
+      source: "subscription",
+    },
+  );
+  assert.deepEqual(selected, ["gpt-5.7-nova"]);
+  assert.ok(catalog.includes("gpt-5.7-nova"));
+});
+
+test("a slug the plan no longer returns at all is retired", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const resolve = loaded.resolveCodexPickerModels as Resolve;
+  const { selected } = resolve(
+    CURATED,
+    ["gpt-5.6-sol"],
+    { models: [{ id: "gpt-5.4" }], known: ["gpt-5.4"], source: "subscription" },
+  );
+  assert.deepEqual(selected, []);
 });

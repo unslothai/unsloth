@@ -243,9 +243,6 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
     slug = item.get("slug")
     if not isinstance(slug, str) or not slug or len(slug) > 128:
         return None
-    # "hide" marks internal slugs (codex-auto-review) that no picker should offer.
-    if item.get("visibility") != "list":
-        return None
     display_name = item.get("display_name")
     context_window = item.get("context_window")
     modalities = item.get("input_modalities")
@@ -260,6 +257,11 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
         "context_length": context_window if isinstance(context_window, int) else None,
         "vision": "image" in modalities if isinstance(modalities, list) else None,
         "reasoning_efforts": efforts,
+        # "hide" marks a slug no picker should offer (codex-auto-review, and models that
+        # age out of the list). It is a presentation flag, not a revocation: the account
+        # can still call one it already saved, so the entry is kept and marked instead of
+        # dropped, which is what lets callers tell "not offered" from "not on this plan".
+        "listed": item.get("visibility") == "list",
     }
 
 

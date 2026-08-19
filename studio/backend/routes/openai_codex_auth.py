@@ -179,9 +179,16 @@ async def list_subscription_models(
             error_type = type(exc).__name__,
         )
         return {"models": curated, "source": "curated"}
-    if not models:
+    # Only listed slugs are offered, but every slug the plan returned is reported so the
+    # picker can tell one it should stop offering from one this account cannot reach.
+    offered = [model for model in models if model.get("listed")]
+    if not offered:
         return {"models": curated, "source": "curated"}
-    return {"models": models, "source": "subscription"}
+    return {
+        "models": offered,
+        "known": [model["id"] for model in models],
+        "source": "subscription",
+    }
 
 
 @router.delete("/{provider_id}/oauth", status_code = 204)

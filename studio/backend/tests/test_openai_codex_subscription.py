@@ -840,7 +840,18 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
             "context_length": 272000,
             "vision": True,
             "reasoning_efforts": ["low", "high"],
-        }
+            "listed": True,
+        },
+        # Kept and marked, not dropped: an account can still call a slug it saved while
+        # the slug was listed, and only the picker needs to stop offering it.
+        {
+            "id": "codex-auto-review",
+            "display_name": "codex-auto-review",
+            "context_length": None,
+            "vision": None,
+            "reasoning_efforts": [],
+            "listed": False,
+        },
     ]
     assert fake.calls[0][0] == f"{OPENAI_CODEX_API_BASE}/codex/models"
     assert fake.calls[0][1] == {"client_version": codex_auth.OPENAI_CODEX_CLIENT_VERSION}
@@ -848,7 +859,7 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
     assert asyncio.run(list_subscription_models("provider-1", "secret-token", "acct-1")) == models
     assert len(fake.calls) == 1
     # Outlives the cache so a slow save is still accepted by the provider routes.
-    assert offered_subscription_model_ids("provider-1") == {"gpt-5.4"}
+    assert offered_subscription_model_ids("provider-1") == {"gpt-5.4", "codex-auto-review"}
     forget_subscription_models("provider-1")
     assert cached_subscription_models("provider-1") is None
     assert offered_subscription_model_ids("provider-1") == set()
@@ -989,12 +1000,22 @@ def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch
     assert call()["source"] == "curated"
 
     async def _models(*_args, **_kwargs):
-        return [{"id": "gpt-5.6-terra", "display_name": "GPT-5.6-Terra", "context_length": 272000}]
+        return [
+            {
+                "id": "gpt-5.6-terra",
+                "display_name": "GPT-5.6-Terra",
+                "context_length": 272000,
+                "listed": True,
+            },
+            # Present on the plan but not offered: reported as known, never in the picker.
+            {"id": "codex-auto-review", "display_name": "codex-auto-review", "listed": False},
+        ]
 
     monkeypatch.setattr(codex_routes.codex_client, "list_subscription_models", _models)
     live = call()
     assert live["source"] == "subscription"
     assert [model["id"] for model in live["models"]] == ["gpt-5.6-terra"]
+    assert live["known"] == ["gpt-5.6-terra", "codex-auto-review"]
 
 
 def test_client_never_emits_done_marker_itself():

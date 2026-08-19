@@ -318,6 +318,9 @@ export async function listProviderModels(payload: {
 
 export interface CodexSubscriptionModels {
   models: ProviderModelInfo[];
+  /** Every slug the plan returned, offered or not: absent from this means the account
+   * cannot reach it, while present-but-unoffered only means it is no longer shown. */
+  known?: string[];
   source: "subscription" | "curated";
 }
 

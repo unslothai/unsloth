@@ -200,11 +200,19 @@ export function resolveCodexPickerModels(
   // curated seed when it could not reach upstream, so treating that as the catalog
   // would drop a saved model and the next unrelated save would make the loss stick.
   const planListed = listed?.source === "subscription" && listed.models.length > 0;
-  const catalog = planListed
-    ? listed.models.map((model) => model.id)
-    : [...new Set([...curated, ...savedModels])];
-  const offered = new Set(catalog);
-  return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+  if (!planListed) {
+    const catalog = [...new Set([...curated, ...savedModels])];
+    const offered = new Set(catalog);
+    return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+  }
+  const offeredIds = listed.models.map((model) => model.id);
+  // A saved slug the plan still returns is kept even when it is no longer offered:
+  // "hide" retires a model from the picker, it does not revoke one already in use.
+  // Only a slug the plan does not return at all is retired from the selection.
+  const known = new Set(listed.known ?? offeredIds);
+  const selected = savedModels.filter((model) => known.has(model));
+  const catalog = [...new Set([...offeredIds, ...selected])];
+  return { catalog, selected };
 }
 
 
