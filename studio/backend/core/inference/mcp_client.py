@@ -266,9 +266,7 @@ def _command_selects_runtime(command: Optional[str]) -> bool:
     """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of
     PATH, so handing its children a different Node would only split the two."""
     return (
-        command is not None
-        and bool(os.path.dirname(command))
-        and _launcher_name(command) == "node"
+        command is not None and bool(os.path.dirname(command)) and _launcher_name(command) == "node"
     )
 
 

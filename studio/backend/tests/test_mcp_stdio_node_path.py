@@ -32,6 +32,7 @@ def managed_node(tmp_path, monkeypatch):
     bin_dir.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
+
     def _no_usable_node(path, require_npm = True):
         return False
 
