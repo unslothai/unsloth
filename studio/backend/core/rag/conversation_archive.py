@@ -390,7 +390,10 @@ def archive_turns(
                 # already read. Measured: 3 passages of which 2 were distinct. At least one
                 # survives, since a turn that is momentarily all-live still has an archive.
                 _restamp(
-                    conn, scope, digest, seats[: max(1, budget)] if seats else seats,
+                    conn,
+                    scope,
+                    digest,
+                    seats[: max(1, budget)] if seats else seats,
                     commit = True,
                 )
                 _widen_span(conn, scope, digest, span)

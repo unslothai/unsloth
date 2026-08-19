@@ -582,12 +582,18 @@ def search_lexical(
             # The mirror of `newest_first`, for the same reason: rowid ordering is
             # scrambled by a re-embed, which can push the oldest turn out of the window.
             # NULLs first, since a row archived before the column existed is the oldest.
+            # Then `created_at`, then the chunk id: on a LEGACY archive every ordinal is
+            # NULL, so every term after the score was constant and both halves of the
+            # two-ended fetch returned the same arbitrary subset, which `_both_ends` then
+            # deduplicated -- the 256-candidate strategy reaching one end twice and the
+            # later revisions not at all.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
                 f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
-                f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC LIMIT ?"
+                f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC, "
+                f"d.created_at ASC, chunks_fts.chunk_id ASC LIMIT ?"
             )
         elif newest_first:
             # Ordered by archive ordinal, not rowid: rowid is insertion order, and a
@@ -598,7 +604,8 @@ def search_lexical(
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
                 f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
-                f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC LIMIT ?"
+                f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC, "
+                f"d.created_at DESC, chunks_fts.chunk_id DESC LIMIT ?"
             )
         elif linked_folder_rows_exist(conn):
             sql = (
