@@ -760,3 +760,35 @@ def install_wall_clock_watchdog(
     if info is not None:
         info(f"watchdog armed: hard-exit at {deadline_s:.0f}s")
     return timer
+
+
+def click_forced(locator: Any, *, timeout_ms: int = 5_000, **click_kwargs: Any) -> None:
+    """Scroll into view, then click with actionability checks off.
+
+    `click(force = True)` skips Playwright's actionability checks, which is what you
+    want against a menu whose overlay would otherwise intercept the click. It also
+    skips the part that scrolls the element into view, and Playwright will not click
+    a point it cannot reach:
+
+        playwright._impl._errors.Error: Locator.click: Element is outside of the viewport
+
+    That is what took down `Compare tab: send to two panes` on macOS. The menu item
+    existed, was found, and was off-screen, because a Mac runner's window is shorter
+    than a Linux one and the item sits at the bottom of a long menu. On Linux the same
+    code has always worked, which is why three forced clicks sat here unnoticed since
+    the composer redesign.
+
+    Scrolling first keeps the reason force was used -- the overlay is still ignored --
+    and removes the assumption that the element happens to be on screen.
+
+    The scroll is best-effort: an element that cannot be scrolled (fixed position, zero
+    size) should still reach the click, and fail there with Playwright's own message
+    rather than here with a scrolling one.
+    """
+    try:
+        locator.scroll_into_view_if_needed(timeout = timeout_ms)
+    except Exception:
+        pass
+    # Callers pass their own `timeout` through: several of these clicks wait longer
+    # than the default because the tab they open is doing work behind the overlay.
+    locator.click(force = True, **click_kwargs)
