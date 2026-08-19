@@ -347,7 +347,20 @@ function Install-UnslothStudio {
             $probe = Join-Path $Path ("unsloth-probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".tmp")
             [System.IO.File]::WriteAllText($probe, "unsloth")
             $readBack = [System.IO.File]::ReadAllText($probe)
-            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            # Deleting has to work too, and be VERIFIED. csc.exe writes its source
+            # and its output into this directory and then cleans up, so one that
+            # accepts a file and will not give it back is the shape that produced
+            # #9140; a suppressed Remove-Item said nothing either way. Retried a
+            # couple of times first, because a scanner holding the file for a
+            # moment is not the same as a directory that denies deletion, and only
+            # the second should cost a healthy host its own temp.
+            $probeGone = $false
+            foreach ($attempt in 1..3) {
+                Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+                if (-not [System.IO.File]::Exists($probe)) { $probeGone = $true; break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (-not $probeGone) { return $false }
             return ($readBack -eq "unsloth")
         } catch {
             return $false

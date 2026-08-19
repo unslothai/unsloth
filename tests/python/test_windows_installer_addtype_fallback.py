@@ -294,6 +294,36 @@ Write-Output "NULL:$($null -eq $answer)"
 
 
 @requires_pwsh
+def test_a_directory_that_will_not_give_a_file_back_is_not_usable(tmp_path: Path):
+    """Create and read are not enough. csc.exe also has to clean up after itself.
+
+    A directory that accepts a file and then refuses to delete it (a denied
+    Delete ACE, a scanner sitting on the handle) is the shape that produced the
+    reported failure, and it passes a create-and-read probe unchanged.
+    """
+    good = tmp_path / "good"
+    good.mkdir()
+    result = _run_powershell(
+        _script(
+            f"""
+Write-Output "BEFORE:$(Test-StudioDirectoryUsable -Path '{good}')"
+# Every delete is a no-op from here, which is what a denied Delete ACE looks
+# like to the caller: no exception, the file simply stays.
+function Remove-Item {{ param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction) }}
+Write-Output "AFTER:$(Test-StudioDirectoryUsable -Path '{good}')"
+""",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "BEFORE:") == ["BEFORE:True"]
+    assert _lines(result, "AFTER:") == ["AFTER:False"]
+    # The healthy probe cleaned up after itself, so only the undeletable one is left.
+    assert len(list(good.glob("unsloth-probe-*.tmp"))) == 1
+
+
+@requires_pwsh
 def test_unusable_temp_is_replaced_and_then_restored(tmp_path: Path):
     # Under a regular file so it cannot merely be created: the probe has to fail the
     # way an ACL-restricted temp directory fails.
