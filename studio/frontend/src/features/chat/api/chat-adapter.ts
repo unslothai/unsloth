@@ -192,6 +192,7 @@ import {
   rejectsAssistantPrefill,
   resumesExactly,
 } from "../utils/continuation";
+import { generationIsSettled } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
   GenerationLengthError,
@@ -226,6 +227,7 @@ import {
   type ChatGenerationRun,
   type ChatGenerationStatus,
   createChatGenerationRunUntilAbort,
+  explicitStopSignal,
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
@@ -1523,7 +1525,8 @@ function extractVideoPartBase64(
 ): string | undefined {
   if (!part || part.type !== "file") return undefined;
   const filePart = part as unknown as { data?: string; mimeType?: string };
-  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? ""))
+    return undefined;
   return filePart.data.startsWith("data:")
     ? filePart.data.split(",")[1]
     : filePart.data;
@@ -2889,10 +2892,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       try {
         const managed = await loadManagedLlamaFlags();
         const clean = (tokens: readonly string[]) =>
-          sanitizeStoredExtraArgs(tokens, managed?.managed ?? new Set<string>(), {
-            maxBytes: managed?.maxBytes,
-            windowsCommandBudget: managed?.windowsCommandBudget,
-          });
+          sanitizeStoredExtraArgs(
+            tokens,
+            managed?.managed ?? new Set<string>(),
+            {
+              maxBytes: managed?.maxBytes,
+              windowsCommandBudget: managed?.windowsCommandBudget,
+            },
+          );
         if (resolvedExtraArgs === undefined) {
           const stored = await fetchLoadExtraArgs(
             modelPath,
@@ -3706,7 +3713,10 @@ export function createOpenAIStreamAdapter(
       const resolvedThreadId =
         (runThreadId ?? runtime.activeThreadId) || undefined;
       if (resolvedThreadId) {
-        rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
+        rememberComposerProjectForRun(
+          resolvedThreadId,
+          composerProjectIdAtSend,
+        );
       }
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
@@ -4009,8 +4019,7 @@ export function createOpenAIStreamAdapter(
           );
           if (
             !queuedRunSettings ||
-            resolvedThreadId ===
-              useChatRuntimeStore.getState().activeThreadId
+            resolvedThreadId === useChatRuntimeStore.getState().activeThreadId
           ) {
             runtime.setDeepResearchEnabled(false);
           }
@@ -4702,10 +4711,11 @@ export function createOpenAIStreamAdapter(
               generationRunId,
               generationSeq,
               generationStatus,
-              generationSettled:
-                generationStatus === "completed" ||
-                generationStatus === "failed" ||
-                generationStatus === "cancelled",
+              generationSettled: generationIsSettled(
+                generationStatus,
+                generationSeq,
+                generationRun?.lastEventSeq ?? Number.POSITIVE_INFINITY,
+              ),
               serverManaged: true,
             }
           : {};
@@ -5710,32 +5720,37 @@ export function createOpenAIStreamAdapter(
                 // Confirmation and browser-executed tool chains still use the
                 // subscriber-owned stream in this PR.
                 generationDecision = "legacy";
-              } else if (
-                await supportsChatGenerationRuns(resolvedThreadId!, runSignal)
-              ) {
-                generationDecision = "durable";
-                generationRun = await createChatGenerationRunUntilAbort(
-                  {
-                    runId: cancelId,
-                    threadId: resolvedThreadId!,
-                    userMessageId: generationUserMessage!.id,
-                    assistantMessageId: unstable_assistantMessageId!,
-                    requestPayload,
-                  },
-                  runSignal,
-                );
-                if (!generationRun) {
-                  return;
-                }
-                generationRunId = generationRun.id;
-                generationStatus = generationRun.status;
-                if (generationStopRequested) {
-                  void cancelChatGenerationRun(generationRun.id).catch(
-                    () => {},
-                  );
-                }
               } else {
-                generationDecision = "legacy";
+                const admission = explicitStopSignal(runSignal);
+                const supported = await supportsChatGenerationRuns(
+                  resolvedThreadId!,
+                  admission.signal,
+                ).finally(admission.dispose);
+                if (!supported) {
+                  generationDecision = "legacy";
+                } else {
+                  generationDecision = "durable";
+                  generationRun = await createChatGenerationRunUntilAbort(
+                    {
+                      runId: cancelId,
+                      threadId: resolvedThreadId!,
+                      userMessageId: generationUserMessage!.id,
+                      assistantMessageId: unstable_assistantMessageId!,
+                      requestPayload,
+                    },
+                    runSignal,
+                  );
+                  if (!generationRun) {
+                    return;
+                  }
+                  generationRunId = generationRun.id;
+                  generationStatus = generationRun.status;
+                  if (generationStopRequested) {
+                    void cancelChatGenerationRun(generationRun.id).catch(
+                      () => {},
+                    );
+                  }
+                }
               }
             }
 
@@ -6798,7 +6813,8 @@ export function createOpenAIStreamAdapter(
           }
           if (
             usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+            useChatRuntimeStore.getState().params.checkpoint ===
+              params.checkpoint
           ) {
             useChatRuntimeStore.getState().setContextUsage(usage);
           }

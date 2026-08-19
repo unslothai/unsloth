@@ -15,6 +15,130 @@ const TERMINAL = new Set<StoredGenerationStatus>([
   "failed",
 ]);
 
+export function generationIsSettled(
+  status: StoredGenerationStatus | null,
+  cursor: number,
+  lastEventSeq: number,
+): boolean {
+  return status !== null && TERMINAL.has(status) && cursor >= lastEventSeq;
+}
+
+export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
+  threadId: string,
+  listActiveRuns: (id: string) => Promise<TRun[]>,
+  listMessages: (id: string) => Promise<TMessage[]>,
+): Promise<{ messages: TMessage[]; activeRuns: TRun[] }> {
+  // Runs first closes the create-between-snapshots gap. If a run commits after
+  // this read, the later message snapshot already carries its durable metadata.
+  const activeRuns = await listActiveRuns(threadId).catch(() => []);
+  const messages = await listMessages(threadId);
+  return { messages, activeRuns };
+}
+
+type RecoveryUsage = {
+  prompt_tokens?: unknown;
+  completion_tokens?: unknown;
+  total_tokens?: unknown;
+  prompt_tokens_details?: { cached_tokens?: unknown };
+  cache_creation_input_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
+};
+
+type RecoveryTimings = {
+  cache_n?: unknown;
+  predicted_per_second?: unknown;
+  [key: string]: unknown;
+};
+
+export function recoveredGenerationFinalMetadata(options: {
+  current: Record<string, unknown>;
+  run: {
+    id: string;
+    requestPayload: { model?: unknown };
+    createdAt: number;
+    startedAt: number | null;
+    completedAt: number | null;
+  };
+  usage?: RecoveryUsage;
+  timings?: RecoveryTimings;
+  firstChunkAt?: number;
+  totalChunks: number;
+}): Record<string, unknown> {
+  const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
+  const modelId =
+    typeof run.requestPayload.model === "string"
+      ? run.requestPayload.model
+      : "Unknown model";
+  const startedAt = run.startedAt ?? run.createdAt;
+  const finishedAt = run.completedAt ?? Date.now();
+  const completionTokens =
+    typeof usage?.completion_tokens === "number"
+      ? usage.completion_tokens
+      : undefined;
+  const tokensPerSecond =
+    typeof timings?.predicted_per_second === "number"
+      ? timings.predicted_per_second
+      : completionTokens !== undefined && finishedAt > startedAt
+        ? completionTokens / ((finishedAt - startedAt) / 1000)
+        : undefined;
+  const next = { ...current };
+
+  if (next.serverTimings === undefined && timings !== undefined) {
+    next.serverTimings = timings;
+  }
+  if (
+    next.contextUsage === undefined &&
+    typeof usage?.prompt_tokens === "number" &&
+    completionTokens !== undefined &&
+    typeof usage.total_tokens === "number"
+  ) {
+    next.contextUsage = {
+      promptTokens: usage.prompt_tokens,
+      completionTokens,
+      totalTokens: usage.total_tokens,
+      cachedTokens:
+        (typeof timings?.cache_n === "number" ? timings.cache_n : undefined) ??
+        (typeof usage.prompt_tokens_details?.cached_tokens === "number"
+          ? usage.prompt_tokens_details.cached_tokens
+          : undefined) ??
+        (typeof usage.cache_read_input_tokens === "number"
+          ? usage.cache_read_input_tokens
+          : 0),
+      cacheWriteTokens:
+        typeof usage.cache_creation_input_tokens === "number"
+          ? usage.cache_creation_input_tokens
+          : 0,
+      modelId,
+    };
+  }
+  if (next.responseDetails === undefined) {
+    next.responseDetails = {
+      modelId,
+      modelLabel: modelId,
+      responseModelId: modelId,
+      providerName: "Local model",
+      providerType: "local",
+      startedAt,
+      finishedAt,
+      durationMs: Math.max(0, finishedAt - startedAt),
+      cancelId: run.id,
+      toolCalls: [],
+    };
+  }
+  if (next.timing === undefined) {
+    next.timing = {
+      streamStartTime: startedAt,
+      firstTokenTime: firstChunkAt,
+      totalStreamTime: Math.max(0, finishedAt - startedAt),
+      tokenCount: completionTokens,
+      tokensPerSecond,
+      totalChunks,
+      toolCallCount: 0,
+    };
+  }
+  return next;
+}
+
 export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
@@ -35,7 +159,7 @@ export function generationRecoveryMetadata(options: {
 }): Record<string, unknown> {
   const { current, runId, status, cursor, lastEventSeq, lengthLimited } =
     options;
-  const settled = TERMINAL.has(status) && cursor >= lastEventSeq;
+  const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
     ...current,
     generationRunId: runId,

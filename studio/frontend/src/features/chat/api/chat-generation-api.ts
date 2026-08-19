@@ -122,6 +122,28 @@ export function isTerminalChatGenerationRun(run: ChatGenerationRun): boolean {
   return TERMINAL_STATUSES.has(run.status);
 }
 
+export function explicitStopSignal(signal: AbortSignal): {
+  signal: AbortSignal;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  const forward = () => {
+    const detached = Boolean(
+      (signal.reason as { detach?: boolean } | undefined)?.detach,
+    );
+    if (!detached) controller.abort(signal.reason);
+  };
+  if (signal.aborted) {
+    forward();
+  } else {
+    signal.addEventListener("abort", forward, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => signal.removeEventListener("abort", forward),
+  };
+}
+
 export async function supportsChatGenerationRuns(
   threadId: string,
   signal?: AbortSignal,

@@ -19,9 +19,24 @@ const {
   cancelChatGenerationRun,
   createChatGenerationRun,
   createChatGenerationRunUntilAbort,
+  explicitStopSignal,
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } = await import("../src/features/chat/api/chat-generation-api.ts");
+
+test("durable admission ignores detach but still observes explicit Stop", () => {
+  const detached = new AbortController();
+  const detachedAdmission = explicitStopSignal(detached.signal);
+  detached.abort({ detach: true });
+  assert.equal(detachedAdmission.signal.aborted, false);
+  detachedAdmission.dispose();
+
+  const stopped = new AbortController();
+  const stoppedAdmission = explicitStopSignal(stopped.signal);
+  stopped.abort({ detach: false });
+  assert.equal(stoppedAdmission.signal.aborted, true);
+  stoppedAdmission.dispose();
+});
 
 const run = (
   status: ChatGenerationRun["status"],

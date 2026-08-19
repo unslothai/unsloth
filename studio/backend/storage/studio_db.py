@@ -219,7 +219,7 @@ def _delete_project_workspace(project: dict) -> None:
         return
     root = Path(root_path).expanduser()
     try:
-        root_resolved = root.resolve(strict = False)
+        root_resolved = root.resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         logger.warning("Skipping project workspace delete for invalid path %r", root_path)
         return
@@ -714,7 +714,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         row[1]
         for row in sorted(
             conn.execute("PRAGMA table_info(research_thread_claims)").fetchall(),
-            key = lambda row: int(row[5] or 0),
+            key=lambda row: int(row[5] or 0),
         )
         if int(row[5] or 0) > 0
     ]
@@ -1100,7 +1100,7 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = busy_timeout_seconds)
+    conn = sqlite3.connect(str(db_path), timeout=busy_timeout_seconds)
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1943,7 +1943,7 @@ def _write_chat_thread_settings_in_conn(
     clear: bool = False,
     seq: Optional[int] = None,
     writer: Optional[str] = None,
-    keep_unreadable = None,
+    keep_unreadable=None,
 ) -> Optional[bool]:
     """The snapshot write itself, on a connection whose transaction the caller owns.
 
@@ -2009,7 +2009,7 @@ def write_chat_thread_settings(
     clear: bool = False,
     seq: Optional[int] = None,
     writer: Optional[str] = None,
-    keep_unreadable = None,
+    keep_unreadable=None,
 ) -> Optional[dict]:
     """Write a thread's settings snapshot, reading and merging in one transaction.
 
@@ -2037,12 +2037,12 @@ def write_chat_thread_settings(
         applied = _write_chat_thread_settings_in_conn(
             conn,
             id,
-            replace = replace,
-            merge = merge,
-            clear = clear,
-            seq = seq,
-            writer = writer,
-            keep_unreadable = keep_unreadable,
+            replace=replace,
+            merge=merge,
+            clear=clear,
+            seq=seq,
+            writer=writer,
+            keep_unreadable=keep_unreadable,
         )
         if applied is None:
             conn.rollback()
@@ -2091,7 +2091,7 @@ def list_chat_threads(
             values,
         ).fetchall()
         # the snapshot is only read when a thread is opened, so it is left out of the listing.
-        return [_chat_thread_from_row(row, include_settings = False) for row in rows]
+        return [_chat_thread_from_row(row, include_settings=False) for row in rows]
     finally:
         conn.close()
 
@@ -2201,7 +2201,7 @@ def _active_research_run_ids(
                     (*chunk, *_ACTIVE_RESEARCH_RUN_STATUSES),
                 ).fetchall()
             )
-    return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
+    return [row["id"] for row in sorted(rows, key=lambda row: (row["created_at"], row["id"]))]
 
 
 def _active_chat_generation_run_ids(
@@ -2226,7 +2226,7 @@ def _active_chat_generation_run_ids(
                     chunk,
                 ).fetchall()
             )
-    return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
+    return [row["id"] for row in sorted(rows, key=lambda row: (row["created_at"], row["id"]))]
 
 
 def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], list[str]]:
@@ -2273,7 +2273,7 @@ def clear_chat_history_with_active_research_runs(
 ) -> tuple[list[str], list[str]]:
     removed, active_runs = clear_chat_history(
         additional_thread_ids,
-        operation_id = operation_id,
+        operation_id=operation_id,
     )
     return active_runs, removed
 
@@ -2534,7 +2534,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
 
 
 def delete_chat_project_with_active_research_runs(id: str) -> tuple[Optional[dict], list[str]]:
-    project = delete_chat_project(id, delete_files = False)
+    project = delete_chat_project(id, delete_files=False)
     if project is None:
         return None, []
     return project, list(project.get("activeResearchRunIds") or [])
@@ -2680,6 +2680,20 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
     }
 
 
+def _active_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs
+               WHERE thread_id = ? AND status IN ('queued', 'running', 'cancelling')""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
 def _server_managed_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     return _research_message_ids(conn, thread_id) | _generation_message_ids(conn, thread_id)
 
@@ -2731,7 +2745,7 @@ def _research_message_would_change(
         return False
 
     def canon(value: object) -> str | None:
-        return json.dumps(value, sort_keys = True) if value is not None else None
+        return json.dumps(value, sort_keys=True) if value is not None else None
 
     stored_parent = row["parent_id"] or None
     sent_parent = message.get("parentId") or None
@@ -2783,8 +2797,8 @@ def _safe_generation_assistant_update(
         return False
 
     stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
-    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
-        stored_attachments, sort_keys = True
+    if json.dumps(message.get("attachments"), sort_keys=True) != json.dumps(
+        stored_attachments, sort_keys=True
     ):
         return False
 
@@ -2809,8 +2823,8 @@ def _safe_generation_assistant_update(
     ):
         return False
     if incoming_seq == stored_seq and json.dumps(
-        message.get("content", []), sort_keys = True
-    ) != json.dumps(json.loads(row["content_json"] or "[]"), sort_keys = True):
+        message.get("content", []), sort_keys=True
+    ) != json.dumps(json.loads(row["content_json"] or "[]"), sort_keys=True):
         return False
 
     # A settled terminal row is immutable. Repeated repository syncs may send
@@ -2925,9 +2939,9 @@ def _content_part_id(part: dict) -> Optional[str]:
         return None
     canonical = json.dumps(
         payload,
-        ensure_ascii = False,
-        separators = (",", ":"),
-        sort_keys = True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     ).encode("utf-8")
     return f"{_CONTENT_PART_ID_PREFIX}{hashlib.sha256(canonical).hexdigest()}"
 
@@ -3166,7 +3180,7 @@ def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -
             conn,
             message["threadId"],
             [message],
-            allow_research_update = allow_research_update,
+            allow_research_update=allow_research_update,
         )
         _raise_if_chat_message_thread_conflicts(
             conn,
@@ -3254,13 +3268,16 @@ def sync_chat_messages(
         research_ids = _research_message_ids(conn, thread_id)
         generation_ids = _generation_message_ids(conn, thread_id)
         managed_ids = research_ids | generation_ids
+        requested_ids = {str(m["id"]) for m in messages}
+        # All generation messages remain update-protected, but only active-run
+        # messages must survive an explicit prune while the server owns them.
+        prune_protected_ids = research_ids | _active_generation_message_ids(conn, thread_id)
         # The rows this sync will delete, computed before the upsert so a relink forced by
         # that deletion can be told apart from an edit. Research ids are subtracted because
         # the delete below exempts them: counting one as pruned would walk the reseat past a
         # parent that actually survives, detaching a research turn from its own prompt.
         pruned: set = set()
         if prune_missing:
-            retained = {str(m["id"]) for m in messages}
             pruned = (
                 {
                     str(row["id"])
@@ -3269,8 +3286,8 @@ def sync_chat_messages(
                         (thread_id,),
                     ).fetchall()
                 }
-                - retained
-                - managed_ids
+                - requested_ids
+                - prune_protected_ids
             )
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
@@ -3353,7 +3370,6 @@ def sync_chat_messages(
                 content_json,
             )
         if prune_missing:
-            retained_ids = {m["id"] for m in reconciled_messages}
             existing_ids = {
                 row["id"]
                 for row in conn.execute(
@@ -3363,7 +3379,7 @@ def sync_chat_messages(
             }
             # Update permission is not delete permission: prune-exempt even for
             # allow_research_update callers.
-            missing_ids = sorted(existing_ids - retained_ids - managed_ids)
+            missing_ids = sorted(existing_ids - requested_ids - prune_protected_ids)
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -3472,8 +3488,8 @@ def _detach_research_message_json(
                 key: value for key, value in custom.items() if key not in _SERVER_MANAGED_LINK_KEYS
             }
     return (
-        json.dumps(content, ensure_ascii = False),
-        json.dumps(metadata, ensure_ascii = False) if metadata is not None else None,
+        json.dumps(content, ensure_ascii=False),
+        json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
     )
 
 
@@ -3700,7 +3716,7 @@ def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
             continue
         text = part.get("text")
         if isinstance(text, str) and text:
-            total += len(text.encode("utf-8", errors = "ignore"))
+            total += len(text.encode("utf-8", errors="ignore"))
             found = True
     return total if found else None
 
@@ -3796,7 +3812,7 @@ def list_chat_attachments() -> list[dict]:
     attachments: list[dict] = []
     offset = 0
     while True:
-        page, next_offset = list_chat_attachments_page(limit = 100, offset = offset)
+        page, next_offset = list_chat_attachments_page(limit=100, offset=offset)
         attachments.extend(page)
         if next_offset is None:
             return attachments
@@ -3968,13 +3984,13 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             messages.extend(_chat_message_from_row(row) for row in rows)
         return sorted(
             messages,
-            key = lambda message: (message["createdAt"], message["id"]),
+            key=lambda message: (message["createdAt"], message["id"]),
         )
     finally:
         conn.close()
 
 
-def get_app_setting(key: str, fallback = None):
+def get_app_setting(key: str, fallback=None):
     conn = get_connection()
     try:
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()

@@ -52,9 +52,14 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
 export function restoredAssistantStatus(
   metadata: unknown,
 ): import("@assistant-ui/react").MessageStatus {
-  return readIncompleteInfo(metadata)
-    ? { type: "incomplete", reason: "error" }
-    : { type: "complete", reason: "unknown" };
+  const incomplete = readIncompleteInfo(metadata);
+  if (!incomplete) {
+    return { type: "complete", reason: "unknown" };
+  }
+  return {
+    type: "incomplete",
+    reason: incomplete.reason === "cancelled" ? "cancelled" : "error",
+  };
 }
 
 const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {

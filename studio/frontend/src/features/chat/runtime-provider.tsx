@@ -97,6 +97,8 @@ import {
 } from "./utils/continuation";
 import {
   generationNeedsRecovery,
+  loadGenerationOverlaySnapshot,
+  recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
@@ -694,8 +696,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     (generationStatus === "queued" ||
       generationStatus === "running" ||
       generationStatus === "cancelling" ||
-      (generationStatus === "completed" &&
-        custom.generationSettled !== true));
+      (generationStatus === "completed" && custom.generationSettled !== true));
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -770,6 +771,19 @@ function scheduleGenerationRecovery(
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
     let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
     let completionTokens: number | undefined;
+    let recoveryUsage:
+      | {
+          prompt_tokens?: unknown;
+          completion_tokens?: unknown;
+          total_tokens?: unknown;
+          prompt_tokens_details?: { cached_tokens?: unknown };
+          cache_creation_input_tokens?: unknown;
+          cache_read_input_tokens?: unknown;
+        }
+      | undefined;
+    let recoveryTimings: Record<string, unknown> | undefined;
+    let firstChunkAt: number | undefined;
+    let totalChunks = 0;
     let currentMetadata = { ...metadata };
     const serverCancel = () => {
       void cancelChatGenerationRun(runId).catch(() => {});
@@ -783,9 +797,9 @@ function scheduleGenerationRecovery(
 
     const publish = async (run: ChatGenerationRun) => {
       const status = run.status;
-      const runModel = useChatRuntimeStore.getState().models.find(
-        (model) => model.id === run.requestPayload.model,
-      );
+      const runModel = useChatRuntimeStore
+        .getState()
+        .models.find((model) => model.id === run.requestPayload.model);
       const lengthLimited =
         run.finishReason === "length" ||
         budgetImpliesTruncation({
@@ -793,7 +807,7 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
-      const nextMetadata = generationRecoveryMetadata({
+      let nextMetadata = generationRecoveryMetadata({
         current: currentMetadata,
         runId,
         status,
@@ -801,6 +815,16 @@ function scheduleGenerationRecovery(
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
       });
+      if (nextMetadata.generationSettled === true) {
+        nextMetadata = recoveredGenerationFinalMetadata({
+          current: nextMetadata,
+          run,
+          usage: recoveryUsage,
+          timings: recoveryTimings,
+          firstChunkAt,
+          totalChunks,
+        });
+      }
       currentMetadata = nextMetadata;
       const content = parseAssistantContent(
         reasoningOpen ? `${raw}</think>` : raw,
@@ -881,7 +905,15 @@ function scheduleGenerationRecovery(
           cursor = update.event.seq;
           if (update.event.type === "chunk") {
             const chunk = update.event.payload as {
-              usage?: { completion_tokens?: unknown };
+              usage?: {
+                prompt_tokens?: unknown;
+                completion_tokens?: unknown;
+                total_tokens?: unknown;
+                prompt_tokens_details?: { cached_tokens?: unknown };
+                cache_creation_input_tokens?: unknown;
+                cache_read_input_tokens?: unknown;
+              };
+              timings?: Record<string, unknown>;
               choices?: Array<{
                 delta?: {
                   content?: unknown;
@@ -889,6 +921,10 @@ function scheduleGenerationRecovery(
                 };
               }>;
             };
+            totalChunks += 1;
+            firstChunkAt ??= update.event.createdAt;
+            if (chunk.usage) recoveryUsage = chunk.usage;
+            if (chunk.timings) recoveryTimings = chunk.timings;
             if (typeof chunk.usage?.completion_tokens === "number") {
               completionTokens = chunk.usage.completion_tokens;
             }
@@ -913,9 +949,7 @@ function scheduleGenerationRecovery(
         const shouldPublish =
           update.event?.type === "chunk" ||
           update.run.status !== lastPublishedStatus ||
-          (["cancelled", "completed", "failed"].includes(
-            update.run.status,
-          ) &&
+          (["cancelled", "completed", "failed"].includes(update.run.status) &&
             cursor >= update.run.lastEventSeq);
         if (shouldPublish) {
           lastPublishedStatus = update.run.status;
@@ -1586,17 +1620,22 @@ function useStudioRuntimeAdapters(
           assistant: 2,
         };
         let msgs: MessageRecord[];
+        let activeGenerationRuns: ChatGenerationRun[];
         try {
-          msgs = await listStoredChatMessages(remoteId);
+          const snapshot = await loadGenerationOverlaySnapshot(
+            remoteId,
+            getActiveChatGenerationRuns,
+            listStoredChatMessages,
+          );
+          msgs = snapshot.messages;
+          activeGenerationRuns = snapshot.activeRuns;
         } catch (error) {
           if (!isExpectedBackgroundChatStorageError(error)) {
             throw error;
           }
           msgs = [];
+          activeGenerationRuns = [];
         }
-        const activeGenerationRuns = await getActiveChatGenerationRuns(
-          remoteId,
-        ).catch(() => []);
         for (const run of activeGenerationRuns) {
           const assistant = msgs.find(
             (message) => message.id === run.assistantMessageId,
@@ -1612,9 +1651,9 @@ function useStudioRuntimeAdapters(
         }
         // Durable research can outlive this runtime. Reattach its server-owned
         // assistant message to the inline card after navigation or refresh.
-        const researchThreadState = await getResearchThreadState(remoteId).catch(
-          () => null,
-        );
+        const researchThreadState = await getResearchThreadState(
+          remoteId,
+        ).catch(() => null);
         if (researchThreadState) {
           useResearchRunStore
             .getState()
