@@ -18,6 +18,14 @@ const indexCss = readFileSync(
   new URL("../src/index.css", import.meta.url),
   "utf8",
 );
+const rootRouteSource = readFileSync(
+  new URL("../src/app/routes/__root.tsx", import.meta.url),
+  "utf8",
+);
+const runtimeProviderSource = readFileSync(
+  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -301,9 +309,13 @@ function createEnvironment(options: {
   const htmlAttributes = new Map(Object.entries(options.htmlAttributes ?? {}));
   const documentElement = {
     style: createStyle(options.htmlVariables),
+    hasAttribute: (name: string) => htmlAttributes.has(name),
     getAttribute: (name: string) => htmlAttributes.get(name) ?? null,
     setAttribute: (name: string, value: string) => {
       htmlAttributes.set(name, value);
+    },
+    removeAttribute: (name: string) => {
+      htmlAttributes.delete(name);
     },
     appendChild(element: { innerHTML: string; removed: boolean }) {
       appended.push(element);
@@ -466,6 +478,8 @@ function createEnvironment(options: {
             | { values?: Record<string, string> }
             | undefined
         )?.values ?? {}) as Record<string, string>,
+        rootVisibility: (root?.style as { visibility?: string } | undefined)
+          ?.visibility,
       };
     },
     dispatch(name: string, event: Record<string, unknown> = {}) {
@@ -540,6 +554,34 @@ test("does not retain the shell for a non-reload navigation", () => {
     activation: { navigationType: "push" },
   });
   assert.equal(environment.storage.size, 0);
+});
+
+test("never persists a Temporary Chat shell", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Sensitive temporary transcript</main>",
+    htmlAttributes: { "data-reload-snapshot-private": "" },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+  assert.equal(environment.storage.size, 0);
+});
+
+test("mirrors Temporary Chat privacy and lets history completion retire chat shells", () => {
+  assert.match(
+    rootRouteSource,
+    /toggleAttribute\(\s*"data-reload-snapshot-private",\s*incognito,/,
+  );
+  assert.equal(
+    [...rootRouteSource.matchAll(/<ReloadSnapshotReady \/>/g)].length,
+    1,
+    "chat must not use the generic commit-time readiness marker",
+  );
+  assert.match(
+    runtimeProviderSource,
+    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await listStoredChatMessages\(remoteId\)[\s\S]*?return completeLoad/,
+  );
 });
 
 test("keeps what a display:contents wrapper renders, drops what is offscreen", () => {
@@ -633,7 +675,7 @@ test("adapts root-scoped palette state to the snapshot shell", () => {
   );
 });
 
-test("registers selected imported fonts before restoring the shell", () => {
+test("loads selected imported fonts before revealing the shell", async () => {
   const persistedAppearance = new Map([
     [
       "unsloth_appearance_customization",
@@ -675,6 +717,7 @@ test("registers selected imported fonts before restoring the shell", () => {
     storage: outgoing.storage,
     localStorage: persistedAppearance,
   });
+  assert.equal(incoming.shell?.rootVisibility, "hidden");
   assert.deepEqual(
     incoming.fontFaces.map((face) => ({
       family: face.family,
@@ -687,6 +730,8 @@ test("registers selected imported fonts before restoring the shell", () => {
       },
     ],
   );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(incoming.shell?.rootVisibility, "visible");
 });
 
 test("drops the retained shell's animations instead of pausing them", () => {

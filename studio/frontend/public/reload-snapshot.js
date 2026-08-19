@@ -10,6 +10,7 @@
   var maxImportedFonts = 3;
   var maxImportedFontLength = 2200000;
   var maxImportedFontsLength = 4400000;
+  var importedFontWaitMs = 250;
   var fontDataUrlPattern =
     /^data:(?:font\/(?:woff2?|ttf|otf|sfnt)|application\/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$/;
   var overlay = null;
@@ -144,20 +145,23 @@
   }
 
   function registerImportedFonts() {
+    var loads = [];
     if (
       typeof FontFace !== "function" ||
       !document.fonts ||
       typeof document.fonts.add !== "function"
     ) {
-      return;
+      return loads;
     }
     try {
       var raw = localStorage.getItem(appearanceStorageKey);
-      if (!raw || raw.length > maxImportedFontsLength + 100000) return;
+      if (!raw || raw.length > maxImportedFontsLength + 100000) return loads;
       var persisted = JSON.parse(raw);
       var customization =
         persisted && persisted.state && persisted.state.customization;
-      if (!customization || !Array.isArray(customization.importedFonts)) return;
+      if (!customization || !Array.isArray(customization.importedFonts)) {
+        return loads;
+      }
       var selected = {};
       ["uiFont", "headingFont", "chatFont", "codeFont"].forEach(
         function (key) {
@@ -191,10 +195,11 @@
           try {
             var face = new FontFace(name, "url(" + dataUrl + ")");
             document.fonts.add(face);
-            face.load().catch(function () {});
+            loads.push(face.load());
           } catch (error) {}
         });
     } catch (error) {}
+    return loads;
   }
 
   function restoreScrollState(root) {
@@ -226,7 +231,7 @@
       return;
     }
 
-    registerImportedFonts();
+    var fontLoads = registerImportedFonts();
     applyAppearance(snapshot.appearance);
     overlay = document.createElement("div");
     overlay.className = "reload-snapshot";
@@ -250,6 +255,7 @@
     // <html> element carrying the classes and gate attributes it was styled by,
     // plus the marker index.css hangs the shell's own rules off.
     var shellRoot = document.createElement("html");
+    if (fontLoads.length) shellRoot.style.visibility = "hidden";
     shellRoot.className =
       "reload-snapshot-shell " +
       (typeof snapshot.rootClass === "string" ? snapshot.rootClass : "");
@@ -268,6 +274,21 @@
     shellRoot.appendChild(shellBody);
     shell.appendChild(shellRoot);
     document.documentElement.appendChild(overlay);
+    if (fontLoads.length) {
+      var revealShell = function () {
+        shellRoot.style.visibility = "visible";
+      };
+      Promise.race([
+        Promise.all(
+          fontLoads.map(function (load) {
+            return load.catch(function () {});
+          }),
+        ),
+        new Promise(function (resolve) {
+          setTimeout(resolve, importedFontWaitMs);
+        }),
+      ]).then(revealShell, revealShell);
+    }
     // Apply once against the current layout, then once more in the last
     // pre-paint frame after the retained stylesheets have resolved.
     restoreScrollState(shellBody);
@@ -444,6 +465,12 @@
   }
 
   function saveSnapshot() {
+    if (
+      document.documentElement.hasAttribute("data-reload-snapshot-private")
+    ) {
+      clearStoredSnapshot();
+      return;
+    }
     var root = document.getElementById("root");
     if (!root || !root.firstElementChild) return;
     try {

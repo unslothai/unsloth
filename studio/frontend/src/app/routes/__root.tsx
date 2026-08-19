@@ -80,6 +80,27 @@ function ReloadSnapshotReady() {
   return null;
 }
 
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
+// privacy state onto the document so Temporary Chat is never serialized even
+// briefly into sessionStorage.
+function ReloadSnapshotPrivacy() {
+  const incognito = useChatRuntimeStore((state) => state.incognito);
+
+  useLayoutEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-reload-snapshot-private",
+      incognito,
+    );
+    return () => {
+      document.documentElement.removeAttribute(
+        "data-reload-snapshot-private",
+      );
+    };
+  }, [incognito]);
+
+  return null;
+}
+
 function RouteBoundary({ children }: { children: ReactNode }) {
   return (
     <Suspense fallback={<RouteFallback />}>
@@ -386,6 +407,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
@@ -429,7 +451,6 @@ function RootLayout() {
                   }
                   inert={!isChatRoute || undefined}
                 >
-                  <ReloadSnapshotReady />
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}

@@ -1301,9 +1301,15 @@ function useStudioRuntimeAdapters(
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
       async load() {
+        const completeLoad = <T,>(result: T): T => {
+          if (modelType === "base" && !pairId) {
+            window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+          }
+          return result;
+        };
         const { remoteId } = aui.threadListItem().getState();
         if (!remoteId) {
-          return { messages: [] };
+          return completeLoad({ messages: [] });
         }
         const roleOrder: Record<string, number> = {
           system: 0,
@@ -1410,7 +1416,7 @@ function useStudioRuntimeAdapters(
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
           let previousId: string | null = null;
-          return {
+          return completeLoad({
             messages: msgs.map((m) => {
               const parentId = m.parentId != null ? m.parentId : previousId;
               previousId = m.id;
@@ -1419,9 +1425,11 @@ function useStudioRuntimeAdapters(
                 message: toThreadMessage(m),
               };
             }),
-          };
+          });
         }
-        return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
+        return completeLoad(
+          ExportedMessageRepository.fromArray(msgs.map(toThreadMessage)),
+        );
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
