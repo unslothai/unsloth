@@ -1410,7 +1410,13 @@ def test_a_dense_ascii_result_is_priced_by_the_callers_tokenizer(archived, monke
 
     source = "def f(x):\n    return {'a':1,'b':[2,3]}\n" * 400
 
-    def fake_recall(thread_id, query, *, top_k = None, branch_messages = None):
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
         return (source, [])
 
     monkeypatch.setattr(conversation_archive, "recall", fake_recall)
@@ -1454,9 +1460,7 @@ def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
     call = {
         "role": "assistant",
         "content": "",
-        "tool_calls": [
-            {"function": {"name": "terminal", "arguments": '{"command":"ls -la"}'}}
-        ],
+        "tool_calls": [{"function": {"name": "terminal", "arguments": '{"command":"ls -la"}'}}],
     }
     branch = [
         {"role": "system", "content": "sys"},
@@ -1474,8 +1478,11 @@ def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
 
     # The user then deletes one already-evicted turn, so the same cut is one shallower.
     _fake_studio_db(monkeypatch, [_anchored_row(2, anchor)])
-    shortened = [{"role": "user", "content": "evicted prompt"}, call,
-                 {"role": "tool", "content": "total 0"},
-                 {"role": "assistant", "content": "a"}]
+    shortened = [
+        {"role": "user", "content": "evicted prompt"},
+        call,
+        {"role": "tool", "content": "total 0"},
+        {"role": "assistant", "content": "a"},
+    ]
 
     assert llama_cpp._sticky_compaction_boundary("t1", shortened) == 1
