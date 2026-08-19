@@ -57,6 +57,7 @@ from hub.utils.gguf_plan import (
     GgufVariantPlan as _GgufVariantRequirement,
     build_gguf_variant_plans,
     is_main_gguf_variant_path,
+    plan_from_expected_files,
 )
 
 logger = get_logger(__name__)
@@ -385,6 +386,67 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
     except Exception as e:
         logger.debug("Dependency key unavailable for %s/%s: %s", repo_id, filename, e)
         return None
+
+
+def variant_remaining_bytes(
+    repo_id: str,
+    requirement,
+    repo_cache_dir: Optional[Path] = None,
+) -> Optional[int]:
+    """Bytes a resume of this variant still has to fetch, or None when unknown.
+
+    Priced per file, which is what the transfer actually reuses: a finished shard is
+    kept, an unresumable partial is refetched whole, so a one-file quant reads back its
+    full size.
+
+    Counted in the root the row names, falling back to the active one. Pricing a pinned row
+    against the active root is wrong in both directions: shards in the pinned root earn no
+    credit, and a copy in the active root earns credit a resume cannot use.
+    """
+    if requirement is None or not requirement.required_hashes:
+        return None
+    try:
+        have = download_registry.existing_blob_bytes(
+            "model",
+            repo_id,
+            requirement.required_hashes,
+            root = repo_cache_dir.parent if repo_cache_dir is not None else None,
+        )
+    except Exception as e:
+        logger.warning(f"Remaining-bytes lookup failed for {repo_id}: {e}")
+        return None
+    return max(0, requirement.download_size_bytes - have)
+
+
+def variant_remaining_bytes_from_state(
+    repo_id: str, variant: str, repo_cache_dir: Optional[Path]
+) -> Optional[int]:
+    """:func:`variant_remaining_bytes` for the local and offline listings, which have no hub
+    plan. The worker writes a manifest before it fetches anything, so a partial row can still
+    be priced from the file list that produced it.
+
+    Deliberately not capped by the row's own size: a local listing sizes a variant from the
+    shards ON DISK, so on an early interruption that total is smaller than the transfer.
+    """
+    if not variant:
+        return None
+    try:
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None,
+        )
+    except Exception as e:
+        logger.warning(f"Manifest read failed while pricing {repo_id} [{variant}]: {e}")
+        return None
+    if manifest is None or not manifest.expected_files:
+        return None
+    return variant_remaining_bytes(
+        repo_id,
+        plan_from_expected_files(variant, manifest.expected_files),
+        repo_cache_dir,
+    )
 
 
 def _partial_transport_for_variant(
@@ -1018,6 +1080,13 @@ async def get_gguf_variants_answer(
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
                         download_size_bytes = v.size_bytes,
+                        download_remaining_bytes = (
+                            None
+                            if _downloaded(v)
+                            else variant_remaining_bytes_from_state(
+                                response_repo_id, v.quant, repo_cache_dir
+                            )
+                        ),
                         downloaded = _downloaded(v),
                         partial = not _downloaded(v),
                         dependency_key = _variant_dependency_key(response_repo_id, v.filename),
@@ -1042,6 +1111,11 @@ async def get_gguf_variants_answer(
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
                         download_size_bytes = v.download_size_bytes or v.size_bytes,
+                        download_remaining_bytes = variant_remaining_bytes_from_state(
+                            response_repo_id,
+                            v.quant,
+                            repo_cache_dir,
+                        ),
                         downloaded = False,
                         partial = True,
                         partial_transport = _partial_transport_for_variant(
@@ -1078,6 +1152,11 @@ async def get_gguf_variants_answer(
                     display_label = v.display_label,
                     size_bytes = v.size_bytes,
                     download_size_bytes = v.download_size_bytes or v.size_bytes,
+                    download_remaining_bytes = variant_remaining_bytes_from_state(
+                        repo_id,
+                        v.quant,
+                        repo_cache_dir,
+                    ),
                     downloaded = False,
                     partial = True,
                     partial_transport = _partial_transport_for_variant(
@@ -1485,6 +1564,12 @@ async def get_gguf_variants_answer(
                 size_bytes = v.size_bytes,
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
+                ),
+                # Scanned per partial variant only: repos carry one, and the scan walks blobs/.
+                download_remaining_bytes = (
+                    variant_remaining_bytes(repo_id, requirement, repo_cache_dir)
+                    if is_partial
+                    else None
                 ),
                 downloaded = downloaded,
                 update_available = downloaded
