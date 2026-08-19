@@ -31,12 +31,19 @@ def retrieve_lexical(
     *,
     match_query: str | None = None,
     newest_first: bool = False,
+    oldest_first: bool = False,
 ) -> list[Hit]:
     k = k or config.TOP_K_LEXICAL
     return [
         Hit(cid, s, lexical_score = s)
         for cid, s in store.search_lexical(
-            conn, scope, query, k, match_query = match_query, newest_first = newest_first
+            conn,
+            scope,
+            query,
+            k,
+            match_query = match_query,
+            newest_first = newest_first,
+            oldest_first = oldest_first,
         )
     ]
 

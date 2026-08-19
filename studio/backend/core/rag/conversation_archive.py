@@ -272,7 +272,7 @@ def archive_turns(
     # Conversation order, read once from the persisted thread. See `_transcript_positions`
     # for why it cannot be the order these turns reach the archive.
     positions = _transcript_positions(thread_id)
-    live_texts = _live_texts(live)
+    live_positions = _live_positions(live)
     written = 0
     conn = None
     try:
@@ -292,7 +292,7 @@ def archive_turns(
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
-            budget = _write_budget(positions, seats, live_texts)
+            budget = _write_budget(positions, seats, live_positions, group)
             if _archived_under(conn, scope, digest, expected_identity, occurrences = budget):
                 # Commit here: this path holds no transaction of its own and the loop can
                 # return before ever reaching the write lock, when every turn is already
@@ -423,6 +423,14 @@ def archive_turns(
             # own conversation and the header calls it the latest word. Runs after the new
             # row exists, so the count is what the scope actually holds.
             _retire_surplus(conn, scope, digest, seats)
+            # A re-embed keeps the ordinal it found, which is right while every copy is
+            # still there and wrong once one has been retired: identical turns at ordinals
+            # 0 and 2 with the FIRST rewound away left the survivor on 0, so a
+            # contradiction at 1 rendered after it and the header called the contradiction
+            # the later, superseding statement. Restamped against the seats that remain,
+            # skipping NULLs so a legacy archive is still not renumbered.
+            if stale is not None:
+                _restamp(conn, scope, digest, seats, skip_null = True)
             conn.commit()
             written += 1
             # A REPLACEMENT is not an addition. The re-embed branch above swaps one copy's
@@ -439,7 +447,7 @@ def archive_turns(
             # stop. Every direct caller therefore behaves exactly as before.
             while (
                 stale is not None
-                and live_texts is not None
+                and live_positions is not None
                 and len(store.documents_by_hash(conn, scope, digest)) < budget
             ):
                 if not _write_copy(
@@ -755,17 +763,28 @@ def _write_copy(
     return True
 
 
-def _live_texts(live: Optional[list[dict]]) -> Optional[set[str]]:
-    """The fitted conversation as the probe texts a transcript position is compared to."""
+def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
+    """The fitted conversation grouped exactly as ``_transcript_positions`` groups the
+    stored one, so a live turn can be matched by the same rules a stored seat is."""
     if live is None:
         return None
-    texts = {_normalise(_probe_text(message)) for message in live}
-    texts.discard("")
-    return texts or None
+    try:
+        from core.inference.context_window import group_turns
+    except Exception:
+        return None
+    positions = [
+        [_normalise(_probe_text(message)) for message in group]
+        for group in group_turns(_as_wire(live))
+        if group
+    ]
+    return positions or None
 
 
 def _write_budget(
-    positions: Optional[list[list[str]]], seats: list[int], live_texts: Optional[set[str]]
+    positions: Optional[list[list[str]]],
+    seats: list[int],
+    live_positions: Optional[list[list[str]]],
+    group: Optional[list[dict]] = None,
 ) -> int:
     """How many copies of a repeated turn the archive may hold RIGHT NOW.
 
@@ -780,17 +799,21 @@ def _write_budget(
     the prompt has not been evicted and buys no write. When that turn is evicted later the
     budget rises on its own and the copy is written then, at its own ordinal.
 
+    COUNTED, not tested for membership. A set of live texts cannot tell "one of three
+    identical turns is still in the prompt" from "all three are", so every seat looked
+    live and a turn said three times with two of them evicted was archived once. Counting
+    the live occurrences with `_occurrences`, the same matcher that finds the seats,
+    subtracts exactly as many as the prompt really holds.
+
     Floors at 1 so a turn whose seats cannot be told apart from live text is still stored;
     and with no ``live`` to compare against, this is exactly the old ``len(seats)``.
     """
     if not seats:
         return 1
-    if not live_texts or not positions:
+    if not live_positions or not positions:
         return len(seats)
-    evicted = [
-        seat for seat in seats if not all(text in live_texts for text in positions[seat] if text)
-    ]
-    return len(evicted) or 1
+    live = len(_occurrences(live_positions, group)) if group else 0
+    return max(len(seats) - live, 1)
 
 
 def _retire_surplus(
@@ -833,6 +856,7 @@ def _restamp(
     *,
     copies = None,
     commit: bool = False,
+    skip_null: bool = False,
 ) -> None:
     """Move existing copies of this turn onto the positions the transcript gives them.
 
@@ -855,6 +879,12 @@ def _restamp(
         rows = copies if copies is not None else store.documents_by_hash(conn, scope, digest)
         moved = False
         for seat, copy in zip(seats, rows):
+            if skip_null and copy.get("archive_ordinal") is None:
+                # A row archived before the column existed must stay unnumbered, or it
+                # moves to the end of its own conversation and the header calls the oldest
+                # statement the latest one. The re-embed path restamps only rows that
+                # already carry a position.
+                continue
             if copy.get("archive_ordinal") != seat:
                 store.set_archive_ordinal(conn, copy["id"], seat)
                 moved = True
@@ -1355,15 +1385,29 @@ def _ends_first_within_ties(conn, hits: list) -> list:
 
 
 def _lexical_pass(
-    conn, scope: str, query: str, model, k: int, expression, *, newest_first: bool = False
+    conn,
+    scope: str,
+    query: str,
+    model,
+    k: int,
+    expression,
+    *,
+    newest_first: bool = False,
+    oldest_first: bool = False,
 ) -> list:
-    if newest_first:
+    if newest_first or oldest_first:
         # The archive's lexical legs are always mode "lexical", so this is the same call
         # one layer down, with the tie-break reversed.
         return _ends_first_within_ties(
             conn,
             retrieval.retrieve_lexical(
-                conn, scope, query, k, match_query = expression, newest_first = True
+                conn,
+                scope,
+                query,
+                k,
+                match_query = expression,
+                newest_first = newest_first,
+                oldest_first = oldest_first,
             ),
         )
     return _ends_first_within_ties(
@@ -1432,6 +1476,7 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
             model,
             _BRANCH_FILTER_MAX_CANDIDATES - _newest_half,
             expressions[0],
+            oldest_first = True,
         ),
         _lexical_pass(
             conn, scope, query, model, _newest_half, expressions[0], newest_first = True
@@ -1452,7 +1497,9 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     _loose_k = max(fetch, _BRANCH_FILTER_MAX_CANDIDATES)
     _loose_newest = _loose_k // 2
     loose = _ends_first_within_ties(conn, _both_ends(
-        _lexical_pass(conn, scope, query, model, _loose_k - _loose_newest, expressions[-1]),
+        _lexical_pass(
+            conn, scope, query, model, _loose_k - _loose_newest, expressions[-1], oldest_first = True
+        ),
         _lexical_pass(
             conn, scope, query, model, _loose_newest, expressions[-1], newest_first = True
         ),
