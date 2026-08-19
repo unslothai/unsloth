@@ -671,6 +671,13 @@ def delete_oauth_bundle(provider_id: str) -> None:
         credential_secrets.OPENAI_CODEX_OAUTH_KIND,
         provider_id,
     )
+    # Disconnecting erases the account identity that a later save would be compared
+    # against, so the next authorization cannot tell it is a different account. The saved
+    # models outlive the bundle, so mark them unproven now rather than letting them read
+    # as cold-start evidence under whoever connects next.
+    from core.inference.openai_codex_client import mark_subscription_catalog_stale
+
+    mark_subscription_catalog_stale(provider_id)
 
 
 def _oauth_flow_record(provider_id: str) -> dict[str, Any] | None:

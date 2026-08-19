@@ -1913,3 +1913,51 @@ def test_chat_does_not_trust_the_saved_row_after_a_rebind(monkeypatch):
         assert len(fake.calls) == 1
     finally:
         forget_subscription_models("codex-1")
+
+
+def test_disconnecting_leaves_the_saved_models_unproven(monkeypatch):
+    """A disconnect erases the identity a later save would be compared against.
+
+    The provider row keeps its models, so without a mark here the next account inherits
+    them as cold-start evidence and sends them under its own credentials.
+    """
+    stored = {}
+    monkeypatch.setattr(
+        codex_auth.credential_secrets,
+        "delete_secret",
+        lambda _kind, provider_id: stored.pop(provider_id, None),
+    )
+    forget_subscription_models("provider-7")
+    assert codex_client.subscription_catalog_stale("provider-7") is False
+
+    codex_auth.delete_oauth_bundle("provider-7")
+    assert codex_client.subscription_catalog_stale("provider-7") is True
+    forget_subscription_models("provider-7")
+
+
+def test_evicting_the_response_cache_keeps_authorization_evidence(monkeypatch):
+    """The TTL cache is bounded; what a plan proved about a connection is not.
+
+    Clearing both together made every other connection look cold, which is exactly the
+    state that licenses a saved slug the account no longer carries.
+    """
+    codex_client._models_cache.clear()
+    codex_client._offered_models.clear()
+    codex_client._catalog_accounts.clear()
+    codex_client._offered_models["other"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
+    codex_client._catalog_accounts["other"] = "acct-other"
+    for filler in range(codex_client._MODELS_CACHE_MAX_ENTRIES):
+        codex_client._models_cache[f"filler-{filler}"] = (time.time() + 600, [])
+
+    fake = _models_response({"models": [{"slug": "gpt-5.5", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    try:
+        asyncio.run(list_subscription_models("provider-8", "token", "acct-8"))
+        assert codex_client.cached_subscription_models("filler-0") is None
+        # The other connection's proof survives the eviction.
+        assert offered_subscription_model_ids("other") == {"gpt-5.4"}
+        assert codex_client._catalog_accounts["other"] == "acct-other"
+    finally:
+        forget_subscription_models("provider-8")
+        forget_subscription_models("other")
+        codex_client._models_cache.clear()

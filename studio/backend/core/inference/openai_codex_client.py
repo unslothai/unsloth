@@ -385,9 +385,12 @@ async def list_subscription_models(
         if model is not None
     ]
     if len(_models_cache) >= _MODELS_CACHE_MAX_ENTRIES:
+        # Only the TTL response cache is bounded here. The per-account authorization
+        # evidence deliberately outlives it: dropping it would make every other
+        # connection look cold and license saved slugs their account no longer carries.
+        # It is keyed by connection and released by forget_subscription_models, so it is
+        # bounded by the connections that exist rather than by fetches.
         _models_cache.clear()
-        _offered_models.clear()
-        _catalog_accounts.clear()
     _models_cache[provider_id] = (time.time() + _MODELS_CACHE_TTL_SECONDS, models)
     _offered_models[provider_id] = {model["id"]: model for model in models}
     _catalog_accounts[provider_id] = account_id
