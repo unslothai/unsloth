@@ -854,6 +854,28 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
     assert offered_subscription_model_ids("provider-1") == set()
 
 
+def test_subscription_catalog_is_dropped_when_the_account_changes(monkeypatch):
+    """A reconnect can bind the same provider row to a different ChatGPT account.
+
+    Nothing on the reauthorization path clears the catalog, so a lookup keyed only by
+    provider would keep serving the previous plan's slugs for the whole TTL.
+    """
+    first = _models_response({"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: first)
+    forget_subscription_models("provider-4")
+    asyncio.run(list_subscription_models("provider-4", "token-a", "acct-a"))
+    assert offered_subscription_model_ids("provider-4") == {"gpt-5.4"}
+
+    second = _models_response({"models": [{"slug": "gpt-5.5", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: second)
+    # Same provider, new account: the stale catalog must not be served from cache.
+    models = asyncio.run(list_subscription_models("provider-4", "token-b", "acct-b"))
+    assert [model["id"] for model in models] == ["gpt-5.5"]
+    assert offered_subscription_model_ids("provider-4") == {"gpt-5.5"}
+    assert len(second.calls) == 1
+    forget_subscription_models("provider-4")
+
+
 def test_subscription_model_list_rejects_non_200(monkeypatch):
     monkeypatch.setattr(
         codex_client,

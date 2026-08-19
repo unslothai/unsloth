@@ -232,6 +232,9 @@ _MODELS_CACHE_MAX_ENTRIES = 32
 _models_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Outlives the cache TTL: a slug listed for this plan stays saveable afterwards.
 _offered_models: dict[str, dict[str, dict[str, Any]]] = {}
+# Which ChatGPT account each cached catalog belongs to; a reauthorization can rebind
+# a connection to a different account whose plan lists different slugs.
+_catalog_accounts: dict[str, str] = {}
 
 
 def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
@@ -279,12 +282,17 @@ def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any
 def forget_subscription_models(provider_id: str) -> None:
     _models_cache.pop(provider_id, None)
     _offered_models.pop(provider_id, None)
+    _catalog_accounts.pop(provider_id, None)
 
 
 async def list_subscription_models(
     provider_id: str, access_token: str, account_id: str
 ) -> list[dict[str, Any]]:
     """Model slugs this ChatGPT plan can reach; anything else is a 400 upstream."""
+    if _catalog_accounts.get(provider_id) not in (None, account_id):
+        # Reauthorized against a different account: the previous plan's catalog says
+        # nothing about this one, and nothing else clears it on the reconnect path.
+        forget_subscription_models(provider_id)
     cached = cached_subscription_models(provider_id)
     if cached is not None:
         return cached
@@ -334,8 +342,10 @@ async def list_subscription_models(
     if len(_models_cache) >= _MODELS_CACHE_MAX_ENTRIES:
         _models_cache.clear()
         _offered_models.clear()
+        _catalog_accounts.clear()
     _models_cache[provider_id] = (time.time() + _MODELS_CACHE_TTL_SECONDS, models)
     _offered_models[provider_id] = {model["id"]: model for model in models}
+    _catalog_accounts[provider_id] = account_id
     return models
 
 

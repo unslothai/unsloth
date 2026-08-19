@@ -40,6 +40,7 @@ import { ApiProviderLogo } from "./api-provider-logo";
 
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
+  type CodexSubscriptionModels,
   type ProviderAuthStatus,
   type ProviderRegistryEntry,
   createProviderConfig,
@@ -154,6 +155,23 @@ interface ChatProvidersSettingsProps {
   providers: ExternalProviderConfig[];
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
 }
+
+export function resolveCodexPickerModels(
+  curated: string[],
+  savedModels: string[],
+  listed: CodexSubscriptionModels | null,
+): { catalog: string[]; selected: string[] } {
+  // Only the plan's own catalog can retire a saved slug. The backend answers with the
+  // curated seed when it could not reach upstream, so treating that as the catalog
+  // would drop a saved model and the next unrelated save would make the loss stick.
+  const planListed = listed?.source === "subscription" && listed.models.length > 0;
+  const catalog = planListed
+    ? listed.models.map((model) => model.id)
+    : [...new Set([...curated, ...savedModels])];
+  const offered = new Set(catalog);
+  return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+}
+
 
 export function ChatProvidersSettings({
   providers,
@@ -950,21 +968,17 @@ export function ChatProvidersSettings({
     authStatus: ProviderAuthStatus | undefined,
   ) {
     const curated = registryByType.get("openai_codex")?.default_models ?? [];
-    let catalog = [...curated];
+    let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
       try {
-        const listed = await fetchCodexSubscriptionModels(providerId);
-        if (listed.models.length > 0) {
-          catalog = listed.models.map((model) => model.id);
-        }
+        listed = await fetchCodexSubscriptionModels(providerId);
       } catch {
         // Keep the curated seed: the form must still open when upstream is unreachable.
       }
     }
-    const offered = new Set(catalog);
-    setAvailableModels(catalog);
-    // Plans differ, so a slug saved before (or by another plan) may no longer exist.
-    setSelectedModelIds(savedModels.filter((model) => offered.has(model)));
+    const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    setAvailableModels(picker.catalog);
+    setSelectedModelIds(picker.selected);
     setManualModelIds("");
   }
 
