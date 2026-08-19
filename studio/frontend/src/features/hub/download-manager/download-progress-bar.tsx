@@ -51,7 +51,9 @@ export function DownloadProgressBar({
       </div>
       <div className="flex items-center justify-between gap-2 text-ui-10p5 text-muted-foreground tabular-nums">
         <span>
-          {indeterminate ? "Transferring…" : formatBytes(progress.downloadedBytes)}
+          {indeterminate
+            ? "Transferring…"
+            : formatBytes(progress.downloadedBytes)}
           {totalLabel && ` / ${totalLabel}`}
         </span>
         <span className="flex items-center gap-2">
