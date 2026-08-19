@@ -342,9 +342,7 @@ def test_no_job_targets_a_retired_macos_image() -> None:
     assert labels, "no macOS labels found at all; this guard would pass vacuously"
 
     retired = sorted(
-        f"{name}:{jid} -> {label}"
-        for name, jid, label in labels
-        if label not in LIVE_MACOS_IMAGES
+        f"{name}:{jid} -> {label}" for name, jid, label in labels if label not in LIVE_MACOS_IMAGES
     )
     assert not retired, (
         f"these jobs target a macOS image not in LIVE_MACOS_IMAGES: {retired}. Either "
