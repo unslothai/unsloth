@@ -52,6 +52,8 @@ export interface CachedGgufRepo {
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
@@ -71,6 +73,8 @@ export interface CachedModelRepo {
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
@@ -99,6 +103,8 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
@@ -121,6 +127,8 @@ export interface CachedDatasetRepo {
   load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
 }
 
 export type LocalDatasetInfo = {
@@ -161,6 +169,8 @@ export interface GgufVariantDetail {
   update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   /** Variants sharing this key share one companion download footprint, so a
    *  footprint resolved for one of them is correct for all of them. */
   dependency_key?: string | null;

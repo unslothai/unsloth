@@ -165,8 +165,12 @@ def test_a_peer_being_written_is_still_protected(monkeypatch, blobs):
 
 
 def test_transport_status_does_not_promise_a_resume_it_cannot_keep(monkeypatch, blobs):
-    """``resumable`` drives a dialog offering to keep existing progress."""
-    monkeypatch.setattr(download_registry, "read_active_transport_marker", lambda *_a, **_k: "http")
+    """``resumable`` drives a dialog offering to keep existing progress.
+
+    The marker is written rather than stubbed: the verdict reads each cache entry's own
+    marker, since one repo can own several and only the one beside a partial vouches for it.
+    """
+    download_registry._write_marker(blobs.parent, download_registry.TRANSPORT_HTTP)
     (blobs / _NONCE_PARTIAL).write_bytes(b"x" * 25)
 
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)

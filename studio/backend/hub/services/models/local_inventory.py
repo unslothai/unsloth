@@ -368,6 +368,11 @@ def _scan_hf_cache(
             if snapshot_partial
             else None
         )
+        snapshot_partial_resumable = snapshot_partial and hf_cache_scan.partial_resume_available(
+            "model",
+            model_id,
+            repo_cache_dir = repo_dir,
+        )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
         load_path = repo_dir if active_cache else scan_path
@@ -441,6 +446,7 @@ def _scan_hf_cache(
             snapshot_partial = snapshot_partial,
             gguf_partial = gguf_partial,
             snapshot_partial_transport = snapshot_partial_transport,
+            snapshot_partial_resumable = snapshot_partial_resumable,
         )
         found.extend(rows)
     return found
