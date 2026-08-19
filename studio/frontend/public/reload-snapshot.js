@@ -369,6 +369,7 @@
     return (
       field.hasAttribute("data-reload-snapshot-sensitive") ||
       field.type === "password" ||
+      field.type === "file" ||
       autocomplete.indexOf("password") !== -1 ||
       autocomplete.indexOf("one-time-code") !== -1 ||
       autocomplete.indexOf("cc-csc") !== -1

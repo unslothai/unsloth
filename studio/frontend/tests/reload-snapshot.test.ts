@@ -1122,6 +1122,13 @@ test("carries live form state, except what sensitive fields hide", () => {
         {
           tag: "input",
           rect: [0, 1440, 400, 0],
+          type: "file",
+          value: "C:\\fakepath\\private-dataset.jsonl",
+          attributes: { value: "C:\\fakepath\\private-dataset.jsonl" },
+        },
+        {
+          tag: "input",
+          rect: [0, 1440, 440, 0],
           type: "text",
           value: "revealed-api-key",
           attributes: {
@@ -1131,14 +1138,14 @@ test("carries live form state, except what sensitive fields hide", () => {
         },
         {
           tag: "textarea",
-          rect: [0, 1440, 440, 0],
+          rect: [0, 1440, 480, 0],
           value: "Authorization: Bearer secret-header",
           text: "Authorization: Bearer stale-header",
           attributes: { "data-reload-snapshot-sensitive": "" },
         },
         {
           tag: "code",
-          rect: [0, 1440, 480, 0],
+          rect: [0, 1440, 520, 0],
           text: "Authorization: Bearer rendered-api-key",
           attributes: { "data-reload-snapshot-sensitive": "" },
         },
@@ -1155,6 +1162,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.match(html, /checked=""/);
   assert.doesNotMatch(html, /hunter2/);
   assert.doesNotMatch(html, /revealed-password/);
+  assert.doesNotMatch(html, /fakepath|private-dataset/);
   assert.doesNotMatch(html, /revealed-api-key/);
   assert.doesNotMatch(html, /secret-header|stale-header/);
   assert.doesNotMatch(html, /rendered-api-key/);
