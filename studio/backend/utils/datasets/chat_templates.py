@@ -285,11 +285,16 @@ def apply_chat_template_to_dataset(
                 }
 
                 try:
-                    text = DEFAULT_ALPACA_TEMPLATE.format(fields["instruction"], fields["input"], fields["output"])
+                    if custom_prompt_template:
+                        # Named placeholders, which is the shape `fields` and the
+                        # error handler below were written for.
+                        text = custom_prompt_template.format(**fields)
+                    else:
+                        text = DEFAULT_ALPACA_TEMPLATE.format(fields["instruction"], fields["input"], fields["output"])
                     text += eos_token
                     texts.append(text)
-                except KeyError as e:
-                    errors.append(f"Custom template missing field: {e}")
+                except (KeyError, IndexError) as e:
+                    errors.append(f"Custom template field error: {e}")
                     texts.append("")
 
             return {"text": texts}
