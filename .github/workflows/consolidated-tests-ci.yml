@@ -2414,7 +2414,7 @@ jobs:
           # `install_llama_cpp` requirement-check is a no-op.
           RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=300 \
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update -qq && apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev'
+            'apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev; }'
           python <<'PY'
           import os, shutil, subprocess, sys, pathlib
           # Apply the same CPU spoof the pytest shims use BEFORE any

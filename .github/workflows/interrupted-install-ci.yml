@@ -133,7 +133,7 @@ jobs:
           RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev'
+            'apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev; }'
 
       - name: Install, interrupted at "${{ matrix.label }}"
         env:

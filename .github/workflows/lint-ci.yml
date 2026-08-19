@@ -145,7 +145,7 @@ jobs:
           RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update -qq && apt-get install -y --no-install-recommends shellcheck'
+            'apt-get install -y --no-install-recommends shellcheck || { apt-get update -qq && apt-get install -y --no-install-recommends shellcheck; }'
 
       - name: Python AST/syntax check (every committed .py must compile)
         # python -m compileall uses the same parser the interpreter

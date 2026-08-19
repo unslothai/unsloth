@@ -401,7 +401,7 @@ jobs:
           # deps, so a wrong dependency list fails here.
           RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb'
+            'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
             sudo apt-get install -y ./dl/*.deb || {
               echo "::error::the .deb does not declare its runtime dependencies correctly"

@@ -94,7 +94,7 @@ jobs:
           RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb'
+            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
