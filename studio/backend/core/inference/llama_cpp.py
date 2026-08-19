@@ -632,6 +632,12 @@ def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict
 # Bounded so one long tool argument cannot bloat the metadata the UI stores per turn. The
 # name plus the head of the arguments is already enough to tell two calls apart.
 _ANCHOR_ARGS_CHARS = 200
+# And the anchor as a whole. It rides in every `context_truncated` event and is persisted
+# on every assistant turn for as long as the boundary stays sticky, so returning a large
+# pasted prompt whole duplicated it across the thread's SSE payloads and history rows. A
+# head is enough to name a message, and the read side clamps only ever SHALLOWER, so two
+# messages sharing a head cost one extra compaction rather than a live turn.
+_ANCHOR_TEXT_CHARS = 200
 
 
 def _anchor_text(message: dict) -> str:
@@ -646,14 +652,14 @@ def _anchor_text(message: dict) -> str:
     """
     text = _archive_message_text(message.get("content"))
     if text:
-        return text
+        return text[:_ANCHOR_TEXT_CHARS]
     parts = []
     for call in message.get("tool_calls") or ():
         function = (call or {}).get("function") or {}
         name = str(function.get("name") or "tool")
         arguments = str(function.get("arguments") or "").strip()[:_ANCHOR_ARGS_CHARS]
         parts.append(f"{name}: {arguments}" if arguments else name)
-    return "\n".join(parts)
+    return "\n".join(parts)[:_ANCHOR_TEXT_CHARS]
 
 
 def _archive_message_text(content) -> str:
@@ -761,7 +767,7 @@ def _sticky_compaction_boundary(
             anchor = truncation.get("boundary_anchor")
             if isinstance(anchor, str) and anchor:
                 for index, message in enumerate(_branch_non_system(branch_messages)):
-                    if _anchor_text(message) == anchor:
+                    if _anchor_text(message) == anchor[:_ANCHOR_TEXT_CHARS]:
                         recorded = min(recorded, index)
                         break
             boundaries.append(recorded)
@@ -801,7 +807,14 @@ def _recall_top_k(budget_tokens: int) -> int:
         cap = max(0, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
     except Exception:
         return 0
-    return max(0, min(cap, int(budget_tokens) // chunk))
+    fits = int(budget_tokens) // chunk
+    if fits <= 0 and int(budget_tokens) > 0:
+        # One attempt whenever there is ANY room. `CHUNK_TOKENS` is a ceiling, not the
+        # size of a turn: most archived turns are far smaller, so flooring to zero
+        # disabled recall on exactly the tight windows that need it. The exact recount
+        # below is what actually decides, and it rejects a chunk that does not fit.
+        fits = 1
+    return max(0, min(cap, fits))
 
 
 def _archive_and_recall(
