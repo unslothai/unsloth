@@ -89,7 +89,7 @@ Order on open, over instruments sorted by `name`: `instrument.open(window)`.
 Order on close, **reverse** order: `instrument.close(window) -> dict | None`. A non-None return is
 stored at `window.instruments[instrument.name]`. A raising instrument is caught, disabled for the
 rest of the cell, and recorded as
-`window.instruments[name] = {"error": "...", "disabled": True}` — one broken instrument never
+`window.instruments[name] = {"error": "...", "disabled": True}`, so one broken instrument never
 loses the window.
 
 `window.duration_ms` is wall clock and is always present. It is not a metric; it is the denominator

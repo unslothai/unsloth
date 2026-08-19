@@ -1,11 +1,56 @@
 # studiobench
 
-A performance benchmark for Unsloth Studio that runs the **real path**.
+A performance benchmark, profiler and A/B simulator for Unsloth Studio that runs the **real path**.
+
+## Run it yourself
 
 ```
+pip install playwright psutil
+playwright install chromium
+
 python -m tests.studio.studiobench --doctor
-python -m tests.studio.studiobench --tier quick --attach http://127.0.0.1:5401
 ```
+
+`--doctor` is always the first command. It works on a machine with nothing installed, because every
+heavy import is lazy, and it names what is missing and what each missing piece costs you.
+
+Then pick a path. There are two that matter:
+
+| path | tier | rungs | film | wall clock | what it is for |
+|---|---|---|---|---|---|
+| **fast** | `--tier fast` | 100K only | 57.3 s | about 5 min, or 9 min for an A/B wave | iteration. You are trying a fix and want direction. |
+| **slow** | `--tier standard` | 1K, 10K, 100K | 243 s | about 20 min | confirmation. You believe a number and want it to hold. |
+
+`--tier quick` (1K and 10K) is a wiring check, and `--tier full` adds the 500K and 1M rungs for a
+ceiling hunt. Neither is the loop you work in.
+
+```
+# iterate against a Studio you are already running
+python -m tests.studio.studiobench --tier fast --attach http://127.0.0.1:5401
+
+# confirm, letting studiobench install and launch its own Studio from a ref
+python -m tests.studio.studiobench --tier standard --branch main --reps 4
+```
+
+**The fast tier is a screen, not a result.** One rung, a wider detection floor, direction only. It
+exists so that someone trying a fix does not wait 20 minutes to learn they were wrong. Nothing goes
+in a pull request until `--tier standard` agrees with it.
+
+### Why 100K, and why the fast tier has only that rung
+
+The 10K rung was run across six pull requests and could not separate any of them from a null
+control: at that size the UI work disappears underneath the scene's own scripted timings, and
+`copy_markdown` read 204 ms on all fourteen arms. 100K is the smallest rung that carries real load,
+with a jank index of 29 against 0.6 and a worst frame of 1,855 ms against 214. It is the only rung
+worth an iteration loop.
+
+### Proving a change actually did something
+
+A single number from a single build is not evidence. Read
+[CONTRIBUTING-perf.md](CONTRIBUTING-perf.md) before you quote a result. The short version: run a
+null control alongside your A/B, derive a per-metric detection floor from it, and clear all three
+verdict gates. In an audit of 40 frontend pull requests, 30 had no effect distinguishable from that
+null control, and several of those had looked like clear wins before the floor was applied.
 
 ## Why this exists
 
@@ -15,15 +60,15 @@ slow.** It measured a backend-free smoke page driven by a local `ChatModelAdapte
 mechanisms never executed.
 
 1. **The cumulative `<think>` re-parse.** Real reasoning arrives as `delta.reasoning_content`, is
-   wrapped into `<think>…</think>`, appended to a single cumulative buffer, and then
+   wrapped into `<think>...</think>`, appended to a single cumulative buffer, and then
    `parseAssistantContent(cumulativeText)` re-parses **the whole growing buffer on every delta**.
-   O(n) per chunk, O(n²) per reply. Not one line of it ran.
+   O(n) per chunk, O(n^2) per reply. Not one line of it ran.
 2. **The autoscroll observer.** `use-intent-aware-autoscroll.tsx` installs a `MutationObserver`
    with `subtree: true, characterData: true` over the entire viewport. Its callback synchronously
    reads `scrollHeight`, writes an inherited CSS custom property on the scroll container
-   (invalidating style for every descendant), and calls `scrollTo` — on every streamed character,
-   at a cost proportional to the whole thread. `LayoutDuration` read as a flat floor, which is
-   exactly what you would see if this never ran.
+   (invalidating style for every descendant), and calls `scrollTo`, on every streamed character, at
+   a cost proportional to the whole thread. `LayoutDuration` read as a flat floor, which is exactly
+   what you would see if this never ran.
 
 So Layer 1 runs the shipped app, through its own backend, over real SSE bytes.
 
@@ -58,7 +103,7 @@ mode is reserved purely as a cadence-fidelity ablation.
 - **Deficit-scheduled cadence.** Each tick computes `floor((now - t0) / gap)` and sends the
   shortfall in one burst, rather than sleeping a gap per chunk. Stream duration then depends on
   wall clock alone, so a tier's time budget is honest on any machine, and a renderer that jams gets
-  a burst when it recovers — which is what a real backend does. Default cadence is the captured
+  a burst when it recovers, which is what a real backend does. Default cadence is the captured
   reply's own: **24 characters every 73 ms**.
 
 `python -m tests.studio.studiobench.pacer` checks all of this on the wire with no browser.
@@ -68,7 +113,7 @@ mode is reserved purely as a cadence-fidelity ablation.
 `fixture/corpus/frozen/` **ships**. The text is generated once from a seed and frozen, with a
 sha256 per unit; a generator that drifts is refused rather than quietly measured. Every fence is
 unique, because Shiki caches highlighted output keyed on the source string and a repeated fence is
-free — which is how a harness measures a 300K-character thread and finds no highlighting cost in
+free, which is how a harness measures a 300K-character thread and finds no highlighting cost in
 it. The escalating cycle is reasoning@10K, code@8K, reasoning@20K, code@16K, and so on.
 
 Rungs are **1K / 10K / 100K / 500K / 1M tokens**, and the characters-per-token ratio is
@@ -79,6 +124,12 @@ Bulk thread mass is **seeded** over `PUT /api/chat/threads/{id}/messages`; only 
 streams, because a million tokens at field cadence is three and a half hours. Seeded and streamed
 are not the same path, so the equivalence is **checked at the 10K rung** and higher rungs are
 labelled `fidelity: seeded_only` when it fails.
+
+The rung varies the **seeded thread**, and the streamed reply is held constant at
+`STREAM_TAIL_CHARS = 6_000` on every rung by design, so that the tail is comparable across rungs. A
+consequence worth knowing before you design an experiment: a mechanism whose cost scales with
+**reply length** rather than thread size is held constant by this ladder and will read as a flat
+floor on it. Measuring one of those needs an axis you build yourself.
 
 ### The scene
 
@@ -92,14 +143,14 @@ Fifteen actions, each with an `expect` assertion that proves it happened:
 | action | what proves it |
 |---|---|
 | keystroke | the composer's controlled value grew by the characters typed |
-| scroll during generation / after | the viewport travelled ≥ 90% of what was commanded |
+| scroll during generation / after | the viewport travelled at least 90% of what was commanded |
 | reasoning expand/collapse | every pane's `data-state` went open, then all closed |
 | stop generation | the run ended, and the character count stopped growing |
 | settings open/scroll/close | the dialog appeared, its body travelled, it closed |
 | model change | an option was clicked and the menu closed |
 | composer short/medium/very long | the composer held every length it was given |
 | copy markdown | the clipboard was non-empty afterwards |
-| select text | the selection covered ≥ half the **visible** characters |
+| select text | the selection covered at least half the **visible** characters |
 | select-all + copy | the selection was non-empty |
 | image upload | the composer's attachment count rose |
 | thread reopen | the thread came back with the same message count |
@@ -111,6 +162,10 @@ opens on `pointerdown`, so `element.click()` leaves it shut and the column reads
 number. A jump scroll from the bottom is read by the intent-aware autoscroll as programmatic and
 snapped back, so the viewport lands where it started and the timing is precise and about nothing.
 
+This is the most common way this harness has produced a wrong answer, and it has happened three
+separate times in three separate subsystems. Each time the shape was identical: code that could
+never fire, reported as "no effect". Check `ran` before you read a timing.
+
 ### The instruments
 
 | name | level | what it reads |
@@ -119,6 +174,10 @@ snapped back, so the viewport lands where it started and the timing is precise a
 | `input` | 0 | keystroke-to-paint from the page side of a real key event |
 | `rss` | 0 | the whole browser tree's RSS, on a thread |
 | `glass` | 1 | `scrollHeight` reads, `scrollTop` writes, the stabilizer property, mutation records |
+
+Headline numbers come from level 0 only. Higher levels buy naming at the cost of overhead, and
+`overhead_growth_with_length` is a gate: overhead correlated with the treatment disqualifies that
+level for that comparison.
 
 The rAF loop **counts and does not pump**, and `requestAnimationFrame` is not wrapped as the frame
 counter: a wrapper counts the page's frame once for the loop and once more for every rAF the app
@@ -144,10 +203,30 @@ exceeds 10 ms, `busy_pct` is `null` **with a reason**, never `0.2%`.
   `<key>_attempted`. An unmeasurable quantity is `null` with a `<key>_reason`.
 - **Three clocks.** rAF, a 1 ms timer, and CDP presented frames. More than 20% disagreement marks
   the window `clocks_agree: false` and the report layer excludes it from scoring.
+- **No cross-session comparison.** Every slope, ratio and A/B pair is read within one session, and
+  the report layer refuses anything else. Measured session-to-session drift on this metric set is
+  about 8%, which is larger than most real effects.
+
+## Ablation: proving a cause rather than correlating with one
+
+A hot frame with a steep slope is a lead, not a finding. `arms/knobs.js` carries runtime-injected
+knobs that are applied to the **shipped build** through `add_init_script`, so an ablation needs no
+recompile: hide content, undo a `content-visibility` override, detach the autoscroll observer,
+neutralise the scroll stabilizer property, freeze React while keeping the DOM.
+
+Every arm must declare and report two things or its reading is worthless:
+
+- **INVARIANCE**: evidence the rendered output is unchanged by the knob. An arm that claims
+  exactness and then drifts is **void**, not quoted with a caveat.
+- **POTENCY**: evidence the knob actually fired, through a counter that must move. An arm that is
+  exact but whose potency counter did not move reads **NOT RUN**, never "no effect".
+
+Which knob removes the slope names the fix. If no knob does, the hypothesis was wrong, and that
+negative result is worth more than a fix aimed at the wrong mechanism.
 
 ## Output
 
-`report/payload.jsonl` — one JSON object per line, flushed and fsynced as it is produced, so a
+`report/payload.jsonl`, one JSON object per line, flushed and fsynced as it is produced, so a
 renderer crash at rung 4 still ships rungs 1 to 3 plus the crash record. A cell that could not
 complete emits a `cell` row with `completed: false`, its failure mode and its RSS at death.
 
@@ -155,10 +234,10 @@ complete emits a `cell` row with `completed: false`, its failure mode and its RS
 
 `python -m tests.studio.studiobench.build` produces `dist/studiobench.pyz`, one file. The bootstrap
 is stdlib-only and Playwright is imported lazily, so `--help` and `--doctor` work on a machine with
-nothing installed — which is the machine where `--doctor` has to say what is missing.
+nothing installed, which is the machine where `--doctor` has to say what is missing.
 
-The default engine matches the tester's desktop webview family: Windows → Chromium via
-`channel=msedge` (WebView2), macOS → WebKit (WKWebView), Linux → WebKit, **labelled a proxy for
+The default engine matches the tester's desktop webview family: Windows to Chromium via
+`channel=msedge` (WebView2), macOS to WebKit (WKWebView), Linux to WebKit, **labelled a proxy for
 WebKitGTK** rather than presented as the real thing.
 
 ## Layers

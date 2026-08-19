@@ -580,6 +580,64 @@ def report_only(args) -> int:
     return 0
 
 
+def assert_liveness(args) -> int:
+    """Fail unless every scheduled action in a payload actually ran.
+
+    THE FAILURE THIS CATCHES. The most expensive wrong answers this harness has produced were not
+    wrong numbers, they were absent ones reported as "no effect": four scene actions recorded NOT
+    RUN on 312 of 312 attempts because their slots opened while a follow-up turn was still
+    streaming, and read as fast, stable and meaningless. A surface crawler walked 53 surfaces that
+    would all have digested the same mounted root. An overlay walk could never fire.
+
+    Every one of those is invisible to a test that only checks the run exited 0, and every one of
+    them is visible here, because `session.py` already counts `actions_not_run` and `slots_missed`
+    per cell. This turns the README's advice to check `ran` before reading a timing into something
+    a machine does, which is the only way it gets done every time.
+
+    Offline, so a payload from anyone's laptop or from CI checks identically.
+    """
+    path = Path(args.assert_liveness)
+    if not path.exists():
+        _log(f"no payload at {path}")
+        return 2
+
+    allowed = {a.strip() for a in (args.allow_not_run or "").split(",") if a.strip()}
+    cells, problems = 0, []
+    for line in path.read_text(encoding = "utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            problems.append("a payload line is not valid JSON")
+            continue
+        if row.get("row_type") != "cell":
+            continue
+        cells += 1
+        where = row.get("cell_id", "?")
+        if row.get("completed") is False:
+            problems.append(f"{where}: the cell did not complete")
+        for action in row.get("actions") or []:
+            name = action.get("action") or action.get("name") or "?"
+            if name in allowed:
+                continue
+            if not action.get("ran"):
+                problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
+            elif action.get("slot_missed"):
+                problems.append(f"{where}: {name} missed its slot")
+
+    if cells == 0:
+        # An empty payload passing every check is the same false negative in a different costume.
+        _log(f"REFUSING: {path} contains no cell rows, so there is nothing to assert about")
+        return 2
+    for line in problems:
+        _log(f"  {line}")
+    _log(f"{cells} cell(s), {len(problems)} liveness problem(s)"
+         + (f", {len(allowed)} action(s) allowed not to run" if allowed else ""))
+    return 1 if problems else 0
+
+
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(
         prog = "studiobench",
@@ -600,6 +658,14 @@ def main(argv: list) -> int:
     ap.add_argument("--report", metavar = "PAYLOAD",
                     help = "score and render an existing payload.jsonl, then exit. Runs offline, "
                            "so a payload mailed in from another machine reports here")
+    ap.add_argument("--assert-liveness", metavar = "PAYLOAD", dest = "assert_liveness",
+                    help = "exit non-zero unless every scheduled action in an existing "
+                           "payload.jsonl actually ran. Offline. This is the gate that catches an "
+                           "action which never fired reporting as 'no effect'")
+    ap.add_argument("--allow-not-run", metavar = "ACTIONS", dest = "allow_not_run",
+                    help = "comma-separated action names --assert-liveness may excuse. Use only "
+                           "for an action a platform genuinely cannot perform, and say which in "
+                           "the pull request: every name here is a hole in the gate")
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
     ap.add_argument("--instrument-level", type = int, default = 0, choices = [0, 1, 2, 3],
@@ -635,6 +701,8 @@ def main(argv: list) -> int:
         return doctor(args)
     if args.report:
         return report_only(args)
+    if args.assert_liveness:
+        return assert_liveness(args)
     if args.ab:
         return run(args, ab_ref = args.ab)
     return run(args)
