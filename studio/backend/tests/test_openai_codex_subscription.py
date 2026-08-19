@@ -2271,17 +2271,24 @@ def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
     forget_subscription_models("provider-17")
 
     class Overtaken:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             # A newer read for the same connection starts while this one is out.
             codex_client._begin_catalog_request("provider-17")
-            return httpx.Response(
-                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
-            )
+            return httpx.Response(200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
 
         async def aclose(self):
             return None
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "token", "acct-1"
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Overtaken())
@@ -2303,16 +2310,23 @@ def test_an_overtaken_read_is_dropped_when_the_account_moved(monkeypatch):
     forget_subscription_models("provider-18")
 
     class Overtaken:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             codex_client._begin_catalog_request("provider-18")
-            return httpx.Response(
-                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
-            )
+            return httpx.Response(200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
 
         async def aclose(self):
             return None
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "token", "acct-a"
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Overtaken())
