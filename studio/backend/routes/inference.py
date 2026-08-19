@@ -12439,6 +12439,7 @@ async def _proxy_to_external_provider(
         from core.inference.providers import get_provider_info as _get_codex_provider_info
 
         info = _get_codex_provider_info("openai_codex") or {}
+
         # The seed is only a seed: /codex/models is what the plan can reach, and the
         # provider routes already accept saving a listed slug that is newer than it.
         # Gating chat on the seed alone rejects the model the picker just offered.
