@@ -755,6 +755,12 @@ test("carries live form state, except what sensitive fields hide", () => {
           text: "Authorization: Bearer stale-header",
           attributes: { "data-reload-snapshot-sensitive": "" },
         },
+        {
+          tag: "code",
+          rect: [0, 1440, 480, 0],
+          text: "Authorization: Bearer rendered-api-key",
+          attributes: { "data-reload-snapshot-sensitive": "" },
+        },
       ],
     },
   });
@@ -770,6 +776,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.doesNotMatch(html, /revealed-password/);
   assert.doesNotMatch(html, /revealed-api-key/);
   assert.doesNotMatch(html, /secret-header|stale-header/);
+  assert.doesNotMatch(html, /rendered-api-key/);
 });
 
 test("preserves IDs that the isolated copy references internally", () => {

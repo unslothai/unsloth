@@ -217,10 +217,10 @@
   function mirrorFieldState(original, cloned) {
     var tag = original.tagName;
     if (isSensitiveField(original)) {
-      // cloneNode can retain either an input value attribute or textarea text
-      // from an earlier controlled render.
+      // cloneNode can retain input attributes, textarea text, or a secret
+      // rendered into an ordinary code/span subtree.
       cloned.removeAttribute("value");
-      if (tag === "TEXTAREA") cloned.textContent = "";
+      if (tag !== "INPUT") cloned.textContent = "";
       return;
     }
     if (tag === "TEXTAREA") {
