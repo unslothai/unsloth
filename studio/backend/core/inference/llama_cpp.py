@@ -210,9 +210,10 @@ class _CpuFallbackRuntime(NamedTuple):
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
-    "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
-    "installed. Run `unsloth studio setup` to download the prebuilt runtime, "
-    "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
+    "This is a GGUF model, but no executable llama.cpp runtime (llama-server) "
+    "is available. Run `unsloth studio setup` to download the prebuilt runtime, "
+    "then try again. If you selected a custom runtime, restore its execute "
+    "permission first (for example, `chmod +x llama-server` on Unix)."
 )
 
 # Shared by the pre-teardown and post-metadata rejections (#7205).
@@ -4916,7 +4917,10 @@ class LlamaCppBackend:
                     # but do not fall through to a different runtime if none works.
                     non_executable = p
             if non_executable is not None:
-                return (str(non_executable), None) if include_denied else (None, non_executable)
+                # include_denied is used only to preserve genuinely transient
+                # access-denied paths. A missing execute bit needs repair, not a
+                # retry, and must not pass the download preflight as available.
+                return (None, None) if include_denied else (None, non_executable)
             return None, None
 
         # 1. Env var: direct path to binary
