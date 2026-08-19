@@ -883,11 +883,7 @@ class InferenceOrchestrator:
             # after the stop, become the resp_queue reader, and consume the
             # worker's "unloaded" reply (unroutable, so dropped) before
             # unload_model's _wait_response sees it -- hanging the unload 300s.
-            if (
-                self._unload_pending
-                or self._exclusive_tts_pending
-                or self._exclusive_op_pending
-            ):
+            if self._unload_pending or self._exclusive_tts_pending or self._exclusive_op_pending:
                 return False
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
                 return False
