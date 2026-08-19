@@ -428,7 +428,6 @@ def _declared_ui_resources(server_id: str) -> dict:
     """tool name -> ui:// template, from this server's discovered tools. The uri
     arrives from the browser, so only what the server declared is fetchable."""
     from core.inference.mcp_client import get_cached_tools
-
     return ui_resource_uris_for_tools(get_cached_tools(server_id) or [])
 
 

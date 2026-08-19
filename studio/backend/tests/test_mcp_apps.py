@@ -44,7 +44,12 @@ def _image(data = "AAAA", mime = "image/png") -> SimpleNamespace:
     return SimpleNamespace(type = "image", data = data, mimeType = mime)
 
 
-def _result(*blocks, is_error = False, structured = None, meta = None) -> SimpleNamespace:
+def _result(
+    *blocks,
+    is_error = False,
+    structured = None,
+    meta = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         content = list(blocks),
         is_error = is_error,
@@ -56,9 +61,7 @@ def _result(*blocks, is_error = False, structured = None, meta = None) -> Simple
 def _envelope(flat: str) -> dict:
     """The __MCP_UI__ payload in a flattened result."""
     line = next(ln for ln in flat.split("\n") if ln.startswith(MCP_UI_SENTINEL))
-    return json.loads(line[len(MCP_UI_SENTINEL):])
-
-
+    return json.loads(line[len(MCP_UI_SENTINEL) :])
 
 
 def test_no_envelope_without_a_declared_template():
@@ -89,7 +92,7 @@ def test_the_envelope_precedes_the_images_so_both_survive():
     img_at = flat.index("\n" + MCP_IMAGES_SENTINEL)
     assert ui_at < img_at
     assert _envelope(flat)["structuredContent"] == {"a": 1}
-    payload = flat[img_at + len("\n" + MCP_IMAGES_SENTINEL):]
+    payload = flat[img_at + len("\n" + MCP_IMAGES_SENTINEL) :]
     assert json.loads(payload) == [{"data": "AAAA", "mimeType": "image/png"}]
     assert strip_result_for_model(flat) == "shot\n[1 image attached; displayed to the user]"
 
@@ -109,9 +112,7 @@ def test_oversized_seed_data_is_dropped_but_the_widget_stays():
 
 
 def test_unserialisable_seed_data_does_not_cost_the_widget():
-    payload = _envelope(
-        _flatten_result(_result(_text("ok"), structured = {"fn": object()}), UI)
-    )
+    payload = _envelope(_flatten_result(_result(_text("ok"), structured = {"fn": object()}), UI))
     assert payload == {"resourceUri": UI, "structuredContentOmitted": True}
 
 
@@ -132,8 +133,6 @@ def test_a_literal_mention_before_a_real_envelope_is_kept():
     body = "see __MCP_UI__: in the docs"
     flat = body + '\n__MCP_UI__:{"resourceUri": "ui://a/b"}'
     assert strip_result_for_model(flat) == body
-
-
 
 
 @pytest.mark.parametrize(
@@ -189,8 +188,6 @@ def test_declared_resources_index_skips_tools_without_one():
     assert ui_resource_uris_for_tools(tools) == {"dash": UI}
 
 
-
-
 def _contents(**kwargs) -> SimpleNamespace:
     kwargs.setdefault("uri", UI)
     kwargs.setdefault("mimeType", "text/html;profile=mcp-app")
@@ -207,11 +204,8 @@ def test_reads_the_content_whose_uri_was_asked_for():
 
 def test_a_base64_blob_decodes_to_the_template():
     import base64
-
     blob = base64.b64encode(b"<!doctype html><p>hi</p>").decode()
-    assert _resource_contents([_contents(blob = blob)], UI)["text"] == (
-        "<!doctype html><p>hi</p>"
-    )
+    assert _resource_contents([_contents(blob = blob)], UI)["text"] == ("<!doctype html><p>hi</p>")
 
 
 def test_declared_csp_metadata_reaches_the_host():
@@ -238,8 +232,6 @@ def test_an_unusable_resource_is_reported_not_guessed_at(blocks):
         _resource_contents(blocks, UI)
 
 
-
-
 def test_a_widget_call_keeps_the_result_shape():
     out = _structured_result(_result(_text("ok"), structured = {"cpu": 9}, meta = {"a": 1}))
     assert out == {
@@ -262,8 +254,6 @@ def test_an_oversized_widget_result_is_refused():
     huge = _result(_text("x"), structured = {"b": "y" * 5_000_000})
     with pytest.raises(ValueError):
         _structured_result(huge)
-
-
 
 
 def _csp_helpers():
@@ -305,9 +295,9 @@ def test_declared_domains_widen_only_their_own_directive():
 @pytest.mark.parametrize(
     "value",
     [
-        "evil.com;script-src *",       # a second directive
-        "evil.com\r\nX-Injected: 1",   # a second header
-        "*",                            # a blanket opening
+        "evil.com;script-src *",  # a second directive
+        "evil.com\r\nX-Injected: 1",  # a second header
+        "*",  # a blanket opening
         "'unsafe-inline'",
         "javascript:alert(1)",
         "data:",
@@ -325,7 +315,6 @@ def test_the_declared_domain_list_is_bounded():
     assert len(parse(",".join(f"h{i}.example.com" for i in range(200)))) == 24
 
 
-
 import asyncio  # noqa: E402
 
 from storage import mcp_servers_db  # noqa: E402
@@ -336,7 +325,13 @@ def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
 
 
-def _server_with_tools(tmp_path, monkeypatch, tools, *, is_enabled = True):
+def _server_with_tools(
+    tmp_path,
+    monkeypatch,
+    tools,
+    *,
+    is_enabled = True,
+):
     """One enabled HTTP server whose tool list is already discovered."""
     from core.inference import mcp_client
 
@@ -373,7 +368,7 @@ def test_a_declared_template_is_fetched(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "uri",
     [
-        "ui://weather-server/other",   # a ui:// resource no tool declared
+        "ui://weather-server/other",  # a ui:// resource no tool declared
         "file:///etc/passwd",
         "https://evil.example/x",
         "",
@@ -430,14 +425,12 @@ def test_a_widget_may_call_an_app_visible_tool(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "tool_name, status",
     [
-        ("danger", 403),        # declared model-only: the spec says reject
+        ("danger", 403),  # declared model-only: the spec says reject
         ("not_discovered", 404),
         ("", 400),
     ],
 )
-def test_a_widget_cannot_call_what_it_is_not_allowed_to(
-    tmp_path, monkeypatch, tool_name, status
-):
+def test_a_widget_cannot_call_what_it_is_not_allowed_to(tmp_path, monkeypatch, tool_name, status):
     from fastapi import HTTPException
     from models.mcp_servers import McpUiToolCallRequest
 
@@ -492,9 +485,7 @@ def test_a_widget_call_rides_the_conversation_stdio_session(tmp_path, monkeypatc
     asyncio.run(
         routes_mcp.call_mcp_ui_tool(
             "s1",
-            McpUiToolCallRequest(
-                tool_name = "refresh", thread_id = "t-1", session_id = "project-p"
-            ),
+            McpUiToolCallRequest(tool_name = "refresh", thread_id = "t-1", session_id = "project-p"),
             current_subject = "u",
         )
     )

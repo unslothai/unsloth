@@ -910,7 +910,9 @@ def tool_ui_resource_uri(tool: Any) -> Optional[str]:
     if not isinstance(uri, str):
         return None
     uri = uri.strip()
-    return uri if uri.startswith(UI_RESOURCE_SCHEME) and len(uri) > len(UI_RESOURCE_SCHEME) else None
+    return (
+        uri if uri.startswith(UI_RESOURCE_SCHEME) and len(uri) > len(UI_RESOURCE_SCHEME) else None
+    )
 
 
 def _tool_visibility(tool: Any) -> Optional[tuple]:
@@ -940,6 +942,7 @@ def ui_resource_uris_for_tools(tools: list) -> dict:
         if name and uri:
             out[str(name)] = uri
     return out
+
 
 MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
@@ -1265,7 +1268,6 @@ def call_tool_sync(
     return _flatten_result(result, ui_resource_uri)
 
 
-
 # A widget renders structuredContent, so its calls keep the result's shape
 # rather than being flattened to text. Bounded: this crosses to a browser.
 MAX_UI_TOOL_RESULT_CHARS = 4_000_000
@@ -1304,9 +1306,7 @@ def _structured_result(result: Any) -> dict:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"tool result is not JSON-serialisable: {exc}") from exc
     if size > MAX_UI_TOOL_RESULT_CHARS:
-        raise ValueError(
-            f"tool result is {size} chars, over the {MAX_UI_TOOL_RESULT_CHARS} limit"
-        )
+        raise ValueError(f"tool result is {size} chars, over the {MAX_UI_TOOL_RESULT_CHARS} limit")
     return out
 
 
@@ -1339,6 +1339,7 @@ def call_tool_structured_sync(
         raise TimeoutError(f"MCP tool '{name}' was cancelled") from exc
     return _structured_result(result)
 
+
 def _resource_contents(blocks: Any, uri: str) -> dict:
     """Normalise a resources/read reply to {uri, mimeType, text, ui}. Of several
     contents the one matching the requested uri wins, else the first."""
@@ -1360,9 +1361,7 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
             raise ValueError(f"resource blob is not UTF-8 HTML: {exc}") from exc
     text = str(text)
     if len(text) > MAX_UI_RESOURCE_CHARS:
-        raise ValueError(
-            f"resource is {len(text)} chars, over the {MAX_UI_RESOURCE_CHARS} limit"
-        )
+        raise ValueError(f"resource is {len(text)} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
     # _meta.ui on the contents, not the tool: the template's CSP declaration.
     ui = None
     for spelling in ("meta", "_meta"):
@@ -1413,7 +1412,6 @@ def read_resource_sync(
     except _MCPCancelled as exc:
         raise TimeoutError(f"reading MCP resource '{uri}' was cancelled") from exc
     return _resource_contents(blocks, uri)
-
 
 
 class _MCPCancelled(Exception):

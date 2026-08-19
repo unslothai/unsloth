@@ -9412,7 +9412,6 @@ def mcp_tool_ui_resource(server_id: str, tool_name: str) -> "str | None":
     return tool_ui_resource_uri(tool) if tool is not None else None
 
 
-
 _TIMEOUT_UNSET = object()
 
 

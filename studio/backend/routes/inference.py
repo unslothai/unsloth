@@ -2574,8 +2574,8 @@ async def artifact_preview_frame(allow_network: bool = False):
 # A hostname, optionally scheme/port and a leading "*." wildcard. A bare "*" is
 # refused: a template asking for every origin gets the default-deny instead.
 _MCP_APP_DOMAIN_RE = _re.compile(
-    r"^(?:(?:https?|wss?)://)?"          # optional scheme
-    r"(?:\*\.)?"                          # optional leading wildcard label
+    r"^(?:(?:https?|wss?)://)?"  # optional scheme
+    r"(?:\*\.)?"  # optional leading wildcard label
     r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*"
     r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
     r"(?::[0-9]{1,5})?$"
@@ -2600,12 +2600,7 @@ def _mcp_app_domains(raw: Optional[str]) -> list:
     return out
 
 
-def _mcp_app_csp(
-    connect: list,
-    resource: list,
-    frame: list,
-    base_uri: list,
-) -> str:
+def _mcp_app_csp(connect: list, resource: list, frame: list, base_uri: list) -> str:
     """The sandbox policy for one template: the canvas shell's default-deny,
     widened only by the directives the template declared."""
     resource_src = " ".join(resource)
