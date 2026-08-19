@@ -24,7 +24,6 @@ import sysconfig
 import tempfile
 import textwrap
 import urllib.request
-import zipfile
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
@@ -4197,64 +4196,6 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
     download_file(url, dest)
 
 
-def _resolve_diffusers_pin_req(pin_file: Path) -> Path:
-    """Download and cache the diffusers archive locally to prevent rate limiting (429).
-    Returns a path to a temporary requirements file pointing to the cached zip if successful,
-    otherwise returns the original pin_file path.
-    """
-    if not pin_file.is_file():
-        return pin_file
-    url = None
-    try:
-        for line in pin_file.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("diffusers @ "):
-                url_part = line.split("diffusers @ ")[1]
-                url = url_part.split(";")[0].strip()
-                break
-    except Exception:
-        return pin_file
-
-    if not url:
-        return pin_file
-
-    cache_dir = Path.home() / ".cache" / "unsloth"
-    cache_file = cache_dir / f"diffusers-{url.split('/')[-1]}"
-    if not cache_file.is_file():
-        cache_tmp = cache_file.with_name(f".{cache_file.name}.{os.getpid()}.tmp")
-        try:
-            cache_dir.mkdir(parents = True, exist_ok = True)
-            _note(f"Downloading diffusers archive to cache: {url}", _dim)
-            req_obj = urllib.request.Request(url, headers = {"User-Agent": "Mozilla/5.0"})
-            with (
-                urllib.request.urlopen(req_obj, timeout = 45) as response,
-                open(cache_tmp, "wb") as out_file,
-            ):
-                out_file.write(response.read())
-            if not zipfile.is_zipfile(cache_tmp):
-                raise ValueError("downloaded Diffusers archive is not a valid ZIP file")
-            os.replace(cache_tmp, cache_file)
-        except Exception as e:
-            cache_tmp.unlink(missing_ok = True)
-            _note(f"Cache download failed ({e}), falling back to direct install", _red)
-
-    if cache_file.is_file():
-        try:
-            local_req_file = cache_dir / "diffusers-pin-local.txt"
-            local_req_file.write_text(
-                f'diffusers @ {cache_file.resolve().as_uri()} ; python_version >= "3.10"\n'
-                'diffusers==0.36.0 ; python_version < "3.10"\n'
-            )
-            return local_req_file
-        except Exception as e:
-            _note(
-                f"Failed to write local requirements file ({e}), falling back to direct install",
-                _red,
-            )
-
-    return pin_file
-
-
 # -- Main install sequence ---------------------------------------------
 
 
@@ -4764,7 +4705,7 @@ def install_python_stack() -> int:
         # (#8530). Guarded: python < 3.10 resolves a released wheel from this file that
         # must not be forced through a source build.
         *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
-        req = _resolve_diffusers_pin_req(REQ_ROOT / "diffusers-pin.txt"),
+        req = REQ_ROOT / "diffusers-pin.txt",
     )
 
     # 12. Patch metadata for single-env compatibility
