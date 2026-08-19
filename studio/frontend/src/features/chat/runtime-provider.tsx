@@ -1634,9 +1634,11 @@ function createRuntimeHook(
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
+  onSwitchFailed,
 }: {
   threadId: string;
   syncActiveThreadId?: boolean;
+  onSwitchFailed?: () => void;
 }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
@@ -1656,10 +1658,18 @@ function ThreadAutoSwitch({
           if (syncActiveThreadId) {
             useChatRuntimeStore.getState().setActiveThreadId(null);
           }
+          onSwitchFailed?.();
         });
       }
     }
-  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [
+    aui,
+    isLoading,
+    mainThreadId,
+    onSwitchFailed,
+    syncActiveThreadId,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
@@ -2223,6 +2233,13 @@ export function ChatRuntimeProvider({
     runtimeHook,
     adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
   });
+  const signalFailedInitialSwitchReady = useCallback(() => {
+    if (onInitialHistoryReady) {
+      onInitialHistoryReady();
+    } else if (modelType === "base" && !pairId) {
+      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    }
+  }, [modelType, onInitialHistoryReady, pairId]);
 
   const aui = useAui({});
 
@@ -2249,6 +2266,7 @@ export function ChatRuntimeProvider({
           <ThreadAutoSwitch
             threadId={initialThreadId}
             syncActiveThreadId={syncActiveThreadId}
+            onSwitchFailed={signalFailedInitialSwitchReady}
           />
         )}
         {!initialThreadId && newThreadNonce && (

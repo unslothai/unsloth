@@ -788,6 +788,14 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
+    /switchToThread\(threadId\)[\s\S]*?\.catch\(\(\) => \{[\s\S]*?onSwitchFailed\?\.\(\)/,
+  );
+  assert.match(
+    runtimeProviderSource,
+    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?unsloth:app-shell-ready[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
+  );
+  assert.match(
+    runtimeProviderSource,
     /createRuntimeHook\([\s\S]*?modelType,[\s\S]*?pairId,[\s\S]*?initialThreadId,[\s\S]*?onInitialHistoryReady/,
   );
   assert.match(
