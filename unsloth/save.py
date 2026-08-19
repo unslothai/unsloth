@@ -166,8 +166,7 @@ def save_to_autoround_4bit(
     VALID_FORMATS = {"auto_awq", "auto_gptq", "auto_round"}
     if export_format not in VALID_FORMATS:
         raise ValueError(
-            f"Unsloth: export_format must be one of {VALID_FORMATS}, "
-            f"got '{export_format}'"
+            f"Unsloth: export_format must be one of {VALID_FORMATS}, " f"got '{export_format}'"
         )
 
     logger.warning_once(
@@ -189,16 +188,13 @@ def save_to_autoround_4bit(
         local_model = model_or_path
         if isinstance(local_model, (PeftModelForCausalLM, PeftModel)):
             logger.warning_once(
-                "Unsloth: PEFT/LoRA model detected — merging adapters before "
-                "quantisation."
+                "Unsloth: PEFT/LoRA model detected — merging adapters before quantisation."
             )
             local_model = local_model.merge_and_unload()
 
         # Save merged weights to a temporary location so Auto-Round can load them.
         _tmp_dir = tempfile.mkdtemp(prefix = "_unsloth_autoround4bit_tmp_")
-        logger.warning_once(
-            f"Unsloth: Saving merged 16-bit model to temporary dir: {_tmp_dir}"
-        )
+        logger.warning_once(f"Unsloth: Saving merged 16-bit model to temporary dir: {_tmp_dir}")
         local_model.save_pretrained(_tmp_dir)
         if tokenizer is not None:
             tokenizer.save_pretrained(_tmp_dir)

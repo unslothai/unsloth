@@ -485,8 +485,7 @@ async def export_lora_adapter(
 
 @router.post("/export/autoround4bit", response_model = ExportOperationResponse)
 async def export_autoround_4bit(
-    request: ExportAutoRound4bitRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ExportAutoRound4bitRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Export the model to 4-bit format using Auto-Round (AWQ/GPTQ).
