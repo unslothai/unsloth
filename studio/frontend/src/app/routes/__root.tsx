@@ -268,6 +268,8 @@ function RootLayout() {
     pathname === "/export" ||
     pathname === "/studio" ||
     pathname === "/api-monitor" ||
+    pathname === "/login" ||
+    pathname === "/change-password" ||
     pathname === "/data-recipes" ||
     pathname.startsWith("/data-recipes/");
   const isAuthFlowRoute = useMatches({

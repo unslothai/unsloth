@@ -80,6 +80,10 @@ const apiMonitorPageSource = readFileSync(
   new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url),
   "utf8",
 );
+const authFormSource = readFileSync(
+  new URL("../src/features/auth/components/auth-form.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -874,6 +878,12 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   assert.match(
     apiMonitorPageSource,
     /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(rootRouteSource, /pathname === "\/login"/);
+  assert.match(rootRouteSource, /pathname === "\/change-password"/);
+  assert.match(
+    authFormSource,
+    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?unsloth:app-shell-ready/,
   );
 });
 
