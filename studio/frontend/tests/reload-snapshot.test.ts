@@ -45,6 +45,8 @@ interface ElementSpec {
   naturalHeight?: number;
   videoWidth?: number;
   videoHeight?: number;
+  width?: number;
+  height?: number;
   /** [top, right, bottom, left]. Ignored for a `display: contents` box. */
   rect?: [number, number, number, number];
   text?: string;
@@ -75,6 +77,8 @@ interface StubElement {
   naturalHeight: number;
   videoWidth: number;
   videoHeight: number;
+  width: number;
+  height: number;
   textContent: string;
   attributeOverrides: Record<string, string>;
   hasAttribute(name: string): boolean;
@@ -119,6 +123,8 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     naturalHeight: spec.naturalHeight ?? 0,
     videoWidth: spec.videoWidth ?? 0,
     videoHeight: spec.videoHeight ?? 0,
+    width: spec.width ?? 0,
+    height: spec.height ?? 0,
     textContent: spec.text ?? "",
     children: [] as StubElement[],
     parent,
@@ -931,6 +937,34 @@ test("keeps trusted chart CSS while stripping every other style", () => {
   const { html } = storedSnapshot(environment.storage);
   assert.match(html, /--color-displayLoss: #16a34a/);
   assert.doesNotMatch(html, /\.untrusted/);
+});
+
+test("materializes visible canvas pixels into the retained shell", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "canvas",
+          rect: [100, 900, 700, 100],
+          width: 1024,
+          height: 768,
+          attributes: { class: "absolute inset-0", style: "opacity:0.8" },
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(
+    html,
+    /style="opacity:0\.8;background-image:url\(data:image\/webp;base64,retained-frame\);background-size:100% 100%;background-repeat:no-repeat;"/,
+  );
 });
 
 test("skips the shell when the snapshot carries no stylesheets", () => {

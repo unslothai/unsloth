@@ -274,39 +274,17 @@
     }
   }
 
-  function materializeBlobMedia(original, cloned, bounds) {
-    var tag = original.tagName;
-    var source = original.currentSrc || original.getAttribute("src") || "";
-    if (source.slice(0, 5) !== "blob:") return;
-
-    // Audio controls remain a useful visual shell without their expiring
-    // source. Images and video frames can additionally carry their rendered
-    // pixels across the document boundary through a bounded data URL.
-    if (tag !== "IMG" && tag !== "VIDEO") {
-      cloned.removeAttribute("src");
-      return;
-    }
-    if (!bounds) {
-      cloned.removeAttribute("src");
-      return;
-    }
+  function capturePixels(original, sourceWidth, sourceHeight, bounds) {
     if (
+      !bounds ||
       bounds.bottom <= 0 ||
       bounds.right <= 0 ||
       bounds.top >= innerHeight ||
       bounds.left >= innerWidth
     ) {
-      cloned.removeAttribute("src");
-      return;
+      return null;
     }
-
-    var sourceWidth = tag === "IMG" ? original.naturalWidth : original.videoWidth;
-    var sourceHeight =
-      tag === "IMG" ? original.naturalHeight : original.videoHeight;
-    if (!sourceWidth || !sourceHeight) {
-      cloned.removeAttribute("src");
-      return;
-    }
+    if (!sourceWidth || !sourceHeight) return null;
     try {
       var pixelRatio = window.devicePixelRatio || 1;
       var scale = Math.min(
@@ -331,16 +309,57 @@
       context.drawImage(original, 0, 0, width, height);
       var dataUrl = canvas.toDataURL("image/webp", 0.82);
       if (!dataUrl || dataUrl === "data:,") throw new Error("Empty media frame");
-      if (tag === "IMG") {
-        cloned.setAttribute("src", dataUrl);
-        cloned.removeAttribute("srcset");
-      } else {
-        cloned.setAttribute("poster", dataUrl);
-        cloned.removeAttribute("src");
-      }
+      return dataUrl;
     } catch (error) {
+      return null;
+    }
+  }
+
+  function materializeBlobMedia(original, cloned, bounds) {
+    var tag = original.tagName;
+    var source = original.currentSrc || original.getAttribute("src") || "";
+    if (source.slice(0, 5) !== "blob:") return;
+
+    // Audio controls remain a useful visual shell without their expiring
+    // source. Images and video frames can additionally carry their rendered
+    // pixels across the document boundary through a bounded data URL.
+    if (tag !== "IMG" && tag !== "VIDEO") {
+      cloned.removeAttribute("src");
+      return;
+    }
+    var sourceWidth = tag === "IMG" ? original.naturalWidth : original.videoWidth;
+    var sourceHeight =
+      tag === "IMG" ? original.naturalHeight : original.videoHeight;
+    var dataUrl = capturePixels(original, sourceWidth, sourceHeight, bounds);
+    if (!dataUrl) {
+      cloned.removeAttribute("src");
+    } else if (tag === "IMG") {
+      cloned.setAttribute("src", dataUrl);
+      cloned.removeAttribute("srcset");
+    } else {
+      cloned.setAttribute("poster", dataUrl);
       cloned.removeAttribute("src");
     }
+  }
+
+  function materializeCanvas(original, cloned, bounds) {
+    if (original.tagName !== "CANVAS") return;
+    var dataUrl = capturePixels(
+      original,
+      original.width,
+      original.height,
+      bounds,
+    );
+    if (!dataUrl) return;
+    var inlineStyle = cloned.getAttribute("style") || "";
+    if (inlineStyle && inlineStyle.slice(-1) !== ";") inlineStyle += ";";
+    cloned.setAttribute(
+      "style",
+      inlineStyle +
+        "background-image:url(" +
+        dataUrl +
+        ");background-size:100% 100%;background-repeat:no-repeat;",
+    );
   }
 
   function saveSnapshot() {
@@ -391,6 +410,7 @@
           mirrorFieldState(original, cloned);
           mirrorScrollState(original, cloned);
           materializeBlobMedia(original, cloned, bounds);
+          materializeCanvas(original, cloned, bounds);
         }
       }
       clone
