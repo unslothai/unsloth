@@ -26,7 +26,13 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on
+# sys.path the in-repo loggers package resolves, and stubbing over it trips the
+# shadowing guard in test_backend_ci_parallel_isolation.py.
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
