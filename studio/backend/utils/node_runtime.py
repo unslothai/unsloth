@@ -27,6 +27,17 @@ _IS_WINDOWS = os.name == "nt"
 
 # Keep in sync with the setup scripts' Node floor: Get-NodeDecision (setup.ps1) /
 # decide_node_source (setup.sh). Vite 8 needs Node ^20.19 || >=22.12 || >=23.
+# Keep in sync with decide_node_source (setup.sh) / Get-NodeDecision (setup.ps1): both
+# require npm >= 11 before accepting a system runtime.
+_NPM_MAJOR_FLOOR = 11
+
+
+def _npm_meets_floor(version: str) -> bool:
+    """True iff an ``npm -v`` string clears the installer's npm floor."""
+    match = re.match(r"v?(\d+)", version.strip())
+    return bool(match) and int(match.group(1)) >= _NPM_MAJOR_FLOOR
+
+
 def _version_meets_floor(version: str) -> bool:
     """True iff a ``node -v`` string clears the installer's version bar."""
     match = re.match(r"v?(\d+)\.(\d+)", version.strip())
@@ -98,15 +109,16 @@ def _reset_managed_node_check() -> None:
 
 
 def _path_has_usable_node(path: str) -> bool:
-    """Whether ``path`` provides both a floor-clearing ``node`` and an ``npx``.
-    decide_node_source() installs the managed runtime unless both hold, so a host
-    with node but no npm still needs it."""
+    """Whether ``path`` provides the runtime the installers would accept: a node and an
+    npm that both clear their floors, plus an npx to launch with. decide_node_source()
+    installs the managed runtime otherwise, so a weaker test here would skip it."""
     try:
         node = shutil.which("node", path = path)
+        npm = shutil.which("npm", path = path)
         npx = shutil.which("npx", path = path)
     except OSError:
         return False
-    if not node or not npx:
+    if not node or not npm or not npx:
         return False
     if _IS_WINDOWS:
         # npm's npx.cmd runs the node.exe beside it when there is one, so that is the
@@ -117,11 +129,16 @@ def _path_has_usable_node(path: str) -> bool:
                 node = sibling
         except OSError:
             return False
-    if _usable_node_cache.get(node):
+    return _probe_ok(node, _node_version_ok) and _probe_ok(npm, _npm_version_ok)
+
+
+def _probe_ok(executable: str, check) -> bool:
+    """Version check for one executable, memoized on success (see _usable_node_cache)."""
+    if _usable_node_cache.get(executable):
         return True
-    ok = _node_version_ok(node)
+    ok = check(executable)
     if ok:
-        _usable_node_cache[node] = True
+        _usable_node_cache[executable] = True
     return ok
 
 
@@ -168,8 +185,18 @@ def path_with_managed_node(base_path: str | None = None) -> str:
     return os.pathsep.join([bin_str, *kept])
 
 
+def _npm_version_ok(executable: str) -> bool:
+    """Run ``<executable> -v`` and check npm clears the installer floor."""
+    return _probe_version(executable, _npm_meets_floor)
+
+
 def _node_version_ok(executable: str) -> bool:
     """Run ``<executable> -v`` and check it clears the floor; False on any error."""
+    return _probe_version(executable, _version_meets_floor)
+
+
+def _probe_version(executable: str, meets_floor) -> bool:
+    """Run ``<executable> -v`` and apply ``meets_floor``; False on any error."""
     try:
         result = subprocess.run(
             [executable, "-v"],
@@ -184,7 +211,7 @@ def _node_version_ok(executable: str) -> bool:
         return False
     if result.returncode != 0:
         return False
-    return _version_meets_floor(result.stdout)
+    return meets_floor(result.stdout)
 
 
 # Memoize ONLY a confirmed version-adequate executable: the installer runs in a
