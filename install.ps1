@@ -4156,10 +4156,7 @@ exit 0
     }
 
     $venvDirExistedBeforeCreation = Test-Path -LiteralPath $VenvDir
-    $venvDirHasOwnershipEvidence = (
-        (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -or
-        (Test-Path -LiteralPath (Join-Path $VenvDir "pyvenv.cfg") -PathType Leaf)
-    )
+    $venvDirHasOwnershipEvidence = Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf
     $fallbackVenvExit = $null
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"

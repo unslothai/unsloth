@@ -419,11 +419,12 @@ def _run_uv_venv_creation_result(
     migrated: bool = False,
     foreign: bool = False,
     detected_python_missing: bool = False,
+    foreign_pyvenv: bool = False,
 ) -> dict[str, str]:
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     readiness = _extract(r"    function Test-VenvPythonReady \{.*?\n    \}\n", source)
     creation = _extract(
-        r"    \$venvDirExistedBeforeCreation = Test-Path -LiteralPath \$VenvDir\n    \$venvDirHasOwnershipEvidence = \(.*?\n    \$fallbackVenvExit = \$null\n    if \(-not \(Test-Path -LiteralPath \$VenvPython\)\) \{.*?(?=\n\n    # Mark the managed venv)",
+        r"    \$venvDirExistedBeforeCreation = Test-Path -LiteralPath \$VenvDir\n    \$venvDirHasOwnershipEvidence = Test-Path -LiteralPath .*?\n    \$fallbackVenvExit = \$null\n    if \(-not \(Test-Path -LiteralPath \$VenvPython\)\) \{.*?(?=\n\n    # Mark the managed venv)",
         source,
     )
     marker_and_readiness = _extract(
@@ -521,6 +522,9 @@ if ($env:TEST_MIGRATED -eq "1") {{
 if ($env:TEST_FOREIGN_DIR -eq "1") {{
     New-Item -ItemType Directory -Force -Path $VenvDir | Out-Null
     Set-Content -LiteralPath (Join-Path $VenvDir "foreign.txt") -Value "foreign"
+    if ($env:TEST_FOREIGN_PYVENV -eq "1") {{
+        Set-Content -LiteralPath (Join-Path $VenvDir "pyvenv.cfg") -Value "home = foreign"
+    }}
 }}
 
 function Invoke-TestCreation {{
@@ -559,6 +563,7 @@ Write-Output ("package=" + $script:PackageInstallReached)
     env["TEST_STUDIO_HOME"] = str(tmp_path / "studio home")
     env["TEST_MIGRATED"] = "1" if migrated else "0"
     env["TEST_FOREIGN_DIR"] = "1" if foreign else "0"
+    env["TEST_FOREIGN_PYVENV"] = "1" if foreign_pyvenv else "0"
     env["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), env.get("PATH", "")))
     output = _run_powershell(shell, script, env)
     return dict(line.split("=", 1) for line in output.splitlines())
@@ -678,10 +683,13 @@ def test_uv_venv_creation_result_unusable_fallback_stops_before_packages(
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("foreign_pyvenv", [False, True])
 def test_uv_venv_creation_result_preserves_foreign_target(
-    tmp_path: Path, shell: str
+    tmp_path: Path, shell: str, foreign_pyvenv: bool
 ):
-    state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "ready", foreign = True)
+    state = _run_uv_venv_creation_result(
+        tmp_path, shell, "nonzero", "ready", foreign = True, foreign_pyvenv = foreign_pyvenv
+    )
     assert state["calls"] == "create virtual environment", state
     _assert_uv_invocation(state, tmp_path)
     assert state["fallback_args"] == "", state
