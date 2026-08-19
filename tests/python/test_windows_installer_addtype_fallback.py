@@ -491,6 +491,25 @@ def test_the_nt_device_prefix_becomes_a_usable_path(raw: str, expected: str):
 
 
 @requires_pwsh
+def test_final_normalization_keeps_a_volume_guid_rooted():
+    """\\\\?\\C:\\x still names a drive once the prefix comes off. A volume GUID does not.
+
+    Stripping it leaves the unrooted "Volume{GUID}\\x", which hashes to a
+    different identity than the same directory reached by drive letter and leaves
+    GetPathRoot empty, so the relaxed process comparison cannot run either.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
+    guid = body.index("\\\\?\\Volume{")
+    dos = body.index("$resolved.Substring(4)")
+    # The volume-GUID branch has to be tested BEFORE the general one, or the
+    # general branch swallows it and strips the prefix anyway.
+    assert guid < dos
+    branch = body[guid : dos]
+    assert "Substring" not in branch
+
+
+@requires_pwsh
 @pytest.mark.parametrize(
     "path,expected",
     [

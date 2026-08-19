@@ -980,6 +980,13 @@ public static class UnslothStudioFinalPathV2
         }
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
+        } elseif ($resolved.StartsWith('\\?\Volume{', [System.StringComparison]::OrdinalIgnoreCase)) {
+            # Kept, unlike an ordinary extended DOS path. \\?\C:\x still names a
+            # drive once the prefix comes off; \\?\Volume{GUID}\x does not -- it
+            # becomes the unrooted "Volume{GUID}\x", which then hashes to a
+            # different identity than the same directory reached by drive letter,
+            # and leaves GetPathRoot empty so the relaxed process comparison
+            # cannot run either. Deliberately left as it is.
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = $resolved.Substring(4)
         }
