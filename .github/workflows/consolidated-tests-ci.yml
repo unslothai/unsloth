@@ -493,11 +493,23 @@ jobs:
           # on whichever file leaks. Pinning here keeps CI honest meanwhile: what these
           # two files prove is unchanged, because a fresh process is what they get today.
           #
+          # test_hf_xet_fallback.py is here for a different reason, found the same way.
+          # It drives a stall detector against the real clock -- 27 sub-second sleeps,
+          # one of them commented "within the unmeasurable window" -- and under four
+          # workers on four cores it reported "Download appears stalled (xet transport)
+          # -- no progress for 0s". Nothing was stalled; the test was descheduled. No
+          # ordering fix helps a wall-clock margin, so it gets the quiet process too.
+          #
+          # It is the only file in the suite with that shape: two use sub-second sleeps
+          # and the other one (test_mlx_save_export_edge_cases.py) sleeps 0.01s to widen
+          # a race window without asserting on elapsed time.
+          #
           # loadfile rather than the default `load`: 34 of the 236 files touch sys.modules
           # or importlib.reload, so tests within a file must stay on one worker, in order.
           python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
             --ignore=tests/test_mlx_generate.py \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
+            --ignore=tests/test_hf_xet_fallback.py \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device \
             --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through
@@ -506,7 +518,8 @@ jobs:
           # ignores above delete 51 tests from CI and the job still goes green.
           python -m pytest -q --tb=short \
             tests/test_mlx_generate.py \
-            tests/test_moe_bnb4bit_per_expert_conversions.py
+            tests/test_moe_bnb4bit_per_expert_conversions.py \
+            tests/test_hf_xet_fallback.py
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
         # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,

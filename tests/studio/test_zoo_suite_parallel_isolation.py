@@ -52,6 +52,10 @@ ISOLATED = [
         "tests/test_moe_bnb4bit_per_expert_conversions.py",
         "6 failures under xdist that serial does not produce",
     ),
+    # Not ordering: wall clock. 27 sub-second sleeps against a stall detector, one of
+    # them commented "within the unmeasurable window". Under four workers it reported
+    # "no progress for 0s" -- nothing stalled, the test was descheduled.
+    ("tests/test_hf_xet_fallback.py", "sub-second wall-clock margins under CPU contention"),
 ]
 
 # The zoo suite is the only pytest run in this workflow driven out of the cloned zoo
