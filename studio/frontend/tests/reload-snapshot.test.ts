@@ -849,6 +849,10 @@ test("media pages retire the shell only after gallery and preview hydration", ()
     audioPageSource,
     /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(\)/,
   );
+  assert.match(
+    audioPageSource,
+    /mode === "transcribe"[\s\S]*?data-reload-snapshot-sensitive=\{\s*transcript \|\| transcribedName \? "" : undefined/,
+  );
 });
 
 test("data-backed routes own reload readiness until hydration settles", () => {

@@ -2108,7 +2108,12 @@ export function AudioPage({
 
         <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           {mode === "transcribe" ? (
-            <div className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
+            <div
+              data-reload-snapshot-sensitive={
+                transcript || transcribedName ? "" : undefined
+              }
+              className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]"
+            >
               {busy === "transcribing" ? (
                 <div className="flex items-center gap-2 text-ui-13 text-muted-foreground">
                   <Spinner className="size-4" />
