@@ -2857,8 +2857,7 @@ def _kv_cache_gpu_fallback_warning(
         return None
     if gpu_memory_mode not in {"auto", "manual"}:
         return None
-    if gpu_memory_mode == "manual" and gpu_layers < 0:
-        pass  # Manual Auto still delegates placement to llama.cpp's GPU fitter.
+    # Manual Auto still delegates placement to llama.cpp's GPU fitter.
     normalized = (cache_type_kv or "").strip().lower()
     if normalized not in _GPU_UNACCELERATED_CACHE_TYPES:
         return None
@@ -17399,8 +17398,17 @@ class LlamaCppBackend:
                     )
                     if intent.cpu_fallback:
                         inference_backend = None
+                    advisory_cache_type = (
+                        intent.cache_type_kv
+                        if (
+                            _extras_cache is None
+                            and not _cache_type_from_env
+                            and cache_type_kv == intent.cache_type_kv
+                        )
+                        else None
+                    )
                     gpu_fallback_warning = _kv_cache_gpu_fallback_warning(
-                        intent.cache_type_kv,
+                        advisory_cache_type,
                         gpu_memory_mode,
                         gpu_layers,
                         inference_backend,
