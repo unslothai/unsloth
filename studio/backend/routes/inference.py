@@ -3172,14 +3172,13 @@ async def _stop_local_disconnect_cancel_watcher(
 
 
 async def _drain_pending_next_task(task, cancel_event) -> None:
-    """Wait for a pending ``asyncio.to_thread(next, gen, ...)`` task to finish
-    before its generator is closed.
+    """Wait for a pending blocking worker before its resources are released.
 
-    On disconnect a ``next(gen)`` call may still run in a worker thread;
-    cancelling the awaiting task does NOT stop it, and ``gen.close()`` mid-
-    ``next(gen)`` raises ``ValueError: generator already executing``, leaking the
-    generator's cleanup. So re-set the cancel flag (the generator polls it) and
-    shield the task until the worker returns. No-op when there is no pending task.
+    On disconnect a worker may still be inside ``next(gen)`` or draining a whole
+    non-streaming generation. Cancelling the awaiting task does NOT stop that
+    worker. Re-set the cancel flag (the generator polls it) and shield the task
+    until the worker returns, so admission and generation tracking still cover
+    its real lifetime. No-op when there is no pending task.
     """
     if task is None:
         return
@@ -3199,6 +3198,73 @@ async def _drain_pending_next_task(task, cancel_event) -> None:
             task.exception()
         except (asyncio.CancelledError, Exception):
             pass
+
+
+def _settle_daemon_worker(future: "asyncio.Future", succeeded: bool, value) -> None:
+    """Publish a daemon worker outcome unless its event loop has moved on."""
+    if future.done():
+        return
+    if succeeded:
+        future.set_result(value)
+    else:
+        future.set_exception(value)
+
+
+def _start_daemon_worker(fn, *, name: str) -> "asyncio.Future":
+    """Start blocking request work without adding an interpreter-exit join.
+
+    ``asyncio.to_thread`` uses the loop's non-daemon default executor. A local
+    generation can be inside a cancellation-ignoring tool for its full timeout,
+    so that executor would defeat the launcher's bounded server-thread join and
+    keep the process alive. The request still awaits this future during ordinary
+    cancellation; daemon status only preserves the process shutdown boundary.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    context = contextvars.copy_context()
+
+    def _run() -> None:
+        try:
+            value = context.run(fn)
+        except BaseException as exc:  # noqa: BLE001 - delivered to the awaiting request
+            outcome = (False, exc)
+        else:
+            outcome = (True, value)
+        try:
+            loop.call_soon_threadsafe(_settle_daemon_worker, future, *outcome)
+        except RuntimeError:
+            pass  # the daemon may finish after process shutdown closed the loop
+
+    try:
+        threading.Thread(target = _run, name = name, daemon = True).start()
+    except BaseException as exc:  # noqa: BLE001 - mirror executor submission failures
+        future.set_exception(exc)
+    return future
+
+
+async def _run_blocking_generation(
+    fn,
+    cancel_event,
+    *,
+    name: str,
+    daemon: bool = False,
+):
+    """Run one synchronous generation unit without blocking the event loop.
+
+    Shield the worker so task cancellation cannot shorten the tracker or
+    admission-lease lifetime. Use a daemon only for server-tool loops that may
+    ignore cancellation; ordinary generation stays on the bounded default pool.
+    """
+    worker = (
+        _start_daemon_worker(fn, name = name)
+        if daemon
+        else asyncio.create_task(asyncio.to_thread(fn))
+    )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await _drain_pending_next_task(worker, cancel_event)
+        raise
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
@@ -13672,13 +13738,28 @@ async def openai_chat_completions(
                 _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
                 try:
-                    full_text = ""
-                    for chunk_text in audio_input_generate():
-                        if isinstance(chunk_text, GenStreamError):
-                            _msg = _friendly_gen_stream_error(chunk_text)
-                            api_monitor.fail(monitor_id, _msg)
-                            raise HTTPException(status_code = 500, detail = _msg)
-                        full_text += chunk_text
+
+                    def _drain_audio_input():
+                        text_parts = []
+                        for chunk_text in audio_input_generate():
+                            if isinstance(chunk_text, GenStreamError):
+                                return chunk_text
+                            text_parts.append(chunk_text)
+                        return "".join(text_parts)
+
+                    full_text = await _run_blocking_generation(
+                        _drain_audio_input,
+                        cancel_event,
+                        name = "openai-audio-input-nonstream",
+                    )
+                    if isinstance(full_text, GenStreamError):
+                        _msg = _friendly_gen_stream_error(full_text)
+                        api_monitor.fail(monitor_id, _msg)
+                        raise HTTPException(status_code = 500, detail = _msg)
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    api_monitor.finish(monitor_id, "cancelled")
+                    raise
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -16346,14 +16427,25 @@ async def openai_chat_completions(
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
         try:
-            full_text = ""
-            for token in generate():
-                if isinstance(token, GenStreamError):
-                    backend.reset_generation_state(cancel_event)
-                    _msg = _friendly_gen_stream_error(token)
-                    api_monitor.fail(monitor_id, _msg)
-                    raise HTTPException(status_code = 500, detail = _msg)
-                full_text = token
+
+            def _drain_generate(messages_override = None):
+                final = ""
+                for token in generate(messages_override):
+                    if isinstance(token, GenStreamError):
+                        return token
+                    final = token
+                return final
+
+            full_text = await _run_blocking_generation(
+                _drain_generate,
+                cancel_event,
+                name = "openai-chat-nonstream",
+            )
+            if isinstance(full_text, GenStreamError):
+                backend.reset_generation_state(cancel_event)
+                _msg = _friendly_gen_stream_error(full_text)
+                api_monitor.fail(monitor_id, _msg)
+                raise HTTPException(status_code = 500, detail = _msg)
 
             # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
             # the shared generate(). Client-tool healing then runs on the visible
@@ -16387,11 +16479,15 @@ async def openai_chat_completions(
                         # and restore them if the retry is discarded.
                         _first_stats = stats_holder.get("stats")
                         try:
-                            retry_text = ""
-                            for token in generate(
-                                [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
-                            ):
-                                retry_text = token
+                            retry_messages = [
+                                *gen_kwargs["messages"],
+                                *nudge_messages(_data, _sf_heal),
+                            ]
+                            retry_text = await _run_blocking_generation(
+                                lambda: _drain_generate(retry_messages),
+                                cancel_event,
+                                name = "openai-chat-nudge-nonstream",
+                            )
                             # Re-split reasoning on the retry so its visible text is
                             # what heals into a call (and reaches the monitor).
                             # The nudge retry appends messages, so it is not a
@@ -16464,6 +16560,11 @@ async def openai_chat_completions(
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state(cancel_event)
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except HTTPException:
             raise
         except GenStreamErrorRaised as exc:
@@ -20844,19 +20945,12 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
     return HTTPException(status_code = 500, detail = _friendly_error(e))
 
 
-async def _collect_anthropic_events(run_gen, cancel_event = None) -> list:
+def _collect_anthropic_events(run_gen) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500."""
 
-    def _drain():
-        return list(run_gen())
-
-    drain_task = asyncio.create_task(asyncio.to_thread(_drain))
     try:
-        return await asyncio.shield(drain_task)
-    except asyncio.CancelledError:
-        await _drain_pending_next_task(drain_task, cancel_event)
-        raise
+        return list(run_gen())
     except HTTPException:
         raise
     except Exception as e:
@@ -20882,15 +20976,14 @@ def _anthropic_message_json_response(
     )
 
 
-async def _anthropic_tool_non_streaming(
-    run_gen,
+def _anthropic_tool_response_from_events(
+    events,
     message_id,
     model_name,
     disable_parallel_tool_use = False,
     openai_tools = None,
-    cancel_event = None,
 ):
-    """Non-streaming response for the tool-calling path.
+    """Reduce collected tool events into one non-streaming response.
 
     Builds ``content_blocks`` in generation order (text → tool_use → text →
     tool_use → ...), mirroring the streaming emitter. Deltas within one
@@ -20913,8 +21006,6 @@ async def _anthropic_tool_non_streaming(
     # Pending client tool_use; cleared by tool_end (server execution) or
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
-
-    events = await _collect_anthropic_events(run_gen, cancel_event)
 
     for event in events:
         etype = event.get("type", "")
@@ -20986,19 +21077,39 @@ async def _anthropic_tool_non_streaming(
     )
 
 
-async def _anthropic_plain_non_streaming(
+async def _anthropic_tool_non_streaming(
     run_gen,
     message_id,
     model_name,
+    disable_parallel_tool_use = False,
+    openai_tools = None,
     cancel_event = None,
 ):
-    """Non-streaming response for the no-tool path."""
+    """Generate and reduce a tool response entirely off the event loop."""
+
+    def _drain_and_build():
+        return _anthropic_tool_response_from_events(
+            _collect_anthropic_events(run_gen),
+            message_id,
+            model_name,
+            disable_parallel_tool_use = disable_parallel_tool_use,
+            openai_tools = openai_tools,
+        )
+
+    return await _run_blocking_generation(
+        _drain_and_build,
+        cancel_event,
+        name = "anthropic-tool-nonstream",
+        daemon = True,
+    )
+
+
+def _anthropic_plain_response_from_events(events, message_id, model_name):
+    """Reduce collected plain events into one non-streaming response."""
     text_parts = []
     usage = {}
     prev_text = ""
     captured_finish_reason = None
-
-    events = await _collect_anthropic_events(run_gen, cancel_event)
 
     for cumulative in events:
         if isinstance(cumulative, dict):
@@ -21022,6 +21133,28 @@ async def _anthropic_plain_non_streaming(
 
     return _anthropic_message_json_response(
         message_id, model_name, content_blocks, stop_reason, usage
+    )
+
+
+async def _anthropic_plain_non_streaming(
+    run_gen,
+    message_id,
+    model_name,
+    cancel_event = None,
+):
+    """Generate and reduce a plain response entirely off the event loop."""
+
+    def _drain_and_build():
+        return _anthropic_plain_response_from_events(
+            _collect_anthropic_events(run_gen),
+            message_id,
+            model_name,
+        )
+
+    return await _run_blocking_generation(
+        _drain_and_build,
+        cancel_event,
+        name = "anthropic-plain-nonstream",
     )
 
 
