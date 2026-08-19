@@ -577,10 +577,6 @@ def degraded() -> bool:
 
 # Short enough that a store or embedder coming back is noticed within a turn or two, long
 # enough that one request's refits share a single probe.
-_REACHABLE_TTL_SECONDS = 5.0
-_REACHABLE_MEMO: dict = {}
-
-
 def reachable() -> bool:
     """Whether an archive write attempted RIGHT NOW could reach its store and embedder.
 
@@ -606,18 +602,18 @@ def reachable() -> bool:
     model it was searchable, and the epoch is replayed from the boundary, so the loss is
     durable rather than one turn.
 
-    Memoised for a few seconds because it is asked per FIT, not per overflow, and a tool
-    loop refits every iteration. `"x"` rather than `""`: an empty input is documented to
-    upset the llama embedding server. An encode rather than `dim()`, which caches and on
-    the sentence-transformers path runs no forward at all -- that would reintroduce
-    exactly the bug this closes.
+    NOT memoised across requests. A time-boxed cache handed back a stale yes for the whole
+    window after the store or embedder died, and one request inside it is enough: the epoch
+    starts, `archive_turns` swallows the write failure, and the fitted prompt has already
+    dropped the turns it says are searchable. The caller memoises per fit instead, which is
+    the only span where the answer cannot change under it.
+
+    `"x"` rather than `""`: an empty input is documented to upset the llama embedding
+    server. An encode rather than `dim()`, which caches and on the sentence-transformers
+    path runs no forward at all -- that would reintroduce exactly the bug this closes.
     """
     if not enabled():
         return False
-    now = time.monotonic()
-    cached = _REACHABLE_MEMO.get("at")
-    if cached is not None and now - cached < _REACHABLE_TTL_SECONDS:
-        return bool(_REACHABLE_MEMO.get("value"))
     conn = None
     try:
         conn = rag_db.get_connection()
@@ -638,11 +634,9 @@ def reachable() -> bool:
         embeddings.embedding_identity(model)
         embeddings.token_counter(model)("")
         embeddings.encode(["x"], model_name = model, normalize = True)
-        _REACHABLE_MEMO.update({"at": now, "value": True})
         return True
     except Exception:  # noqa: BLE001 -- an unreachable archive is "no", never an error
         logger.debug("conversation_archive.unreachable", exc_info = True)
-        _REACHABLE_MEMO.update({"at": now, "value": False})
         return False
     finally:
         # The probe runs on every checkpoint-eligible overflow, and a connection left to

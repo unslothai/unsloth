@@ -1366,7 +1366,6 @@ def test_the_reachability_probe_encodes_rather_than_only_tokenizing(monkeypatch)
     """
     from core.rag import conversation_archive, embeddings
 
-    conversation_archive._REACHABLE_MEMO.clear()
     monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
     monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: "st:model-a")
     monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: (lambda _text: 1))
@@ -1377,7 +1376,6 @@ def test_the_reachability_probe_encodes_rather_than_only_tokenizing(monkeypatch)
     monkeypatch.setattr(embeddings, "encode", _broken_encode)
     assert conversation_archive.reachable() is False
 
-    conversation_archive._REACHABLE_MEMO.clear()
     calls = []
     monkeypatch.setattr(
         embeddings, "encode", lambda texts, **kwargs: calls.append(texts) or [[0.0]]
@@ -1386,10 +1384,10 @@ def test_the_reachability_probe_encodes_rather_than_only_tokenizing(monkeypatch)
     # Not the empty string: an empty input is documented to upset the llama embed server.
     assert calls == [["x"]]
 
-    # And the probe is memoised, since it is asked per fit and a tool loop refits per
-    # iteration.
+    # And it is asked again every time: the caller memoises per fit, this does not memoise
+    # across them, or a yes outlives the moment it described.
     assert conversation_archive.reachable() is True
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_the_reachability_probe_requires_a_writable_database(monkeypatch, tmp_path):
@@ -1404,7 +1402,6 @@ def test_the_reachability_probe_requires_a_writable_database(monkeypatch, tmp_pa
     from core.rag import conversation_archive, embeddings
     from storage import rag_db
 
-    conversation_archive._REACHABLE_MEMO.clear()
     monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
     monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: "st:model-a")
     monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: (lambda _text: 1))
@@ -1419,7 +1416,6 @@ def test_the_reachability_probe_requires_a_writable_database(monkeypatch, tmp_pa
     monkeypatch.setattr(rag_db, "get_connection", _readonly_connection)
     assert conversation_archive.reachable() is False
 
-    conversation_archive._REACHABLE_MEMO.clear()
     monkeypatch.setattr(rag_db, "get_connection", lambda: sqlite3.connect(str(path)))
     assert conversation_archive.reachable() is True
 
@@ -1665,3 +1661,31 @@ def test_the_checkpoint_check_reads_the_routes_own_message_models(monkeypatch):
     ]
 
     assert inference_routes._thread_has_checkpoint("t1", models) is True
+
+
+def test_a_healthy_probe_is_not_trusted_on_the_next_request(monkeypatch):
+    """A yes describes the moment it was taken, and nothing longer.
+
+    Cached across requests, the first overflow after the store or embedder dies is still
+    told the archive is reachable: it starts an epoch, `archive_turns` swallows the write
+    failure, and the fitted prompt has already dropped the turns the block says are
+    searchable. The epoch replays from the boundary, so that loss is durable.
+    """
+    from core.rag import conversation_archive, embeddings
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: "st:model-a")
+    monkeypatch.setattr(embeddings, "token_counter", lambda *_a, **_k: (lambda _text: 1))
+    monkeypatch.setattr(embeddings, "encode", lambda texts, **kwargs: [[0.0]])
+
+    assert conversation_archive.reachable() is True
+
+    # The embedder dies a moment later, well inside any plausible cache window.
+    def _broken_encode(*_args, **_kwargs):
+        raise RuntimeError("CUDA error: out of memory")
+
+    monkeypatch.setattr(embeddings, "encode", _broken_encode)
+
+    assert conversation_archive.reachable() is False, (
+        "a stale yes let the next request reset into an archive that cannot be written"
+    )
