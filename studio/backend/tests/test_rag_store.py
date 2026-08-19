@@ -410,3 +410,50 @@ def test_a_quoted_function_word_survives_the_stopword_filter():
     assert plain == ['"say"']
     # A quoted function word is not an identifier, so only the permissive pass widens.
     assert len(quoted) == 1
+
+
+def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
+    """Every ordinal NULL made both halves of the two-ended fetch the same query.
+
+    FTS5 floors the IDF of a term the whole index shares, so a per-thread archive's own
+    subject scores identically on every hit, and on an archive written before
+    `archive_ordinal` existed every later ordering term was constant too. Both windows
+    then returned the same arbitrary rows, `_both_ends` deduplicated them, and the later
+    legacy revisions were unreachable at any candidate count.
+    """
+    import types
+
+    from core.rag import store
+
+    conn = rag_conn
+    scope = "convarchive_legacy"
+    for index in range(8):
+        document = store.create_document(
+            conn,
+            scope = scope,
+            thread_id = "t",
+            filename = f"earlier turn {index}",
+            sha256 = f"h{index}",
+            status = "completed",
+            embedding_model = "m",
+            archive_messages = 2,
+            archive_ordinal = None,
+            commit = False,
+        )
+        chunk = types.SimpleNamespace(
+            chunk_index = 0,
+            text = f"ZQXLEGACY token number {index}",
+            page_number = None,
+            source_page_index = None,
+            token_count = 5,
+            char_count = 20,
+        )
+        store.add_chunks(conn, scope, document, [chunk], [[0.0, 0.0, 0.0, 0.0]])
+    conn.commit()
+
+    oldest = [chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, oldest_first = True)]
+    newest = [chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, newest_first = True)]
+
+    assert oldest and newest
+    assert oldest != newest, "both ends of the fetch returned the same rows"
+    assert not set(oldest) & set(newest), (oldest, newest)
