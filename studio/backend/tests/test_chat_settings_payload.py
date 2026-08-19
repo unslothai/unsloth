@@ -41,6 +41,7 @@ def test_mirrored_settings_round_trip():
                 "allowedDomains": ["unsloth.ai"],
                 "blockedDomains": [],
             },
+            "researchModelTimeoutSeconds": 0,
             "speculativeType": "ngram",
             "gpuMemoryMode": "manual",
             "fitOnDeviceOnly": True,
@@ -60,6 +61,7 @@ def test_mirrored_settings_round_trip():
             "allowedDomains": ["unsloth.ai"],
             "blockedDomains": [],
         },
+        "researchModelTimeoutSeconds": 0,
         "speculativeType": "ngram",
         "gpuMemoryMode": "manual",
         "fitOnDeviceOnly": True,
@@ -143,6 +145,13 @@ def test_unset_fields_stay_out_of_the_merge():
         {"ragSource": {"type": "kb"}},
         {"ragSource": {"type": "kb", "kbId": ""}},
         {"researchWebsitePolicy": {"allowedDomains": "unsloth.ai"}},
+        # The run route takes 0 or at least 10, so a persisted 1..9 would 400 every run.
+        {"researchModelTimeoutSeconds": 1},
+        {"researchModelTimeoutSeconds": 9},
+        {"researchModelTimeoutSeconds": -1},
+        {"researchModelTimeoutSeconds": 365 * 24 * 3600 + 1},
+        # bool subclasses int, so False would persist as the 0 "unlimited" sentinel.
+        {"researchModelTimeoutSeconds": False},
         {"unknownSetting": True},
     ],
 )

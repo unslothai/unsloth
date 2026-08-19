@@ -57,6 +57,8 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
@@ -74,6 +76,7 @@ import {
   type ModelLifecycleLease,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import type { MmprojFallbackReason } from "../types/api";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -86,6 +89,8 @@ export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
   "unsloth_chat_deep_research_enabled";
 export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
+export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
+  "unsloth_chat_deep_research_model_timeout";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
 export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
   "unsloth_chat_show_canvas_menu_item";
@@ -168,6 +173,29 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
 };
+export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
+
+/** 0 (unlimited) or a finite budget the settings patch and the run route both accept.
+ * Anything else would be dropped from the patch and 400 the run, so the default stands in. */
+function isSupportedResearchModelTimeout(value: number): boolean {
+  if (!Number.isSafeInteger(value) || value < 0) return false;
+  if (value > MAX_RESEARCH_MODEL_TIMEOUT_SECONDS) return false;
+  return value === 0 || value >= MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS;
+}
+
+function loadResearchModelTimeoutSeconds(): number {
+  if (typeof window === "undefined") return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  try {
+    const raw = window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY);
+    if (raw === null) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+    const value = Number(raw);
+    return isSupportedResearchModelTimeout(value)
+      ? value
+      : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  } catch {
+    return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  }
+}
 
 function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
@@ -591,6 +619,10 @@ const MIRRORED_SETTINGS = {
   researchWebsitePolicy: {
     storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
     ...JSON_SETTING,
+  },
+  researchModelTimeoutSeconds: {
+    storageKey: CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    ...NUMBER_SETTING,
   },
   artifactsEnabled: {
     storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
@@ -2201,6 +2233,7 @@ type ChatRuntimeStore = {
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
+  researchModelTimeoutSeconds: number;
   artifactsEnabled: boolean;
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
   showCanvasMenuItem: boolean;
@@ -2304,6 +2337,8 @@ type ChatRuntimeStore = {
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /** Projector recovery outcome for the active GGUF, or null. */
+  mmprojFallbackReason: MmprojFallbackReason | null;
   /**
    * Which drafter the loaded model's speculative resolution was about: "mtp",
    * "dspark" or "dflash". Paired with specFallbackReason: the reason alone cannot name the
@@ -2524,6 +2559,7 @@ type ChatRuntimeStore = {
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
+  setResearchModelTimeoutSeconds: (seconds: number) => void;
   setArtifactsEnabled: (
     enabled: boolean,
     options?: { persist?: boolean },
@@ -2643,6 +2679,7 @@ type ScalarSettingKey =
   | "webFetchToolsEnabled"
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
+  | "researchModelTimeoutSeconds"
   | "artifactsEnabled"
   | "showCanvasMenuItem"
   | "mcpEnabledForChat"
@@ -2691,6 +2728,7 @@ const SCALAR_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchModelTimeoutSeconds",
   "artifactsEnabled",
   "showCanvasMenuItem",
   "mcpEnabledForChat",
@@ -3337,6 +3375,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
+  researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
   showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
@@ -3392,6 +3431,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  mmprojFallbackReason: null,
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
@@ -3861,6 +3901,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              mmprojFallbackReason: null,
               specDrafterKind: null,
             }
           : {}),
@@ -4103,6 +4144,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      mmprojFallbackReason: null,
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
@@ -4260,6 +4302,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveResearchWebsitePolicy(researchWebsitePolicy);
       return {
         researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setResearchModelTimeoutSeconds: (researchModelTimeoutSeconds) =>
+    set((state) => {
+      const seconds = isSupportedResearchModelTimeout(
+        researchModelTimeoutSeconds,
+      )
+        ? researchModelTimeoutSeconds
+        : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+      persistSetting(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, String(seconds));
+      return {
+        researchModelTimeoutSeconds: seconds,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

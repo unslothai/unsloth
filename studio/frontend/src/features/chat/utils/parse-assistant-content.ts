@@ -83,7 +83,7 @@ export function extractDeltaText(delta: unknown): {
 // ContentPart from @assistant-ui/react has readonly fields, so `last.text +=
 // text` fails (TS2540). Replace the last element with a merged object instead.
 
-function appendTextPart(parts: ContentPart[], text: string): void {
+export function appendTextPart(parts: ContentPart[], text: string): void {
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "text") {
@@ -93,7 +93,7 @@ function appendTextPart(parts: ContentPart[], text: string): void {
   parts.push({ type: "text", text });
 }
 
-function appendReasoningPart(parts: ContentPart[], text: string): void {
+export function appendReasoningPart(parts: ContentPart[], text: string): void {
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
@@ -149,61 +149,87 @@ const THINK_TAG_OVERLAP =
 
 export type ThinkTagTracker = {
   /**
-   * Whether `text` ends inside a `<think>` block, that is, what
-   * `hasUnclosedThinkTag(text)` returns.
-   *
-   * `text` must be the previous call's text with characters appended and then,
-   * at most once, a suffix removed. That is the only way the streaming adapter's
-   * buffer changes: deltas are appended, and the trailing template-literal strip
-   * takes a suffix off the end. An unrelated string, or one whose committed
-   * prefix was rewritten, gets an answer based on stale tag positions.
+   * Take the characters an arrival added. Reads `delta` and the seven
+   * characters in front of it, never the accumulated reply.
    */
-  update(text: string): boolean;
+  append(delta: string): void;
+  /**
+   * Take back the suffix a rewrite removed. `text` is the buffer AFTER the
+   * removal, and is read only when a tag left with the suffix or the retained
+   * overlap has to be refilled, both of which the trailing template-literal
+   * strip makes rare.
+   */
+  retract(text: string): void;
+  /**
+   * Whether the accumulated text ends inside a `<think>` block, that is, what
+   * `hasUnclosedThinkTag` returns for the same text.
+   */
+  endsInsideThink(): boolean;
 };
 
 /**
- * Track `hasUnclosedThinkTag` across a stream without rereading the buffer.
+ * Track `hasUnclosedThinkTag` across a stream without reading the buffer.
  *
  * `hasUnclosedThinkTag` walks the whole reply, so calling it once per SSE
- * arrival costs O(reply^2) over a reply. This keeps the index of the last open
- * and close tag and looks only at what arrived since the previous call, plus the
- * few characters in front of it that a tag split across arrivals can occupy. A
- * `<think>` delivered one character at a time over seven arrivals is found on
- * the arrival that completes it.
+ * arrival costs O(reply^2) over a reply. Reading the buffer at all costs that
+ * much, even for one character: `text += delta` builds a cons string, and the
+ * next read of it flattens the whole thing. So this takes the delta rather
+ * than the buffer, and keeps the last seven characters itself, which is the
+ * most a tag split across arrivals can hide in front of one. A `<think>`
+ * delivered one character at a time over seven arrivals is still found on the
+ * arrival that completes it.
  */
 export function createThinkTagTracker(): ThinkTagTracker {
-  // Everything before this offset has been scanned; the indices are the last
-  // position of each tag in it, or -1, exactly as `lastIndexOf` reports.
-  let scanned = 0;
+  // Characters taken so far; the two indices are the last position of each tag
+  // within them, or -1, exactly as `lastIndexOf` reports.
+  let length = 0;
   let lastOpen = -1;
   let lastClose = -1;
+  // The final `THINK_TAG_OVERLAP` characters, held flat so the next arrival can
+  // be searched together with the tag prefix it may complete.
+  let overlap = "";
+
+  const refindWithin = (text: string): void => {
+    if (lastOpen >= 0 && lastOpen + THINK_OPEN_TAG.length > text.length) {
+      lastOpen = text.lastIndexOf(THINK_OPEN_TAG);
+    }
+    if (lastClose >= 0 && lastClose + THINK_CLOSE_TAG.length > text.length) {
+      lastClose = text.lastIndexOf(THINK_CLOSE_TAG);
+    }
+  };
 
   return {
-    update(text: string): boolean {
-      if (text.length >= scanned) {
-        const from = Math.max(0, scanned - THINK_TAG_OVERLAP);
-        const arrived = text.slice(from);
-        // A tag re-found inside the overlap is one already recorded, so it can
-        // only reproduce the index it gave last time.
-        const openAt = arrived.lastIndexOf(THINK_OPEN_TAG);
-        if (openAt !== -1) {
-          lastOpen = Math.max(lastOpen, from + openAt);
-        }
-        const closeAt = arrived.lastIndexOf(THINK_CLOSE_TAG);
-        if (closeAt !== -1) {
-          lastClose = Math.max(lastClose, from + closeAt);
-        }
-      } else {
-        // A suffix went away. Re-find only the tags that left with it; the
-        // ordinary case, a strip of plain text, costs nothing here.
-        if (lastOpen >= 0 && lastOpen + THINK_OPEN_TAG.length > text.length) {
-          lastOpen = text.lastIndexOf(THINK_OPEN_TAG);
-        }
-        if (lastClose >= 0 && lastClose + THINK_CLOSE_TAG.length > text.length) {
-          lastClose = text.lastIndexOf(THINK_CLOSE_TAG);
-        }
+    append(delta: string): void {
+      if (!delta) {
+        return;
       }
-      scanned = text.length;
+      const window = overlap + delta;
+      const from = length - overlap.length;
+      // A tag re-found inside the overlap is the one already recorded, so it
+      // can only reproduce the index it produced last time.
+      const openAt = window.lastIndexOf(THINK_OPEN_TAG);
+      if (openAt !== -1) {
+        lastOpen = Math.max(lastOpen, from + openAt);
+      }
+      const closeAt = window.lastIndexOf(THINK_CLOSE_TAG);
+      if (closeAt !== -1) {
+        lastClose = Math.max(lastClose, from + closeAt);
+      }
+      length += delta.length;
+      overlap =
+        window.length <= THINK_TAG_OVERLAP
+          ? window
+          : window.slice(window.length - THINK_TAG_OVERLAP);
+    },
+    retract(text: string): void {
+      refindWithin(text);
+      length = text.length;
+      overlap =
+        text.length <= THINK_TAG_OVERLAP
+          ? text
+          : text.slice(text.length - THINK_TAG_OVERLAP);
+    },
+    endsInsideThink(): boolean {
       return lastOpen > lastClose;
     },
   };

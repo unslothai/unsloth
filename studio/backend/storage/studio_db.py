@@ -3350,6 +3350,23 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
         conn.close()
 
 
+def fork_counts_for_thread(thread_id: str) -> dict[str, int]:
+    """Fork counts for every message of one thread, keyed by message id."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT forked_from_message_id, COUNT(*) FROM chat_threads
+            WHERE forked_from_thread_id = ? AND forked_from_message_id IS NOT NULL
+            GROUP BY forked_from_message_id
+            """,
+            (thread_id,),
+        ).fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
+    finally:
+        conn.close()
+
+
 def list_chat_messages(thread_id: str) -> list[dict]:
     conn = get_connection()
     try:
