@@ -302,7 +302,7 @@ def test_the_merged_block_is_re_capped_not_just_concatenated():
     assert len(recapped) == checkpoint.MAX_ITEMS
     # Newest kept, oldest dropped, and still rendered oldest first so the supersession
     # rule in the header stays true.
-    assert recapped == items[-checkpoint.MAX_ITEMS:]
+    assert recapped == items[-checkpoint.MAX_ITEMS :]
     # A repeat carried once and evicted again is one item, not two.
     assert checkpoint._recap(["same thing", "same thing"], max_tokens = 1024, max_items = 8) == [
         "same thing"

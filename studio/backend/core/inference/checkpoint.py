@@ -314,11 +314,13 @@ def fit_checkpoint_context(
         # of the system turn, and the accumulated blocks are unevictable. Merged, not
         # dropped: by now the turns that produced the first block are gone, and that text
         # is the only copy of those instructions left.
-        prior = _block_items("".join(
-            _text_of(message)
-            for message in kept
-            if message.get("role") in ("system", "developer")
-        ))
+        prior = _block_items(
+            "".join(
+                _text_of(message)
+                for message in kept
+                if message.get("role") in ("system", "developer")
+            )
+        )
         if prior:
             items = _recap(prior + items, max_tokens = budget, max_items = MAX_ITEMS)
         text = render_checkpoint(items, searchable = searchable)
