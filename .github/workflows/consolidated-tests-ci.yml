@@ -41,6 +41,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
     paths:
@@ -50,6 +51,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
     inputs:
       unsloth_zoo_ref:
@@ -2371,6 +2373,10 @@ jobs:
           pip show unsloth_zoo
 
       - name: llama.cpp install via unsloth_zoo.llama_cpp + CLI `--help` smoke
+        # Bounds the apt preamble below rather than leaving the job's 25m to do
+        # it: 2 x 300s of attempts plus a lock wait is 12m of the 22, and the
+        # llama.cpp build that follows has the rest.
+        timeout-minutes: 22
         # Exercise the canonical `unsloth_zoo.llama_cpp.install_llama_cpp`
         # flow that GGUF export uses at runtime: clone ggml-org/llama.cpp
         # into ~/.unsloth/llama.cpp, build the LLAMA_CPP_TARGETS list
@@ -2406,9 +2412,9 @@ jobs:
           # libssl-dev / libcurl4-openssl-dev are needed by llama.cpp's
           # cmake build for HTTPS support; install up-front so the
           # `install_llama_cpp` requirement-check is a no-op.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential cmake git curl \
-            libgomp1 libssl-dev libcurl4-openssl-dev
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=300 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev; }'
           python <<'PY'
           import os, shutil, subprocess, sys, pathlib
           # Apply the same CPU spoof the pytest shims use BEFORE any
