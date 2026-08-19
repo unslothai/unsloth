@@ -99,12 +99,16 @@ def _reset_managed_node_check() -> None:
 
 
 def _path_has_usable_node(path: str) -> bool:
-    """Whether ``path`` already resolves a ``node`` that clears the version floor."""
+    """Whether ``path`` already provides what stdio servers need: a ``node`` clearing
+    the version floor AND an ``npx`` to launch packaged servers. decide_node_source()
+    installs the managed runtime unless both are satisfied, so checking node alone
+    would skip a managed install a host with no npm still needs."""
     try:
         node = shutil.which("node", path = path)
+        npx = shutil.which("npx", path = path)
     except OSError:
         return False
-    if not node:
+    if not node or not npx:
         return False
     if _usable_node_cache.get(node):
         return True

@@ -215,10 +215,13 @@ def test_stdio_env_preserves_empty_component_from_config(managed_node):
     assert env["PATH"] == f"{managed_node}{os.pathsep}{configured}"
 
 
-def _system_node_dir(tmp_path):
+def _system_node_dir(tmp_path, with_npx = True):
+    """A system runtime dir; without npx it mirrors a host where setup picked bundled."""
     sysbin = tmp_path / "sysbin"
     sysbin.mkdir()
     _make_executable(sysbin, "node")
+    if with_npx:
+        _make_executable(sysbin, "npx")
     return sysbin
 
 
@@ -257,3 +260,17 @@ def test_system_node_probe_is_memoized(managed_node_install, monkeypatch, tmp_pa
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
     assert len(calls) == 1
+
+
+def test_managed_node_used_when_system_lacks_npx(managed_node_install, monkeypatch, tmp_path):
+    """decide_node_source installs bundled when npm is missing, so node alone is not enough."""
+    sysbin = _system_node_dir(tmp_path, with_npx = False)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
+    expected = f"{managed_node_install}{os.pathsep}{sysbin}"
+    assert node_runtime.path_with_managed_node(str(sysbin)) == expected
+
+
+def test_complete_system_runtime_is_not_shadowed(managed_node_install, monkeypatch, tmp_path):
+    sysbin = _system_node_dir(tmp_path)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
+    assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
