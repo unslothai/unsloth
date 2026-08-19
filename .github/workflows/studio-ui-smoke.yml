@@ -35,6 +35,9 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # Both apt steps in this workflow shell out to it, so an edit to it changes
+      # what this workflow actually runs.
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
@@ -108,10 +111,30 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
+        # Retried through the shared helper. Unbounded, this stalled on the Azure
+        # mirror for 28 minutes on one shard before anyone noticed, and would have
+        # spent the job's full 30: an apt stall is not slow, it is silent. Every
+        # step after it is skipped and the run reports "cancelled" with no reason,
+        # so the shard says nothing about its subject.
+        #
+        # The retry is the point, not the shorter wait. The note on this job's
+        # timeout-minutes records the last attempt at this -- cutting the JOB budget
+        # to 20 turned the same stall from a slow pass into a red build, because a
+        # single attempt had nowhere to go. Three bounded attempts do: 180s is ~14x
+        # the 13 seconds this takes healthy, so only a mirror that is genuinely gone
+        # burns all three, and that is a hang rather than a slow mean.
+        #
+        # The job's 30 stays the final backstop and is deliberately not tightened.
+        timeout-minutes: 20
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '180'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -219,54 +242,28 @@ jobs:
         # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
         # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
         # pair in case `timeout` itself is outlived by an unkillable child.
-        timeout-minutes: 22
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        timeout-minutes: 18
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
             set -- install-deps chromium firefox webkit
           else
             set -- install --with-deps chromium firefox webkit
           fi
-
-          # Wait for whatever the killed attempt left behind to let go of dpkg.
-          #
-          # The first version of this retry skipped this and could not recover.
-          # playwright shells out to apt-get as ROOT, so terminating the python
-          # parent leaves that child alive holding the lock, and attempt 2 died two
-          # seconds later with "Could not get lock /var/lib/dpkg/lock-frontend. It
-          # is held by process 4578 (apt-get)". A retry that cannot succeed is worse
-          # than no retry: it buries the real reason under a second, different
-          # failure.
-          release_dpkg_lock() {
-            for _ in $(seq 1 24); do
-              fuser /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || return 0
-              sleep 5
-            done
-            # Still held after two minutes. It is our own orphan and this is a
-            # throwaway runner, so take the lock rather than spend the attempt.
-            echo "::warning::dpkg lock still held after 120s; terminating the holder"
-            fuser -k /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || true
-            sleep 5
-          }
-
-          for attempt in 1 2; do
-            timeout --signal=TERM --kill-after=30 480 python -m playwright "$@"
-            rc=$?
-            [ "$rc" -eq 0 ] && exit 0
-            # 124 is timeout's own "I killed it"; 137 is SIGKILL landing after
-            # --kill-after. Anything else is playwright itself refusing, and saying
-            # "did not finish within 8 minutes" about a 2-second exit sends the next
-            # reader looking for a stall that never happened.
-            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-              reason="did not finish within 8 minutes"
-            else
-              reason="exited with status ${rc}"
-            fi
-            echo "::warning::playwright install attempt ${attempt} ${reason}"
-            [ "$attempt" -eq 2 ] && break
-            release_dpkg_lock
-          done
-          echo "::error::playwright browser install failed twice; the attempt warnings above say which way each one went"
-          exit 1
+          bash .github/scripts/retry-with-apt-lock.sh python -m playwright "$@"
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
@@ -656,10 +653,30 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
+        # Retried through the shared helper. Unbounded, this stalled on the Azure
+        # mirror for 28 minutes on one shard before anyone noticed, and would have
+        # spent the job's full 30: an apt stall is not slow, it is silent. Every
+        # step after it is skipped and the run reports "cancelled" with no reason,
+        # so the shard says nothing about its subject.
+        #
+        # The retry is the point, not the shorter wait. The note on this job's
+        # timeout-minutes records the last attempt at this -- cutting the JOB budget
+        # to 20 turned the same stall from a slow pass into a red build, because a
+        # single attempt had nowhere to go. Three bounded attempts do: 180s is ~14x
+        # the 13 seconds this takes healthy, so only a mirror that is genuinely gone
+        # burns all three, and that is a hang rather than a slow mean.
+        #
+        # The job's 30 stays the final backstop and is deliberately not tightened.
+        timeout-minutes: 20
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '180'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
@@ -714,54 +731,28 @@ jobs:
         # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
         # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
         # pair in case `timeout` itself is outlived by an unkillable child.
-        timeout-minutes: 22
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        timeout-minutes: 18
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
             set -- install-deps chromium firefox webkit
           else
             set -- install --with-deps chromium firefox webkit
           fi
-
-          # Wait for whatever the killed attempt left behind to let go of dpkg.
-          #
-          # The first version of this retry skipped this and could not recover.
-          # playwright shells out to apt-get as ROOT, so terminating the python
-          # parent leaves that child alive holding the lock, and attempt 2 died two
-          # seconds later with "Could not get lock /var/lib/dpkg/lock-frontend. It
-          # is held by process 4578 (apt-get)". A retry that cannot succeed is worse
-          # than no retry: it buries the real reason under a second, different
-          # failure.
-          release_dpkg_lock() {
-            for _ in $(seq 1 24); do
-              fuser /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || return 0
-              sleep 5
-            done
-            # Still held after two minutes. It is our own orphan and this is a
-            # throwaway runner, so take the lock rather than spend the attempt.
-            echo "::warning::dpkg lock still held after 120s; terminating the holder"
-            fuser -k /var/lib/dpkg/lock-frontend > /dev/null 2>&1 || true
-            sleep 5
-          }
-
-          for attempt in 1 2; do
-            timeout --signal=TERM --kill-after=30 480 python -m playwright "$@"
-            rc=$?
-            [ "$rc" -eq 0 ] && exit 0
-            # 124 is timeout's own "I killed it"; 137 is SIGKILL landing after
-            # --kill-after. Anything else is playwright itself refusing, and saying
-            # "did not finish within 8 minutes" about a 2-second exit sends the next
-            # reader looking for a stall that never happened.
-            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-              reason="did not finish within 8 minutes"
-            else
-              reason="exited with status ${rc}"
-            fi
-            echo "::warning::playwright install attempt ${attempt} ${reason}"
-            [ "$attempt" -eq 2 ] && break
-            release_dpkg_lock
-          done
-          echo "::error::playwright browser install failed twice; the attempt warnings above say which way each one went"
-          exit 1
+          bash .github/scripts/retry-with-apt-lock.sh python -m playwright "$@"
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry

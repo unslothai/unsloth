@@ -25,6 +25,7 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The Linux job installs and runs the Tauri CLI out of the studio/ package
       # root (`npm install --prefix studio`, `npx --prefix studio`), so these
       # manifests decide what it builds with.
@@ -47,6 +48,7 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The Linux job installs and runs the Tauri CLI out of the studio/ package
       # root (`npm install --prefix studio`, `npx --prefix studio`), so these
       # manifests decide what it builds with.
@@ -77,11 +79,18 @@ jobs:
           persist-credentials: false
 
       - name: Linux native deps for Tauri / WebKit2GTK
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '150'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev libxdo-dev libssl-dev patchelf xvfb
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:

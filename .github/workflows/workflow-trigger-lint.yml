@@ -110,6 +110,7 @@ jobs:
         run: |
           python3 -m pytest -q -n 4 \
             tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_apt_steps_are_bounded.py \
             tests/studio/test_backend_ci_matrix.py \
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
