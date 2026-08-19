@@ -233,7 +233,9 @@ def can_archive(thread_id: Optional[str]) -> bool:
 
 
 def archive_turns(
-    thread_id: str, evicted: list[dict], live: Optional[list[dict]] = None
+    thread_id: str,
+    evicted: list[dict],
+    live: Optional[list[dict]] = None,
 ) -> int:
     """Index the evicted turns for ``thread_id``. Returns how many were newly written.
 
@@ -688,9 +690,7 @@ def _live_texts(live: Optional[list[dict]]) -> Optional[set[str]]:
 
 
 def _write_budget(
-    positions: Optional[list[list[str]]],
-    seats: list[int],
-    live_texts: Optional[set[str]],
+    positions: Optional[list[list[str]]], seats: list[int], live_texts: Optional[set[str]]
 ) -> int:
     """How many copies of a repeated turn the archive may hold RIGHT NOW.
 
@@ -713,9 +713,7 @@ def _write_budget(
     if not live_texts or not positions:
         return len(seats)
     evicted = [
-        seat
-        for seat in seats
-        if not all(text in live_texts for text in positions[seat] if text)
+        seat for seat in seats if not all(text in live_texts for text in positions[seat] if text)
     ]
     return len(evicted) or 1
 
