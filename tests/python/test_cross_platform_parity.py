@@ -27,14 +27,11 @@ class TestNoTorchBackendAutoInInstallSh:
         for i, line in enumerate(lines):
             if (
                 fallback_start is None
-                and line.strip() == "# Fallback: GPU detection failed to produce a URL -- let uv resolve torch"
+                and line.strip()
+                == "# Fallback: GPU detection failed to produce a URL -- let uv resolve torch"
             ):
                 fallback_start = i
-            elif (
-                fallback_start is not None
-                and fallback_end is None
-                and line == "fi"
-            ):
+            elif fallback_start is not None and fallback_end is None and line == "fi":
                 fallback_end = i
                 break
         fallback_range = (
