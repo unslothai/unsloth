@@ -18,7 +18,11 @@ const {
   MLX_DRAFT_BLOCK_SIZE_RANGE,
   MLX_DRAFT_TOKENS_RANGE,
   isSelectableMlxDraftCandidate,
+  mlxDraftRowCheckpoint,
   isUnavailableMlxSpeculativeMode,
+  mlxDraftSelection,
+  selectExternalMlxDraftCandidate,
+  selectableExternalMlxDraftCandidates,
   mlxSpeculativeLoadFields,
   selectMlxSpeculativeCandidate,
   normalizeMlxDraftBlockSize,
@@ -177,6 +181,7 @@ function candidate(over: Record<string, unknown> = {}) {
     integration_ready: true,
     loadable: true,
     reason: null,
+    recommended: false,
     ...over,
   } as MlxSpeculativeCandidate;
 }
@@ -213,18 +218,44 @@ test("Off selects nothing, even from a row that claims to be an Off drafter", ()
   );
 });
 
-test("a method is offered only when picking it would load rather than refuse", () => {
-  // The select disables a method with no candidate. Anything it does offer gets pinned
-  // and loaded, so admitting a candidate the backend would refuse turns the control into
-  // a way to produce a 400.
+test("a method one download away is offered, since the picker offers the download", () => {
+  // Widened with the picker that makes it actionable.
   const undownloaded = candidate({
     loadable: false,
     downloaded: false,
     reason: "checkpoint_not_downloaded",
   });
-  assert.equal(isSelectableMlxDraftCandidate(undownloaded), false);
-  assert.equal(selectMlxSpeculativeCandidate([undownloaded], "mtp", null), null);
-  assert.equal(isSelectableMlxDraftCandidate(candidate()), true);
+  assert.equal(isSelectableMlxDraftCandidate(undownloaded), true);
+  assert.equal(
+    selectMlxSpeculativeCandidate([undownloaded], "mtp", null)?.repo_id,
+    "org/d",
+  );
+  // What downloading cannot fix stays out, and so does the head: nothing to fetch for it.
+  for (const broken of [
+    { compatible: false },
+    { runtime_supported: false },
+    { integration_ready: false },
+    { reason: "insufficient_unified_memory" },
+    { source: "builtin" },
+  ]) {
+    assert.equal(
+      isSelectableMlxDraftCandidate(candidate({ ...undownloaded, ...broken })),
+      false,
+      JSON.stringify(broken),
+    );
+  }
+  // Unpinned, the method takes the first usable candidate, not the first listed.
+  assert.equal(
+    selectMlxSpeculativeCandidate(
+      [
+        candidate({ repo_id: "org/unusable", loadable: false, compatible: false }),
+        candidate({ repo_id: "org/usable" }),
+      ],
+      "mtp",
+      null,
+    )?.repo_id,
+    "org/usable",
+  );
   // An explicit pin names one repository and takes no substitute.
   const cs = [candidate(), candidate({ repo_id: "org/other" })];
   assert.equal(selectMlxSpeculativeCandidate(cs, "mtp", "ORG/Other")?.repo_id, "org/other");
@@ -294,3 +325,40 @@ test("only a named method with no drafter is ruled out", () => {
   }
 });
 
+test("the draft row names the pin, and offers to fetch only what would run", () => {
+  const pinned = candidate({ repo_id: "org/pinned" });
+  const resolved = candidate({ repo_id: "org/resolved" });
+  assert.equal(mlxDraftRowCheckpoint(pinned, resolved).shown?.repo_id, "org/pinned");
+  // Not the first companion listed: those span every method, so it is usually untouched here.
+  assert.equal(mlxDraftRowCheckpoint(null, resolved).shown?.repo_id, "org/resolved");
+  assert.equal(mlxDraftRowCheckpoint(null, null).shown, null);
+  const fetchable = candidate({ repo_id: "org/resolved", downloaded: false });
+  assert.equal(mlxDraftRowCheckpoint(null, fetchable).fetchable, true);
+  assert.equal(mlxDraftRowCheckpoint(fetchable, fetchable).fetchable, true);
+  // A pin the request would not draft with is named but not offered: fetching changes nothing.
+  const foreign = candidate({ repo_id: "org/foreign", downloaded: false });
+  assert.equal(mlxDraftRowCheckpoint(foreign, resolved).fetchable, false);
+  assert.equal(mlxDraftRowCheckpoint(foreign, null).fetchable, false);
+  assert.equal(mlxDraftRowCheckpoint(null, resolved).fetchable, false);
+});
+
+
+test("the control reads back what was asked for, not what the runtime settled on", async () => {
+  const { mlxRuntimeStateFrom } = await import(
+    "../src/features/chat/lib/mlx-runtime-state.ts"
+  );
+  // Auto that resolved to MTP: the control still shows Auto, or every read-back rewrites the
+  // request as the pick it produced and the user can never leave it on Auto.
+  const state = mlxRuntimeStateFrom({
+    is_mlx: true,
+    mlx_speculative_mode_requested: "auto",
+    mlx_draft_model_requested: null,
+    mlx_draft_block_size_requested: null,
+    mlx_speculative_mode: "mtp",
+    mlx_draft_model: "org/resolved",
+    mlx_draft_block_size: 4,
+  });
+  assert.equal(state.mlxSpeculativeMode, "auto");
+  assert.equal(state.mlxDraftModel, null);
+  assert.equal(state.mlxDraftBlockSize, null);
+});

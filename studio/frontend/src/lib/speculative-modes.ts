@@ -170,6 +170,8 @@ export interface MlxSpeculativeCandidate {
   repo_id: string;
   label: string;
   source: "builtin" | "cached" | "recommended";
+  /** Whether the curated index proposes this checkpoint, which the cache does not retract. */
+  recommended: boolean;
   // biome-ignore lint/style/useNamingConvention: backend API schema
   approximate_size_bytes: number;
   // biome-ignore lint/style/useNamingConvention: backend API schema
@@ -260,10 +262,69 @@ export function isUnavailableMlxSpeculativeMode(
   );
 }
 
-/** Whether picking this candidate would produce a load rather than a refusal. */
+/**
+ * A pin is named even when it resolves to nothing, since it is what the user must see to
+ * replace. Fetching is offered only for the checkpoint this request would draft with.
+ */
+export function mlxDraftRowCheckpoint(
+  selected: MlxSpeculativeCandidate | null,
+  resolved: MlxSpeculativeCandidate | null,
+): { shown: MlxSpeculativeCandidate | null; fetchable: boolean } {
+  const shown = selected ?? resolved;
+  return {
+    shown,
+    fetchable:
+      shown !== null && !shown.downloaded && shown.repo_id === resolved?.repo_id,
+  };
+}
+
+/** Loadable now, or one download away: what no download can fix stays out. */
 export function isSelectableMlxDraftCandidate(
   candidate: MlxSpeculativeCandidate,
 ): boolean {
-  return candidate.loadable;
+  return (
+    candidate.loadable ||
+    (candidate.source !== "builtin" &&
+      candidate.compatible &&
+      candidate.runtime_supported &&
+      candidate.integration_ready &&
+      candidate.reason === "checkpoint_not_downloaded")
+  );
+}
+
+/** Companions only: a target's own head is nothing to choose or download. Ready sorts first. */
+export function selectableExternalMlxDraftCandidates(
+  candidates: readonly MlxSpeculativeCandidate[],
+): MlxSpeculativeCandidate[] {
+  return candidates
+    .filter((c) => c.source !== "builtin" && isSelectableMlxDraftCandidate(c))
+    .sort(
+      (a, b) =>
+        Number(b.loadable) - Number(a.loadable) || compareAutoCandidates(a, b),
+    );
+}
+
+/** The companion a pin names, or null when it names none or names the target's head. */
+export function selectExternalMlxDraftCandidate(
+  candidates: readonly MlxSpeculativeCandidate[],
+  preferredRepo: string | null | undefined,
+): MlxSpeculativeCandidate | null {
+  const preferred = preferredRepo?.trim().toLowerCase();
+  return preferred
+    ? (candidates.find(
+        (c) => c.source !== "builtin" && c.repo_id.toLowerCase() === preferred,
+      ) ?? null)
+    : null;
+}
+
+/** Picking a checkpoint picks the method it implements; the two are one setting. */
+export function mlxDraftSelection(candidate: MlxSpeculativeCandidate): {
+  mlxSpeculativeMode: MlxSpeculativeMethod;
+  mlxDraftModel: string;
+} {
+  return {
+    mlxSpeculativeMode: candidate.method,
+    mlxDraftModel: candidate.repo_id,
+  };
 }
 

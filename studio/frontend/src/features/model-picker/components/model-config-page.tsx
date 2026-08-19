@@ -57,13 +57,28 @@ import {
   type MlxSpeculativeCandidate,
   type MlxSpeculativeMethod,
   type MlxSpeculativeMode,
+  type MlxSpeculativeOptions,
+  mlxDraftSelection,
   isUnavailableMlxSpeculativeMode,
+  mlxDraftRowCheckpoint,
   normalizeMlxDraftBlockSize,
   normalizeMlxDraftModel,
   normalizeMlxSpeculativeMode,
   normalizeMlxSpeculativeMethod,
+  selectExternalMlxDraftCandidate,
   selectMlxSpeculativeCandidate,
+  selectableExternalMlxDraftCandidates,
 } from "@/lib/speculative-modes";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
+import { DownloadProgressBar } from "@/features/hub/download-manager/download-progress-bar";
+import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
+import { TransportConflictDialog } from "@/features/hub/catalog/transport-conflict-dialog";
+import { formatBytes } from "@/features/hub/lib/format";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1315,6 +1330,231 @@ function mlxMethodLabel(mode: MlxSpeculativeMode): string {
       : MLX_SPECULATIVE_METHOD_LABELS[mode];
 }
 
+/** Split on any run of whitespace, so "qwen  mtp" matches as two terms. */
+const MLX_DRAFT_SEARCH_SEPARATOR = /\s+/;
+
+function MlxDraftCheckpointDownload({
+  candidate,
+  onDownloaded,
+}: {
+  candidate: MlxSpeculativeCandidate;
+  /** Re-ask what is available: nothing else moves a candidate out of not-downloaded. */
+  onDownloaded: () => void;
+}) {
+  const [failed, setFailed] = useState(false);
+  // The existing manager, not a second downloader, so it keeps running if this closes.
+  const job = useRepoDownload({
+    kind: "model",
+    repoId: candidate.repo_id,
+    activeVariant: null,
+    autoAdopt: true,
+    onComplete: onDownloaded,
+    onError: () => setFailed(true),
+  });
+  const downloading = job.progress !== null && job.progress.variant === null;
+
+  return (
+    <div className="space-y-2" aria-live="polite">
+      {downloading && job.progress ? (
+        <>
+          <DownloadProgressBar
+            progress={job.progress}
+            bytesPerSec={job.bytesPerSec}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-ui-11 text-muted-foreground">
+              {job.cancelling ? "Cancelling…" : "Downloading checkpoint…"}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
+              disabled={job.cancelling}
+              onClick={() => job.cancelDownload(null)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-ui-11 text-muted-foreground">
+            Not downloaded ({formatBytes(candidate.approximate_size_bytes)})
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
+            // One at a time: a second download would fight the first for the same files.
+            disabled={job.repoPeerActive}
+            onClick={() => {
+              setFailed(false);
+              job.requestStartDownload(null, candidate.approximate_size_bytes);
+            }}
+          >
+            Download
+          </Button>
+        </div>
+      )}
+      {failed ? (
+        <p className="text-ui-11 leading-snug text-destructive">
+          Download failed. Check your connection or credentials and try again.
+        </p>
+      ) : null}
+      <TransportConflictDialog
+        conflict={job.transportConflict}
+        onCancel={job.cancelConflict}
+        onKeepTransport={job.resumeConflict}
+        onSwitchTransport={job.restartConflict}
+      />
+    </div>
+  );
+}
+
+function MlxDraftModelSetting({
+  candidates,
+  selected,
+  resolved,
+  update,
+  onDownloaded,
+}: {
+  candidates: readonly MlxSpeculativeCandidate[];
+  selected: MlxSpeculativeCandidate | null;
+  /** What this request would actually draft with, which a pin can fail to name. */
+  resolved: MlxSpeculativeCandidate | null;
+  update: (patch: Partial<PerModelConfig>) => void;
+  onDownloaded: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const matches = useMemo(() => {
+    const terms = query
+      .toLowerCase()
+      .trim()
+      .split(MLX_DRAFT_SEARCH_SEPARATOR)
+      .filter(Boolean);
+    const found = candidates.filter((candidate) => {
+      const text = `${candidate.label} ${candidate.repo_id}`.toLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+    // Already ordered ready-first by the caller; re-sorting here would offer a download
+    // above a checkpoint the user already has.
+    return found;
+  }, [candidates, query]);
+  const { shown, fetchable } = mlxDraftRowCheckpoint(selected, resolved);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const choose = (candidate: MlxSpeculativeCandidate) => {
+    update(mlxDraftSelection(candidate));
+    setOpen(false);
+    setQuery("");
+  };
+
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Draft Model</span>
+          <InfoHint>
+            The checkpoint that proposes tokens. Only checkpoints built for this
+            model are listed.
+          </InfoHint>
+        </div>
+        <Popover
+          open={open}
+          onOpenChange={(next) => {
+            setOpen(next);
+            if (!next) {
+              setQuery("");
+            }
+          }}
+        >
+          <PopoverTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label="MLX speculative decoding draft model"
+              className={`flex h-8 w-[168px] min-w-0 shrink-0 items-center justify-between gap-1 ${CONTROL_SURFACE} pl-3 pr-2 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/50`}
+            >
+              <span className="truncate">
+                {shown === null ? "Choose a checkpoint" : shown.label}
+              </span>
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                strokeWidth={2}
+                className="pointer-events-none size-3.5 shrink-0 text-muted-foreground"
+              />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={4} className="w-72 gap-0 p-0">
+            <div className="p-1.5 pb-0.5">
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search checkpoints"
+                className="h-8 text-sm"
+                onKeyDown={(event) => {
+                  const first = matches[0];
+                  if (event.key === "Enter" && first) {
+                    event.preventDefault();
+                    choose(first);
+                  }
+                }}
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto p-1">
+              {matches.length === 0 ? (
+                <div className="px-3 py-3 text-xs text-muted-foreground">
+                  No checkpoint matches that search.
+                </div>
+              ) : (
+                matches.map((candidate) => (
+                  <button
+                    key={candidate.repo_id}
+                    type="button"
+                    onClick={() => choose(candidate)}
+                    aria-selected={candidate.repo_id === selected?.repo_id}
+                    className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+                      candidate.repo_id === selected?.repo_id ? "bg-muted" : ""
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-ui-13 text-nav-fg">
+                        {candidate.label}
+                      </span>
+                      <span className="block truncate text-ui-11 text-muted-foreground">
+                        {mlxMethodLabel(candidate.method)}
+                        {candidate.downloaded ? "" : " · not downloaded"}
+                      </span>
+                    </span>
+                    {candidate.recommended ? (
+                      <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                        Recommended
+                      </span>
+                    ) : null}
+                  </button>
+                ))
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+      {/* Keyed by repository, so a failure reported for one is not still on screen
+          under the next. */}
+      {shown && fetchable ? (
+        <MlxDraftCheckpointDownload
+          key={shown.repo_id}
+          candidate={shown}
+          onDownloaded={onDownloaded}
+        />
+      ) : null}
+    </>
+  );
+}
+
 function MlxSpeculativeSetting({
   config,
   update,
@@ -1336,6 +1576,16 @@ function MlxSpeculativeSetting({
   const mode = config.mlxSpeculativeMode ?? "auto";
   // What Auto would pick, so the control names a method rather than making the user load.
   const predicted = selectMlxSpeculativeCandidate(candidates, "auto", null);
+  // What this request would run, which decides whether a companion is choosable.
+  const resolved = selectMlxSpeculativeCandidate(
+    candidates,
+    mode,
+    config.mlxDraftModel,
+  );
+  const externalCandidates = useMemo(
+    () => selectableExternalMlxDraftCandidates(candidates),
+    [candidates],
+  );
   // An empty list would claim the load will not speculate, which a failed or in-flight
   // request cannot support.
   const known = !pending && error === null;
@@ -1397,6 +1647,22 @@ function MlxSpeculativeSetting({
           </SelectContent>
         </Select>
       </div>
+      {/* Hidden only when this request resolves to the target's own head, which needs
+          no companion: there is nothing left for the control to choose. A checkpoint
+          pinned explicitly resolves to that checkpoint instead, here and in the
+          backend, and keeps the row. */}
+      {mode !== "off" && resolved?.source !== "builtin" ? (
+        <MlxDraftModelSetting
+          candidates={externalCandidates}
+          selected={selectExternalMlxDraftCandidate(
+            candidates,
+            config.mlxDraftModel,
+          )}
+          resolved={resolved}
+          update={update}
+          onDownloaded={onRetry}
+        />
+      ) : null}
       {/* Auto names no method until the load resolves one, so there is no default for a
           depth to override yet. */}
       {normalizeMlxSpeculativeMethod(mode) !== null ? (
@@ -1447,18 +1713,8 @@ function MlxSpeculativeSetting({
           </button>
         </p>
       ) : null}
-      {active ? (
-        <div className="space-y-1 text-ui-11 leading-snug text-muted-foreground">
-          <p>Active: {active}</p>
-          {reason ? <p className="text-destructive">{reason}</p> : null}
-          {stats ? (
-            <p>
-              Last request: {stats.acceptedTokens}/{stats.draftedTokens} drafted
-              tokens accepted ({Math.round(stats.acceptanceRate * 100)}%) across{" "}
-              {stats.rounds} rounds.
-            </p>
-          ) : null}
-        </div>
+      {reason ? (
+        <p className="text-ui-11 leading-snug text-destructive">{reason}</p>
       ) : null}
     </>
   );
