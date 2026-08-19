@@ -41,6 +41,7 @@ import {
   cachedPinnableGpuContext,
   pinnableGpuContext,
   reconcileGpuSelection,
+  useInferenceGpuInfo,
   useGpuDevices,
 } from "@/hooks/use-gpu-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -957,6 +958,20 @@ function GgufAdvancedSettings({
       : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
     config.nUbatch != null && config.nUbatch > effectiveBatch;
+  const inferenceGpu = useInferenceGpuInfo();
+  const affectedKvCache = ["q4_1", "q5_0", "q5_1", "iq4_nl"].includes(
+    config.kvCacheDtype ?? KV_CACHE_DTYPE_DEFAULT,
+  );
+  const gpuPlacementWarns =
+    (config.gpuMemoryMode ?? "auto") === "auto" ||
+    ((config.gpuMemoryMode ?? "auto") === "manual" &&
+      (config.gpuLayers == null || config.gpuLayers < 0 || config.gpuLayers > 0));
+  const kvCacheGpuWarning =
+    (inferenceGpu.backend === "cuda" ||
+      inferenceGpu.backend === "rocm" ||
+      inferenceGpu.backend === "hip") &&
+    gpuPlacementWarns &&
+    affectedKvCache;
   return (
     <>
       <div className={ROW_CLASS}>
@@ -994,6 +1009,12 @@ function GgufAdvancedSettings({
           </SelectContent>
         </Select>
       </div>
+      {kvCacheGpuWarning ? (
+        <p className="text-ui-11 leading-snug text-amber-500">
+          This cache type may fall back to CPU on CUDA/HIP, causing high CPU
+          load. q8_0 is a safer quantized option.
+        </p>
+      ) : null}
 
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
