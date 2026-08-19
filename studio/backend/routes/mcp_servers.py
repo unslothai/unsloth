@@ -128,8 +128,8 @@ def _row_to_response(row: dict) -> McpServerResponse:
     )
 
 
-# Read handlers are sync so FastAPI runs them in its threadpool; the mutating ones stay
-# async so the event loop keeps serializing their read-then-write against each other.
+# Read-only handlers are sync, so FastAPI runs them in its threadpool. The rest stay async:
+# the loop is what keeps import's seen_urls-then-insert atomic against a second import.
 @router.get("/", response_model = list[McpServerResponse])
 def list_mcp_servers(
     current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False

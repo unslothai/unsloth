@@ -15,13 +15,11 @@ it read, with nothing below them serializing the pair:
   * refresh consumes a token and inserts its replacement, and logout deletes every token in
     between without rotating the credential generation.
 
-They are await-free, so the loop is what makes those sequences atomic. As plain `def` handlers
-FastAPI dispatches them to its threadpool, where two imports duplicate a server row, an update
-racing a delete writes a credential for a provider that is gone, a burst of guesses passes
-admission together, and a logout leaves the refresh token that landed after it.
-
-The read-only handlers beside them do belong in the threadpool, which is the point of the change
-this guards, so both directions are pinned here.
+They are await-free, so the loop is what makes those sequences atomic. In the threadpool, two
+imports duplicate a server row, an update racing a delete writes a credential for a provider that
+is gone, a burst of guesses passes admission together, and a logout leaves the refresh token that
+landed after it. The read-only handlers beside them do belong in the threadpool, so both
+directions are pinned here.
 
 Asserts which thread each handler ran on rather than racing two requests.
 """
@@ -180,9 +178,9 @@ def _drive(monkeypatch, case: _Case):
 @pytest.mark.parametrize("case", _MUTATIONS.values(), ids = list(_MUTATIONS))
 def test_a_state_changing_handler_runs_on_the_event_loop_thread(monkeypatch, case):
     threads, loop_thread = _drive(monkeypatch, case)
-    assert (
-        threads[0] == loop_thread
-    ), f"{case.path} ran in the threadpool, so its check-then-write is no longer serialized"
+    assert threads[0] == loop_thread, (
+        f"{case.path} ran in the threadpool, so its check-then-write is no longer serialized"
+    )
 
 
 @pytest.mark.parametrize("case", _READS.values(), ids = list(_READS))

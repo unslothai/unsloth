@@ -181,8 +181,8 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 # ── Provider config CRUD ──────────────────────────────────────────
 
 
-# Read handlers are sync so FastAPI runs them in its threadpool; the mutating ones stay
-# async so the event loop keeps serializing their read-then-write against deletion.
+# Read-only handlers are sync, so FastAPI runs them in its threadpool. The rest stay async:
+# the loop is what keeps update's read-then-save atomic against a concurrent delete.
 @router.get("/", response_model = list[ProviderResponse])
 def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
     """List all saved provider configurations."""
