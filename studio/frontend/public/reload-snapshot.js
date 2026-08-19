@@ -6,6 +6,7 @@
   var maxSnapshotLength = 3 * 1024 * 1024;
   var maxInlineStylesLength = 2 * 1024 * 1024;
   var maxSnapshotAgeMs = 10 * 1000;
+  var retainedStyleWaitMs = 500;
   var maxMaterializedMediaPixels = 1500 * 1000;
   var appearanceStorageKey = "unsloth_appearance_customization";
   var maxImportedFonts = 3;
@@ -268,11 +269,24 @@
     // markup is a duplicate of the live shell, so leaving it in the page tree
     // makes `#root textarea` (and the UI tests that wait on one) ambiguous.
     var shell = overlay.attachShadow({ mode: "closed" });
+    var pendingLinkedStyles = 0;
+    var linkedStylesRestored = false;
+    var shellBody;
+    var restoreAfterLinkedStyles = function () {
+      if (linkedStylesRestored) return;
+      linkedStylesRestored = true;
+      if (overlay && shellBody) restoreScrollState(shellBody);
+    };
     linkedStyles.forEach(function (href) {
       if (typeof href !== "string" || !href) return;
       var link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = href;
+      pendingLinkedStyles += 1;
+      link.onload = function () {
+        pendingLinkedStyles -= 1;
+        if (pendingLinkedStyles === 0) restoreAfterLinkedStyles();
+      };
       // A rebuilt bundle renames its hashed CSS, so the shell would come back
       // unstyled. Drop it and let the real document through instead.
       link.onerror = removeOverlay;
@@ -303,7 +317,7 @@
     // Global typography and foreground styles are applied to body, not html.
     // Recreate that inheritance boundary inside the shadow tree rather than
     // hanging the app subtree directly off the synthetic html element.
-    var shellBody = document.createElement("body");
+    shellBody = document.createElement("body");
     shellBody.innerHTML = snapshot.html;
     shellRoot.appendChild(shellBody);
     shell.appendChild(shellRoot);
@@ -323,12 +337,15 @@
         }),
       ]).then(revealShell, revealShell);
     }
-    // Apply once against the current layout, then once more in the last
-    // pre-paint frame after the retained stylesheets have resolved.
+    // Apply immediately and on the next frame for inline styles, then once
+    // linked styles settle (or after a bounded wait) for their final geometry.
     restoreScrollState(shellBody);
     requestAnimationFrame(function () {
       if (overlay) restoreScrollState(shellBody);
     });
+    if (pendingLinkedStyles > 0) {
+      setTimeout(restoreAfterLinkedStyles, retainedStyleWaitMs);
+    }
     removalTimer = setTimeout(removeOverlay, 5000);
   }
 

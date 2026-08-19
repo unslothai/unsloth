@@ -265,6 +265,7 @@ function RootLayout() {
   const routeOwnsReloadReadiness =
     pathname === "/hub" ||
     pathname === "/projects" ||
+    pathname === "/export" ||
     pathname === "/data-recipes" ||
     pathname.startsWith("/data-recipes/");
   const isAuthFlowRoute = useMatches({

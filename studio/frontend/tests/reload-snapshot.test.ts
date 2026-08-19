@@ -60,6 +60,10 @@ const editRecipePageSource = readFileSync(
   ),
   "utf8",
 );
+const exportPageSource = readFileSync(
+  new URL("../src/features/export/export-page.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -305,6 +309,7 @@ function createEnvironment(options: {
   htmlAttributes?: Record<string, string>;
   styleSheets?: string[];
   inlineStyleSheets?: string[];
+  trackScrollRestores?: boolean;
   localStorage?: Map<string, string>;
 }) {
   const storage = options.storage ?? new Map<string, string>();
@@ -312,6 +317,7 @@ function createEnvironment(options: {
   const animationFrames: Array<() => void> = [];
   const fontFaces: Array<{ family: string; source: string }> = [];
   const appended: Array<{ innerHTML: string; removed: boolean }> = [];
+  let scrollRestoreCalls = 0;
   const bodyTree = options.rootTree
     ? createElement({
         tag: "body",
@@ -400,6 +406,8 @@ function createEnvironment(options: {
         },
         rel: "",
         href: "",
+        onload: null as (() => void) | null,
+        onerror: null as (() => void) | null,
         inert: false,
         innerHTML: "",
         textContent: "",
@@ -424,7 +432,24 @@ function createEnvironment(options: {
         getAttribute(name: string) {
           return element.attributes[name] ?? null;
         },
-        querySelectorAll() {
+        querySelectorAll(selector?: string) {
+          if (
+            tag === "body" &&
+            options.trackScrollRestores &&
+            selector ===
+              "[data-reload-scroll-top], [data-reload-scroll-left]"
+          ) {
+            scrollRestoreCalls += 1;
+            return [
+              {
+                scrollTop: 0,
+                scrollLeft: 0,
+                getAttribute(name: string) {
+                  return name === "data-reload-scroll-top" ? "600" : null;
+                },
+              },
+            ];
+          }
           return [];
         },
         appendChild(child: Record<string, unknown>) {
@@ -497,6 +522,9 @@ function createEnvironment(options: {
     appended,
     htmlVariables: documentElement.style,
     htmlAttributes,
+    get scrollRestoreCalls() {
+      return scrollRestoreCalls;
+    },
     /** The host element of the retained shell, if one was restored. */
     get shell() {
       const host = appended[0] as unknown as
@@ -534,6 +562,16 @@ function createEnvironment(options: {
     dispatch(name: string, event: Record<string, unknown> = {}) {
       for (const listener of listeners.get(name) ?? []) {
         listener(event);
+      }
+    },
+    loadStyleSheets() {
+      const host = appended[0] as unknown as
+        | { shadow: ShadowStub | null }
+        | undefined;
+      for (const child of host?.shadow?.children ?? []) {
+        if (child.rel === "stylesheet") {
+          (child.onload as (() => void) | null)?.();
+        }
       }
     },
     runAnimationFrame() {
@@ -702,6 +740,11 @@ test("data-backed routes own reload readiness until hydration settles", () => {
     editRecipePageSource,
     /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
   );
+  assert.match(rootRouteSource, /pathname === "\/export"/);
+  assert.match(
+    exportPageSource,
+    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?unsloth:app-shell-ready/,
+  );
 });
 
 test("captures Vite's injected development stylesheet", () => {
@@ -724,6 +767,30 @@ test("captures Vite's injected development stylesheet", () => {
     storage: outgoing.storage,
   });
   assert.deepEqual(incoming.shell?.inlineStyles, [css]);
+});
+
+test("restores scroll offsets again after linked styles load", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Scrolled shell</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    trackScrollRestores: true,
+  });
+  assert.equal(incoming.scrollRestoreCalls, 1);
+  incoming.runAnimationFrame();
+  assert.equal(incoming.scrollRestoreCalls, 2);
+  incoming.loadStyleSheets();
+  assert.equal(incoming.scrollRestoreCalls, 3);
+  incoming.loadStyleSheets();
+  assert.equal(incoming.scrollRestoreCalls, 3);
 });
 
 test("keeps what a display:contents wrapper renders, drops what is offscreen", () => {
