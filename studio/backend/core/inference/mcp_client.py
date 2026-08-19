@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import sys
 import threading
 import time
@@ -258,6 +259,18 @@ def _stdio_env(headers: Optional[dict]) -> Optional[dict]:
     return env or None
 
 
+def _stdio_argv(parts: list, env: Optional[dict]) -> list:
+    """argv with argv[0] resolved against the child's PATH. Windows looks the command
+    up in the parent environment before ``env`` applies (and cannot run a bare ``npx``
+    that lives only in the managed Node dir), so hand it the full path."""
+    path = (env or {}).get("PATH") or os.environ.get("PATH", "")
+    try:
+        resolved = shutil.which(parts[0], path = path)
+    except OSError:
+        resolved = None
+    return [resolved or parts[0], *parts[1:]]
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -276,11 +289,13 @@ def _client(
             raise ValueError(f"Empty stdio command: {url!r}")
         # env vars ride the headers field (merged over the SDK default env).
         # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
+        env = _stdio_env(headers)
+        argv = _stdio_argv(parts, env)
         return Client(
             StdioTransport(
-                command = parts[0],
-                args = parts[1:],
-                env = _stdio_env(headers),
+                command = argv[0],
+                args = argv[1:],
+                env = env,
                 keep_alive = False,
             )
         )
