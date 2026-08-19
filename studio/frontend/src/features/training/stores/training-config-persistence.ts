@@ -24,7 +24,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 20;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 21;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -226,6 +226,17 @@ function migrateThroughVersion19(
   }
 }
 
+function migrateThroughVersion21(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 21) {
+    // currentStep belonged to the onboarding wizard and was persisted, so without
+    // this it survives every rehydrate and partialize writes it straight back.
+    Reflect.deleteProperty(state, "currentStep");
+  }
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -277,6 +288,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion17(state, version);
   migrateThroughVersion18(state, version);
   migrateThroughVersion19(state, version);
+  migrateThroughVersion21(state, version);
   return state as unknown as TrainingConfigStore;
 }
 

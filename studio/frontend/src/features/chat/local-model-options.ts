@@ -57,6 +57,12 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
+      // Only a single .gguf file, which is the one local shape the picker loads
+      // straight through as a GGUF (`localDirectGgufMeta`). A GGUF DIRECTORY is
+      // deliberately left alone: that row expands to pick a quant, and the
+      // variant it yields is not something a chat row records, so claiming GGUF
+      // for it would send llama-server flags for a quant nobody chose.
+      ...(model.path.toLowerCase().endsWith(".gguf") ? { isGguf: true } : {}),
     });
   }
   return options;

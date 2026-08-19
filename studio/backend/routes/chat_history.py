@@ -10,7 +10,7 @@ mixed handlers explicitly send their database transaction through Starlette's th
 
 import asyncio
 import sqlite3
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
+from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
@@ -25,6 +26,7 @@ from storage.studio_db import (
     ChatThreadDeletedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
+    ProjectWorkspaceError,
     build_chat_history_export,
     clear_chat_history,
     count_chat_threads,
@@ -34,6 +36,7 @@ from storage.studio_db import (
     delete_chat_threads,
     ensure_chat_project_workspace,
     fork_chat_thread,
+    fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
     get_chat_thread,
@@ -52,12 +55,72 @@ from storage.studio_db import (
     upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
+    write_chat_thread_settings,
     upsert_chat_thread,
 )
 
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+class ChatRagThreadSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["thread"]
+
+
+class ChatRagKnowledgeBaseSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    type: Literal["kb"]
+    kbId: str = Field(min_length = 1, max_length = 256)
+
+
+class ChatThreadSettings(BaseModel):
+    """The chat settings captured per thread; a thread storing none uses the global ones."""
+
+    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take
+    # a bare NaN, which is then stored as a token no strict reader can parse back.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+
+    reasoningEnabled: Optional[bool] = None
+    reasoningEffort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    artifactsEnabled: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    # "full" (Full access) is session-only and never persisted, per thread or globally.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragEnabled: Optional[bool] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # The sampling params a chat runs with. Ranges match the sliders that set them.
+    temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
+    topP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
+    topK: Optional[int] = Field(default = None, ge = -1, le = 100)
+    minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
+    presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    # Not length-capped, like the installation-wide copy: truncating here would
+    # silently change what the chat runs with.
+    systemPrompt: Optional[str] = None
+    systemVariables: Optional[str] = None
 
 
 class ChatThread(BaseModel):
@@ -74,6 +137,96 @@ class ChatThread(BaseModel):
     anthropicCodeExecContainerId: Optional[str] = None
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
+    settings: Optional[ChatThreadSettings] = None
+
+
+def thread_from_row(row: dict) -> ChatThread:
+    """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read.
+
+    `settings` is the first strictly validated nested model Studio builds out of the
+    database rather than off the wire, and a stored snapshot outlives the build that
+    wrote it: a newer Studio adding a seventeenth setting, widening an enum or
+    raising a bound writes a blob this one rejects. Refusing it here 500s the chat on
+    open and takes the entire history export with it, since the export validates
+    every thread. `_json_loads` already shrugs off JSON that will not parse; JSON
+    that parses but postdates this build deserves the same treatment.
+
+    Only the read is forgiving. The wire contract stays strict in both directions, so
+    a client still cannot invent a setting, and the row itself is left untouched,
+    which means upgrading again restores whatever this build had to drop.
+    """
+    settings = row.get("settings")
+    if isinstance(settings, dict):
+        row = {**row, "settings": readable_thread_settings(settings)}
+    elif settings is not None:
+        row = {**row, "settings": None}
+    return ChatThread(**row)
+
+
+def readable_thread_settings(settings: dict) -> Optional[dict]:
+    """The part of a stored snapshot this build can validate, or None if none of it is."""
+    known = {k: v for k, v in settings.items() if k in ChatThreadSettings.model_fields}
+    # Drop exactly the fields pydantic names and retry: a version gap usually
+    # carries several at once, so removing one guess at a time gives up too early.
+    for _ in range(len(known) + 1):
+        try:
+            ChatThreadSettings.model_validate(known)
+            return known
+        except ValidationError as exc:
+            bad = {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
+            if not bad or not bad & set(known):
+                return None
+            known = {k: v for k, v in known.items() if k not in bad}
+    return None
+
+
+def _unreadable_thread_settings(stored: dict) -> dict:
+    """The part of a stored snapshot this build cannot validate, and so must not delete.
+
+    An older Studio opening a database a newer one wrote drops the fields it cannot read.
+    A blind replacement would make that loss permanent instead of temporary, so a write
+    carries forward everything the writer could not have known about: unknown keys, and
+    known keys holding values this build rejects.
+    """
+    readable = readable_thread_settings(stored) or {}
+    return {k: v for k, v in stored.items() if k not in readable}
+
+
+def _settings_write_from_patch(patch: dict) -> Optional[dict]:
+    """Take `settings` / `settingsPatch` out of `patch` and describe the write they ask for.
+
+    `settings` replaces the snapshot, `settingsPatch` applies only the fields it names,
+    for a client that knows what changed but not what else the row holds. The result is
+    handed to storage rather than executed here: the read, the merge and the guarded
+    metadata write all have to be one transaction, or two tabs each build a replacement
+    from the same stale row, or a rejected precondition returns 409 having already
+    committed the settings.
+    """
+    replace = "settings" in patch
+    merge = "settingsPatch" in patch
+    seq = patch.pop("settingsSeq", None)
+    writer = patch.pop("settingsWriter", None)
+    if not (replace or merge):
+        return None
+    incoming = patch.pop("settingsPatch", None)
+    if merge:
+        # A merge is the more specific instruction; sending both is a client bug.
+        patch.pop("settings", None)
+    else:
+        incoming = patch.pop("settings")
+    if incoming is None:
+        # Clearing is the one instruction that means the whole column. A merge of
+        # nothing is not an instruction at all, so it leaves the row alone.
+        if replace and not merge:
+            return {"clear": True, "seq": seq, "writer": writer}
+        return None
+    return {
+        "merge": incoming if merge else None,
+        "replace": None if merge else incoming,
+        "seq": seq,
+        "writer": writer,
+        "keep_unreadable": _unreadable_thread_settings,
+    }
 
 
 class ChatThreadPatch(BaseModel):
@@ -91,6 +244,16 @@ class ChatThreadPatch(BaseModel):
     updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    # Replaces the whole snapshot, except for anything the client could not read.
+    settings: Optional[ChatThreadSettings] = None
+    # Applies just the fields it names. For the writer that knows what changed but not
+    # what else the row holds, which is any write made before the row has been read.
+    settingsPatch: Optional[ChatThreadSettings] = None
+    # Orders this writer's snapshot writes against its OWN earlier ones, so a keepalive
+    # sent on unload cannot be undone by a PATCH the server already had in hand. Never
+    # compared across writers: two browsers' counters mean nothing to each other.
+    settingsSeq: Optional[int] = None
+    settingsWriter: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -175,7 +338,13 @@ class ChatExportResponse(BaseModel):
 
 
 class ChatInferenceSettings(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    # allow_inf_nan: json.loads accepts bare NaN and Infinity, and pydantic takes them
+    # for a float, so `{"temperature": NaN}` used to be stored as a bare NaN token in
+    # value_json. Python reads that back, so the row is never quarantined, while the
+    # response model renders it as null: the value is silently lost and the row is not
+    # valid JSON for any strict reader. Refuse it at the door instead, the way
+    # models/training.py already does for every numeric training field.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
@@ -192,7 +361,7 @@ class ChatInferenceSettings(BaseModel):
 
 
 class ChatPresetLoadConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
@@ -229,10 +398,26 @@ class ChatPreset(BaseModel):
     loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
-class ChatSettingsPayload(BaseModel):
+class ChatResearchWebsitePolicy(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
+    # 253 is the maximum length of a DNS name.
+    allowedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+    blockedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
+        default_factory = list, max_length = 1_000
+    )
+
+
+class ChatSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+
     inferenceParams: Optional[ChatInferenceSettings] = None
+    # Last-used params per checkpoint id. Deep-merged per key, so patching one
+    # model cannot drop another's.
+    inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
@@ -247,6 +432,63 @@ class ChatSettingsPayload(BaseModel):
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
+
+    # Composer and RAG toggles. They describe the installation, not the browser
+    # that set them, so a second browser or a remote session reads them back here
+    # instead of falling back to defaults.
+    reasoningEnabled: Optional[bool] = None
+    toolsEnabled: Optional[bool] = None
+    codeToolsEnabled: Optional[bool] = None
+    imageToolsEnabled: Optional[bool] = None
+    webFetchToolsEnabled: Optional[bool] = None
+    deepResearchEnabled: Optional[bool] = None
+    researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
+    # like the run route so a value it would reject cannot be persisted and replayed.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
+    artifactsEnabled: Optional[bool] = None
+    showCanvasMenuItem: Optional[bool] = None
+    mcpEnabledForChat: Optional[bool] = None
+    confirmToolCalls: Optional[bool] = None
+    # "full" (Full access) is session-only by design and never persisted.
+    permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    ragSource: Optional[
+        Annotated[
+            Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
+            Field(discriminator = "type"),
+        ]
+    ] = None
+    ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
+    # Matches the ge/le the retrieval endpoint enforces on its own top_k.
+    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
+    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    ragOcrScanned: Optional[bool] = None
+    ragCaptionFigures: Optional[bool] = None
+    # Standing load preferences the model-load path reads outside the store.
+    speculativeType: Optional[Literal["auto", "ngram", "off"]] = None
+    gpuMemoryMode: Optional[Literal["auto", "manual"]] = None
+    expandQuantizations: Optional[bool] = None
+    showAllQuantizations: Optional[bool] = None
+    fitOnDeviceOnly: Optional[bool] = None
+
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+    @field_validator("researchModelTimeoutSeconds")
+    @classmethod
+    def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:
+        # The run route takes 0 (unlimited) or at least 10, so a persisted 1..9 would hydrate
+        # and then 400 every later run with nothing pointing at this setting.
+        if value is not None and 0 < value < 10:
+            raise ValueError("researchModelTimeoutSeconds must be 0 (unlimited) or at least 10")
+        return value
 
 
 class ChatSettingsResponse(BaseModel):
@@ -291,7 +533,7 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [ChatThread(**t) for t in threads])
+    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
 
 
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
@@ -312,7 +554,7 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
-        return ChatThread(**upsert_chat_thread(payload.model_dump()))
+        return thread_from_row(upsert_chat_thread(payload.model_dump()))
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
@@ -328,7 +570,7 @@ def get_thread(thread_id: str, current_subject: str = Depends(get_current_subjec
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatThread(**thread)
+    return thread_from_row(thread)
 
 
 @router.patch("/threads/{thread_id}", response_model = ChatThread)
@@ -345,12 +587,14 @@ def patch_thread(
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
         raise _missing_project_error(patch["projectId"])
+    settings_write = _settings_write_from_patch(patch)
     try:
         thread = update_chat_thread(
             thread_id,
             patch,
             expected_title = expected_title,
             expected_opening_message_id = expected_opening_message_id,
+            settings_write = settings_write,
         )
     except sqlite3.IntegrityError as exc:
         # Same race as save_thread: the project can go away before this write lands.
@@ -364,7 +608,7 @@ def patch_thread(
         )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatThread(**thread)
+    return thread_from_row(thread)
 
 
 def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
@@ -685,7 +929,22 @@ def list_projects(
 
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
-    return ChatProject(**upsert_chat_project(payload.model_dump()))
+    try:
+        return ChatProject(**upsert_chat_project(payload.model_dump()))
+    except ProjectWorkspaceError as exc:
+        # A project is the only thing Studio writes to Documents, so a folder it
+        # cannot create there fails here and nowhere else. Only this error, and
+        # only its own path: the same upsert also opens the database, which
+        # lives somewhere else entirely.
+        raise log_and_http_error(
+            exc,
+            500,
+            f"Could not create the project folder {exc.path}. Check that the "
+            "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
+            "location.",
+            event = "chat_history.create_project_workspace_failed",
+            log = logger,
+        ) from exc
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
@@ -1094,7 +1353,12 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code = 400, detail = exc.errors()) from exc
+        # safe_validation_errors, not exc.errors(): the raw errors echo the offending
+        # input, and Starlette's JSONResponse dumps with allow_nan = False, so a
+        # rejected NaN or Infinity made the 400 handler itself unrenderable and the
+        # caller got a 500 for a request the validator had already refused. It also
+        # bounds a multi-megabyte value being quoted back.
+        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
@@ -1124,6 +1388,10 @@ class ChatForkResponse(BaseModel):
 
 class ChatForkCountResponse(BaseModel):
     count: int
+
+
+class ChatThreadForkCountsResponse(BaseModel):
+    counts: dict[str, int]
 
 
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
@@ -1176,7 +1444,7 @@ def fork_thread(
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
     return ChatForkResponse(
-        thread = ChatThread(**forked),
+        thread = thread_from_row(forked),
         messages = [ChatMessage(**m) for m in messages],
         containerSnapshotWarning = warning,
     )
@@ -1194,6 +1462,15 @@ def get_fork_count(
     return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
 
 
+@router.get(
+    "/threads/{thread_id}/forks",
+    response_model = ChatThreadForkCountsResponse,
+)
+def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_current_subject)):
+    """Every fork count of a thread in one read, so a rendered thread costs one request."""
+    return ChatThreadForkCountsResponse(counts = fork_counts_for_thread(thread_id))
+
+
 @router.get("/export", response_model = ChatExportResponse)
 def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
@@ -1203,6 +1480,6 @@ def export_history(current_subject: str = Depends(get_current_subject)):
         version = 1,
         threadCount = len(threads),
         projects = [ChatProject(**project) for project in projects],
-        threads = [ChatThread(**thread) for thread in threads],
+        threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )

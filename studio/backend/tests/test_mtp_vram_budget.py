@@ -355,6 +355,74 @@ class TestOverheadTotal:
         pred = b._estimate_mtp_overhead_bytes(ctx) / MIB
         assert pred == pytest.approx(measured_draft_kv_mib, abs = 2)
 
+    @pytest.mark.parametrize(
+        "ctx,target_kv_mib,draft_kv_mib",
+        [
+            (4096, 256, 16),
+            (16384, 1024, 64),
+            (65536, 4096, 256),
+            (131072, 8192, 512),
+        ],
+    )
+    def test_hybrid_mtp_matches_target_and_draft_context_across_lengths(
+        self, ctx, target_kv_mib, draft_kv_mib
+    ):
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        target = b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = 4)
+        draft_kv = b._mtp_draft_kv_bytes(ctx, n_parallel = 4)
+
+        assert base / MIB == pytest.approx(598.5)
+        assert target == base + target_kv_mib * MIB
+        assert draft_kv == draft_kv_mib * MIB
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                ctx,
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+
+    def test_a_separate_drafter_pays_the_same_target_rollback_state(self, monkeypatch):
+        # The rollback copies live in the TARGET context, and llama.cpp sizes them
+        # from --spec-draft-n-max for every draft-model type (need_n_rs_seq), so a
+        # sidecar drafter costs the Hybrid Mamba target exactly what an embedded
+        # head does. draft-simple is the one engaged mode that gets none, which is
+        # what the caller reports through target_rollback.
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        stub = _StubDrafter(kv_per_token = 2000)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        draft_kv = stub._estimate_kv_cache_bytes(4096, n_parallel = 4)
+        assert base > 0
+
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+                target_rollback = False,
+            )
+            == draft_kv
+        )
+
 
 # ---------------------------------------------------------------------------
 # _fit_context_to_vram: MTP reserve lowers the chosen context
@@ -598,17 +666,20 @@ class TestExtraArgsMtpDetection:
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
         # A SEPARATE drafter offloaded to CPU (--spec-draft-ngl 0 /
         # --spec-draft-device none) consumes no GPU, so it must be dropped from the
-        # budget and get no flat reserve (Finding F2). But an embedded head is on
-        # GPU regardless of those draft-only flags, so the flat reserve is only
-        # suppressed when there is no embedded head (Finding G5).
+        # budget and get no flat reserve (Finding F2). An embedded head is on GPU
+        # regardless of those draft-only flags (Finding G5) -- but only when it is
+        # the head that runs: llama.cpp loads the draft model on has_dft(), so a
+        # separate sidecar wins over one, and an unused head must not keep the
+        # reserve alive. Hence "no embedded head OR a separate drafter was chosen".
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
         assert (
             "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
         )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
-        # flat reserve suppressed only for a CPU drafter with no embedded head
-        assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
+        # flat reserve suppressed for a CPU drafter that is the one being launched
+        assert "_draft_cpu_no_embedded=_draft_on_cpuand(" in compact
+        assert "ornotself._nextn_predict_layers)" in compact
         assert "not_draft_cpu_no_embedded" in compact
 
     def test_load_model_keeps_flat_reserve_for_unsized_draft_kv(self):
@@ -622,10 +693,13 @@ class TestExtraArgsMtpDetection:
     def test_load_model_ranks_subsets_by_active_pin_fraction(self):
         # Auto/cap subset ranking uses the active budget fraction (lowered by the
         # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
-        # the fit budget that is then tested (Finding G4).
+        # the fit budget that is then tested (Finding G4). _vram_frac is that
+        # fraction resolved once per load: the user's budget, else the constant.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_gpu_usable(g,pin_fraction)" in compact
-        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
+        assert "_gpu_usable(g,_vram_frac-_flat_mtp_reserve)" in compact
+        # Resolved once, so a mid-load save cannot split ranking from fitting.
+        assert "_vram_frac=_active_vram_fraction()" in compact
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -1038,10 +1112,17 @@ class TestExtraArgsMtpDetection:
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
         # tensor reserve must be suppressed like the layer path -- else tensor mode
         # subtracts a phantom flat MTP reserve and under-advertises context (#6312).
+        # The flat fraction is the part that must stay suppressed outright; the
+        # byte reserve now has one exception, a Hybrid Mamba target's own rollback
+        # state, which the CPU pin does not move off the GPU.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_mtp_will_engageandnot_draft_cpu_no_embedded" in load
-        assert "ifnot_mtp_reserves_gpu:" in load
+        assert "if(_flat_mtp_engagesandnot_draft_cpu_no_embedded)" in load
+        assert "_mtp_reserves_gpu=_mtp_will_engageandnot_draft_cpu_no_embedded" in load
         assert "mtp_engaged=_mtp_reserves_gpu" in load
+        # The tensor floor asks the narrower question, so the target state it keeps
+        # is held there without also re-charging the CPU-resident draft graph.
+        assert "_mtp_gpu_bytes_remain=_mtp_reserves_gpuormtp_overhead_fnisnotNone" in load
+        assert "ifnot_mtp_gpu_bytes_remain:" in load
 
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,

@@ -33,12 +33,30 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# What this helper guarantees about the third-party source it builds as root. install.sh
+# refuses to run a copy that does not declare the contract it requires, so a helper fetched
+# from an older pin can never quietly drop one of these. Bump BOTH on any change here.
+#   1: builds LIBROCDXG_REF, no verification.
+#   2: verifies the clone against LIBROCDXG_SHA before building, and treats a failed
+#      checkout with no SHA to verify against as fatal rather than building default HEAD.
+UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2
+
 # ── Tunables (override via env) ──────────────────────────────────────────────
 ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
 # GPU arch: empty = auto-detect from rocminfo after install (override UNSLOTH_WSL_GFX=gfx1200).
 # The ROCm + librocdxg setup is arch-agnostic; only verify + the smoke test need the arch.
 GFX="${UNSLOTH_WSL_GFX:-}"
-LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-develop}"    # ROCm/librocdxg git ref to build
+# ROCm/librocdxg source to build. This is compiled and `sudo make install`ed, so it is
+# pinned to a commit, not to a branch (rewritten by definition) or a tag (movable): the
+# ref IS the commit and the clone is verified against it below. This is v1.2.2, the
+# current release, which is also what develop points at, so the build is unchanged.
+LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-4955d12888a3ec57057f1cf8660c2485e415e74c}"
+LIBROCDXG_SHA="${UNSLOTH_LIBROCDXG_SHA:-4955d12888a3ec57057f1cf8660c2485e415e74c}"
+# An explicit UNSLOTH_LIBROCDXG_REF with no SHA is a deliberate operator choice (e.g.
+# testing a fix branch) -- honour it and skip the pin check rather than hard-failing.
+if [ -n "${UNSLOTH_LIBROCDXG_REF:-}" ] && [ -z "${UNSLOTH_LIBROCDXG_SHA:-}" ]; then
+    LIBROCDXG_SHA=""
+fi
 # AMD's wheel index for the (optional) smoke test; resolved after arch detection.
 TORCH_INDEX=""
 # Optional torch smoke test (throwaway venv). OFF by default: install.sh installs
@@ -197,11 +215,30 @@ else
     note "Windows SDK: ${_win_sdk}"
     _src="${HOME}/.unsloth/librocdxg"
     rm -rf "$_src"
-    git clone --depth 1 --branch "$LIBROCDXG_REF" https://github.com/ROCm/librocdxg.git "$_src" \
-        || git clone "https://github.com/ROCm/librocdxg.git" "$_src"
+    # --branch takes a branch/tag, never a commit, so a 40 char ref goes straight to the
+    # full clone (librocdxg is ~29 MB, about a second) and is reached by checkout below.
+    if [ "${#LIBROCDXG_REF}" = "40" ]; then
+        git clone "https://github.com/ROCm/librocdxg.git" "$_src"
+    else
+        git clone --depth 1 --branch "$LIBROCDXG_REF" https://github.com/ROCm/librocdxg.git "$_src" \
+            || git clone "https://github.com/ROCm/librocdxg.git" "$_src"
+    fi
     (
         cd "$_src"
-        git checkout "$LIBROCDXG_REF" 2>/dev/null || true
+        _co_failed=0
+        git checkout "$LIBROCDXG_REF" 2>/dev/null || _co_failed=1
+        # A failed checkout leaves the default branch in place. With a SHA the check below
+        # catches that; without one (a deliberate ref-only override) nothing else would, and
+        # building whatever HEAD happens to be is not what was asked for.
+        if [ "$_co_failed" = "1" ] && [ -z "$LIBROCDXG_SHA" ]; then
+            die "could not check out librocdxg ref '${LIBROCDXG_REF}'. Refusing to build the repository's default branch instead."
+        fi
+        # Verify the pin BEFORE cmake/make/`sudo make install` run anything from this
+        # tree: a moved tag or a mirror serving something else stops here.
+        if [ -n "$LIBROCDXG_SHA" ]; then
+            _got_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+            [ "$_got_sha" = "$LIBROCDXG_SHA" ] || die "librocdxg ${LIBROCDXG_REF} resolved to ${_got_sha:-unknown}, expected ${LIBROCDXG_SHA}. Refusing to build and install unverified source as root. Set UNSLOTH_LIBROCDXG_REF (and optionally UNSLOTH_LIBROCDXG_SHA) to build a different revision on purpose."
+        fi
         mkdir -p build && cd build
         cmake .. -DWIN_SDK="${_win_sdk}/shared"
         make -j"$(nproc)"

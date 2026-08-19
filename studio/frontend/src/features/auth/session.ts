@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
 import { isTauri } from "@/lib/api-base";
 
 import {
@@ -13,7 +12,6 @@ export { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "./session
 
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
-export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 
 
@@ -93,26 +91,10 @@ export function setMustChangePassword(required: boolean): void {
   }
 }
 
-export function isOnboardingDone(): boolean {
-  if (!canUseStorage()) return false;
-  return localStorage.getItem(ONBOARDING_DONE_KEY) === "true";
-}
-
-export function markOnboardingDone(): void {
-  if (!canUseStorage()) return;
-  localStorage.setItem(ONBOARDING_DONE_KEY, "true");
-}
-
-export function resetOnboardingDone(): void {
-  if (!canUseStorage()) return;
-  localStorage.removeItem(ONBOARDING_DONE_KEY);
-}
-
 
 
 export function getPostAuthRoute(): PostAuthRoute {
   if (isTauri) return "/chat";
   if (mustChangePassword()) return "/change-password";
-  if (usePlatformStore.getState().isChatOnly()) return "/chat";
   return "/chat";
 }

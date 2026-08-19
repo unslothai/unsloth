@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
+import { DEFAULT_HYPERPARAMS } from "@/config/training";
 import { getLocale, translate } from "@/i18n";
-import type { DatasetFormat, StepNumber } from "@/types/training";
-import { requiresExplicitCachedDatasetSplit } from "../lib/dataset-split-policy";
+import type { DatasetFormat } from "@/types/training";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
-import { validateS3Source } from "../lib/validation";
 import type {
   BrowseDatasetSelection,
   DatasetCacheReferenceOptions,
   TrainingConfigState,
 } from "../types/config";
-
-const MIN_STEP: StepNumber = 1;
-const MAX_STEP: StepNumber = STEPS.length as StepNumber;
-
 export function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
   return {};
 }
@@ -60,7 +54,6 @@ export function createUploadBrowseDatasetSelection(
 
 export const initialTrainingConfigState: TrainingConfigState = {
   userEditRevision: 0,
-  currentStep: MIN_STEP,
   modelType: null,
   selectedModel: null,
   modelKnownCached: false,
@@ -109,38 +102,6 @@ export const initialTrainingConfigState: TrainingConfigState = {
   maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
 };
-
-export function clampTrainingStep(step: number): StepNumber {
-  return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
-}
-
-export function canProceedForTrainingStep(state: TrainingConfigState): boolean {
-  switch (state.currentStep) {
-    case 1:
-      return state.modelType !== null;
-    case 2:
-      return state.selectedModel !== null;
-    case 3: {
-      if (state.datasetSource === "upload") {
-        return state.uploadedFile !== null;
-      }
-      if (state.datasetSource === "s3") {
-        return validateS3Source(state).ok;
-      }
-      return (
-        state.dataset !== null &&
-        state.manualDatasetOptionsValid &&
-        !requiresExplicitCachedDatasetSplit(state)
-      );
-    }
-    case 4:
-    case 5:
-      return true;
-    default:
-      return false;
-  }
-}
-
 export function hasSeparateStreamingEvalSplit(
   state: Pick<
     TrainingConfigState,

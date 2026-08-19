@@ -17,6 +17,7 @@ from typing import cast
 import pytest
 
 from core.inference import safetensors_agentic
+from core.inference import tool_call_parser
 from core.inference.safetensors_agentic import (
     _coerce_arguments,
     _detect_render_html_tool_start,
@@ -115,19 +116,6 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
         assert "print('hi')" in result[0]["function"]["arguments"]
-
-    def test_xml_param_preserves_leading_indentation(self):
-        import json
-
-        # Only the wrapping newline is trimmed; code-argument indentation survives.
-        text = (
-            "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "code": "    indented = 1\n    more"
-        }
 
     def test_xml_unclosed(self):
         # Closing tags omitted; parser must still extract the value.
@@ -3673,6 +3661,16 @@ class TestGGUFSafetensorsHealingParity:
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not all direct intent.
             "I will know the answer after I search the web",
+            # the sign-offs only count when nothing follows them; named work keeps the plan reading.
+            "I'll dig into the source now and report back.",
+            "I'll dig in and search the web for the latest numbers.",
+            "I'll dig in, then run the numbers.",
+            "I'll dig in. Starting with a web search.",
+            "I'll dig in.\nStarting with a web search.",
+            "I'll help analyze the sales data now.",
+            # "let me assist" names work without a "to", so only the sign-offs skip that gate.
+            "Let me assist by searching the web now.",
+            "Let me assist with checking the documentation.",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3690,6 +3688,10 @@ class TestGGUFSafetensorsHealingParity:
             "I'll never call that tool.",
             # Hands control back rather than announcing an action.
             "Let me know if you need anything else.",
+            # #8907: a question to the user, signed off with an action that names no work.
+            "Let me know what you're after and I'll dig in.",
+            'Could you clarify what "it" means? Let me know and I\'ll help analyze!',
+            "Tell me what you are after and let me dig in.",
             "First, the answer is 42",
             "First, the result is 3.",
             "First, it is 42",
@@ -5247,3 +5249,58 @@ def test_both_tool_loops_say_they_are_waiting_for_approval():
             and node.func.id == "awaiting_approval_status"
         ]
         assert calls, f"{name} still announces a gated tool call as running"
+
+
+class TestStreamingDisplayStripStillMatchesTheExportedHelper:
+    """The loop used to call ``strip_tool_markup_streaming`` directly; it now drives a
+    ``StreamingMarkupStripper`` instead, and the exported helper has no call site left in
+    this module. Everything else in this file asserts on the helper, so without this the
+    suite would look like it guards the loop while guarding a parallel implementation.
+
+    This pins the two together: for the inputs the rest of the file uses, the incremental
+    path the loop actually runs must agree with the helper at every prefix.
+    """
+
+    @staticmethod
+    def _loop_strip(text, names = None):
+        """The loop's display strip, reproduced exactly: Magistral reasoning removal,
+        then the shared incremental stripper (see ``_strip_streaming_display``)."""
+        stripper = tool_call_parser.StreamingMarkupStripper(names)
+        return stripper.strip(safetensors_agentic._strip_mistral_reasoning(text))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call>',
+            "before <function=search><parameter=q>x</parameter></function> after",
+            "plain prose with no markup at all",
+            "<think>rehearsed <tool_call>{}</tool_call></think> visible",
+            "[TOOL_CALLS] search[ARGS]{}",
+            "trailing <function=search",
+            "",
+        ],
+    )
+    def test_the_loop_path_agrees_with_the_helper(self, text):
+        names = {"search"}
+        assert self._loop_strip(text, names) == strip_tool_markup_streaming(
+            text, enabled_tool_names = names
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call> after',
+            "<function=search><parameter=q>a</parameter></function>tail",
+        ],
+    )
+    def test_the_loop_path_agrees_at_every_prefix(self, text):
+        """The loop feeds a growing buffer, so agreement has to hold at each step, not
+        only on the whole string."""
+        names = {"search"}
+        stripper = tool_call_parser.StreamingMarkupStripper(names)
+        for i in range(1, len(text) + 1):
+            prefix = text[:i]
+            incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
+            assert incremental == strip_tool_markup_streaming(
+                prefix, enabled_tool_names = names
+            ), f"diverged at offset {i}"

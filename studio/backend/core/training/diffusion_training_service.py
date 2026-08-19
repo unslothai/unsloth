@@ -4,9 +4,9 @@
 """A small job service for diffusion LoRA training.
 
 This is deliberately separate from the LLM ``TrainingBackend``: that backend's
-lifecycle (LLM config build, per-run SQLite rows, matplotlib plots, transfer-to-chat-
-inference) is specific to text training and would mis-handle a diffusion run. This
-service does only what a diffusion job needs -- spawn the trainer subprocess, pump its
+lifecycle (LLM config build, per-run SQLite rows, and matplotlib plots) is specific
+to text training and would mis-handle a diffusion run. This service does only what a
+diffusion job needs -- spawn the trainer subprocess, pump its
 events (``model_load_*`` / ``progress`` / ``complete`` / ``error``) into an in-memory
 status snapshot, and support stop -- and is polled over JSON by the route layer.
 
@@ -27,6 +27,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -209,7 +210,10 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
     """Summaries of persisted diffusion runs, newest first. The heavy per-run payload
     (metric logs, config) stays in the file; fetch it via ``get_diffusion_run``."""
     try:
-        files = sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+        # Sliced by limit below, so a companion per run would halve the history window.
+        files = drop_appledouble_metadata(
+            sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+        )
     except Exception:  # noqa: BLE001 -- unreadable dir -> no history
         return []
     out: list[dict] = []

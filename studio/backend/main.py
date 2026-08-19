@@ -222,8 +222,14 @@ except (OSError, ValueError):
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
+    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # Classify by the canonical value so that inherited default remains editable.
+    from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+    mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -300,11 +306,13 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+    openai_codex_auth_router,
     rag_router,
     research_runs_router,
     training_history_router,
     training_router,
     video_router,
+    youtube_router,
 )
 from routes.llama import router as llama_router
 from routes.whisper import router as whisper_router
@@ -341,7 +349,9 @@ from utils.torch_warmup import (
     start_background_warm,
     warm_status,
 )
-from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.cache_cleanup import (
+    clear_compiled_cache_unless_shared as _clear_compiled_cache_unless_shared,
+)
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
@@ -489,20 +499,6 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-def _warm_rag_embedder() -> None:
-    """Warm RAG embeddings without blocking backend readiness."""
-    try:
-        from storage import rag_db
-
-        if not rag_db.RAG_AVAILABLE:
-            return
-        from core.rag import embeddings
-
-        embeddings.warm()
-    except Exception:
-        pass
-
-
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped by every start and stop. A worker captures the value it started with and stops once
@@ -552,9 +548,9 @@ def _stop_post_warm_thread() -> None:
 def _post_warm_retired(generation: Optional[int]) -> bool:
     """True when this post-warm worker's lifespan has ended. Logs once when it has.
 
-    A mismatch means the application that wanted this work has stopped. Everything the
-    worker does imports or loads something, and the RAG warm can spawn a llama-server, so
-    none of it may start for a stopped lifespan.
+    A mismatch means the application that wanted this work has stopped. The remaining
+    work imports optional platform or RAG scheduling modules, so none of it may start for
+    a stopped lifespan.
     """
     if generation is None or _post_warm_current_generation() == generation:
         return False
@@ -587,14 +583,11 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
 
 
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
-    """Stack-dependent startup work, run after the coordinated warm.
+    """Platform repair and linked-folder lifecycle work after the coordinated warm.
 
-    Both import the ML stack, and both used to do it their own way before the socket bound:
-    the MLX check inline on the lifespan thread (a healthy Mac waited on mlx.core/mlx_lm/
-    mlx_vlm before uvicorn could bind), the RAG embedder early enough to race the warm for
-    the GIL and the import locks, outside its hardware-first order and purge-on-failure.
-
-    Joining the warm first means the stack is imported once, in the intended order.
+    MLX repair used to probe the runtime before the socket bound. Joining first keeps that
+    optional probe out of the login-screen critical path. Linked-folder startup only loads
+    embeddings when a queued sync has real ingestion work; an idle scheduler stays cold.
     """
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
@@ -619,14 +612,15 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
-    # Only the RAG warm is gated: it pulls sentence-transformers/transformers/torch. MLX
-    # autorepair and linked-folder scheduling have their own lifecycles.
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
-        return
 
-    if _post_warm_retired(generation):
-        return
-    _warm_rag_embedder()
+def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
+    """Clear the compiled cache unless a sibling backend of this install is live.
+
+    The decision lives in cache_cleanup, next to the paths it clears and the lock
+    that serializes it against a sibling's startup; run_server puts the probe on
+    app.state because main.py must not import run.py back.
+    """
+    _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
 @asynccontextmanager
@@ -639,7 +633,7 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
-    clear_unsloth_compiled_cache()
+    clear_compiled_cache_unless_shared(app)
 
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
@@ -697,7 +691,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
-    # The RAG embedder warm moved to _post_warm_background_work: here it raced for the GIL.
+    # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
     from core.research_runs import ResearchSupervisor
@@ -752,18 +746,22 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats
+    # this after cleanup, but its awaits would otherwise let startup imports continue for
+    # a lifespan that has already stopped.
+    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
+    if _invalidate_detection is not None:
+        _invalidate_detection()
+
+    from core.inference.openai_codex_auth import shutdown_flows
+
+    await shutdown_flows()
     try:
         from core.rag.folder_sync import stop_auto_sync
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
-
-    # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
-    # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
-    # warm keeps importing for a stopped lifespan. Retiring twice is harmless; getattr for tests.
-    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
-    if _invalidate_detection is not None:
-        _invalidate_detection()
 
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
@@ -783,7 +781,7 @@ async def lifespan(app: FastAPI):
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
-        clear_unsloth_compiled_cache,
+        lambda: clear_compiled_cache_unless_shared(app),
         _hw_module,
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
@@ -1367,6 +1365,9 @@ app.include_router(video_router, prefix = "/api/inference", tags = ["inference"]
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+
+app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
+
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
@@ -1382,6 +1383,7 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
@@ -1556,8 +1558,8 @@ def _torch_warm_in_progress() -> bool:
     """True while the coordinated warm thread is still working through its stages.
 
     A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
-    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
-    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, and datasets
+    run after it, and those C-extension imports can hold the GIL
     for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
     alone ends it with the expensive half of the warm still ahead of it, which is the window
     the grace exists for. But that marker also means "this hardware verdict is provisional,
@@ -1576,6 +1578,23 @@ def _torch_warm_in_progress() -> bool:
     """
     status = warm_status()
     return bool(status["started"] and not status["finished"] and status["alive"])
+
+
+def _inference_active() -> bool:
+    """True while at least one generation is in flight.
+
+    Published so the desktop health watchdog can tell a backend that is busy serving from
+    one that has died: a saturated host can stall the event loop past a probe budget, and
+    killing there ends a response the user is still waiting on.
+
+    A len() under a threading.Lock held only for that read, so the route stays cheap.
+    Failures report "not busy", the same answer as before this field existed.
+    """
+    try:
+        from state import active_generations
+        return active_generations.count() > 0
+    except Exception:
+        return False
 
 
 @app.get("/api/liveness")
@@ -1597,12 +1616,18 @@ async def liveness_check():
     # are the point of the route: it probes liveness every 15s and holds its startup grace
     # period open until a reply says the warm-up is over, because the warm thread's
     # `import torch` holds the GIL and can stall the next probes on a healthy process.
-    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
-    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: later
+    # transformers and datasets stages can also hold the GIL after detection settles.
     # Both are non-blocking reads of module-level state, so unlike health this neither starts
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():
         alive["torch_warm_in_progress"] = True
+    # Startup is not the only window where a healthy backend can miss probes: an
+    # oversubscribed host generating on every slot stalls this loop the same way, long
+    # after the warm is over. The watchdog widens its failure budget on this marker
+    # rather than ending a stream that is still producing tokens.
+    if _inference_active():
+        alive["inference_active"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
         if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -1654,6 +1679,10 @@ async def health_check(request: Request):
     # to have liveness, so the warm marker has to reach it by the same path.
     if _torch_warm_in_progress():
         base["torch_warm_in_progress"] = True
+    # Lockstep with /api/liveness for the same reason: the fallback route has to carry the
+    # busy marker too, or an older backend loses the widened budget.
+    if _inference_active():
+        base["inference_active"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1687,6 +1716,12 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
+    # Alongside device_type, not folded into it: "mac" is every Darwin host, and an Intel
+    # Mac with a discrete GPU spills to system RAM like a PC while Apple Silicon has one
+    # pool and nowhere to spill. The UI words its memory warnings from this. Same gate the
+    # Metal context budget uses, and a pure platform check, so a health poll pays nothing.
+    from utils.hardware import is_apple_silicon
+
     authed = {
         **base,
         "version": UNSLOTH_VERSION,
@@ -1707,6 +1742,7 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        authed["apple_silicon"] = is_apple_silicon()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
@@ -1851,6 +1887,15 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             )
             enriched_devices.append(enriched_dev)
 
+        # The tile divides the aggregate by the SUMMED per-device totals, so both must
+        # describe the same cards. The two probes enumerate independently: visibility
+        # drops a device whose mem_get_info raises, the aggregate side reads torch
+        # properties only and keeps it. A device in one and not the other inflates the
+        # percentage and floors free at 0, so identical index sets only (#7452).
+        aggregate_basis_matches = metrics_match and {
+            d.get("index") for d in utilization_info.get("devices", [])
+        } == {d.get("index") for d in enriched_devices}
+
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
@@ -1878,6 +1923,11 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
             "gguf_gpu_ids_supported": gpu_ids_supported,
+            # Host-level used VRAM, for when no counter is attributable to one card
+            # (#7452). Only the Windows ROCm path sets it; None everywhere else.
+            "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
+            if aggregate_basis_matches
+            else None,
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp
@@ -1916,7 +1966,12 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device, export_capability, video_capability
+    from utils.hardware import (
+        get_device,
+        export_capability,
+        video_capability,
+        cpu_frequency_mhz,
+    )
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
@@ -1925,11 +1980,8 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     memory = psutil.virtual_memory()
 
-    try:
-        cpu_freq = psutil.cpu_freq()
-    except Exception as e:
-        logger.debug(f"Failed to get CPU frequency: {e}")
-        cpu_freq = None
+    # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
+    cpu_freq_mhz = cpu_frequency_mhz()
 
     try:
         disk = psutil.disk_usage(os.path.abspath(os.sep))
@@ -1972,9 +2024,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),
             "usage_percent": psutil.cpu_percent(interval = None),
-            "frequency_mhz": round(cpu_freq.current, 2)
-            if cpu_freq and cpu_freq.current is not None
-            else None,
+            "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
             "total_gb": round(memory.total / 1024**3, 2),
@@ -2273,13 +2323,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_remote_frontend_request(scope, app_state) -> bool:
+    """True for a request the desktop backend may answer with its packaged web UI.
+
+    Two ways in, both identified by the connection itself rather than a client
+    header the caller controls: Cloudflare's own edge, or one of the sockets the
+    runtime LAN listener bound (Settings > LAN access).
+    """
+    from lan_access import request_on_lan_listener
+    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+
+
 class _TunnelOnlyFrontend:
     def __init__(self, frontend_app, app_state):
         self.frontend_app = frontend_app
         self.app_state = app_state
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+        if scope["type"] != "http" or _is_remote_frontend_request(scope, self.app_state):
             await self.frontend_app(scope, receive, send)
             return
         await Response(status_code = 404)(scope, receive, send)
@@ -2291,7 +2352,11 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional)"""
+    """Mount frontend static files (optional).
+
+    ``tunnel_only`` restricts the mount to remote callers: the Cloudflare edge, or
+    a socket the runtime LAN listener bound. See :func:`_is_remote_frontend_request`.
+    """
     if not build_path.exists():
         return False
 
@@ -2307,7 +2372,7 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
 
     def _frontend_request_allowed(request: Request) -> bool:
-        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
+        return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()

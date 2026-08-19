@@ -153,13 +153,32 @@ def split_listing_is_complete(names: Iterable[str], name: str) -> bool:
     The listing counterpart of _drafter_split_is_complete, which needs files on disk.
     A repo mid-upload lists part of a set and the fetch refuses that, so the plan and
     the budget must agree. True for a single-file name, which encodes no set.
+
+    Counted within the file's own directory. A repo laid out by quant can hold
+    Q4/model-00001-of-00002.gguf beside Q8/model-00002-of-00002.gguf, and matching
+    on basenames alone would call both halves of two broken sets one whole one.
     """
     match = _LISTED_SHARD_RE.match(Path(name).name)
     if not match:
         return True
-    stem, total = match.group(1), match.group(3)
+    stem, total = match.group(1), int(match.group(3))
+    parent = Path(name).parent
     sibling = re.compile(
-        r"^" + re.escape(stem) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$",
+        r"^" + re.escape(stem) + r"-(\d{5})-of-" + re.escape(match.group(3)) + r"\.gguf$",
         re.IGNORECASE,
     )
-    return sum(1 for other in names if sibling.match(Path(other).name)) == int(total)
+    # Distinct indices inside 1..total, not a count: a mid-publication listing can
+    # hold 00001-of-00002 beside a stray 00003-of-00002, and counting would call
+    # that pair whole while shard 2 is still missing and llama-server cannot open
+    # the set. _drafter_split_is_complete answers the on-disk version the same way.
+    seen = set()
+    for other in names:
+        if Path(other).parent != parent:
+            continue
+        found = sibling.match(Path(other).name)
+        if not found:
+            continue
+        index = int(found.group(1))
+        if 1 <= index <= total:
+            seen.add(index)
+    return len(seen) == total

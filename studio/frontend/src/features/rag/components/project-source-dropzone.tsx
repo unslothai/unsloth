@@ -13,7 +13,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  announceProjectSourcesUpdated,
   invalidateProjectSources,
+  noteProjectWork,
   uploadProjectDocument,
 } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -91,7 +93,23 @@ export async function uploadStagedSources(
   if (staged.length === 0) return;
   invalidateProjectSources(projectId);
   markProjectSourcesPending(projectId);
-  const { ocr, caption } = resolveVisionOverrides();
+  // Counted as project work for the whole batch: a tab opening the new project
+  // holds no row for a file still uploading, so without this it reports nothing
+  // indexing and lets a send go out ahead of the sources it was created with.
+  noteProjectWork(projectId, 1);
+  try {
+    await uploadStaged(projectId, staged);
+  } finally {
+    announceProjectSourcesUpdated(projectId);
+    noteProjectWork(projectId, -1);
+  }
+}
+
+async function uploadStaged(
+  projectId: string,
+  staged: StagedSource[],
+): Promise<void> {
+  const { ocr, caption } = await resolveVisionOverrides();
   const documentIds = new Set<string>();
   const merged: string[] = [];
   for (const entry of staged) {
@@ -127,7 +145,6 @@ export async function uploadStagedSources(
       { description: "Identical contents are stored once." },
     );
   }
-  invalidateProjectSources(projectId);
 }
 
 /** Create-project drop area: stages files until the project exists. */
@@ -292,7 +309,14 @@ export function ProjectSourceDropzone({
   // handler, which would attach it to the chat behind the dialog.
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => {
-      if (disabled) return;
+      // Claimed but refusing, so say so: returning quietly made the file
+      // vanish with no border and no message (#9036).
+      if (disabled) {
+        toast.error("Sources are still uploading", {
+          description: "Wait for them to finish, then drop again.",
+        });
+        return;
+      }
       void addNativePaths(paths);
     },
     onDragOver: (over) => setDragging(over && !disabled),

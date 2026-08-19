@@ -4,13 +4,13 @@
 # Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
 # Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
-# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+# Usage: run -Help. The web one-liner is in that help text and is not repeated here, since
+# AMSI scans this file in full before any of it runs and nothing reads the header.
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
-    # Reset at entry: `irm ... | iex` defines this function in the caller's session, so a
+    # Reset at entry: a piped web run defines this function in the caller's session, so a
     # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
@@ -183,15 +183,43 @@ Environment:
         }
     }
 
+    # Is this bin\unsloth.cmd the launcher install.ps1 wrote, or just a file with that
+    # name? The distinction decides whether a directory gets deleted recursively, so a
+    # name alone is not enough -- `unsloth.cmd` is a plausible wrapper for anyone who
+    # ships an unsloth-based tool, and pointing UNSLOTH_STUDIO_HOME at such a project
+    # must not hand its whole tree to _RemovePath.
+    #
+    # The trampoline is the marker: install.ps1 bakes that exact expression into the
+    # shim, no other file has a reason to carry it, and it survives every layout the
+    # shim has (relative %~dp0 or an absolute cross-volume path, unsloth_studio or the
+    # legacy .venv). Bounded read: the real shim is a few hundred bytes.
+    function _IsUnslothCmdShim {
+        param([string]$Path)
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+        try {
+            $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+            if ($item.Length -gt 8192) { return $false }
+            $text = [System.IO.File]::ReadAllText($Path)
+        } catch {
+            # Unreadable proves nothing, and "proves nothing" must not mean "delete it".
+            return $false
+        }
+        return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
+    }
+
     # A path is an Unsloth-owned root iff one of install.ps1's sentinels exists:
     #   <root>\share\studio.conf, <root>\unsloth_studio\.unsloth-studio-owned,
-    #   or <root>\bin\unsloth.exe.
+    #   <root>\bin\unsloth.exe, or a <root>\bin\unsloth.cmd this installer wrote.
+    # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
+    # machines whose Application Control policy denies the generated console script. An
+    # install whose .exe was removed by that policy's quarantine still owns its root.
     function _IsStudioRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
+        if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
         return $false
     }
 
@@ -479,7 +507,20 @@ Environment:
 
     # Default install root + default data dir.
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
-    $defaultDataDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth Studio" } else { $null }
+    # BOTH LocalAppData spellings, not just the first that answers. The variable is
+    # dropped entirely in service and CI contexts, and install.ps1 also falls through
+    # from it to the known folder when the variable is merely SET but not usable, so
+    # a non-blank $env:LOCALAPPDATA does not mean that is where "Unsloth Studio\temp"
+    # ended up. Reading one candidate leaves the other behind on exactly the hosts
+    # that needed the fallback.
+    $knownLocalAppData = $null
+    try { $knownLocalAppData = [Environment]::GetFolderPath('LocalApplicationData') } catch { $knownLocalAppData = $null }
+    $defaultDataDirs = @()
+    foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidate = Join-Path $root "Unsloth Studio"
+        if ($defaultDataDirs -notcontains $candidate) { $defaultDataDirs += $candidate }
+    }
     # Default-mode ~/.unsloth holds a SHARED llama.cpp build + .cache that are
     # siblings of studio (not under it), so deleting <studio> misses them -- handle
     # explicitly. No-op in env/custom mode (nested under the custom root, removed
@@ -512,8 +553,8 @@ Environment:
 
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
-    if ($defaultDataDir) {
-        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $knownRoots
+    foreach ($d in $defaultDataDirs) {
+        _StopByPortFile -PortFile (Join-Path $d "studio.port") -KnownRoots $knownRoots
     }
     foreach ($r in $customRoots) {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
@@ -599,7 +640,7 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    $stopRoots = @($knownRoots) + @($defaultDataDirs) + @($defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
@@ -637,7 +678,7 @@ Environment:
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir.
-    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    foreach ($d in $defaultDataDirs) { _RemoveDataDirKeepingWslIcon $d }
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
@@ -728,7 +769,9 @@ Environment:
     # Re-sweep: the first pass may have left unsloth.ico locked by Explorer/SMEH for
     # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
     # keeps the icon -- see the helper.)
-    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    foreach ($d in $defaultDataDirs) {
+        if (Test-Path -LiteralPath $d) { _RemoveDataDirKeepingWslIcon $d }
+    }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."

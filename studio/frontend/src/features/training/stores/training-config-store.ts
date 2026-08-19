@@ -50,8 +50,6 @@ import {
   partializeTrainingConfig,
 } from "./training-config-persistence";
 import {
-  canProceedForTrainingStep,
-  clampTrainingStep,
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
   datasetSelectionStreamingPatch,
@@ -815,34 +813,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
       return {
         ...initialTrainingConfigState,
-        setStep: (step) => set({ currentStep: step }),
-        nextStep: () =>
-          set({ currentStep: clampTrainingStep(get().currentStep + 1) }),
-        prevStep: () =>
-          set({ currentStep: clampTrainingStep(get().currentStep - 1) }),
-        setModelType: (modelType) => {
-          _modelConfigController?.abort();
-          _modelConfigController = null;
-
-          setUserEdit({
-            modelType,
-            selectedModel: null,
-            modelKnownCached: false,
-            modelLocalPath: null,
-            modelFormat: null,
-            isCheckingVision: false,
-            isVisionModel: false,
-            isEmbeddingModel: false,
-            isAudioModel: false,
-            audioCapabilityUnknown: false,
-            isDatasetAudio: false,
-            isLoadingModelDefaults: false,
-            modelDefaultsError: null,
-            modelDefaultsAppliedFor: null,
-            advancedSettingsBaseline: null,
-            trainOnCompletionsDefaultPendingFor: null,
-          });
-        },
         setSelectedModel: (selectedModel) => {
           selectModelInternal(selectedModel, null);
         },
@@ -963,32 +933,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
           });
-        },
-        setDatasetSource: (datasetSource) => {
-          const state = get();
-          if (datasetSource === state.datasetSource) {
-            const invariantPatch = datasetSourceInvariantPatch(state);
-            if (invariantPatch.datasetStreaming !== undefined) {
-              set(invariantPatch);
-            }
-            return;
-          }
-          if (datasetSource === "s3") {
-            selectS3SourceInternal();
-            return;
-          }
-          if (
-            state.datasetSource === "s3" &&
-            state.browseDatasetSelection.source === datasetSource
-          ) {
-            restoreBrowseDatasetSourceInternal();
-            return;
-          }
-          if (datasetSource === "upload") {
-            selectLocalDatasetInternal(null);
-            return;
-          }
-          selectHfDatasetInternal(null);
         },
         selectHfDataset: selectHfDatasetInternal,
         selectLocalDataset: selectLocalDatasetInternal,
@@ -1236,32 +1180,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) =>
           setUserEdit({ datasetSliceEnd }),
-        setUploadedFile: (uploadedFile) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          setUserEdit((state) => ({
-            uploadedFile,
-            datasetKnownCached: false,
-            datasetLocalPath: null,
-            browseDatasetSelection:
-              state.datasetSource === "upload"
-                ? createUploadBrowseDatasetSelection(uploadedFile)
-                : state.browseDatasetSelection,
-            datasetCheckFailed: false,
-            datasetSubset: null,
-            datasetSplit: null,
-            datasetEvalSplit: null,
-            manualDatasetOptionsValid: true,
-            datasetManualMapping: emptyManualMapping(),
-            datasetSliceStart: null,
-            datasetSliceEnd: null,
-            uploadedEvalFile: null,
-            isDatasetImage: null,
-            isDatasetAudio: false,
-            isCheckingDataset: false,
-          }));
-        },
         setUploadedEvalFile: (uploadedEvalFile) =>
           setUserEdit({
             uploadedEvalFile,
@@ -1348,7 +1266,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ finetuneMLPModules }),
         setTargetModules: (targetModules) => setUserEdit({ targetModules }),
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
-        canProceed: () => canProceedForTrainingStep(get()),
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;

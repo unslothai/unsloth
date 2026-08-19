@@ -28,6 +28,12 @@ from core.inference.diffusion_prequant import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _pin_prequant_safe_globals(real_prequant_safe_globals):
+    """Apply the shared stand-in allowlist (see conftest) to every test in this module."""
+    return real_prequant_safe_globals
+
+
 # ── resolve_prequant_source ──────────────────────────────────────────────────────
 def _fam(prequant_repos = (), prequant_variant_repos = ()):
     return DiffusionFamily(
@@ -592,7 +598,9 @@ def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
     assert seen["safe_globals"], "the allowlist has to be registered before the load"
 
 
-def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkeypatch):
+def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
+    monkeypatch, real_prequant_safe_globals
+):
     """The exact set read out of the pickles Studio actually resolves.
 
     Surveyed with ``pickletools`` (no unpickling) over every hosted prequant repo the family
@@ -628,7 +636,38 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkey
     monkeypatch.setattr(
         pq, "_PREQUANT_SAFE_GLOBALS", (("torchao.nowhere", "Nope"), ("collections", "OrderedDict"))
     )
-    assert [name for _obj, name in pq._prequant_safe_globals()] == ["collections.OrderedDict"]
+    assert [name for _obj, name in real_prequant_safe_globals()] == ["collections.OrderedDict"]
+
+
+def test_the_registration_floor_needs_a_real_torchao(real_prequant_safe_globals):
+    """On a host that HAS torchao, the real resolution must clear the floor.
+
+    Every other test in this file stands in for the names the host cannot import, which is what
+    lets them run on the torchao-free CI image. That stand-in would also hide a torchao release
+    that renamed or retired the constructors out from under us -- ``AffineQuantizedTensor`` is
+    already deprecated upstream (pytorch/ao#2752). So this one asks the unpatched resolver, and
+    skips where there is nothing to ask."""
+    pytest.importorskip("torchao")
+    resolved = {name for _obj, name in real_prequant_safe_globals()}
+    assert "torch.torch_version.TorchVersion" in resolved
+    assert [name for name in resolved if name.startswith("torchao.")], (
+        "no torchao constructor resolved, so no pre-quant checkpoint could be opened: "
+        + repr(sorted(resolved))
+    )
+
+
+def test_the_registration_refuses_when_nothing_resolves(monkeypatch):
+    """And where there IS nothing to ask, the load refuses rather than unpickling unrestricted.
+
+    This is the CI image's own situation -- torch installed, torchao not -- so it is worth
+    pinning directly: an install that cannot express the allowlist gets a raise and a dense
+    fallback, never a ``torch.load`` with the restriction dropped."""
+    monkeypatch.setattr(pq, "_prequant_safe_globals", list)
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    assert pq._register_prequant_safe_globals() is False
+    assert pq.restricted_prequant_load_supported("fp8") is False
+    with pytest.raises(RuntimeError, match = "allowlist"):
+        pq._torch_load_prequant("/x.pt", map_location = "cpu")
 
 
 def test_a_malicious_checkpoint_is_refused_before_it_executes():
@@ -963,6 +1002,7 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         roots.append(cache_dir)
         return str(downloaded)
@@ -1009,6 +1049,7 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         requested.append(filename)
         if filename != "transformer_fp8.pt":
@@ -1265,6 +1306,7 @@ def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatc
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append((filename, cache_dir))
         return str(ckpt)  # the same blob, revalidated
@@ -1313,6 +1355,7 @@ def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypat
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append((filename, cache_dir))
         return str(ckpt)  # unchanged upstream: the same blob, revalidated
@@ -1397,6 +1440,9 @@ def test_an_uncached_checkpoint_downloads_into_the_live_root(monkeypatch):
             "filename": "Z-Image-Turbo-FP8.pt",
             "token": "tok",
             "cache_dir": "/live-hub",
+            # An ordinary user-initiated load still downloads; only an API-initiated one is pinned
+            # to the cache, and that is the caller's flag rather than this helper's default.
+            "local_files_only": False,
         }
     ]
 
@@ -1443,6 +1489,7 @@ def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, t
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append(filename)
         return str(tmp_path / "downloaded-canonical.pt")
@@ -1474,6 +1521,7 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append(filename)
         if filename == "Z-Image-Turbo-FP8.pt":
@@ -1520,6 +1568,7 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append((filename, cache_dir))
         if filename == "Z-Image-Turbo-FP8.pt":
@@ -1561,6 +1610,7 @@ def test_a_primary_404_during_revalidation_still_reaches_the_legacy_fallback(mon
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append((filename, cache_dir))
         if filename == "Z-Image-Turbo-FP8.pt":
@@ -1602,6 +1652,7 @@ def test_offline_revalidation_still_returns_the_other_root_copy(monkeypatch, tmp
         filename,
         token = None,
         cache_dir = None,
+        local_files_only = False,
     ):
         asked.append((filename, cache_dir))
         raise LocalEntryNotFoundError("offline and not in this root")
@@ -1654,7 +1705,7 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
     ckpt = live_root / "ck.pt"  # the checkpoint came from the LIVE root
     ckpt.write_bytes(b"x")
 
-    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None: str(ckpt))
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None, **_: str(ckpt))
     monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
     monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})
@@ -1666,6 +1717,7 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
             subfolder = None,
             token = None,
             cache_dir = None,
+            local_files_only = False,
         ):
             seen.append(cache_dir)
             raise RuntimeError("stop right after the config fetch")
@@ -1702,7 +1754,7 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
     ckpt = other_root / "ck.pt"
     ckpt.write_bytes(b"x")
 
-    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None: str(ckpt))
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None, **_: str(ckpt))
     monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
     monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})
@@ -1728,6 +1780,7 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
             subfolder = None,
             token = None,
             cache_dir = None,
+            local_files_only = False,
         ):
             seen.append(cache_dir)
             if cache_dir is not None:

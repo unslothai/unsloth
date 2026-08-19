@@ -49,7 +49,6 @@ pytest.importorskip("fastapi")
 pytest.importorskip("huggingface_hub")
 
 try:
-    from routes import models as routes_models
     from utils.paths import path_utils
 except Exception as exc:
     pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
@@ -86,14 +85,14 @@ def test_wsl_file_is_selected_in_explorer(linux_host, spawned, monkeypatch, tmp_
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
     target = tmp_path / "model.gguf"
     target.write_bytes(b"gguf")
-    routes_models._reveal_in_file_manager(target)
+    path_utils.reveal_in_file_manager(target)
     assert spawned.run == [["wslpath", "-w", str(target)]]
     assert spawned.popen == [["explorer.exe", f"/select,{_WINDOWS_PATH}"]]
 
 
 def test_wsl_directory_opens_in_explorer(linux_host, spawned, monkeypatch, tmp_path):
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
-    routes_models._reveal_in_file_manager(tmp_path)
+    path_utils.reveal_in_file_manager(tmp_path)
     assert spawned.popen == [["explorer.exe", _WINDOWS_PATH]]
 
 
@@ -102,7 +101,7 @@ def test_wsl_without_interop_falls_back_to_xdg_open(linux_host, spawned, monkeyp
     spawned.run_error = FileNotFoundError("wslpath")
     target = tmp_path / "model.gguf"
     target.write_bytes(b"gguf")
-    routes_models._reveal_in_file_manager(target)
+    path_utils.reveal_in_file_manager(target)
     assert spawned.popen == [["xdg-open", str(tmp_path)]]
 
 
@@ -113,7 +112,7 @@ def test_wsl_empty_conversion_falls_back_to_xdg_open(linux_host, spawned, monkey
         return types.SimpleNamespace(stdout = "\n")
 
     monkeypatch.setattr(subprocess, "run", empty_run)
-    routes_models._reveal_in_file_manager(tmp_path)
+    path_utils.reveal_in_file_manager(tmp_path)
     assert spawned.popen == [["xdg-open", str(tmp_path)]]
 
 
@@ -123,6 +122,6 @@ def test_native_linux_keeps_xdg_open_on_parent_directory(
     monkeypatch.setattr(path_utils, "_IS_WSL", False)
     target = tmp_path / "model.gguf"
     target.write_bytes(b"gguf")
-    routes_models._reveal_in_file_manager(target)
+    path_utils.reveal_in_file_manager(target)
     assert spawned.run == []
     assert spawned.popen == [["xdg-open", str(tmp_path)]]
