@@ -1661,6 +1661,6 @@ def test_a_tool_result_cut_exactly_on_a_line_stays_on_its_branch(conn):
         text = rendered[1] if isinstance(rendered, tuple) else rendered
         live = conversation_archive.branch_message_texts(turn)
 
-        assert conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True, (
-            f"cut {where}"
-        )
+        assert (
+            conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True
+        ), f"cut {where}"
