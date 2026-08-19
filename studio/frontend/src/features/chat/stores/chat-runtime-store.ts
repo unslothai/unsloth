@@ -28,7 +28,23 @@ import {
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
+import {
+  CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+  DEFAULT_PROJECT_ATTACHMENT_TARGET,
+  normalizeProjectAttachmentTarget,
+  type ProjectAttachmentTarget,
+} from "../utils/project-attachment-target";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
+import {
+  PERSISTED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_INFERENCE_PARAM_KEYS,
+  type PersistedInferenceParamKey,
+  getRememberedParamsPatch,
+  getReplayedParams,
+  pickRememberedChanges,
+  pickRememberedParams,
+  setInferenceParam,
+} from "../lib/per-model-params";
 import {
   type ChatLoraSummary,
   type ChatModelSummary,
@@ -41,6 +57,8 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
@@ -58,6 +76,7 @@ import {
   type ModelLifecycleLease,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import type { MmprojFallbackReason } from "../types/api";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -70,6 +89,8 @@ export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
   "unsloth_chat_deep_research_enabled";
 export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
+export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
+  "unsloth_chat_deep_research_model_timeout";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
 export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
   "unsloth_chat_show_canvas_menu_item";
@@ -120,6 +141,19 @@ const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
+/** Where the composer files an attachment in a project chat. `project` indexes
+
+/** Key a choice made in a chat that has no id yet lives under until it gets one. */
+export const PENDING_CHAT_ATTACHMENT_KEY = "__pending__";
+
+/** Bumped whenever the pending entry changes hands, so a composer that read it
+ * can tell whether the one sitting there afterwards is still its own. */
+let pendingAttachmentTargetClaim = 0;
+
+export function readPendingAttachmentTargetClaim(): number {
+  return pendingAttachmentTargetClaim;
+}
+
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
@@ -139,6 +173,29 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
 };
+export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
+
+/** 0 (unlimited) or a finite budget the settings patch and the run route both accept.
+ * Anything else would be dropped from the patch and 400 the run, so the default stands in. */
+function isSupportedResearchModelTimeout(value: number): boolean {
+  if (!Number.isSafeInteger(value) || value < 0) return false;
+  if (value > MAX_RESEARCH_MODEL_TIMEOUT_SECONDS) return false;
+  return value === 0 || value >= MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS;
+}
+
+function loadResearchModelTimeoutSeconds(): number {
+  if (typeof window === "undefined") return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  try {
+    const raw = window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY);
+    if (raw === null) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+    const value = Number(raw);
+    return isSupportedResearchModelTimeout(value)
+      ? value
+      : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  } catch {
+    return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  }
+}
 
 function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
@@ -185,6 +242,12 @@ function loadRagSource(): RagSource {
 
 function saveRagSource(value: RagSource): void {
   persistSetting(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+}
+
+function loadProjectAttachmentTarget(): ProjectAttachmentTarget {
+  return normalizeProjectAttachmentTarget(
+    loadString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, DEFAULT_PROJECT_ATTACHMENT_TARGET),
+  );
 }
 
 function loadRagMode(): RagMode {
@@ -335,19 +398,35 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // stored `kb` one keeps `kbId`, which the backend's thread variant forbids.
 const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 
+// Maps of per-model objects, merged a level further in: two edits to different
+// fields inside one debounce window must not replace each other.
+const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
+
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
   for (const [key, value] of Object.entries(more)) {
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
-    if (
-      !ATOMIC_SETTING_KEYS.has(key) &&
-      isPlainObject(prev) &&
-      isPlainObject(value)
-    ) {
-      intoAny[key] = { ...prev, ...value };
-    } else {
+    if (ATOMIC_SETTING_KEYS.has(key)) {
       intoAny[key] = value;
+      continue;
     }
+    if (!isPlainObject(prev) || !isPlainObject(value)) {
+      intoAny[key] = value;
+      continue;
+    }
+    if (!NESTED_MAP_SETTING_KEYS.has(key)) {
+      intoAny[key] = { ...prev, ...value };
+      continue;
+    }
+    const merged: Record<string, unknown> = { ...prev };
+    for (const [id, entry] of Object.entries(value)) {
+      const existing = merged[id];
+      merged[id] =
+        isPlainObject(existing) && isPlainObject(entry)
+          ? { ...existing, ...entry }
+          : entry;
+    }
+    intoAny[key] = merged;
   }
 }
 
@@ -540,6 +619,10 @@ const MIRRORED_SETTINGS = {
   researchWebsitePolicy: {
     storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
     ...JSON_SETTING,
+  },
+  researchModelTimeoutSeconds: {
+    storageKey: CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    ...NUMBER_SETTING,
   },
   artifactsEnabled: {
     storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
@@ -2053,6 +2136,9 @@ type ChatRuntimeStore = {
    */
   threadScopedSettingsPending: boolean;
   params: InferenceParams;
+  /** Last-used sampling params per checkpoint id, replayed on model switch. */
+  paramsByModel: Record<string, PersistedInferenceParams>;
+  rememberParamsPerModel: boolean;
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
@@ -2147,6 +2233,7 @@ type ChatRuntimeStore = {
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
+  researchModelTimeoutSeconds: number;
   artifactsEnabled: boolean;
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
   showCanvasMenuItem: boolean;
@@ -2155,6 +2242,11 @@ type ChatRuntimeStore = {
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
+  /** Default composer attachment scope for chats inside a project. */
+  projectAttachmentTarget: ProjectAttachmentTarget;
+  /** Per-chat override of that default, so a pick in one chat does not redirect
+   * the rest. Session-only: a reload falls back to the saved default. */
+  projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
   // autoInject = forced first-pass retrieval before answering.
@@ -2245,6 +2337,8 @@ type ChatRuntimeStore = {
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /** Projector recovery outcome for the active GGUF, or null. */
+  mmprojFallbackReason: MmprojFallbackReason | null;
   /**
    * Which drafter the loaded model's speculative resolution was about: "mtp",
    * "dspark" or "dflash". Paired with specFallbackReason: the reason alone cannot name the
@@ -2381,7 +2475,15 @@ type ChatRuntimeStore = {
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (
     params: InferenceParams,
-    options?: { persist?: boolean; trackQueuedSettings?: boolean },
+    options?: {
+      persist?: boolean;
+      trackQueuedSettings?: boolean;
+      /** These params are the model's defaults, so its remembered settings are
+       * laid back over them even though the checkpoint did not change. */
+      fromModelDefaults?: boolean;
+      /** The context the model just loaded with. */
+      maxTokensCap?: number;
+    },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
@@ -2424,7 +2526,14 @@ type ChatRuntimeStore = {
   setCheckpoint: (
     modelId: string,
     ggufVariant?: string | null,
-    options?: { trackQueuedSettings?: boolean },
+    options?: {
+      trackQueuedSettings?: boolean;
+      /** False when the switch only puts back what was on screen before a
+       * hidden load, so the model it steps off was never the user's. */
+      persist?: boolean;
+      /** The context the model just loaded with, when the caller knows it. */
+      maxTokensCap?: number;
+    },
   ) => void;
   setActiveThreadId: (threadId: string | null) => void;
   /** show `threadId`'s own settings; a null threadId or snapshot restores the global ones. */
@@ -2450,6 +2559,7 @@ type ChatRuntimeStore = {
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
+  setResearchModelTimeoutSeconds: (seconds: number) => void;
   setArtifactsEnabled: (
     enabled: boolean,
     options?: { persist?: boolean },
@@ -2472,7 +2582,20 @@ type ChatRuntimeStore = {
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
+  setRememberParamsPerModel: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
+  setProjectAttachmentTarget: (target: ProjectAttachmentTarget) => void;
+  setThreadProjectAttachmentTarget: (
+    threadId: string | null,
+    target: ProjectAttachmentTarget,
+  ) => void;
+  /** Carry a choice made before the chat existed onto its new id. `claim` is
+   * the value readPendingAttachmentTargetClaim gave when the choice was made;
+   * a newer one means the entry now belongs to a different composer. */
+  adoptPendingProjectAttachmentTarget: (threadId: string, claim?: number) =>
+    void;
+  /** Drop a choice made in a composer that never became a chat. */
+  clearPendingProjectAttachmentTarget: () => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
@@ -2538,9 +2661,9 @@ type PersistedChatSettings = Awaited<
 type PersistedInferenceParams = NonNullable<
   PersistedChatSettings["inferenceParams"]
 >;
-type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 type ScalarSettingKey =
   | "autoTitle"
+  | "rememberParamsPerModel"
   | "reasoningEffort"
   | "preserveThinking"
   | "collapseHtmlArtifacts"
@@ -2556,6 +2679,7 @@ type ScalarSettingKey =
   | "webFetchToolsEnabled"
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
+  | "researchModelTimeoutSeconds"
   | "artifactsEnabled"
   | "showCanvasMenuItem"
   | "mcpEnabledForChat"
@@ -2586,23 +2710,9 @@ type SettingsHydrationVersions = {
   presets: PresetHydrationVersions;
 };
 
-const PERSISTED_INFERENCE_PARAM_KEYS = [
-  "temperature",
-  "topP",
-  "topK",
-  "minP",
-  "repetitionPenalty",
-  "presencePenalty",
-  "maxSeqLength",
-  "maxTokens",
-  "systemPrompt",
-  "systemVariables",
-  "trustRemoteCode",
-  "fastMode",
-] as const satisfies readonly PersistedInferenceParamKey[];
-
 const SCALAR_SETTING_KEYS = [
   "autoTitle",
+  "rememberParamsPerModel",
   "reasoningEffort",
   "preserveThinking",
   "collapseHtmlArtifacts",
@@ -2618,6 +2728,7 @@ const SCALAR_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchModelTimeoutSeconds",
   "artifactsEnabled",
   "showCanvasMenuItem",
   "mcpEnabledForChat",
@@ -2637,6 +2748,9 @@ const SCALAR_SETTING_KEYS = [
   "gpuMemoryMode",
 ] as const satisfies readonly ScalarSettingKey[];
 
+// Ids this browser holds a local answer for. Hydration keeps these and merges
+// the rest, so a pre-hydration edit cannot drop other models.
+const locallyRememberedModels = new Set<string>();
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
 ) as Record<PersistedInferenceParamKey, number>;
@@ -2704,17 +2818,13 @@ function backfillMirroredSettings(settings: PersistedChatSettings): void {
   if (hasKeys(patch)) saveSettingsPatch(patch);
 }
 
-function setInferenceParam(
-  params: InferenceParams,
-  key: PersistedInferenceParamKey,
-  value: PersistedInferenceParams[PersistedInferenceParamKey],
-): void {
-  (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
-}
-
+/** `bumpVersions` fences the moved keys against a hydration response in flight.
+ * A model's own defaults do not get that: they must not outrank the settings the
+ * user saved for it. */
 function getChangedInferenceParams(
   nextParams: InferenceParams,
   currentParams: InferenceParams,
+  bumpVersions = true,
 ): PersistedInferenceParams {
   const changedParams: PersistedInferenceParams = {};
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
@@ -2722,12 +2832,143 @@ function getChangedInferenceParams(
     if (Object.is(nextValue, currentParams[key])) {
       continue;
     }
-    inferenceParamMutationVersions[key] += 1;
+    if (bumpVersions) {
+      inferenceParamMutationVersions[key] += 1;
+    }
     if (nextValue !== undefined) {
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
     }
   }
   return changedParams;
+}
+
+/** Bump the hydration versions for the replayed keys and mirror them into the
+ * global set, so a reload lands on this model's settings. */
+function persistReplayedParams(
+  state: ChatRuntimeStore,
+  nextParams: InferenceParams,
+  replayed: boolean,
+): void {
+  if (!replayed) {
+    return;
+  }
+  const changed = getChangedInferenceParams(nextParams, state.params);
+  if (state.settingsHydrated && hasKeys(changed)) {
+    saveSettingsPatch({ inferenceParams: changed });
+  }
+}
+
+/** Same fence as the inference-param versions, recorded per model so only the
+ * edited one is protected. Before hydration the params are placeholders, so
+ * nothing is recorded. */
+function trackParamsByModel(
+  state: ChatRuntimeStore,
+  paramsByModel: Record<string, PersistedInferenceParams> | null,
+  modelId: string | undefined,
+): Record<string, PersistedInferenceParams> | null {
+  if (!state.settingsHydrated) {
+    return null;
+  }
+  if (paramsByModel && modelId) {
+    locallyRememberedModels.add(modelId);
+  }
+  return paramsByModel;
+}
+
+/** State a model switch owes to the memory: the outgoing model's snapshot. */
+function getReplayStatePatch(
+  state: ChatRuntimeStore,
+  nextParams: InferenceParams,
+  outgoing: Record<string, PersistedInferenceParams> | null,
+  baseParams: InferenceParams,
+): Partial<ChatRuntimeStore> {
+  persistReplayedParams(state, nextParams, baseParams !== state.params);
+  return outgoing ? { paramsByModel: outgoing } : {};
+}
+
+/** The map after a setParams call, falling back to the outgoing snapshot. A
+ * non-persisting update (a background load) must not rewrite durable memory.
+ *
+ * Only an edit is recorded: defaults are not settings the model was used with,
+ * and staged load params describe the model about to load. Both are picked up
+ * by the snapshot taken when the model is left. */
+function getParamsByModelAfterEdit(
+  state: ChatRuntimeStore,
+  outgoing: Record<string, PersistedInferenceParams> | null,
+  nextParams: InferenceParams,
+  changedParams: PersistedInferenceParams,
+  persist: boolean,
+): Record<string, PersistedInferenceParams> | null {
+  if (!persist) {
+    return outgoing;
+  }
+  const recorded = trackParamsByModel(
+    state,
+    getRememberedParamsPatch(
+      state.rememberParamsPerModel,
+      outgoing ?? state.paramsByModel,
+      nextParams.checkpoint,
+      changedParams,
+      pickRememberedParams(nextParams),
+    ),
+    nextParams.checkpoint,
+  );
+  return recorded ?? outgoing;
+}
+
+/** Snapshot the model being switched away from, so a model that was never edited
+ * still keeps what it ran with. */
+function rememberOutgoingModel(
+  state: ChatRuntimeStore,
+  outgoing: InferenceParams,
+): Record<string, PersistedInferenceParams> | null {
+  if (!state.settingsHydrated && outgoing.checkpoint) {
+    modelLeftBeforeHydration = outgoing.checkpoint;
+  }
+  const snapshot = pickRememberedParams(outgoing);
+  // Only to seed a model with no entry: later changes are written key by key by
+  // the edit that made them, and a full snapshot would put this browser's copy
+  // of untouched keys over another tab's.
+  const seeding = state.paramsByModel[outgoing.checkpoint] === undefined;
+  const next = trackParamsByModel(
+    state,
+    getRememberedParamsPatch(
+      state.rememberParamsPerModel,
+      state.paramsByModel,
+      outgoing.checkpoint,
+      snapshot,
+      snapshot,
+    ),
+    outgoing.checkpoint,
+  );
+  // A full snapshot rewrites every field, so send one only when this browser has
+  // something to say: an edit made here, or an entry that does not exist yet.
+  if (next && state.settingsHydrated && outgoing.checkpoint && seeding) {
+    saveSettingsPatch({
+      inferenceParamsByModel: { [outgoing.checkpoint]: snapshot },
+    });
+  }
+  return next;
+}
+
+/** Write an edit to the global set, and to the selected model's own set. */
+function persistParamEdit(
+  changedParams: PersistedInferenceParams,
+  paramsByModel: Record<string, PersistedInferenceParams> | null,
+  modelId: string | undefined,
+): void {
+  if (!hasKeys(changedParams)) {
+    return;
+  }
+  // Only what moved: the server merges per key, so sending the rest would put
+  // this browser's copy of every other key over another tab's.
+  const rememberedChanges = pickRememberedChanges(changedParams);
+  saveSettingsPatch({
+    inferenceParams: changedParams,
+    ...(paramsByModel && modelId && hasKeys(rememberedChanges)
+      ? { inferenceParamsByModel: { [modelId]: rememberedChanges } }
+      : {}),
+  });
 }
 
 function getHydratedCustomPresets(
@@ -2779,6 +3020,61 @@ function getHydratedPresetState(
   return nextState;
 }
 
+/** Keys the user moved while the request was in flight: the same fence, read the
+ * other way round. */
+function pickLocallyEditedParams(
+  params: InferenceParams,
+  versions: SettingsHydrationVersions,
+): PersistedInferenceParams {
+  const edited: PersistedInferenceParams = {};
+  for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
+    if (inferenceParamMutationVersions[key] !== versions.inferenceParams[key]) {
+      setInferenceParam(edited as InferenceParams, key, params[key]);
+    }
+  }
+  return edited;
+}
+
+/** The context the last load or status published for the model on screen.
+ * ggufContextLength covers only GGUF, so without this a safetensors model has
+ * nothing to clamp the hydration replay against. Keyed by checkpoint. */
+let loadedContext: { checkpoint: string; cap: number } | null = null;
+
+function noteLoadedContext(checkpoint: string, cap: number | undefined): void {
+  if (cap !== undefined) {
+    loadedContext = { checkpoint, cap };
+  }
+}
+
+function loadedContextFor(checkpoint: string): number | null {
+  return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
+}
+
+/** A model that took over from another while the request was in flight. Its
+ * defaults lose to its own entry but outrank the global set, which belongs to
+ * whichever model was used last. Not narrowed to the keys that moved. */
+let modelLoadedBeforeHydration: string | null = null;
+
+/** A model stepped off before hydration. Nothing can be filed for it yet, but the
+ * global set the response will deliver is what it ran with, so this says which
+ * model to file that under. */
+let modelLeftBeforeHydration: string | null = null;
+
+function noteModelDefaultsBeforeHydration(
+  checkpoint: string,
+  replacedAnotherModel: boolean,
+): void {
+  if (replacedAnotherModel) {
+    modelLoadedBeforeHydration = checkpoint;
+    return;
+  }
+  // The model already resident at startup is the one the saved global set
+  // describes, so its defaults must not stand in front of it.
+  if (modelLoadedBeforeHydration !== checkpoint) {
+    modelLoadedBeforeHydration = null;
+  }
+}
+
 /**
  * Whether the active checkpoint is an external model that cannot run deep
  * research, matching the composer's own rule. An unresolved provider is left
@@ -2818,17 +3114,94 @@ function getHydratedSettingsState(
   versions: SettingsHydrationVersions,
 ): Partial<ChatRuntimeStore> {
   const nextState: Partial<ChatRuntimeStore> = {};
+  const checkpoint = state.params.checkpoint;
+  const loadedBeforeHydration = modelLoadedBeforeHydration === checkpoint;
+  modelLoadedBeforeHydration = null;
+  // The toggle as it will read once this response lands, under the same fence
+  // the scalar loop below applies.
+  const remembersPerModel =
+    settings.rememberParamsPerModel !== undefined &&
+    scalarSettingMutationVersions.rememberParamsPerModel ===
+      versions.scalarSettings.rememberParamsPerModel
+      ? settings.rememberParamsPerModel
+      : state.rememberParamsPerModel;
+  // A model loaded mid-flight has no entry to restore its defaults from, so the
+  // global set would overwrite them with the last model's. Only while the memory
+  // is on: with it off that global set IS this model's settings.
+  const keepModelDefaults =
+    remembersPerModel &&
+    loadedBeforeHydration &&
+    settings.inferenceParamsByModel?.[checkpoint] === undefined;
   const params = { ...state.params };
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
     if (
       value !== undefined &&
+      !keepModelDefaults &&
+      // The context belongs to the load, not to the previous model's global set,
+      // and no entry carries one for the replay below to put back.
+      !(loadedBeforeHydration && key === "maxSeqLength") &&
       inferenceParamMutationVersions[key] === versions.inferenceParams[key]
     ) {
       setInferenceParam(params, key, value);
     }
   }
   nextState.params = params;
+  if (settings.inferenceParamsByModel !== undefined) {
+    const hydrated: Record<string, PersistedInferenceParams> = {};
+    for (const [modelId, entry] of Object.entries(
+      settings.inferenceParamsByModel,
+    )) {
+      // Stored as written: a gap is a key this model never pinned, and there is
+      // no honest value to invent. The replay lays the entry over what a load
+      // just published, which is where a gap belongs.
+      hydrated[modelId] = entry;
+    }
+    for (const modelId of locallyRememberedModels) {
+      const local = state.paramsByModel[modelId];
+      if (local) {
+        hydrated[modelId] = local;
+      }
+    }
+    // The entry arriving for this model predates the fenced edit, so lay the
+    // edit over it or the next defaults update replays the stale one.
+    if (checkpoint) {
+      const edited = pickLocallyEditedParams(params, versions);
+      if (hasKeys(edited)) {
+        hydrated[checkpoint] = { ...hydrated[checkpoint], ...edited };
+      }
+    }
+    nextState.paramsByModel = hydrated;
+  } else if (checkpoint) {
+    // No map in the response: an install upgraded from before this feature. With
+    // no entry the next defaults update has nothing to replay and puts the
+    // recommendation back over the fenced edit.
+    const edited = pickLocallyEditedParams(params, versions);
+    if (hasKeys(edited)) {
+      nextState.paramsByModel = {
+        ...state.paramsByModel,
+        [checkpoint]: { ...state.paramsByModel[checkpoint], ...edited },
+      };
+    }
+  }
+  // A model stepped off before this response landed could not be filed then, and
+  // the global set it ran with is only now known. Without this it has no entry,
+  // so switching back inherits whatever replaced it.
+  const left = modelLeftBeforeHydration;
+  modelLeftBeforeHydration = null;
+  const byModel = nextState.paramsByModel ?? state.paramsByModel;
+  if (remembersPerModel && left && left !== checkpoint && !byModel[left]) {
+    const inherited: PersistedInferenceParams = {};
+    for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
+      const value = settings.inferenceParams?.[key];
+      if (value !== undefined) {
+        setInferenceParam(inherited as InferenceParams, key, value);
+      }
+    }
+    if (hasKeys(inherited)) {
+      nextState.paramsByModel = { ...byModel, [left]: inherited };
+    }
+  }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
     // Full access is session-only, so a stored level must not silently drop the
@@ -2889,6 +3262,44 @@ function getHydratedSettingsState(
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
+  // The model already selected when this lands never crossed a checkpoint
+  // transition, so nothing replayed its memory and it would run on the global
+  // set, which belongs to whichever model was used last.
+  const remembered = (nextState.paramsByModel ?? state.paramsByModel)[
+    params.checkpoint
+  ];
+  if (
+    (nextState.rememberParamsPerModel ?? state.rememberParamsPerModel) &&
+    remembered
+  ) {
+    // Same fence as the global set above: a key the user moved mid-flight is
+    // their edit. REMEMBERED, not PERSISTED, as in getReplayedParams: a
+    // maxSeqLength the row carries must not replace the loaded context.
+    const replayed = { ...params };
+    for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
+      const value = remembered[key];
+      if (
+        value !== undefined &&
+        inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+      ) {
+        setInferenceParam(replayed, key, value);
+      }
+    }
+    // The same cap the load and status replays apply.
+    nextState.params = replayed;
+  }
+  // Outside the replay: an install with only a global set has no entry, and the
+  // budget restored from it does not fit the load either.
+  const capped = nextState.params ?? params;
+  // ggufContextLength describes whatever is resident, which an external pick
+  // leaves loaded, so it is not this checkpoint's context to clamp against.
+  const residentGgufCap = isExternalModelId(checkpoint)
+    ? null
+    : state.ggufContextLength;
+  const cap = loadedContextFor(checkpoint) ?? residentGgufCap;
+  if (cap !== null && capped.maxTokens > cap) {
+    nextState.params = { ...capped, maxTokens: cap };
+  }
   return nextState;
 }
 
@@ -2920,6 +3331,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ? { ...DEFAULT_INFERENCE_PARAMS, checkpoint: persistedExternal }
       : DEFAULT_INFERENCE_PARAMS;
   })(),
+  paramsByModel: {},
+  // On by default; a model with nothing remembered keeps the current settings.
+  rememberParamsPerModel: true,
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
@@ -2961,6 +3375,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
+  researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
   showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
@@ -2985,6 +3400,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
   ragSource: loadRagSource(),
+  projectAttachmentTarget: loadProjectAttachmentTarget(),
+  projectAttachmentTargetByThread: {},
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
   ragAutoInject: loadRagAutoInject(),
@@ -3014,6 +3431,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  mmprojFallbackReason: null,
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
@@ -3159,27 +3577,69 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params, options) =>
     set((state) => {
-      // Bump version unconditionally so a late hydration response won't clobber
-      // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
-      const changedParams = getChangedInferenceParams(params, state.params);
-      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
-        state.params,
-        params,
-        options?.trackQueuedSettings !== false,
-      );
-      if (
-        options?.persist !== false &&
-        state.settingsHydrated &&
-        hasKeys(changedParams)
-      ) {
-        saveSettingsPatch({ inferenceParams: changedParams });
-      }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
       // via setParams() before setCheckpoint runs, leaving stale per-turn
       // counters under the new checkpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
-      return {
+      const fromModelDefaults = options?.fromModelDefaults === true;
+      // Remember what the outgoing model was running with before replacing it.
+      const outgoing = checkpointChanged
+        ? rememberOutgoingModel(state, state.params)
+        : null;
+      // An interactive local load lands here with the destination checkpoint and
+      // the backend's recommended params, and only reaches setCheckpoint later,
+      // once params.checkpoint already matches. Replay here or that switch, the
+      // common one, never restores the model's own settings. fromModelDefaults
+      // marks the updates that re-apply model defaults after a load or a status
+      // poll: they overwrite remembered values, so memory goes back over them.
+      noteLoadedContext(params.checkpoint, options?.maxTokensCap);
+      const nextParams = getReplayedParams(
+        state.rememberParamsPerModel,
+        outgoing ?? state.paramsByModel,
         params,
+        params.checkpoint,
+        checkpointChanged || fromModelDefaults,
+        options?.maxTokensCap,
+      );
+      // A user edit fences the keys it moved against a hydration response still
+      // in flight; only the HTTP write is gated on settingsHydrated.
+      const changedParams = getChangedInferenceParams(
+        nextParams,
+        state.params,
+        !fromModelDefaults,
+      );
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        state.params,
+        nextParams,
+        options?.trackQueuedSettings !== false,
+      );
+      // An edit belongs to the model the params now describe, so a call that moves
+      // checkpoint and sliders at once files them under the destination.
+      const paramsByModel = getParamsByModelAfterEdit(
+        state,
+        outgoing,
+        nextParams,
+        changedParams,
+        options?.persist !== false && !fromModelDefaults,
+      );
+      if (options?.persist !== false && state.settingsHydrated) {
+        // A switch replays the destination's entry over the params, so writing
+        // it back says nothing new and, merged per key on the server, would put
+        // this browser's copy over one another tab has since changed.
+        persistParamEdit(
+          changedParams,
+          checkpointChanged ? null : paramsByModel,
+          nextParams.checkpoint,
+        );
+      } else if (fromModelDefaults && !state.settingsHydrated) {
+        noteModelDefaultsBeforeHydration(
+          nextParams.checkpoint,
+          checkpointChanged && state.params.checkpoint !== "",
+        );
+      }
+      return {
+        params: nextParams,
+        ...(paramsByModel ? { paramsByModel } : {}),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),
@@ -3360,10 +3820,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      // Remember what the outgoing model was running with before replacing it.
+      // Not for a restore: the model it steps off is the one a background load
+      // put there, and its load defaults are not settings the user chose.
+      const outgoing =
+        checkpointChanged && options?.persist !== false
+          ? rememberOutgoingModel(state, state.params)
+          : null;
+      const baseParams = getReplayedParams(
+        state.rememberParamsPerModel,
+        outgoing ?? state.paramsByModel,
+        state.params,
+        modelId,
+        checkpointChanged,
+        options?.maxTokensCap,
+      );
       // Clamp maxTokens to the new model's cap when switching into an external
       // model so a value carried over from a local session doesn't exceed the
       // slider's max.
-      let nextMaxTokens = state.params.maxTokens;
+      let nextMaxTokens = baseParams.maxTokens;
       if (checkpointChanged && isExternalModelId(modelId)) {
         const parsed = parseExternalModelId(modelId);
         const provider = parsed
@@ -3404,12 +3879,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         },
         options?.trackQueuedSettings !== false,
       );
+      const nextParams = {
+        ...baseParams,
+        checkpoint: modelId,
+        maxTokens: nextMaxTokens,
+      };
       return {
-        params: {
-          ...state.params,
-          checkpoint: modelId,
-          maxTokens: nextMaxTokens,
-        },
+        params: nextParams,
+        ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
@@ -3424,6 +3901,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              mmprojFallbackReason: null,
               specDrafterKind: null,
             }
           : {}),
@@ -3607,6 +4085,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      // An unload leaves the model the same way a switch does, so record what it
+      // was running with.
+      ...(() => {
+        const outgoing = rememberOutgoingModel(state, state.params);
+        return outgoing ? { paramsByModel: outgoing } : {};
+      })(),
       params: {
         ...state.params,
         checkpoint: "",
@@ -3660,6 +4144,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      mmprojFallbackReason: null,
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
@@ -3817,6 +4302,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveResearchWebsitePolicy(researchWebsitePolicy);
       return {
         researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setResearchModelTimeoutSeconds: (researchModelTimeoutSeconds) =>
+    set((state) => {
+      const seconds = isSupportedResearchModelTimeout(
+        researchModelTimeoutSeconds,
+      )
+        ? researchModelTimeoutSeconds
+        : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+      persistSetting(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, String(seconds));
+      return {
+        researchModelTimeoutSeconds: seconds,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -3983,6 +4481,97 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         ragEnabled,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setProjectAttachmentTarget: (projectAttachmentTarget) =>
+    set(() => {
+      saveString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, projectAttachmentTarget);
+      return { projectAttachmentTarget };
+    }),
+  setThreadProjectAttachmentTarget: (threadId, target) =>
+    set((state) => {
+      if (threadId === null) {
+        pendingAttachmentTargetClaim += 1;
+      }
+      return {
+        projectAttachmentTargetByThread: {
+          ...state.projectAttachmentTargetByThread,
+          [threadId ?? PENDING_CHAT_ATTACHMENT_KEY]: target,
+        },
+      };
+    }),
+  adoptPendingProjectAttachmentTarget: (threadId, claim) =>
+    set((state) => {
+      // The entry under the shared key need not be the caller's: an abandoned
+      // composer has had its own dropped and the next one's is sitting there,
+      // which handing it over would consume.
+      if (claim !== undefined && claim !== pendingAttachmentTargetClaim) {
+        return state;
+      }
+      const pending =
+        state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
+      // A chat that already made its own choice keeps it: the pending entry
+      // belongs to a chat that does not exist yet.
+      if (
+        pending === undefined ||
+        threadId in state.projectAttachmentTargetByThread
+      ) {
+        return state;
+      }
+      const next = { ...state.projectAttachmentTargetByThread };
+      delete next[PENDING_CHAT_ATTACHMENT_KEY];
+      next[threadId] = pending;
+      return { projectAttachmentTargetByThread: next };
+    }),
+  clearPendingProjectAttachmentTarget: () =>
+    set((state) => {
+      const byThread = state.projectAttachmentTargetByThread;
+      if (!(PENDING_CHAT_ATTACHMENT_KEY in byThread)) {
+        return state;
+      }
+      pendingAttachmentTargetClaim += 1;
+      const next = { ...byThread };
+      delete next[PENDING_CHAT_ATTACHMENT_KEY];
+      return { projectAttachmentTargetByThread: next };
+    }),
+  setRememberParamsPerModel: (rememberParamsPerModel) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "rememberParamsPerModel",
+        rememberParamsPerModel,
+        state.rememberParamsPerModel,
+      );
+      // Turning it on adopts the settings on screen for the active model.
+      const snapshot = pickRememberedParams(state.params);
+      const paramsByModel = trackParamsByModel(
+        state,
+        getRememberedParamsPatch(
+          rememberParamsPerModel,
+          state.paramsByModel,
+          state.params.checkpoint,
+          snapshot,
+          snapshot,
+        ),
+        state.params.checkpoint,
+      );
+      // Turning it on is an explicit statement about the model on screen, so the
+      // whole snapshot is what it means, not a key-by-key patch.
+      if (paramsByModel && state.settingsHydrated && state.params.checkpoint) {
+        saveSettingsPatch({
+          inferenceParamsByModel: {
+            [state.params.checkpoint]: paramsByModel[state.params.checkpoint],
+          },
+        });
+      }
+      // Turning it off makes the settings on screen the one shared set. The
+      // global set can still be the last model's, so write it or the next launch
+      // restores that instead.
+      if (!rememberParamsPerModel && state.settingsHydrated) {
+        saveSettingsPatch({ inferenceParams: snapshot });
+      }
+      return {
+        rememberParamsPerModel,
+        ...(paramsByModel ? { paramsByModel } : {}),
       };
     }),
   setRagSource: (ragSource) =>
