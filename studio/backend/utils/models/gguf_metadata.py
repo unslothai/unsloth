@@ -608,27 +608,32 @@ def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
     return bool(architecture and architecture.strip().lower() in GGUF_EMBEDDING_ARCHITECTURES)
 
 
+def _has_embedding_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _EMBEDDING_NAME_HINTS))
+
+
 def is_gguf_embedding_model(
     gguf_path: str,
     model_identifier: Optional[str] = None,
     architecture: Optional[str] = None,
 ) -> bool:
     """Whether a GGUF should be launched with ``--embedding`` for /v1/embeddings."""
-    arch = (architecture or "").strip().lower()
-    if not arch:
-        meta = read_gguf_general_metadata(gguf_path)
-        arch = ((meta or {}).get("general.architecture") or "").strip().lower()
+    meta = read_gguf_general_metadata(gguf_path) or {}
+    arch = (architecture or meta.get("general.architecture") or "").strip().lower()
     if is_gguf_embedding_architecture(arch):
         return True
 
     if model_identifier:
         identifier_basename = model_identifier.strip().replace("\\", "/").rsplit("/", 1)[-1]
-        if any(needle in identifier_basename.lower() for needle in _EMBEDDING_NAME_HINTS):
+        if _has_embedding_name_hint(identifier_basename):
+            return True
+
+    for key in ("general.name", "general.basename"):
+        if _has_embedding_name_hint(meta.get(key)):
             return True
 
     try:
-        low_path = Path(gguf_path).name.lower()
-        if any(needle in low_path for needle in _EMBEDDING_NAME_HINTS):
+        if _has_embedding_name_hint(Path(gguf_path).name):
             return True
     except Exception:
         pass

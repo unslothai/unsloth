@@ -605,3 +605,17 @@ def test_is_gguf_embedding_model_ignores_owner_name_hint(tmp_path: Path):
             is_gguf_embedding_model(str(p), model_identifier = "embedding-lab/Llama-3-GGUF") is False
         )
     remote_classifier.assert_not_called()
+
+
+def test_is_gguf_embedding_model_from_intrinsic_name_hints(tmp_path: Path):
+    for index, (key, value) in enumerate(
+        (
+            ("general.name", "Qwen3 Embedding 4B"),
+            ("general.basename", "Qwen3-Embedding"),
+        )
+    ):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model-{index}.gguf",
+            {"general.architecture": "qwen3", key: value},
+        )
+        assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is True
