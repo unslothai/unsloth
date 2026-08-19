@@ -1556,11 +1556,9 @@ def test_no_earlier_instruction_means_no_second_query(
         branch_messages = turns + [{"role": "user", "content": "continue"}],
     )
 
-    # The archive is not searched AT ALL. A nudge with no earlier instruction behind it
-    # has nothing to search for, and under checkpoint compaction the automatic block is
-    # also the model's first sight of the search tool, so priming it with a query for the
-    # word "continue" teaches the wrong lookup. Previously this searched for the nudge and
-    # asserted only that no second query was added.
+    # The archive is not searched AT ALL: a nudge with no earlier instruction has nothing
+    # to search for, and priming the model's first sight of the search tool with a query
+    # for "continue" teaches the wrong lookup.
     assert block is None
     assert seen == {}
 

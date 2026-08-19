@@ -50,11 +50,9 @@ CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") =
 # rendering byte for byte. Presentation only: neither setting changes which turns are
 # selected, which is what keeps "what did I originally say" working.
 CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
-# Cosine floor applied ONLY to the automatic recall, never to a search the model asked
-# for: there, the model chose the query and is entitled to whatever comes back. Default
-# 0.0, i.e. off, because the measured risk runs both ways -- a weak match is often still
-# the right turn in one's own conversation, and the campaign found useful recalls scoring
-# poorly. Raise it when the automatic block is doing more harm than good.
+# Cosine floor for the automatic recall only, never for a search the model asked for.
+# Default 0.0 (off): a weak match is often still the right turn in one's own conversation.
+# Raise it when the automatic block does more harm than good.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}

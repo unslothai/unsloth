@@ -10624,10 +10624,9 @@ def build_conversation_recall(
         anchor = None
         thin = False
     if thin and not anchor:
-        # A nudge with nothing behind it. Searching the archive for the word "continue"
-        # returns whatever happens to share its stopwords, and under checkpoint compaction
-        # that block is also the model's FIRST sight of the search tool -- priming it with
-        # a meaningless query teaches the wrong lookup. Skip; the tool stays available.
+        # A nudge with nothing behind it: searching for "continue" returns whatever shares
+        # its stopwords, and under checkpoint compaction that block is the model's FIRST
+        # sight of the search tool. Skip; the tool stays available.
         logger.info(
             "Conversation recall skipped: the latest message is a nudge with no "
             "earlier instruction to search for instead"

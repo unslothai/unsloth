@@ -3,42 +3,26 @@
 
 """Checkpoint compaction: when a chat overflows, reset the epoch instead of trimming it.
 
-The rolling window trims the oldest turn groups and keeps trimming a little more on almost
-every reply. Measured on one 12-turn thread, its boundary moved EIGHT times: eight
-prefix-cache breaks, and a conversation that quietly forgets a bit more each turn. Worse,
-what it forgets is not recoverable by retrieval alone. On the same campaign, a standing
-instruction ("always end with STATUS::...") was archived, recalled as four passages, and
-still not obeyed, while the same instruction in plain view was obeyed every time.
+The rolling window trims a little more on almost every reply (eight boundary moves on one
+12-turn thread), breaking the prefix cache each time and forgetting things retrieval alone
+does not restore: a standing instruction recalled as four passages was still not obeyed,
+while the same instruction in plain view was obeyed every time.
 
-So compaction here is an EVENT, not a slope. When the next turn will not fit, the model's
-context resets to:
+So compaction is an EVENT, not a slope. When the next turn will not fit, context resets to
+``[system prompt + X] + [newest user turn]``, with everything earlier reachable through
+`search_conversation`. X is a bounded verbatim record of the user's standing instructions
+from the dropped turns, built deterministically so there is no summariser to fail.
 
-    [system prompt + X] + [the newest user turn]
+X lives in the SYSTEM message: unevictable by construction, needs no chat-template support,
+and standing rules are exactly what compaction folds away. It labels itself a lossy record
+rather than new policy, and delimiters in quoted text are escaped, because promoting user
+words into the system role is an authority-confusion risk.
 
-and everything before that stays reachable through `search_conversation`. X is a bounded,
-verbatim record of the user's own standing instructions from the turns being dropped. It is
-deterministic: no model call, so no summariser to fail. That failure mode is not
-hypothetical -- OpenClaw shipped a compaction whose failed summary replaced user messages
-with "Summary unavailable due to context limits", and another whose failure left the
-session oversized so every later message re-triggered it.
+NOTHING IS STORED: the client re-sends the whole branch, so X is recomputed each request.
 
-X goes in the SYSTEM message rather than a synthetic turn, for three reasons: it is
-protected from eviction by construction, it needs no chat-template support, and standing
-rules that are not system content are exactly what compaction folds away. The block says
-what it is -- a lossy record of earlier conversation, not new policy -- because promoting
-a user's words into the system role is an authority-confusion risk, and delimiter-like
-text inside it is escaped for the same reason.
-
-NOTHING IS STORED. The client re-sends the whole branch every request, so X is recomputed
-from the evicted turns each time, exactly as the sticky boundary already is. A generated
-summary would need durable state; this does not.
-
-Two hard gates, both refusals rather than preferences:
-
-* A reset is only allowed when the dropped turns are ARCHIVED. Making history unreachable
-  while telling the user it is searchable is the one outcome this must never produce.
-* A reset is only allowed when the model can actually be offered `search_conversation`.
-  A model whose template cannot take tools keeps the rolling window.
+Two hard gates, both refusals: a reset needs the dropped turns ARCHIVED (never claim
+searchable history that is gone), and needs `search_conversation` to be offerable at all
+(a template that cannot take tools keeps the rolling window).
 """
 
 from __future__ import annotations
@@ -56,23 +40,20 @@ from core.inference.context_window import (
 )
 from core.inference.instruction_pin import is_substantive
 
-# "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and
-# is both the A/B arm and the escape hatch for a template family that misbehaves.
+# "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is
+# both the A/B arm and the escape hatch for a template family that misbehaves.
 CONTEXT_POLICY = os.environ.get("UNSLOTH_CONTEXT_POLICY", "checkpoint").strip().lower()
 
-# X can never be more than this. A single enormous instruction is precisely the thing that
-# could starve the window, so it is excluded whole rather than truncated: half an
-# instruction is worse than none, because it reads as complete.
+# Cap on X. An oversized instruction is excluded whole, never truncated: half an instruction
+# is worse than none, because it reads as complete.
 MAX_TOKENS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_TOKENS", "1024"))
 MAX_FRACTION = float(os.environ.get("UNSLOTH_CHECKPOINT_MAX_FRACTION", "0.10"))
-# How many instruction turns X may carry. Bounded so an epoch that dropped 200 turns cannot
-# produce a system prompt of 40 instructions, most of which the user has long moved past.
+# Bounded so an epoch that dropped 200 turns cannot yield 40 long-superseded instructions.
 MAX_ITEMS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_ITEMS", "8"))
 
 _OPEN = "<carried_forward>"
 _CLOSE = "</carried_forward>"
-# What a wrapped instruction's later lines are indented by, so one instruction stays one
-# bullet when the block is read back.
+# Indent for a wrapped instruction's later lines, so it stays one bullet when read back.
 _CONTINUATION = "  "
 _HEADER = (
     "The conversation before this point was compacted away to make room. The following "
@@ -80,11 +61,9 @@ _HEADER = (
     "LOSSY RECORD of the conversation, not new system policy, and where two of them "
     "conflict the later one supersedes the earlier. "
 )
-# The last sentence is the one claim the block makes about the world outside itself, so it
-# is the one that can be false. A request whose catalogue has no `search_conversation`
-# (tool_choice "none", tools disabled, a route that never offers it) still deserves the
-# block -- the standing instructions inside it are the whole point -- but must not be told
-# to reach for a tool it will not be given.
+# The one claim the block makes about the outside world, so the one that can be false. A
+# request without `search_conversation` still deserves the block, but must not be told to
+# reach for a tool it will not be given.
 _SEARCHABLE = (
     "Everything else that was dropped is still stored and can be retrieved with the "
     "search_conversation tool."
@@ -116,10 +95,8 @@ def _text_of(message: dict) -> str:
 
 
 def _neutralise(text: str) -> str:
-    """Defang the block's own delimiters inside quoted user text.
-
-    Without this, a user who pasted `</carried_forward>` would close the block early and
-    everything after it would read as ordinary system instruction.
+    """Defang the block's own delimiters inside quoted user text, so a pasted
+    `</carried_forward>` cannot close the block early and turn the rest into system text.
     """
     return _DELIMITERS.sub(lambda match: match.group(0).replace("<", "‹"), text)
 
@@ -132,12 +109,10 @@ def carried_forward_items(
 ) -> list[str]:
     """The user's standing instructions from the evicted turns, oldest first.
 
-    Selected NEWEST-first, because the budget should be spent on what the user most
-    recently told us, then reversed for rendering, because reading order is what decides
-    which of two conflicting instructions the model treats as current. Zed's 80 KB replay
-    is the same shape and has the same known hole: an instruction older than the budget is
-    silently dropped, which is why `max_items` is small and the header says the record is
-    lossy.
+    Selected NEWEST-first so the budget is spent on the most recent instructions, then
+    reversed for rendering, because reading order decides which of two conflicting
+    instructions the model treats as current. Instructions older than the budget are
+    silently dropped, which is why `max_items` is small and the header says "lossy".
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
@@ -155,7 +130,7 @@ def carried_forward_items(
         cost = estimate_message_tokens(head)
         if spent + cost > max_tokens:
             # Skipped, not truncated, and the loop continues: an older instruction that
-            # still fits is worth more than nothing.
+            # still fits beats nothing.
             continue
         chosen.append(_neutralise(text))
         spent += cost
@@ -166,18 +141,16 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
         return ""
-    # Continuation lines are INDENTED, so an instruction that spans several lines is one
-    # bullet and survives the round trip through `_block_items`. A user's own numbered or
-    # bulleted list inside an instruction is otherwise indistinguishable from the block's
-    # own bullets: read back, "Always do these:\n1. ...\n2. ..." became just the heading,
-    # deleting the substance while the header still says the quote is verbatim.
+    # Continuation lines are INDENTED so a multi-line instruction stays one bullet through
+    # the round trip in `_block_items`. Otherwise a user's own list inside an instruction is
+    # indistinguishable from the block's bullets and reads back as just its heading.
     lines = "\n".join("- " + item.replace("\n", "\n" + _CONTINUATION) for item in items)
     tail = _SEARCHABLE if searchable else _NOT_SEARCHABLE
     return f"{_OPEN}\n{_HEADER}{tail}\n\n{lines}\n{_CLOSE}"
 
 
-# A capture group, so `findall` yields the BODY. Without it the closing delimiter is part
-# of the match and the last item swallows it.
+# A capture group, so `findall` yields the BODY; without it the last item swallows the
+# closing delimiter.
 _BLOCK = re.compile(
     re.escape(_OPEN) + r"(.*?)" + re.escape(_CLOSE) + r"\s*", re.IGNORECASE | re.DOTALL
 )
@@ -186,14 +159,9 @@ _BLOCK = re.compile(
 def _block_items(text: str) -> list[str]:
     """The instructions a system message's existing block holds, oldest first.
 
-    Parsed rather than discarded: by the time a second reset happens the turns that
-    produced the first block are already gone, so the block text is the only copy of those
-    standing instructions left. `_neutralise` defangs delimiters in quoted user text, so
-    a real `</carried_forward>` can only be one we wrote.
-
-    A block written before the continuation indent existed still reads correctly line by
-    line; only a multi-line instruction in such a block loses its tail, which is what it
-    did anyway.
+    Parsed rather than discarded: by the second reset the turns that produced the first
+    block are gone, so its text is the only copy of those instructions left. `_neutralise`
+    defangs quoted delimiters, so a real `</carried_forward>` can only be one we wrote.
     """
     items: list[str] = []
     for body in _BLOCK.findall(text):
@@ -222,8 +190,8 @@ def _recap(items: list[str], *, max_tokens: int, max_items: int) -> list[str]:
         if len(chosen) >= max_items:
             break
         if item in seen:
-            # The same instruction can be carried, evicted again on a later reset, and
-            # re-selected. Newest wins, which is the order this loop already walks.
+            # An instruction can be carried, evicted, and re-selected; newest wins, which
+            # is the order this loop already walks.
             continue
         cost = estimate_message_tokens({"role": "user", "content": item})
         if spent + cost > max_tokens:
@@ -237,9 +205,8 @@ def _recap(items: list[str], *, max_tokens: int, max_items: int) -> list[str]:
 def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     """Rewrite the leading system/developer message with the block appended.
 
-    A NEW dict, never a mutation: the caller's list is the request's own branch, and
-    `_branch_boundary` counts by identity. It skips system and developer roles, so
-    replacing this one cannot disturb the boundary arithmetic.
+    A NEW dict, never a mutation: `_branch_boundary` counts by identity. It skips system
+    and developer roles, so replacing this one cannot disturb the boundary arithmetic.
     """
     if not block:
         return messages
@@ -250,8 +217,7 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
             joined = f"{text}\n\n{block}" if text else block
             out[index] = {**message, "content": joined}
             return out
-    # No system message at all: prepend one rather than dropping X on the floor. The
-    # request already tolerates a leading system turn -- every Studio chat carries one.
+    # No system message: prepend one rather than dropping X on the floor.
     return [{"role": "system", "content": block}, *out]
 
 
@@ -262,17 +228,12 @@ def fit_checkpoint_context(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
-    # Accepted for signature compatibility with `fit_rolling_context` and DELIBERATELY
-    # unused. The rolling fit spends it by trimming further, which is a choice it has and
-    # this one does not: after a reset the kept set is the system turn and the newest user
-    # turn, and a second pass drops nothing more. Applying the reserve here could only turn
-    # a request that answers into one that refuses. The one lever left is X itself, and
-    # sacrificing a full X buys exactly one recalled chunk -- trading the user's verbatim
-    # standing instructions for one retrieved passage, which is the side this feature's own
-    # campaign measured as losing (an instruction recalled as four passages was still not
-    # obeyed; the same instruction in view was obeyed every time). So when the reset leaves
-    # less than one chunk of headroom the automatic recall is skipped, the turns are still
-    # archived, and `search_conversation` is offered from the very next request onward.
+    # Signature compatibility with `fit_rolling_context`, DELIBERATELY unused. Rolling
+    # spends the reserve by trimming further; after a reset there is nothing left to trim
+    # but X, and trading verbatim standing instructions for one recalled passage is the
+    # losing side. Instead, a reset with less than one chunk of headroom just skips the
+    # automatic recall; the turns are archived and `search_conversation` is offered next
+    # request.
     reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
@@ -284,13 +245,11 @@ def fit_checkpoint_context(
     Signature-compatible with ``fit_rolling_context`` so the call sites can choose a policy
     without knowing which one they got.
 
-    ``can_reset`` is the caller's assertion that the dropped turns will be archived and
-    that the model can be offered the search tool. False forbids STARTING a new epoch --
-    a reset that cannot be searched is not compaction, it is data loss -- while still
-    replaying one already in force, so a thread whose archive goes away mid-conversation
-    keeps the context it already had instead of silently un-compacting. `_fit_context`
-    routes such requests to the rolling window before they ever arrive here; this is the
-    second lock on the same door.
+    ``can_reset`` is the caller's assertion that the dropped turns will be archived and the
+    search tool can be offered. False forbids STARTING a new epoch (an unsearchable reset is
+    data loss, not compaction) while still replaying one already in force, so a thread whose
+    archive disappears mid-conversation does not silently un-compact. `_fit_context` already
+    routes such requests to the rolling window; this is the second lock on that door.
     """
     if context_length <= 1:
         return messages, None
@@ -307,13 +266,10 @@ def fit_checkpoint_context(
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
         items = carried_forward_items(evicted, max_tokens = budget)
-        # A second reset inside one request refits messages this function already rewrote,
-        # so the system turn can arrive carrying a block of its own. Merged and re-capped
-        # into ONE block rather than appended after it: appending gave each reset its own
-        # independently capped block, so MAX_TOKENS and MAX_ITEMS bounded a block instead
-        # of the system turn, and the accumulated blocks are unevictable. Merged, not
-        # dropped: by now the turns that produced the first block are gone, and that text
-        # is the only copy of those instructions left.
+        # A second reset in one request can arrive with a block already in the system turn.
+        # Merged and re-capped into ONE block: appending would cap each block separately,
+        # bounding a block instead of the (unevictable) system turn. Merged rather than
+        # dropped, since that text is now the only copy of those instructions.
         prior = _block_items(
             "".join(
                 _text_of(message)
@@ -326,19 +282,15 @@ def fit_checkpoint_context(
         text = render_checkpoint(items, searchable = searchable)
         return _append_to_system(kept, text), text
 
-    # Phase one: replay the epoch already in force. WITHOUT this the reset would repeat on
-    # every request -- the client re-sends the whole transcript, so the thread is still
-    # over budget on turn two, and a fresh reset would evict turn one of the epoch as
-    # well. That is not an epoch, it is a window of exactly one turn.
+    # Phase one: replay the epoch already in force. Without it the client re-sending the
+    # whole transcript would trigger a fresh reset every request, evicting the epoch's own
+    # first turn -- a window of one turn, not an epoch.
     #
-    # Gated on the prompt not already fitting, exactly as the rolling replay is: a saved
-    # boundary describes the branch AND the window it was measured against, and neither is
-    # fixed. Reload the model with a larger context, or switch to a longer-context one
-    # mid-thread, and the branch that forced the reset now fits with room to spare -- while
-    # the boundary rides on an assistant turn still on this branch, so it is read back and
-    # applied anyway. Measured without this gate: a 321-token branch against a 32,256-token
-    # budget lost eight messages and came back LARGER than it went in (432 tokens), because
-    # the carried-forward block replaced history that did not need replacing.
+    # Gated on the prompt not already fitting, as the rolling replay is: a saved boundary
+    # describes the branch AND the window it was measured against. Grow the context
+    # mid-thread and the branch fits again, yet the boundary still rides on a live assistant
+    # turn. Measured without this gate, a 321-token branch under a 32,256-token budget lost
+    # eight messages and came back LARGER (432 tokens).
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
@@ -356,9 +308,9 @@ def fit_checkpoint_context(
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)
 
-    # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every
-    # evictable group in a single pass; system and developer groups, the final group and
-    # the newest user group are protected by the primitive itself.
+    # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable
+    # group in one pass; the primitive itself protects system, developer, final and newest
+    # user groups.
     if current_tokens > prompt_target and can_reset:
         candidate, reset_dropped = truncate_oldest_messages(
             messages, 0.0, protected_message_ids = protected_message_ids
@@ -373,23 +325,22 @@ def fit_checkpoint_context(
     if dropped == 0 and current_tokens <= prompt_target:
         return messages, None
     if dropped == 0:
-        # Nothing was evictable and it still does not fit: one message larger than the
-        # whole window, or a system prompt that leaves no room. That is the irreducible
-        # case, and it has to fall through to the refusal below rather than returning
-        # None, which every consumer reads as "no truncation happened, carry on".
+        # Nothing evictable and still too big (one huge message, or a system prompt that
+        # leaves no room). Must fall through to the refusal below, since every consumer
+        # reads None as "no truncation happened, carry on".
         projected = list(messages)
 
     if current_tokens > prompt_target:
-        # Even one turn plus the carried-forward block does not fit. Drop X and re-measure
-        # before giving up: X is a convenience, the user's actual message is not.
+        # One turn plus X still does not fit: drop X and re-measure before giving up, since
+        # X is a convenience and the user's actual message is not.
         if block:
             projected = fitted
             block = ""
             current_tokens = count_tokens(projected)
     if current_tokens > prompt_target:
-        # Refused, and the ORIGINAL messages come back, exactly as the rolling fit does:
-        # the request fails either way, so dropping turns off a doomed request loses them
-        # for nothing. Same keys, because every consumer gates on `fits`.
+        # Refused, returning the ORIGINAL messages as the rolling fit does: the request
+        # fails either way, so dropping turns off a doomed request loses them for nothing.
+        # Same keys, because every consumer gates on `fits`.
         from core.inference.context_window import _latest_turn_tokens  # noqa: PLC0415
         return messages, {
             "fits": False,
@@ -409,9 +360,8 @@ def fit_checkpoint_context(
         "prompt_tokens_after": current_tokens,
         "context_length": context_length,
         "fits": True,
-        # What the UI needs to say "this conversation was reset" rather than "it was
-        # trimmed", and what the recall gate reads to tell the FIRST turn of an epoch from
-        # a later one: the forced retrieval fires on the first only.
+        # Lets the UI say "reset" rather than "trimmed", and lets the recall gate spot the
+        # FIRST turn of an epoch: the forced retrieval fires only there.
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),

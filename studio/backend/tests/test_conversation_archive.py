@@ -2201,14 +2201,10 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
 def test_the_forced_floor_filters_candidates_rather_than_deleting_results(conn, monkeypatch):
     """A floor applied after the top-k slice is a deletion, not a filter.
 
-    The weak hits took the slots and were then removed, so an archive holding qualifying
-    turns handed back fewer of them, or none at all, and the automatic block that is also
-    the model's first sight of the search tool simply did not appear. Measured at a floor
-    of 0.5 with the top four candidates weak and four qualifying ones behind them: the
-    forced recall returned nothing where the unforced one returned 4.
-
-    Only reachable when an operator raises RAG_CONVERSATION_FORCED_MIN_SCORE: the shipped
-    default is 0.0, which leaves the floor off entirely.
+    Weak hits took the slots and were then removed, so at a floor of 0.5 with four weak
+    candidates on top the forced recall returned nothing where the unforced one returned 4.
+    Only reachable when an operator raises RAG_CONVERSATION_FORCED_MIN_SCORE off its 0.0
+    default.
     """
     from core.rag import config
 

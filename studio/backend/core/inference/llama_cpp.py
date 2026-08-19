@@ -87,10 +87,9 @@ from core.inference.llama_server_args import (
 def _backend_supports_tools(backend) -> bool:
     """`backend.supports_tools`, or False if asking is not safe.
 
-    The property reads load-time state that a backend part way through construction or
-    teardown may not have yet, and a context-policy probe has no business raising on the
-    chat path. Measured: it raised AttributeError on a backend built without the diffusion
-    flag, which turned a policy question into a failed request.
+    The property reads load-time state a backend mid-construction or teardown may not have
+    yet (measured: AttributeError without the diffusion flag), and a context-policy probe
+    has no business raising on the chat path.
     """
     try:
         return bool(backend.supports_tools)
@@ -101,22 +100,16 @@ def _backend_supports_tools(backend) -> bool:
 def _memory_tool_withheld(thread_id, tools) -> bool:
     """Whether this request carries no `search_conversation` although its thread has one.
 
-    The tool-loop paths know their own catalogue, so they can answer the question the
-    process policy cannot: will THIS request be able to reach the archive. A request that
-    NAMED its tools is the case that matters, on either surface: `_select_anthropic_server_tools`
-    returns the caller's list verbatim once tools are named, and `tool_choice: "none"` does
-    the same on the OpenAI path, so such a request would otherwise reset an epoch behind a
-    tool that is absent on every turn, which is the one outcome checkpoint compaction must
-    never produce.
+    The tool-loop paths know their own catalogue, so they can answer what the process
+    policy cannot: will THIS request reach the archive. A request that NAMED its tools is
+    the case that matters on either surface, since both honour the caller's list verbatim;
+    resetting an epoch behind a tool that is then absent every turn is the one outcome
+    checkpoint compaction must never produce.
 
-    Not `/v1/messages` as a route, which an earlier version of this comment claimed: that
-    route never passes `context_overflow`, so it reaches no checkpoint fit at all, and its
-    default catalogue is ALL_TOOLS, which does contain `search_conversation`.
-
-    Gated on the thread ALREADY having an archive, and that gate is load-bearing rather
-    than an optimisation: the archive is written during the first compaction, so on the
-    turn that resets for the first time the tool legitimately does not exist yet and its
-    absence says nothing. Refusing there would mean no thread could ever start an epoch.
+    Gated on the thread ALREADY having an archive, which is load-bearing, not an
+    optimisation: the archive is written during the first compaction, so on the turn that
+    first resets the tool legitimately does not exist yet and its absence says nothing.
+    Refusing there would mean no thread could ever start an epoch.
     """
     if not thread_id:
         return False
@@ -145,37 +138,28 @@ def _can_reset_epoch(
 
     Two refusals, both about not lying to the user:
 
-    * the dropped turns must end up in the archive, or the reset makes them unreachable
-      while the notice says they are searchable. Incognito, API-only and threadless
-      requests archive nothing, so they keep the rolling window.
-    * the model must be able to receive `search_conversation` at all. A template that
-      cannot render tools would be offered a memory it can never reach, and neither must
-      a process whose operator turned the tool loop off.
+    * the dropped turns must reach the archive, or the reset makes them unreachable while
+      the notice says they are searchable. Incognito, API-only and threadless requests
+      archive nothing, so they keep the rolling window.
+    * the model must be able to receive `search_conversation` at all, so a template that
+      cannot render tools, or a process with the tool loop off, is refused.
     """
     if not thread_id or not supports_tools:
         return False
     if tools_withheld:
-        # The REQUEST withdrew the tool loop, which the process policy below cannot see.
-        # `tool_choice: "none"` is the OpenAI way to say "answer, do not call anything",
-        # and Studio honours it by suppressing the loop AND by excluding this request from
-        # the checkpoint repair that would otherwise re-admit `search_conversation` alone
-        # (`openai_chat_completions`). A caller that sets it once usually sets it on every
-        # turn, so resetting here puts the epoch behind a tool that never arrives on this
-        # request or the next, while the carried-forward header tells the model to search
-        # for what was dropped. Same refusal as the process policy, one scope down.
+        # The REQUEST withdrew the tool loop, which the process policy below cannot see
+        # (`tool_choice: "none"` also skips the checkpoint repair that would re-admit
+        # `search_conversation` alone). A caller that sets it once usually sets it every
+        # turn, so resetting would put the epoch behind a tool that never arrives while the
+        # carried-forward header tells the model to search. Same refusal, one scope down.
         return False
     try:
         from state.tool_policy import get_tool_policy
 
-        # `supports_tools` is the TEMPLATE's capability, which is not the same question as
-        # "will this request be given the tool". `unsloth studio run --disable-tools` (and
-        # the per-request force-off the public surfaces use) makes `_select_request_tools`
-        # refuse every tool for the life of the process, and blocks the checkpoint
-        # override in `openai_chat_completions` on the way. Resetting anyway puts the
-        # epoch behind a tool that never arrives, on this request and on every one after
-        # it, while the carried-forward header tells the model it can search for what was
-        # dropped. Rolling instead: it keeps the newest turns in view and re-injects the
-        # inline recall on every compacting turn, neither of which needs a tool.
+        # `supports_tools` is the TEMPLATE's capability, not "will this request be given
+        # the tool". `--disable-tools` refuses every tool for the life of the process, so
+        # resetting would strand the epoch behind a tool that never arrives. Rolling keeps
+        # the newest turns in view and re-injects the inline recall, needing no tool.
         if get_tool_policy() is False:
             return False
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
@@ -190,15 +174,13 @@ def _can_reset_epoch(
 def _archive_is_degraded() -> bool:
     """Whether an archive write for THIS request would fail.
 
-    Read separately from `_can_reset_epoch` because it answers a different question. The
-    admission gates gate whether an epoch may EXIST at all; this one only says whether a
-    NEW one may start right now, and an epoch already in force is unaffected.
+    Separate from `_can_reset_epoch`: those gates decide whether an epoch may EXIST at all,
+    this only whether a NEW one may start right now, leaving one in force untouched.
 
-    Two questions, not one. `degraded()` is the verdict on the LAST write, which is the
-    wrong tense: the write for the turns this request is about to evict runs afterwards and
-    swallows its own failure, so the first request after the store goes away would commit a
-    reset whose block says the dropped turns can be searched while nothing was indexed.
-    `reachable()` probes the store and the embedder now, which closes that turn.
+    Both halves are needed. `degraded()` is the verdict on the LAST write, the wrong tense:
+    this request's write runs afterwards and swallows its failure, so the first request
+    after the store dies would claim searchable turns that were never indexed.
+    `reachable()` probes the store and embedder now, closing that turn.
     """
     try:
         from core.rag import conversation_archive
@@ -210,66 +192,52 @@ def _archive_is_degraded() -> bool:
 def _fit_context(messages, **kwargs):
     """The context policy in one place, so the five call sites do not each pick one.
 
-    Checkpoint mode resets the epoch; rolling mode is the previous behaviour and stays
-    reachable through `UNSLOTH_CONTEXT_POLICY=rolling`, both as the A/B arm for the
-    evidence campaign and as the escape hatch if a template family misbehaves. A request
-    that may not reset (see `_can_reset_epoch`) silently keeps rolling, which is why the
-    two fits share a signature.
+    Checkpoint mode resets the epoch; rolling mode is the previous behaviour, still
+    reachable via `UNSLOTH_CONTEXT_POLICY=rolling` as the A/B arm and the escape hatch for
+    a misbehaving template family. A request that may not reset (see `_can_reset_epoch`)
+    silently keeps rolling, which is why the two fits share a signature.
     """
     can_reset = bool(kwargs.pop("can_reset", False))
     try:
         from core.inference import checkpoint
         if not can_reset and checkpoint.enabled() and int(kwargs.get("sticky_dropped") or 0) > 0:
-            # An epoch is already in force and THIS request may not reset -- tools were
-            # withdrawn, the policy is off, or the route's catalogue has no
-            # `search_conversation`. Falling straight through to rolling was the worst of
-            # both: it replays the checkpoint-sized boundary, which is a near-total
-            # eviction, WITHOUT rebuilding the block that made that eviction survivable.
-            # Measured on a 24-message thread with the standing instruction in the block:
-            # 22 dropped either way, but rolling kept 2 messages with the instruction gone
-            # from the prompt entirely, one turn after the user was told the conversation
-            # was compacted and searchable. So replay the epoch and keep the block, with
-            # the header's tool sentence swapped for one that does not promise a lookup
-            # this request cannot perform. If the replay cannot fit, fall through to
-            # rolling BELOW, which drops the boundary rather than reusing it.
+            # An epoch is in force but THIS request may not reset. Falling straight through
+            # to rolling was the worst of both: it replays the checkpoint-sized (near-total)
+            # eviction WITHOUT rebuilding the block that made it survivable. Measured on a
+            # 24-message thread: 22 dropped either way, but rolling left the standing
+            # instruction gone entirely, one turn after the user was told the conversation
+            # was compacted and searchable. So replay the epoch and keep the block, with the
+            # header's tool sentence swapped for one that promises no lookup this request
+            # cannot perform. If the replay cannot fit, fall through to rolling BELOW.
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages, can_reset = False, searchable = False, **kwargs
             )
             if truncation is not None and truncation.get("fits"):
                 return fitted, truncation
-            # A checkpoint boundary means nothing to the rolling window, which cannot
-            # rebuild what that boundary assumed. Recomputing from scratch loses the
-            # epoch, which is the honest trade: an un-compacted window tells no lie.
+            # A checkpoint boundary means nothing to rolling, which cannot rebuild what it
+            # assumed. Recomputing loses the epoch: an un-compacted window tells no lie.
             kwargs.pop("sticky_dropped", None)
         if can_reset and checkpoint.enabled():
             # A degraded archive downgrades reset to REPLAY rather than closing the door.
-            # Refusing outright sent the request to the rolling window, which replays the
-            # same boundary WITHOUT rebuilding the carried-forward block, so a thread that
-            # already had an epoch silently lost its standing instructions -- and
-            # `degraded()` does not self-clear when the embedder is broken rather than
-            # briefly unhappy, so "transient" is not a safe assumption. Replaying keeps the
-            # block; only starting a NEW epoch is refused, which is the half that would
-            # promise a searchable history that is not being written.
+            # Refusing outright sent the request to rolling, which replays the same boundary
+            # WITHOUT rebuilding the block, so a thread with an epoch silently lost its
+            # standing instructions (and `degraded()` does not self-clear on a broken
+            # embedder, so "transient" is not safe to assume). Only starting a NEW epoch is
+            # refused, the half that would promise a history nobody is writing.
             #
-            # `searchable` goes with it, and that is the half a reset alone does not cover.
-            # The write that makes an epoch searchable runs AFTER this fit and swallows its
-            # own failure, so the flag read here is the verdict on the LAST write, never
-            # this one: the first failure commits a block that says the dropped turns "can
-            # be retrieved with the search_conversation tool" while nothing was indexed.
-            # Nothing later took that sentence back either, because only `can_reset` was
-            # downgraded, so the same claim was replayed on every turn afterwards. Once the
-            # flag is set the block says the turns are stored but not retrievable now,
-            # which is true whether the embedder is briefly unhappy or permanently down,
-            # and the tool is still offered so a recovered archive is not walled off.
+            # `searchable` goes with it: the archive write runs AFTER this fit and swallows
+            # its failure, so without it the block would claim the dropped turns are
+            # retrievable while nothing was indexed, and repeat that claim every later turn.
+            # Cleared, it says stored but not retrievable now -- true either way -- and the
+            # tool is still offered so a recovered archive is not walled off.
             degraded = _archive_is_degraded()
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages, can_reset = not degraded, searchable = not degraded, **kwargs
             )
-            # `can_reset = False` has no phase two, so once the replayed boundary stops
-            # being enough it refuses. Measured: a threadless request went from
-            # `dropped 4, fits True` to `fits False`, i.e. every incognito and API overflow
-            # erroring instead of being trimmed. Rolling still serves those, so a refusal
-            # here falls through to it rather than reaching the caller.
+            # `can_reset = False` has no phase two, so it refuses once the replayed
+            # boundary is no longer enough (measured: a threadless request went from
+            # `dropped 4, fits True` to `fits False`). Rolling still serves those, so a
+            # refusal here falls through rather than reaching the caller.
             if truncation is None or truncation.get("fits"):
                 return fitted, truncation
     except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
@@ -777,16 +745,13 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     message is not the same thing, since a continued assistant message follows it.
 
     Every evicted message is counted, not just the leading run, because that is what the
-    replay actually consumes: ``truncate_oldest_messages``'s ``min_dropped`` counts the
-    messages it drops and SKIPS protected groups, so the two agree exactly. Stopping at
-    the first survivor agreed with it only while eviction was a clean prefix. It is not:
-    a protected group (an instruction pin, an anchored recall) is skipped and eviction
-    carries on past it, leaving live turns on both sides. Under the checkpoint reset that
-    understated the boundary badly enough to un-compact the epoch -- the turns the reset
-    removed came back on the very next request, one turn after the user was told they had
-    been compacted away and the system prompt told the model that only the
-    carried_forward block was kept. Where eviction WAS a prefix, which is every case the
-    rolling window produces without pins, this counts the same number as before.
+    replay consumes: ``truncate_oldest_messages``'s ``min_dropped`` counts dropped messages
+    and SKIPS protected groups. Stopping at the first survivor matched that only while
+    eviction was a clean prefix, which a protected group (an instruction pin, an anchored
+    recall) breaks, leaving live turns on both sides. Under a checkpoint reset that
+    understated the boundary enough to un-compact the epoch: the removed turns returned on
+    the next request, one turn after the user was told they were compacted away. Where
+    eviction IS a prefix, which is every pin-free rolling case, the count is unchanged.
     """
     messages = list(branch or ())
     cutoff = max(
@@ -924,15 +889,14 @@ def _sticky_compaction_boundary(
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
                 return 0
-            # And only under the policy that recorded it. A checkpoint boundary is the
-            # depth of a RESET, affordable because the carried-forward block is rebuilt on
-            # every replay. Under `UNSLOTH_CONTEXT_POLICY=rolling` nothing rebuilds it, and
-            # neither guard in `_fit_context` fires because both are `checkpoint.enabled()`,
-            # so the depth would be replayed with nothing handed back: measured at 18
-            # messages evicted where rolling chooses 6 for itself. Refuse it HERE rather
-            # than at the fit, because `boundary_messages` is re-recorded every turn, so a
-            # rolling turn that inherited 18 would persist 18 with no `checkpoint` key and
-            # make the reset-sized window permanent. Let rolling compute its own.
+            # And only under the policy that recorded it. A checkpoint boundary is the depth
+            # of a RESET, affordable only because the block is rebuilt on every replay;
+            # under `UNSLOTH_CONTEXT_POLICY=rolling` nothing rebuilds it and both
+            # `_fit_context` guards are `checkpoint.enabled()`, so the depth replays with
+            # nothing handed back (18 evicted where rolling picks 6). Refused HERE, not at
+            # the fit: `boundary_messages` is re-recorded every turn, so a rolling turn that
+            # inherited 18 would persist it with no `checkpoint` key and make the
+            # reset-sized window permanent. Let rolling compute its own.
             if truncation.get("checkpoint") and not checkpoint.enabled():
                 return 0
             # Counted against the request's own transcript, which is what it is applied
@@ -1044,11 +1008,10 @@ def _archive_and_recall(
             result["counts"] = counts
             return result
         if not force_recall:
-            # Checkpoint mode, and this is not the first turn of the epoch. Archiving still
-            # happened above -- it must, or the epoch stops being searchable -- but the
-            # automatic lookup fires once, on the turn that reset the conversation. After
-            # that the model has `search_conversation` and decides for itself, which is the
-            # difference between priming a habit and answering every question twice.
+            # Checkpoint mode, past the first turn of the epoch. Archiving still ran above
+            # (it must, or the epoch stops being searchable), but the automatic lookup fires
+            # only on the turn that reset the conversation; after that the model has
+            # `search_conversation` and decides for itself.
             result["counts"] = counts
             return result
 
@@ -22141,9 +22104,8 @@ class LlamaCppBackend:
                         branch_messages = _before_fit,
                         thread_id = thread_id,
                         style = "inline",
-                        # Checkpoint mode fires the automatic lookup once, on the turn that reset
-                        # the conversation. Rolling mode has no such key and keeps today's
-                        # behaviour, which is to recall on every turn that evicted anything.
+                        # Checkpoint mode recalls once, on the turn that reset; rolling has no
+                        # such key and keeps recalling on every turn that evicted anything.
                         force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = False,
                         recall_budget_tokens = max(
@@ -22354,8 +22316,8 @@ class LlamaCppBackend:
                     # archived nowhere and no reserve or boundary applies, on the one path
                     # that deliberately compacts again.
                     thread_id = thread_id,
-                    # The retry refits, so it re-asks the reset question and must be told
-                    # the same thing about this request's tools as the first attempt was.
+                    # The retry refits, so it must be told the same about this request's
+                    # tools as the first attempt was.
                     tools_withheld = tools_withheld,
                     _allow_respawn_retry = False,
                 )
@@ -22790,9 +22752,8 @@ class LlamaCppBackend:
                             style = (
                                 "tool" if "search_conversation" in _enabled_tool_names else "inline"
                             ),
-                            # Checkpoint mode fires the automatic lookup once, on the turn that reset
-                            # the conversation. Rolling mode has no such key and keeps today's
-                            # behaviour, which is to recall on every turn that evicted anything.
+                            # Checkpoint mode recalls once, on the turn that reset; rolling has
+                            # no such key and recalls on every turn that evicted anything.
                             force_recall = bool(truncation.get("checkpoint_started", True)),
                             recall_done = _conversation_recall_done,
                             recall_budget_tokens = max(
@@ -24202,16 +24163,12 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
-                        # Withheld, not `tools`: this is the synthesised final answer,
-                        # and `stream_payload` below carries no tools array at all
-                        # (the count above passes None for the same reason). Asking
-                        # the gate with the request's catalogue answers a question
-                        # this request does not pose, and lets a NEW epoch start on
-                        # the one pass that cannot call `search_conversation` and has
-                        # no loop left to run it -- an epoch behind a tool that is
-                        # absent, which is what the gate exists to refuse. Replaying
-                        # one already in force is unaffected: the system turn still
-                        # carries the block an earlier fit appended.
+                        # Withheld, not `tools`: this is the synthesised final answer
+                        # and `stream_payload` below sends no tools array at all, so
+                        # the request's catalogue answers a question it does not pose
+                        # and would let a NEW epoch start on the one pass that can
+                        # never call `search_conversation`. Replaying an epoch already
+                        # in force is unaffected.
                         tools_withheld = True,
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -24232,9 +24189,8 @@ class LlamaCppBackend:
                         # with no tools array, so a forged tool role has no catalogue to
                         # match and breaks strict templates.
                         style = "inline",
-                        # Checkpoint mode fires the automatic lookup once, on the turn that reset
-                        # the conversation. Rolling mode has no such key and keeps today's
-                        # behaviour, which is to recall on every turn that evicted anything.
+                        # Checkpoint mode recalls once, on the turn that reset; rolling has no
+                        # such key and keeps recalling on every turn that evicted anything.
                         force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = _conversation_recall_done,
                         recall_budget_tokens = max(

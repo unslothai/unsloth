@@ -103,12 +103,10 @@ def test_the_epoch_accumulates_instead_of_resetting_every_turn():
 def test_a_stale_boundary_never_compacts_a_branch_that_now_fits():
     """A saved boundary describes the branch AND the window it was measured against.
 
-    Reload the model with a larger context, or switch to a longer-context one mid-thread,
-    and the branch that forced the reset now fits with room to spare -- but the boundary
-    rides on an assistant turn still on this branch, so it is read straight back. The
-    rolling fit gates its replay on the prompt not already fitting and says why; this one
-    has to as well, or the thread loses eight turns for the rest of its life and the
-    prompt comes back BIGGER than it went in.
+    Grow the context mid-thread and the branch fits again, yet the boundary still rides on
+    a live assistant turn and is read straight back. Like the rolling fit, this one gates
+    its replay on the prompt not already fitting, or the thread loses eight turns for life
+    and the prompt comes back BIGGER than it went in.
     """
     messages = [{"role": "system", "content": "you are helpful"}]
     for index in range(6):
@@ -237,11 +235,9 @@ def test_the_block_is_appended_to_an_existing_system_turn_not_prepended_as_a_new
 def test_a_second_reset_merges_into_one_block_instead_of_stacking_another():
     """One request can reset twice, and the second fit is handed the first fit's output.
 
-    Appended, each reset added its own independently capped block to the system turn, so
-    MAX_TOKENS and MAX_ITEMS bounded a block rather than the system turn, and the blocks
-    are unevictable: enough of them and an ordinary turn stops fitting at all. Merged and
-    re-capped instead, and the earlier instructions have to survive that merge, because
-    the turns that produced them are already gone by then.
+    Appending gave each reset its own capped block, bounding a block rather than the
+    (unevictable) system turn. Merged and re-capped instead, and the earlier instructions
+    must survive that merge, since the turns that produced them are already gone.
     """
     from core.inference import checkpoint
 
@@ -268,10 +264,9 @@ def test_a_second_reset_merges_into_one_block_instead_of_stacking_another():
 def test_a_multiline_instruction_survives_being_read_back():
     """The block claims to quote the user verbatim, so a merge must not edit the quote.
 
-    Rendered flat, every line of a wrapped instruction looked like a separate bullet, and
-    reading it back kept only the ones starting with "- ". "Always do these:\\n1. ...\\n2.
-    ..." came back as the heading alone, silently deleting the requirements, and a user's
-    own bulleted list was promoted into separate items that ate the cap.
+    Rendered flat, each line of a wrapped instruction looked like its own bullet: reading
+    back kept only the "- " lines, so "Always do these:\\n1. ...\\n2. ..." came back as the
+    heading alone and a user's own list became separate items that ate the cap.
     """
     from core.inference import checkpoint
 
@@ -300,8 +295,8 @@ def test_the_merged_block_is_re_capped_not_just_concatenated():
     )
 
     assert len(recapped) == checkpoint.MAX_ITEMS
-    # Newest kept, oldest dropped, and still rendered oldest first so the supersession
-    # rule in the header stays true.
+    # Newest kept, oldest dropped, still rendered oldest first so the header's
+    # supersession rule stays true.
     assert recapped == items[-checkpoint.MAX_ITEMS :]
     # A repeat carried once and evicted again is one item, not two.
     assert checkpoint._recap(["same thing", "same thing"], max_tokens = 1024, max_items = 8) == [
@@ -375,10 +370,9 @@ def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatc
 
 
 def test_an_instruction_shorter_than_the_substantive_floor_is_not_carried():
-    """A real and deliberate bound, recorded rather than left to be discovered. The floor
-    is 80 characters, and it is what stops "ok, do that" being carried as policy; the
-    price is that a genuinely short instruction ("always answer in French") is not carried
-    either. It is still archived and still searchable."""
+    """A deliberate bound: the 80-character floor stops "ok, do that" being carried as
+    policy, at the price of dropping a genuinely short instruction ("always answer in
+    French") too. It is still archived and still searchable."""
     short = {"role": "user", "content": "Always answer in French."}
 
     assert carried_forward_items([short], max_tokens = 4096) == []
@@ -406,11 +400,9 @@ def test_at_most_max_items_instructions_are_carried():
 def test_a_process_with_tools_disabled_never_resets(monkeypatch):
     """`supports_tools` is the TEMPLATE's capability, not "this request gets the tool".
 
-    `unsloth studio run --disable-tools` sets the process policy to False, which makes
-    `_select_request_tools` refuse every tool and blocks the checkpoint override in
-    `openai_chat_completions`. Resetting anyway leaves the epoch behind a tool that never
-    arrives -- on this request and every one after it -- while the carried-forward header
-    tells the model it can search for what was dropped.
+    `--disable-tools` sets the process policy to False, so every tool is refused and the
+    checkpoint override is blocked. Resetting anyway would leave the epoch behind a tool
+    that never arrives while the header tells the model to search for what was dropped.
     """
     from core.inference import llama_cpp
 
@@ -462,14 +454,11 @@ class _ToolCapableBackend:
 def test_studios_own_memory_history_does_not_steal_the_request_from_the_context_fit():
     """The one that cost a whole epoch in a live 6-round chat.
 
-    Checkpoint compaction admits `search_conversation` with the user's tool pills OFF, so
-    the branch permanently gains an assistant `tool_calls` turn and a `role="tool"` result.
-    Counted as a CLIENT tool contract, that history routes every later turn of the thread
-    to the llama-server passthrough, which never calls `_fit_context` at all: rounds 3-6
-    reported only `{"dropped_messages": 22/24/28/28, "fits": true}` from llama-server's own
-    overflow retry, with no `checkpoint` key, no token counts and no boundary -- the epoch,
-    the carried-forward block and the standing instruction inside it all gone one turn
-    after the reset that created them.
+    The branch permanently gains an assistant `tool_calls` turn and a `role="tool"` result.
+    Counted as a CLIENT tool contract, that history routes every later turn to the
+    llama-server passthrough, which never calls `_fit_context`: rounds 3-6 reported only
+    llama-server's own overflow retry, with no `checkpoint` key, no token counts and no
+    boundary, one turn after the reset that created them.
     """
     from models.inference import ChatCompletionRequest
     from routes import inference as inference_route
@@ -539,11 +528,10 @@ def test_can_reset_false_replays_an_epoch_but_never_starts_one():
 def test_an_unreachable_archive_stops_the_epoch_on_the_TURN_IT_BREAKS(monkeypatch):
     """`degraded()` is the verdict on the last write, which is the wrong tense here.
 
-    The write for the turns this request is about to evict runs AFTER the fit and swallows
-    its own failure, so the first request after the store or the embedder goes away
-    committed a reset whose block says the dropped turns can be searched while nothing was
-    indexed. Probed now instead, so the reset is withheld on that turn rather than the one
-    after it.
+    This request's write runs AFTER the fit and swallows its own failure, so the first
+    request after the store or embedder died committed a reset claiming the dropped turns
+    are searchable while nothing was indexed. Probed now, the reset is withheld on that
+    turn rather than the one after it.
     """
     from core.inference import llama_cpp
     from core.rag import conversation_archive
@@ -560,11 +548,9 @@ def test_an_unreachable_archive_stops_the_epoch_on_the_TURN_IT_BREAKS(monkeypatc
 def test_the_reachability_probe_is_no_for_an_embedder_that_cannot_initialize(monkeypatch):
     """A tokenizer that is merely CONSTRUCTED proves nothing.
 
-    `embedding_identity` is string formatting over resolver metadata and touches no model,
-    and the llama backend's `token_counter` hands back a lazy closure that starts no
-    server, so both reported a healthy archive while the embedder could not initialize at
-    all. The reset was then committed with a block saying the dropped turns are
-    searchable, and the write failed afterwards and swallowed it.
+    `embedding_identity` is string formatting over resolver metadata and `token_counter`
+    hands back a lazy closure, so both reported a healthy archive while the embedder could
+    not initialize, and the reset was committed claiming the dropped turns are searchable.
     """
     from core.rag import conversation_archive, embeddings
 
@@ -597,15 +583,12 @@ def test_the_reachability_probe_is_no_for_a_store_that_cannot_be_opened(monkeypa
 
 def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeypatch):
     """`enabled()` and `can_archive()` are capability checks, so both keep saying yes while
-    the embedder is failing and nothing is being indexed, and starting an epoch there would
-    promise a searchable history that does not exist.
+    the embedder fails and nothing is indexed, and an epoch started there would promise a
+    searchable history that does not exist.
 
-    But refusing OUTRIGHT was worse than the problem: it sent the request to the rolling
-    window, which replays the same boundary WITHOUT rebuilding the carried-forward block,
-    so a thread that already had an epoch silently lost its standing instructions. And
-    `degraded()` does not self-clear when the embedder is broken rather than briefly
-    unhappy. So a degraded archive downgrades reset to replay: the block survives, only a
-    new epoch is refused.
+    But refusing OUTRIGHT was worse: the request fell to the rolling window, which replays
+    the same boundary WITHOUT rebuilding the block, so a thread with an epoch silently lost
+    its standing instructions. So a degraded archive downgrades reset to replay.
     """
     from core.inference import llama_cpp
 
@@ -625,8 +608,7 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
     assert replayed["carried_forward_chars"] > 0
     assert replayed["checkpoint_started"] is False
 
-    # No epoch yet: no new one is started, and the request still gets served by rolling
-    # rather than refused.
+    # No epoch yet: none is started, and rolling still serves the request.
     _, fresh = llama_cpp._fit_context(
         messages,
         context_length = 1200,
@@ -662,13 +644,10 @@ def test_a_healthy_archive_still_starts_an_epoch(monkeypatch):
 def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
     """The checkpoint half of the nudge describes THIS request's fit, not the policy.
 
-    `fit_checkpoint_context` is reached from one place, `llama_cpp._fit_context`, so a
-    safetensors request never resets the epoch and never grows a carried_forward block --
-    but it shares `_apply_compaction_nudge`, and reading the process-wide policy there told
-    such a model that everything before a block it does not have was removed and that
-    recall had already run for it. Both statements are false, and the second one is the
-    expensive kind of false: it tells the model not to call search_conversation on the very
-    turn the text claims retrieval already covered.
+    Only `llama_cpp._fit_context` reaches `fit_checkpoint_context`, so a safetensors
+    request never resets and never grows a block -- yet it shares `_apply_compaction_nudge`,
+    and reading the process-wide policy there told such a model its history was removed and
+    that recall had already run, which discourages the search that would recover it.
     """
     import routes.inference as routes_mod
 
@@ -689,13 +668,11 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
 def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
     """The process policy is not the only way `search_conversation` fails to arrive.
 
-    `tool_choice: "none"` is the OpenAI way of saying "answer, do not call anything", and
-    Studio honours it twice over: the tool loop is suppressed, and the request is excluded
-    from the checkpoint repair that otherwise re-admits search_conversation alone even with
-    the user's tools off (`_client_disabled_tool_calls` at both gates). A caller that sets
-    it sets it every turn, so a reset here hides the dropped turns behind a tool that never
-    arrives, while the carried-forward header tells the model to go and search for them.
-    Same refusal as `--disable-tools`, one scope down: the request, not the process.
+    Studio honours `tool_choice: "none"` twice over: the tool loop is suppressed, and the
+    request is excluded from the checkpoint repair that otherwise re-admits
+    search_conversation alone. A caller that sets it sets it every turn, so a reset would
+    hide the dropped turns behind a tool that never arrives. Same refusal as
+    `--disable-tools`, one scope down: the request, not the process.
     """
     from core.inference import llama_cpp
 
@@ -724,22 +701,16 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
     assert body.count("tools_withheld = tools_withheld") == 2
 
     route = inspect.getsource(routes_mod.openai_chat_completions)
-    # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes a
-    # request can take that make the loop unusable once opened.
+    # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes that
+    # make the loop unusable once opened.
     assert "tools_withheld = _tool_loop_unusable" in route
     assert "_client_disabled_tool_calls" in route.split("_tool_loop_unusable = (", 1)[1]
 
 
 def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(monkeypatch):
-    """A request that NAMED its tools is the live case, on either surface.
-
-    `_select_anthropic_server_tools` returns the caller's list verbatim once tools are
-    named, and `tool_choice: "none"` does the same on the OpenAI path, so such a request
-    would reset an epoch behind a tool absent on every turn.
-
-    NOT `/v1/messages` as a route, which this docstring used to claim: that route never
-    passes `context_overflow`, so it reaches no checkpoint fit at all, and its default
-    catalogue is ALL_TOOLS, which does contain `search_conversation`."""
+    """A request that NAMED its tools is the live case, on either surface: both paths
+    return the caller's list verbatim, so such a request would reset an epoch behind a tool
+    absent on every turn."""
     from core.inference import llama_cpp
 
     monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: True)
@@ -776,11 +747,10 @@ def test_the_first_compaction_is_not_refused_for_lacking_a_tool_that_cannot_exis
 def test_the_memory_tool_override_needs_a_request_that_can_actually_reset(monkeypatch):
     """The policy says a reset is possible SOMEWHERE, not that this request can do one.
 
-    Only the llama.cpp branch runs `fit_checkpoint_context`. The safetensors branch, the
-    external-provider loops and the token counter all share this selector, so reading the
-    process-wide policy here put Studio's conversation-memory tool in front of an MCP-only
-    request on a path where nothing is ever compacted. `_apply_compaction_nudge` already
-    takes the same per-request flag, for the same reason.
+    Only the llama.cpp branch runs `fit_checkpoint_context`, yet the safetensors branch,
+    the external-provider loops and the token counter share this selector, so reading the
+    process-wide policy put the memory tool in front of an MCP-only request on a path where
+    nothing is ever compacted.
     """
     import asyncio
     import types
@@ -811,10 +781,8 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
     """Two Retry siblings can carry byte-identical replies with only one having reset.
 
     The exact-text filter keeps both, and taking the first match reopened the tool loop on
-    the branch that never reset, which costs a tools-off request the n > 1 and
-    non-streaming guards. The sticky boundary meets the same ambiguity and answers it with
-    `min(boundaries)`: where the text cannot separate them, leave the request as it was.
-    The two must agree, so this pins the agreement and not just the value.
+    the branch that never reset. Where the text cannot separate them, leave the request as
+    it was, as the sticky boundary's `min(boundaries)` does; this pins that agreement.
     """
     import sys
     import types
@@ -865,8 +833,8 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
     branch = [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
 
-    # Only the abandoned sibling reset. The boundary that gets replayed is the shallower
-    # one, which is the never-reset sibling's, so no epoch is in force on this branch.
+    # Only the abandoned sibling reset, so the shallower (never-reset) boundary is
+    # replayed and no epoch is in force on this branch.
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 6
@@ -879,15 +847,12 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
     """The boundary this fit records has to reproduce THIS fit on the next request.
 
-    `truncate_oldest_messages` skips a protected group and keeps evicting past it, so the
-    reset's evicted set is not a prefix: an instruction pinned in the middle of the thread
-    leaves live turns on BOTH sides of it. `_branch_boundary` stops counting at the first
-    surviving message, so it records the leading run and not what was actually dropped,
-    and the next request replays that smaller number -- which puts the turns this reset
-    removed straight back into the model's context, one turn after the user was told they
-    were compacted away and the system prompt told the model only the carried_forward
-    block was kept. The rolling window cannot show this: it always trims to fit, so it
-    never restores what it dropped.
+    `truncate_oldest_messages` skips a protected group and evicts past it, so a pin in the
+    middle of the thread leaves live turns on BOTH sides and the evicted set is no longer a
+    prefix. Counting only the leading run understates the boundary, and the next request
+    replays that smaller number, putting the compacted-away turns straight back one turn
+    after the user was told they were gone. Rolling cannot show this: it always trims to
+    fit, so it never restores what it dropped.
     """
     from core.inference.llama_cpp import _branch_boundary
 
@@ -942,13 +907,10 @@ def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
 def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_not_send():
     """The gate has to be asked about the catalogue the request actually carries.
 
-    The synthesised final answer is sent with no tools array -- its own token count passes
-    `None` for tools, and `stream_payload` has no "tools" key -- so a model compacted
-    there cannot call `search_conversation`, and unlike an ordinary turn there is no loop
-    left to run one either. Asking `_memory_tool_withheld` with the REQUEST's catalogue
-    answers a different question and lets a new epoch start exactly there, which is the
-    outcome the gate exists to refuse and which this file already pins for the empty
-    catalogue (`_memory_tool_withheld("thread-1", []) is True`).
+    The synthesised final answer sends no tools array, so a model compacted there cannot
+    call `search_conversation` and has no loop left to run one. Asking
+    `_memory_tool_withheld` with the REQUEST's catalogue answers a different question and
+    lets a new epoch start exactly there, which is what the gate exists to refuse.
     """
     import inspect
 
@@ -970,15 +932,11 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
 def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
     """Without this the sticky boundary is unreadable on every thinking model.
 
-    assistant-ui stores a reply as content PARTS and `parseAssistantContent` splits
-    `<think>` into a `reasoning` part, which `runtime-provider` persists verbatim. The
-    same reply goes back on the wire as text only -- the thought travels in
-    `reasoning_content`, a sibling field the probe never reads. So the stored probe is
-    strictly longer than the branch, the substring test in `content_on_branch` misses,
-    `_sticky_compaction_boundary` finds no on-branch assistant turn and returns 0, and
-    checkpoint phase one -- the only thing standing between an epoch and a one-turn
-    window -- never runs. Rolling only slides a little further; this fit resets from
-    scratch on every overflowing turn.
+    assistant-ui persists `<think>` as a `reasoning` content part, but the same reply goes
+    back on the wire as text only (the thought travels in the sibling `reasoning_content`
+    field). The stored probe is then longer than the branch, `content_on_branch` misses,
+    `_sticky_compaction_boundary` returns 0, and checkpoint phase one never runs -- so the
+    fit resets from scratch on every overflowing turn.
     """
     from core.rag import conversation_archive
 
@@ -1006,16 +964,14 @@ def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
 
 
 def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_away(monkeypatch):
-    """The worst of both was the old behaviour: a request that may not reset fell through
-    to the rolling window, which replays the checkpoint-sized boundary (a near-total
-    eviction) WITHOUT rebuilding the block that made it survivable. Measured before the
-    fix: 22 dropped either way, but rolling kept 2 messages with the standing instruction
-    gone from the prompt entirely, one turn after the user was told the conversation was
-    compacted and searchable."""
+    """The worst of both: a request that may not reset fell through to rolling, which
+    replays the checkpoint-sized (near-total) eviction WITHOUT rebuilding the block that
+    made it survivable. Measured at 22 dropped either way, but rolling left the standing
+    instruction gone entirely, one turn after the user was told it was searchable."""
     from core.inference import llama_cpp
 
-    # This is about what an epoch KEEPS, not about archive health, and the reachability
-    # probe now really starts the embedder -- which no test host here has.
+    # This is about what an epoch KEEPS, not archive health, and the reachability probe
+    # really starts the embedder, which no test host here has.
     monkeypatch.setattr("core.rag.conversation_archive.reachable", lambda: True)
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
@@ -1044,9 +1000,9 @@ def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_aw
 
 
 def test_a_block_never_promises_a_tool_the_request_will_not_be_given():
-    """The block's last sentence is its only claim about the world outside itself, so it
-    is the only one that can be false. A request whose catalogue has no
-    `search_conversation` still deserves the instructions, but must not be sent looking."""
+    """The block's last sentence is its only claim about the outside world, so the only one
+    that can be false. A request without `search_conversation` still deserves the
+    instructions, but must not be sent looking."""
     items = [INSTRUCTION]
 
     assert "search_conversation tool" in render_checkpoint(items)
@@ -1060,14 +1016,11 @@ def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
     """The checkpoint repair overrides the caller's `enable_tools = false`, so it must fire
     only where the reset it repairs can happen.
 
-    Every checkpoint fit sits behind `context_overflow == "truncate_oldest"` (three sites in
-    `llama_cpp.py`), which is exactly `_rolling_context_policy`. Without it nothing is
-    evicted, no epoch is reset and there are no dropped turns to go back for -- yet the gate
-    read only the PROCESS policy, which is `checkpoint` by default, so any tools-off request
-    carrying a thread that had ever been archived opened the loop, was handed
-    `search_conversation` alone, executed it unprompted (it is always-safe) and was told its
-    older turns had been removed. The compaction nudge on this same path already reads the
-    request's policy for the same reason.
+    Every checkpoint fit sits behind `context_overflow == "truncate_oldest"`, which is
+    exactly `_rolling_context_policy`. Reading only the PROCESS policy (`checkpoint` by
+    default) meant any tools-off request on an ever-archived thread opened the loop, was
+    handed `search_conversation` alone, ran it unprompted and was told its older turns had
+    been removed.
     """
     import inspect
 
@@ -1078,20 +1031,17 @@ def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
     assert "_checkpoint_needs_search()" in gate
     assert "_thread_has_conversation_archive" in gate
     assert "_rolling_context_policy(payload) is not None" in gate
-    # And the request must be able to USE the loop once it opens, not merely be allowed
-    # to open it. `tool_choice: "none"` was the only shape considered.
+    # And the request must be able to USE the loop once it opens, not merely open it.
     assert "_tool_loop_unusable" in gate
 
 
 def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
     """Two more ways a request can be handed a loop it can get nothing out of.
 
-    `max_tool_calls_per_message: 0` is documented as "0 = disabled" and becomes
-    `max_tool_iterations = 0`, so the loop runs no iterations and its final pass withholds
-    tools outright. `n > 1` is rejected by the tool-path guard the moment the loop opens,
-    so a multi-choice conversation that was served before its first compaction started
-    returning 400 after it. Either way the epoch would sit behind a tool the model can
-    never call while the carried-forward header tells it to search, so both keep rolling.
+    `max_tool_calls_per_message: 0` means disabled, so the loop runs no iterations and its
+    final pass withholds tools; `n > 1` is rejected by the tool-path guard the moment the
+    loop opens, so a multi-choice conversation served before its first compaction started
+    returning 400 after it. Either way the epoch would sit behind an uncallable tool.
     """
     import inspect
 
@@ -1103,8 +1053,8 @@ def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
     assert "_client_disabled_tool_calls" in predicate
     assert "payload.max_tool_calls_per_message == 0" in predicate
     assert "_wants_multiple_choices(payload)" in predicate
-    # And it is what the epoch gate is told, so the reset is refused rather than the
-    # catalogue narrowed: this predicate must never reach `_select_request_tools`.
+    # And the epoch gate is what it feeds, so the reset is refused rather than the
+    # catalogue narrowed: it must never reach `_select_request_tools`.
     assert "tools_withheld = _tool_loop_unusable," in route
     assert "tools_on = _tool_loop_unusable" not in route
 
@@ -1135,13 +1085,11 @@ def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_noth
     """`degraded()` is the verdict on the last write, and the write runs AFTER the fit.
 
     `enabled()` only asks whether sqlite-vec loaded and `can_archive()` only whether the
-    thread is persisted, so on a machine whose embedder cannot start both keep saying yes
-    and the first compaction commits a reset before anything is indexed. `archive_turns`
-    then swallows its failure and sets the flag. Every turn after that replays the epoch,
-    and while the reset was correctly downgraded the block still carried the sentence that
-    says the dropped turns can be retrieved with `search_conversation` -- a lookup that
-    returns nothing, repeated for the life of the thread. The tool stays on the catalogue,
-    so a recovered archive is not walled off; only the promise goes.
+    thread is persisted, so where the embedder cannot start both say yes and the first
+    compaction commits a reset before anything is indexed. Downgrading only the reset left
+    the block still promising a `search_conversation` lookup that returns nothing, repeated
+    for the life of the thread. The tool stays on the catalogue so a recovered archive is
+    not walled off; only the promise goes.
     """
     from core.inference import llama_cpp
 
@@ -1190,22 +1138,15 @@ def _stub_studio_db(monkeypatch, messages):
 def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkeypatch):
     """The escape hatch has to escape the depth too, not just the reset.
 
-    A checkpoint boundary is the depth of a RESET, and what makes that depth affordable
-    is the carried-forward block rebuilt on every replay. Switch the thread to
-    `UNSLOTH_CONTEXT_POLICY=rolling` and neither of `_fit_context`'s guards fires, because
-    both are `and checkpoint.enabled()`, so the stored reset-sized boundary flowed
-    straight into `fit_rolling_context`, which replayed a near-total eviction and built no
-    block at all. Measured on a 20-message thread: 18 messages evicted where rolling
-    chooses 6 on its own, i.e. 12 extra live turns gone under a policy that cannot pay
-    for them, with the prompt then sitting far under budget.
+    A checkpoint boundary is the depth of a RESET, affordable only because the block is
+    rebuilt on every replay. Under `UNSLOTH_CONTEXT_POLICY=rolling` neither `_fit_context`
+    guard fires (both are `and checkpoint.enabled()`), so the stored reset-sized boundary
+    flowed into `fit_rolling_context`, which evicted 18 messages where rolling picks 6 and
+    built no block at all.
 
-    Worse, the boundary launders itself. `boundary_messages` is re-recorded on every fit,
-    so the first rolling turn would persist 18 again with no `checkpoint` key, and the
-    checkpoint-depth window would outlive the policy that made sense of it. Refusing the
-    boundary at the READ is what stops that: rolling recomputes its own, and records that.
-
-    No restart is needed to reach this. The policy is read at call time on purpose, and
-    the boundary is read back from persisted metadata, so both sides survive one.
+    Worse, the boundary launders itself: `boundary_messages` is re-recorded on every fit,
+    so the first rolling turn would persist 18 with no `checkpoint` key and outlive the
+    policy that made sense of it. Refusing at the READ makes rolling compute its own.
     """
     from core.inference import llama_cpp
 
@@ -1235,8 +1176,8 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
         llama_cpp._sticky_compaction_boundary("t1") == 0
     ), "a reset-sized boundary was replayed under rolling, which rebuilds no block"
 
-    # A boundary that rolling itself recorded is still restored under rolling: this is
-    # about provenance, not about distrusting every stored number.
+    # A boundary rolling itself recorded is still restored: this is about provenance, not
+    # about distrusting every stored number.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 6,
@@ -1247,14 +1188,11 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
 def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch):
     """An archive is not a checkpoint, and only one of them justifies the override.
 
-    A thread compacted under the rolling window archives identically to one that
-    checkpointed, so keying the tools-off repair on "has an archive" opened the loop where
-    no epoch exists and nothing was reset. That overrides the caller's enable_tools = false
-    for a repair that cannot happen, and it costs the request the tool-path guards, which
-    reject n > 1 and non-streaming ask/auto once the loop is open.
-
-    Read from the assistant turn's own contextTruncation, which is what the sticky boundary
-    already reads, so nothing new is persisted.
+    A rolling-window thread archives identically, so keying the tools-off repair on "has an
+    archive" opened the loop where nothing was reset, overriding enable_tools = false for a
+    repair that cannot happen and costing the request the n > 1 and non-streaming guards.
+    Read from the assistant turn's own contextTruncation, as the sticky boundary already
+    does, so nothing new is persisted.
     """
     import sys
     import types
@@ -1280,10 +1218,9 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is True
 
-    # ...but only for the branch the request is on. The stored rows are the whole DAG, so
-    # a Retry that forked BEFORE the turn which recorded the epoch leaves that turn on an
-    # abandoned sibling, and a thread-wide scan would report a checkpoint for a branch
-    # that never reset.
+    # ...but only for the branch the request is on. A Retry that forked BEFORE the
+    # epoch-recording turn leaves it on an abandoned sibling, and a thread-wide scan would
+    # report a checkpoint for a branch that never reset.
     on_branch = [
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": "the epoch reply, written out in full"},
@@ -1295,21 +1232,19 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     assert inference_routes._thread_has_checkpoint("t1", on_branch) is True
     assert inference_routes._thread_has_checkpoint("t1", off_branch) is False
 
-    # A branch with no reply of its own is not an unscoped branch. Editing or regenerating
-    # the FIRST user turn re-sends [system, user], and the assistant-only projection of
-    # that is empty, which read as "no branch given" and put the scan back thread-wide.
-    # `_sticky_compaction_boundary` returns 0 on this shape, so the two disagreed about
-    # the same branch: no boundary replayed, yet the tool loop reopened.
+    # A branch with no reply of its own is not an unscoped branch. Editing the FIRST user
+    # turn re-sends [system, user], whose assistant-only projection is empty and read as
+    # "no branch given", putting the scan back thread-wide while
+    # `_sticky_compaction_boundary` returns 0: no boundary replayed, yet the loop reopened.
     user_only = [
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "a brand new question on a fresh branch"},
     ]
     assert inference_routes._thread_has_checkpoint("t1", user_only) is False
 
-    # And the branch check is textual, so a SHORT abandoned reply rides in on a longer
-    # live one. The sticky boundary prefers exact matches for this exact collision;
-    # without the same preference here, a checkpoint recorded on a discarded sibling
-    # reopens the loop on the branch that never reset.
+    # And the branch check is textual, so a SHORT abandoned reply rides in on a longer live
+    # one. Without the sticky boundary's same preference for exact matches, a checkpoint
+    # recorded on a discarded sibling reopens the loop on the branch that never reset.
     import sys as _sys
 
     siblings = types.SimpleNamespace(

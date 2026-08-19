@@ -121,18 +121,14 @@ def _probe_text(message: dict) -> str:
                 if result not in (None, "", {}, []):
                     results.extend(rendered(result))
             elif part.get("type") == "reasoning":
-                # A thinking model's stored reply is [reasoning, text]; the wire copy the
-                # probe is matched against carries the text only, because the client sends
-                # the thought in `reasoning_content`, a FIELD, not in `content`. Folding
-                # it in here (the `"text" in part` arm below does) makes the stored probe
-                # strictly longer than the branch, so the substring test in
-                # `content_on_branch` fails for every assistant turn of every reasoning
-                # thread and `_sticky_compaction_boundary` returns 0 forever. Harmless
-                # under the rolling window, which only slides a little further; under the
-                # checkpoint fit the boundary is the whole of phase one, so its loss
-                # turns every overflowing turn into a fresh reset -- the one-turn window
-                # that phase one exists to prevent. Skipped on both sides: the wire shape
-                # has no reasoning part to lose.
+                # A thinking model's stored reply is [reasoning, text], but the wire copy
+                # the probe is matched against has the text only (the client sends the
+                # thought in the `reasoning_content` FIELD). Folding it in, as the
+                # `"text" in part` arm below would, makes the stored probe longer than the
+                # branch, so `content_on_branch` fails for every assistant turn of every
+                # reasoning thread and `_sticky_compaction_boundary` returns 0 forever --
+                # which under the checkpoint fit turns every overflowing turn into a fresh
+                # reset. Skipped on both sides: the wire shape has no reasoning part.
                 continue
             elif part.get("type") in ("text", "input_text") or "text" in part:
                 texts.append(str(part.get("text") or ""))
@@ -574,23 +570,19 @@ def degraded() -> bool:
 def reachable() -> bool:
     """Whether an archive write attempted RIGHT NOW could reach its store and embedder.
 
-    ``degraded`` is the verdict on the last write, which is the wrong tense for a caller
-    deciding whether to reset the conversation: the write for the turns THIS request is
-    about to evict has not happened yet, and it runs afterwards and swallows its own
-    failure. So the first request after the database or the embedder goes away commits a
-    reset whose block says the dropped turns can be searched, while nothing was indexed.
+    ``degraded`` is the verdict on the LAST write, the wrong tense for a caller deciding
+    whether to reset: this request's write runs afterwards and swallows its own failure, so
+    the first request after the store or embedder dies would commit a reset claiming the
+    dropped turns are searchable while nothing was indexed.
 
-    A probe rather than a promise. It cannot see a failure that begins after it returns,
-    which leaves the same one-turn window for a store that dies mid-request; the turns are
-    still recovered, because the client re-sends the branch and the write is idempotent.
-    Nor does a tokenizer that answers guarantee that an encode will.
+    A probe, not a promise: it cannot see a failure starting after it returns, leaving the
+    same one-turn window for a store that dies mid-request (the turns survive anyway, since
+    the client re-sends the branch and the write is idempotent).
 
     The counter is CALLED, not merely constructed. `embedding_identity` is string
-    formatting over resolver metadata and touches no model, and the llama backend's
-    `token_counter` hands back a lazy closure that starts no server, so both reported a
-    healthy archive while the embedder could not initialize at all. Calling it forces the
-    load. The work is not extra: `archive_turns` makes the identical call moments later on
-    the same request, and this runs only on an overflowing checkpoint-eligible request.
+    formatting over resolver metadata and `token_counter` hands back a lazy closure, so
+    both reported a healthy archive while the embedder could not initialize; calling it
+    forces the load. Not extra work: `archive_turns` repeats the call moments later.
     """
     if not enabled():
         return False
@@ -1560,12 +1552,10 @@ def _conversation_order(row) -> tuple:
 def _above_floor(hits: list, min_dense_score: float) -> list:
     """Candidates clearing the forced path's cosine floor. Off (0.0) returns them all.
 
-    The FORCED path only. An automatic lookup that returns whatever happens to share a
-    stopword with the question is worse than none under checkpoint compaction, because
-    that block is also the model's first sight of the search tool. Lexical-only hits are
-    kept: they matched real tokens, and gating them on a similarity they never carried
-    would delete the exact-identifier hits this archive is best at. A model that wanted
-    more can still search.
+    FORCED path only: an automatic lookup returning whatever shares a stopword with the
+    question is worse than none, since that block is the model's first sight of the search
+    tool. Lexical-only hits are kept, because gating them on a similarity they never
+    carried would delete the exact-identifier hits this archive is best at.
     """
     if min_dense_score <= 0:
         return hits
@@ -1944,16 +1934,14 @@ def recall(
             fetched = _candidates(conn, scope, query, model, fetch, thread_id)
             if not fetched:
                 return None
-            # The floor is applied to CANDIDATES, before anything is cut to `limit`.
-            # Applying it after the slice made it a deletion rather than a filter: the
-            # weak hits took the slots and were then removed, so a recall whose archive
-            # held qualifying turns returned fewer of them, or none at all. Measured at a
-            # floor of 0.5 with the top four weak and four qualifying candidates behind
-            # them: the forced recall returned nothing while the unforced one returned 4.
+            # The floor filters CANDIDATES, before the cut to `limit`. After the slice it
+            # was a deletion instead: weak hits took the slots and were then removed, so at
+            # a floor of 0.5 with four weak hits on top the forced recall returned nothing
+            # where the unforced one returned 4.
             #
-            # `exhausted` is read off the RAW fetch, not the filtered list, or the widening
-            # loop would mistake "the floor removed most of this page" for "the index has
-            # nothing more to give" and stop one page early.
+            # `exhausted` is read off the RAW fetch, or the widening loop would mistake "the
+            # floor removed most of this page" for "the index has nothing more" and stop
+            # one page early.
             exhausted = len(fetched) < fetch
             candidates = _above_floor(fetched, min_dense_score)
             if not candidates:
