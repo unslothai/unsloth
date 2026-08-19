@@ -582,8 +582,6 @@ def test_windows_npm_sibling_runtime_is_validated(managed_node_install, monkeypa
 
     _patch_floors(monkeypatch, lambda executable: _record(executable))
     configured = f"{good}{os.pathsep}{old}"
-    result = node_runtime.path_with_managed_node(
-        configured, require_npm = True, require_npx = False
-    )
+    result = node_runtime.path_with_managed_node(configured, require_npm = True, require_npx = False)
     assert any(c.endswith("node.exe") for c in checked), checked
     assert result == f"{managed_node_install}{os.pathsep}{configured}"
