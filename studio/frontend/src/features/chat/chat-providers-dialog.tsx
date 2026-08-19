@@ -67,7 +67,9 @@ import {
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
+  PROVIDER_CAPABILITY_WILDCARD,
   providerModelSupportsStudioTools,
+  setProviderModelCapabilities,
   removeExternalProviderApiKey,
   supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
@@ -155,6 +157,35 @@ interface ChatProvidersSettingsProps {
   providers: ExternalProviderConfig[];
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
 }
+
+export function codexCapabilitiesWithPlanModels(
+  entry: ProviderRegistryEntry | undefined,
+  listed: CodexSubscriptionModels | null,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
+  if (!listed || listed.source !== "subscription") return null;
+  const registryCapabilities = entry?.model_capabilities ?? {};
+  const capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> = {
+    ...registryCapabilities,
+  };
+  if (typeof entry?.supports_studio_tools === "boolean") {
+    capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
+      ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
+      studio_tools: entry.supports_studio_tools,
+    };
+  }
+  let added = false;
+  for (const model of listed.models) {
+    // Only the plan describes a slug the registry never listed. Without it the
+    // composer reads "unknown" as "allowed" and offers image attachments that the
+    // backend then refuses on every send.
+    if (typeof model.vision === "boolean" && !(model.id in registryCapabilities)) {
+      capabilities[model.id] = { ...capabilities[model.id], vision: model.vision };
+      added = true;
+    }
+  }
+  return added ? capabilities : null;
+}
+
 
 export function resolveCodexPickerModels(
   curated: string[],
@@ -986,6 +1017,11 @@ export function ChatProvidersSettings({
       // applying it here would save the first connection's models onto the second.
       return;
     }
+    const capabilities = codexCapabilitiesWithPlanModels(
+      registryByType.get("openai_codex"),
+      listed,
+    );
+    if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
     setAvailableModels(picker.catalog);
     setSelectedModelIds(picker.selected);

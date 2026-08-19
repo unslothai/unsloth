@@ -57,6 +57,8 @@ export interface ProviderModelInfo {
   display_name: string;
   context_length?: number | null;
   owned_by?: string | null;
+  /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
+  vision?: boolean | null;
 }
 
 export interface ProviderTestResult {

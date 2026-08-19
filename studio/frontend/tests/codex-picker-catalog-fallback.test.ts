@@ -72,3 +72,58 @@ test("an empty plan catalog is not treated as an empty account", () => {
   );
   assert.deepEqual(selected, ["gpt-5.4"]);
 });
+
+interface RegistryEntry {
+  model_capabilities?: Record<string, { vision?: boolean; studio_tools?: boolean }>;
+  supports_studio_tools?: boolean;
+}
+
+type Capabilities = (
+  entry: RegistryEntry | undefined,
+  listed: (SubscriptionModels & { models: { id: string; vision?: boolean | null }[] }) | null,
+) => Record<string, { vision?: boolean; studio_tools?: boolean }> | null;
+
+const ENTRY: RegistryEntry = {
+  model_capabilities: { "gpt-5.4": { vision: true, studio_tools: true } },
+  supports_studio_tools: true,
+};
+
+test("a plan-listed slug carries its own vision flag into the capability map", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  const capabilities = codexCapabilitiesWithPlanModels(ENTRY, {
+    source: "subscription",
+    models: [{ id: "gpt-5.7-nova", vision: false }, { id: "gpt-5.7-eos", vision: true }],
+  });
+  // Without this the composer reads "unknown" as allowed and offers attachments the
+  // backend refuses on every send.
+  assert.equal(capabilities?.["gpt-5.7-nova"].vision, false);
+  assert.equal(capabilities?.["gpt-5.7-eos"].vision, true);
+  // The registry's own entries survive untouched.
+  assert.deepEqual(capabilities?.["gpt-5.4"], { vision: true, studio_tools: true });
+});
+
+test("a curated fallback never rewrites the capability map", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  assert.equal(
+    codexCapabilitiesWithPlanModels(ENTRY, {
+      source: "curated",
+      models: [{ id: "gpt-5.7-nova", vision: true }],
+    }),
+    null,
+  );
+  assert.equal(codexCapabilitiesWithPlanModels(ENTRY, null), null);
+});
+
+test("a plan that describes nothing new leaves the map alone", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  assert.equal(
+    codexCapabilitiesWithPlanModels(ENTRY, {
+      source: "subscription",
+      models: [{ id: "gpt-5.4", vision: false }, { id: "gpt-5.7-nova" }],
+    }),
+    null,
+  );
+});
