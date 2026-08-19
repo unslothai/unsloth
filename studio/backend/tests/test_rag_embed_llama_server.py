@@ -466,7 +466,9 @@ def test_path_save_restarts_embedder_with_new_binary(monkeypatch):
     backend._model_repo = config.effective_gguf_repo()
     backend._binary = "/old/llama-server"
     backend._binary_path_revision = llama_cpp_path_settings.custom_llama_cpp_path_revision()
-    monkeypatch.setattr(llama_cpp_path_settings, "_path_revision", backend._binary_path_revision + 1)
+    monkeypatch.setattr(
+        llama_cpp_path_settings, "_path_revision", backend._binary_path_revision + 1
+    )
     spawned = []
 
     def fake_spawn():

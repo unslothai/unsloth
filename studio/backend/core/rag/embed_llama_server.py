@@ -655,7 +655,6 @@ class LlamaServerBackend:
         """Alive AND serving the effective repo (a Settings model change makes a
         live server stale)."""
         from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
-
         return (
             self._process_alive()
             and self._model_repo == config.effective_gguf_repo()

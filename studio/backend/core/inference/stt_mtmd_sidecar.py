@@ -833,7 +833,6 @@ class MtmdSttSidecar:
     ) -> None:
         if path_revision is None:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
-
             path_revision = custom_llama_cpp_path_revision()
         with self._lock:
             training = _training_active()
