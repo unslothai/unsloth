@@ -562,7 +562,7 @@ def test_final_normalization_keeps_a_volume_guid_rooted():
     # The volume-GUID branch has to come BEFORE the general one, which would
     # otherwise swallow it and strip the prefix anyway.
     assert guid < dos
-    branch = body[guid : dos]
+    branch = body[guid:dos]
     assert "Substring" not in branch
 
 
