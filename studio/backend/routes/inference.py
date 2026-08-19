@@ -12465,7 +12465,8 @@ async def _proxy_to_external_provider(
             for message in payload.messages
         )
         listed_model = (
-            None if model in capabilities
+            None
+            if model in capabilities
             else offered_subscription_model(payload.provider_id, model)
         )
         if image_requested and model not in capabilities and listed_model is None:
