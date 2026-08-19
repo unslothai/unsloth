@@ -72,6 +72,34 @@ def managed_node_binary() -> Path:
     return node_dir / "bin" / "node"
 
 
+def managed_node_bin_dir() -> Path | None:
+    """Directory holding the isolated node/npm/npx executables, or None if not installed."""
+    node_dir = managed_node_dir()
+    bin_dir = node_dir if os.name == "nt" else node_dir / "bin"
+    try:
+        return bin_dir if bin_dir.is_dir() else None
+    except OSError:
+        return None
+
+
+def path_with_managed_node(base_path: str | None = None) -> str:
+    """``base_path`` (default: this process's PATH) with the managed Node bin dir
+    prepended, unchanged when there is no managed install or it is already there.
+
+    The installer only puts the isolated Node on PATH for the setup process, so
+    subprocesses that need ``node``/``npx`` must be handed it explicitly."""
+    current = os.environ.get("PATH", "") if base_path is None else base_path
+    bin_dir = managed_node_bin_dir()
+    if bin_dir is None:
+        return current
+    bin_str = str(bin_dir)
+    entries = [entry for entry in current.split(os.pathsep) if entry]
+    normalized = os.path.normcase(os.path.normpath(bin_str))
+    if any(os.path.normcase(os.path.normpath(entry)) == normalized for entry in entries):
+        return current
+    return os.pathsep.join([bin_str, *entries])
+
+
 def _node_version_ok(executable: str) -> bool:
     """Run ``<executable> -v`` and check it clears the floor; False on any error."""
     try:

@@ -241,6 +241,23 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
+def _stdio_env(headers: Optional[dict]) -> Optional[dict]:
+    """Process env for a stdio server: its own vars, plus the managed Node bin dir
+    on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
+    env = dict(headers or {})
+    base = env.get("PATH")
+    if not isinstance(base, str) or not base:
+        base = os.environ.get("PATH", "")
+    try:
+        from utils.node_runtime import path_with_managed_node
+        patched = path_with_managed_node(base)
+    except (ImportError, OSError, ValueError):
+        patched = base
+    if patched and patched != env.get("PATH"):
+        env["PATH"] = patched
+    return env or None
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -263,7 +280,7 @@ def _client(
             StdioTransport(
                 command = parts[0],
                 args = parts[1:],
-                env = headers or None,
+                env = _stdio_env(headers),
                 keep_alive = False,
             )
         )
