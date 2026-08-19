@@ -428,8 +428,8 @@ class TestCudaLeafDigitParity:
             text = path.read_text(encoding = "utf-8")
             body = text[text.index("_has_intel_xpu_gpu() {") :]
             body = body[: body.index("\n}")]
-            assert "/dev/dri/renderD*" in body
-            assert "device/vendor" in body
+            assert '"$_pci_dev"/drm/renderD*' in body
+            assert '"/dev/dri/${_pci_render##*/}"' in body
             assert '"0x8086"' in body
 
     def test_install_sh_lowercases_backend_leaf(self):

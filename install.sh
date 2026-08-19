@@ -3138,18 +3138,7 @@ _has_intel_xpu_gpu() {
             return 0
         fi
     fi
-    _intel_dri_accessible=false
-    for _render_node in /dev/dri/renderD*; do
-        [ -r "$_render_node" ] && [ -w "$_render_node" ] || continue
-        _render_vendor="/sys/class/drm/${_render_node##*/}/device/vendor"
-        [ -r "$_render_vendor" ] || continue
-        read -r _render_vendor_id < "$_render_vendor" 2>/dev/null || continue
-        if [ "$_render_vendor_id" = "0x8086" ]; then
-            _intel_dri_accessible=true
-            break
-        fi
-    done
-    if [ "$_intel_dri_accessible" = true ] && [ -d /sys/bus/pci/devices ]; then
+    if [ -d /sys/bus/pci/devices ]; then
         for _pci_dev in /sys/bus/pci/devices/*; do
             [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] && [ -r "$_pci_dev/device" ] || continue
             read -r _v < "$_pci_dev/vendor" 2>/dev/null || continue
@@ -3159,7 +3148,10 @@ _has_intel_xpu_gpu() {
                 _d=$(printf '%s' "$_d" | tr '[:upper:]' '[:lower:]')
                 case "$_d" in
                     0x56*|0x0bd*|0x64*|0x7d*|0xe2*)
-                        return 0
+                        for _pci_render in "$_pci_dev"/drm/renderD*; do
+                            _render_node="/dev/dri/${_pci_render##*/}"
+                            [ -r "$_render_node" ] && [ -w "$_render_node" ] && return 0
+                        done
                         ;;
                 esac
             fi
