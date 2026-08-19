@@ -5854,3 +5854,72 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     boundaries = [notice["boundary_messages"] for notice in notices]
     assert max(boundaries) == 4
     assert boundaries == sorted(boundaries)
+
+
+def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypatch):
+    """`fit_rolling_context` returns None when it drops nothing.
+
+    A prompt that simply FITS, after a context-length increase or on a shorter branch,
+    therefore left the budget to a character estimate that cannot see the template's own
+    framing. It reported room the request did not have, the recall appended a passage too
+    large for the real window, and the next iteration could not evict it again because the
+    current tool exchange is protected.
+    """
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_s",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "It was 5150."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 4096
+    # Most of the window is catalogue and template framing, which no character estimate
+    # can see. The messages themselves are short, so the fit drops nothing at all.
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: 2800
+        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+    )
+
+    seen = {}
+
+    def execute_tool(name, arguments, **kwargs):
+        seen.update(kwargs)
+        return "an earlier turn"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "what was the code"}],
+            tools = [{"type": "function", "function": {"name": "search_conversation"}}],
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    budget = seen.get("conversation_budget_tokens")
+    assert budget is not None
+    # 3,584 of budget against a real prompt of roughly 2,800: hundreds of tokens of room,
+    # not the thousands the estimate claimed from a handful of short messages.
+    assert 0 <= budget < 1000, budget

@@ -3497,9 +3497,12 @@ def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
     rendered = conversation_archive.render_turn(wire)
     text = rendered[1] if isinstance(rendered, tuple) else rendered
 
-    assert conversation_archive._document_matches_one_run(
-        [{"text": text}], conversation_archive.branch_message_texts(stored), 3
-    ) is True
+    assert (
+        conversation_archive._document_matches_one_run(
+            [{"text": text}], conversation_archive.branch_message_texts(stored), 3
+        )
+        is True
+    )
     # The wire-shaped branch, which every live caller supplies, is unchanged.
     assert conversation_archive._document_matches_one_run(
         [{"text": text}], conversation_archive.branch_message_texts(wire), 3
@@ -3669,3 +3672,47 @@ def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
     assert len(positions) == 3, positions
     # Both repeats keep their own seat instead of collapsing onto the first.
     assert conversation_archive._occurrences(positions, branch[2:4]) == [1, 2]
+
+
+def test_a_batch_mixing_a_search_with_an_ordinary_tool_keeps_its_transcript_span(conn):
+    """`archive_messages` bounds the branch check, so it has to be the TRANSCRIPT span.
+
+    An assistant batch that called `search_conversation` alongside an ordinary tool has
+    its retrieval call and result stripped before the document is written, so the archived
+    copy is three messages where the live turn is four. Bounded by the shorter figure, the
+    perfectly valid ordinary-tool exchange and the answer that followed were rejected as
+    off-branch and could never be recalled.
+    """
+    group = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    archivable = conversation_archive._archivable(group)
+    assert len(archivable) == 3 and len(group) == 4
+
+    rendered = conversation_archive.render_turn(archivable)
+    text = rendered[1] if isinstance(rendered, tuple) else rendered
+    live = conversation_archive.branch_message_texts(group)
+
+    assert (
+        conversation_archive._document_matches_one_run([{"text": text}], live, len(group)) is True
+    )
+
+    _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    spans = [
+        row["archive_messages"]
+        for row in conn.execute(
+            "SELECT archive_messages FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    ]
+    assert spans == [4], spans

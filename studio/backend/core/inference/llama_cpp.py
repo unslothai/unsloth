@@ -22224,6 +22224,9 @@ class LlamaCppBackend:
         # for a conversation search to be told there is room it does not have. Carrying
         # the difference makes the estimate exact where it was measured.
         _prompt_token_offset: Optional[int] = None
+        # Filled lazily, and only on the leg where the fit reported nothing. See the
+        # recall budget below.
+        _exact_prompt_tokens: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
         # injected into `conversation`. The archive is keyed by thread and the stored rows
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
@@ -23725,6 +23728,8 @@ class LlamaCppBackend:
                         # stream while the tool blocks (the SSE route turns heartbeats into
                         # keepalives). Result is byte-identical to a direct call.
                         def _invoke_tool(_output_callback, _decision = decision):
+                            # Priced once per request, not once per tool call.
+                            nonlocal _exact_prompt_tokens
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -23751,14 +23756,50 @@ class LlamaCppBackend:
                                 # leave the tools array out, and a big catalogue can put
                                 # the request near its budget while this still reports
                                 # room for several 500-token chunks.
+                                # `fit_rolling_context` returns None when it dropped
+                                # nothing, so a prompt that simply FITS leaves
+                                # `_prompt_token_offset` unset -- after a context-length
+                                # increase, or on a shorter branch. The character estimate
+                                # that stood in for it there leaves out the template's own
+                                # framing, so it can report room that is not there, the
+                                # recall appends a passage too large for the real window,
+                                # and the next iteration cannot evict it again because the
+                                # current tool exchange is protected.
+                                #
+                                # So price it exactly instead, once, and only here: this
+                                # runs when the model actually reaches for a retrieval
+                                # tool on a request that did not truncate, not on every
+                                # turn. A failure falls back to the estimate, which is
+                                # what this did before.
+                                if _prompt_token_offset is None and _exact_prompt_tokens is None:
+                                    try:
+                                        _exact_prompt_tokens = self.count_chat_tokens(
+                                            neutralize_control_markup_in_messages(
+                                                conversation, _markup_cache, self.markup_profile
+                                            ),
+                                            None,
+                                            safe_tools,
+                                            strict = True,
+                                            chat_template_kwargs = _reasoning_kw,
+                                        )
+                                    except Exception:
+                                        logger.debug(
+                                            "recall budget: exact prompt count failed",
+                                            exc_info = True,
+                                        )
                                 # Dense on the fallback leg only: `_prompt_token_offset`
                                 # already carries the fit's exact tokenizer count, so it
                                 # needs no correction, while the estimate that stands in
                                 # for it undercounts CJK and emoji by about half.
-                                _spent = estimate_messages_tokens_dense(conversation) + (
-                                    _prompt_token_offset
-                                    if _prompt_token_offset is not None
-                                    else estimate_messages_tokens_dense(safe_tools or [])
+                                _spent = (
+                                    _exact_prompt_tokens
+                                    if _exact_prompt_tokens is not None
+                                    else estimate_messages_tokens_dense(conversation)
+                                    + (
+                                        _prompt_token_offset
+                                        if _prompt_token_offset is not None
+                                        else estimate_messages_tokens_dense(safe_tools or [])
+                                    )
                                 )
                                 kwargs["conversation_budget_tokens"] = max(
                                     0,
