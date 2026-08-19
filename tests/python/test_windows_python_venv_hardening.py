@@ -624,9 +624,7 @@ def test_uv_venv_creation_result_nonzero_uv_uses_selected_python_fallback(
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_uv_venv_creation_result_nonzero_ready_uv_still_uses_fallback(
-    tmp_path: Path, shell: str
-):
+def test_uv_venv_creation_result_nonzero_ready_uv_still_uses_fallback(tmp_path: Path, shell: str):
     state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero_ready", "ready")
     assert state["calls"] == "create virtual environment,repair virtual environment", state
     _assert_uv_invocation(state, tmp_path)
@@ -653,9 +651,7 @@ def test_uv_venv_creation_result_missing_selected_python_stops_before_packages(
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_uv_venv_creation_result_nonzero_fallback_stops_before_packages(
-    tmp_path: Path, shell: str
-):
+def test_uv_venv_creation_result_nonzero_fallback_stops_before_packages(tmp_path: Path, shell: str):
     state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "nonzero")
     assert state["calls"] == "create virtual environment,repair virtual environment", state
     _assert_uv_invocation(state, tmp_path)
