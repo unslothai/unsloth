@@ -512,6 +512,58 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_a_search_the_MODEL_asked_for_is_not_archived_as_new_history():
+    """`_is_injected` knows this feature's own ids, and the model's searches carry none.
+
+    A model-emitted `search_conversation` gets an ordinary `call_N` id from the parser, so
+    both the call and the passages it retrieved were indexed as fresh conversation. A
+    second search then archived the first one's output inside its own, one nesting level
+    per distinct search, each copy competing for the four recall slots.
+
+    Removed by NAME, and only the retrieval parts: the reply that follows a search is real
+    conversation, and an assistant message can carry an ordinary call beside the search.
+    """
+    from core.rag import conversation_archive as archive
+
+    recalled = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "function": {"name": "search_conversation", "arguments": '{"query":"pass"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "<chunk>RETRIEVEDPASSAGE</chunk>"},
+        {"role": "assistant", "content": "It was ZQXVARA123."},
+    ]
+
+    rendered = archive.render_turn(archive._archivable(recalled))
+    assert "RETRIEVEDPASSAGE" not in rendered
+    assert "ZQXVARA123" in rendered
+
+    # A retrieval call beside an ordinary one loses only the retrieval half.
+    mixed = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_0", "function": {"name": "search_conversation", "arguments": "{}"}},
+                {"id": "call_1", "function": {"name": "terminal", "arguments": '{"cmd":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "<chunk>RETRIEVEDPASSAGE</chunk>"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "total 12"},
+    ]
+
+    mixed_rendered = archive.render_turn(archive._archivable(mixed))
+    assert "RETRIEVEDPASSAGE" not in mixed_rendered
+    assert "terminal" in mixed_rendered
+    assert "total 12" in mixed_rendered
+
+
 def test_swapping_the_tool_retires_the_archived_call():
     """Which tool ran is part of what the turn says, so it has to be part of the probe.
 
