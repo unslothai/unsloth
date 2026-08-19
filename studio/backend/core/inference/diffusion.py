@@ -5836,15 +5836,11 @@ class DiffusionBackend:
                     self._gen = None
 
     def generate_progress(self) -> dict[str, Any]:
-        """Live per-step progress for an in-flight or teardown-queued generation."""
+        """Live per-step progress for an in-flight generation (lock-free read)."""
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
-            with self._generation_cancel_lock:
-                pending = bool(
-                    self._queued_generate_cancels or self._active_generate_cancel is not None
-                )
             return {
-                "active": pending,
+                "active": False,
                 "step": 0,
                 "total_steps": 0,
                 "fraction": 0.0,

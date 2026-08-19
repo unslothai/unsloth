@@ -7365,8 +7365,6 @@ def test_cancel_wakes_generation_waiting_for_replacement(fake_runtime, tmp_path,
     else:
         allow_replacement_commit.set()
         pytest.fail("generation was not published while waiting for replacement")
-    assert backend.generate_progress()["active"] is True
-
     assert backend.cancel_generate() is True
     worker.join(5)
     assert not worker.is_alive(), "cancelled generation waited for replacement to finish"

@@ -9,14 +9,12 @@ stack loads."""
 import builtins
 import contextlib
 import dataclasses
-import functools
 import sys
 import threading
 import time
 import types
 from dataclasses import replace
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -4606,13 +4604,10 @@ def test_each_video_load_gets_its_own_cancel_event(monkeypatch):
     backend = VideoBackend.__new__(VideoBackend)
     backend._lock = threading.RLock()
     backend._generate_lock = threading.RLock()
-    backend._generation_cancel_lock = threading.Lock()
-    backend._teardown_drained = threading.Event()
     backend._cancel_event = threading.Event()
     backend._load_token = 0
     backend._loading = None
     backend._active_generate_cancel = None
-    backend._queued_generate_cancels = set()
     backend._state = None
 
     started: list[threading.Event] = []
@@ -4660,30 +4655,6 @@ class _HookedLock:
         self._lock.release()
         if threading.current_thread().name == self._thread_name:
             self._on_release()
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *_exc) -> None:
-        self.release()
-
-
-class _ObservedLock:
-    """Lock wrapper that reports an acquisition attempt made outside its owner thread."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._owner = threading.current_thread()
-        self.waiting = threading.Event()
-
-    def acquire(self, *args, **kwargs):
-        if threading.current_thread() is not self._owner:
-            self.waiting.set()
-        return self._lock.acquire(*args, **kwargs)
-
-    def release(self) -> None:
-        self._lock.release()
 
     def __enter__(self):
         self.acquire()
@@ -4743,347 +4714,34 @@ def test_unload_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_
     assert backend._teardown_waiters == 0  # the fence drained
 
 
-class _RecordingEvent(threading.Event):
-    """Event that reports each wait() so a test can observe a worker parking on it."""
+def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_path):
+    # The load path takes the same barrier before tearing the old model down, so it has the same hole.
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
 
-    def __init__(
-        self,
-        waiting: threading.Event,
-        waiting_again: Optional[threading.Event] = None,
-    ):
-        super().__init__()
-        self._waiting = waiting
-        self._waiting_again = waiting_again
-        self._wait_count = 0
+    queued = _run_teardown_race(backend, lambda: _load_gguf(backend, tmp_path))
 
-    def wait(self, timeout = None):
-        self._wait_count += 1
-        if self._wait_count == 1:
-            self._waiting.set()
-        elif self._waiting_again is not None:
-            self._waiting_again.set()
-        return super().wait(timeout)
+    assert (
+        "out" not in queued
+    ), "a generation queued behind the load barrier ran against a pipeline being torn down"
+    assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
+    assert backend._teardown_waiters == 0  # the fence drained
 
 
-def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
-    # A generation that wins the lock race must yield it to the queued teardown, not
-    # misreport a cancellation. Two reservations prove it does not resume early.
+def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
+    # The fence's effect: with a teardown waiting on _generate_lock, a generation that wins the lock refuses instead of denoising.
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)
     assert backend.generate(prompt = "before", steps = 2)["mp4_bytes"] == b"MP4"
 
-    waiting = threading.Event()
-    waiting_again = threading.Event()
-    denoise_entered = threading.Event()
-    pipe_type = type(backend._state.pipe)
-    real_call = pipe_type.__call__
+    backend._teardown_waiters = 1
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate(prompt = "during", steps = 2)
+    # Still loaded: the refusal is about the pending teardown, not a missing model.
+    assert backend._state is not None
 
-    @functools.wraps(real_call)
-    def record_denoise(self, *args, **kwargs):
-        denoise_entered.set()
-        return real_call(self, *args, **kwargs)
-
-    monkeypatch.setattr(pipe_type, "__call__", record_denoise)
-    backend._teardown_drained = _RecordingEvent(waiting, waiting_again)
-    with backend._lock:
-        backend._teardown_waiters = 2
-
-    outcome: dict = {}
-    worker = threading.Thread(
-        target = lambda: outcome.setdefault("result", backend.generate(prompt = "during", steps = 2)),
-        daemon = True,
-    )
-    worker.start()
-    assert waiting.wait(5), "generation did not yield to the pending teardown"
-
-    with backend._lock:
-        backend._release_teardown_locked()
-        backend._teardown_drained.set()
-    assert waiting_again.wait(5), "generation did not re-wait for the final teardown"
-    assert not denoise_entered.is_set(), "generation denoised before every teardown drained"
-
-    with backend._lock:
-        backend._release_teardown_locked()
-    worker.join(5)
-    assert not worker.is_alive(), "generation did not resume after the teardown drained"
-    assert denoise_entered.is_set()
-    assert outcome["result"]["mp4_bytes"] == b"MP4"
-
-
-def test_background_generation_waits_for_replacement_and_completes(
-    fake_runtime, tmp_path, monkeypatch
-):
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-    old_pipe = backend._state.pipe
-
-    replacement_build_started = threading.Event()
-    allow_replacement_commit = threading.Event()
-    real_from_single_file = _FakeTransformer.from_single_file
-
-    def blocking_from_single_file(cls, path, **kwargs):
-        replacement_build_started.set()
-        assert allow_replacement_commit.wait(5), "replacement load was not released"
-        return real_from_single_file(path, **kwargs)
-
-    monkeypatch.setattr(
-        _FakeTransformer, "from_single_file", classmethod(blocking_from_single_file)
-    )
-
-    generated_with: list[object] = []
-    real_call = _FakePipe.__call__
-
-    @functools.wraps(real_call)
-    def record_pipe(self, *args, **kwargs):
-        generated_with.append(self)
-        return real_call(self, *args, **kwargs)
-
-    monkeypatch.setattr(_FakePipe, "__call__", record_pipe)
-    monkeypatch.setattr(
-        "core.inference.video_gallery.save",
-        lambda *_args, **_kwargs: {"id": "replacement-race"},
-    )
-
-    load_outcome: dict = {}
-
-    def replace_model():
-        try:
-            load_outcome["result"] = _load_gguf(backend, tmp_path)
-        except BaseException as exc:  # noqa: BLE001 - surface worker failures in the test thread
-            load_outcome["error"] = exc
-
-    # Hold the barrier until both contenders are queued. The replacement reserves teardown
-    # first; begin_generate can still validate the old committed state, and its worker must
-    # yield even if Python admits it to the generation lock before the loader.
-    backend._generate_lock.acquire()
-    loader = threading.Thread(target = replace_model, daemon = True)
-    loader.start()
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        with backend._lock:
-            if backend._teardown_waiters == 1:
-                break
-        time.sleep(0.01)
-    else:
-        backend._generate_lock.release()
-        pytest.fail("replacement did not reserve teardown")
-
-    backend.begin_generate(prompt = "during replacement", steps = 2)
-    backend._generate_lock.release()
-
-    assert replacement_build_started.wait(5), load_outcome
-    assert backend.generate_progress()["active"] is True
-    allow_replacement_commit.set()
-    loader.join(5)
-    assert not loader.is_alive(), "replacement load did not finish"
-    assert "error" not in load_outcome, load_outcome
-
-    deadline = time.monotonic() + 5
-    while backend.generate_progress()["active"] and time.monotonic() < deadline:
-        time.sleep(0.01)
-    progress = backend.generate_progress()
-    assert progress["phase"] == "completed", progress
-    assert generated_with == [backend._state.pipe]
-    assert generated_with[0] is not old_pipe
-
-
-def test_queued_background_generation_revalidates_the_replacement_family(
-    fake_runtime, tmp_path, monkeypatch
-):
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-    old_family = backend._state.family
-    replacement_family = dataclasses.replace(old_family, name = "replacement-family")
-
-    validated: list[str] = []
-
-    def validate_shape(family, **_kwargs):
-        validated.append(family.name)
-        if family is replacement_family:
-            raise ValueError("replacement family rejects this shape")
-
-    monkeypatch.setattr(video_mod, "validate_video_request_shape", validate_shape)
-
-    waiting = threading.Event()
-    backend._teardown_drained = _RecordingEvent(waiting)
-    with backend._lock:
-        backend._teardown_waiters = 1
-
-    backend.begin_generate(prompt = "queued for another family", width = 768, height = 512)
-    assert waiting.wait(5), "background generation did not wait for replacement"
-
-    with backend._lock:
-        backend._state = dataclasses.replace(backend._state, family = replacement_family)
-        backend._release_teardown_locked()
-
-    deadline = time.monotonic() + 5
-    while backend.generate_progress()["active"] and time.monotonic() < deadline:
-        time.sleep(0.01)
-    progress = backend.generate_progress()
-    assert progress["phase"] == "failed", progress
-    assert progress["error"] == "replacement family rejects this shape"
-    assert validated == [old_family.name, replacement_family.name]
-
-
-def test_cancel_wakes_a_background_generation_waiting_for_teardown(fake_runtime, tmp_path):
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-
-    waiting = threading.Event()
-    backend._teardown_drained = _RecordingEvent(waiting)
-    with backend._lock:
-        backend._teardown_waiters = 1
-
-    try:
-        backend.begin_generate(prompt = "cancel while queued", steps = 2)
-        assert waiting.wait(5), "background generation did not wait for teardown"
-        assert backend.cancel_generate() is True
-
-        deadline = time.monotonic() + 5
-        while backend.generate_progress()["active"] and time.monotonic() < deadline:
-            time.sleep(0.01)
-        progress = backend.generate_progress()
-        assert progress["phase"] == "failed", progress
-        assert progress["error"] == VIDEO_CANCELLED_MSG
-        assert backend._teardown_waiters == 1, "test teardown drained before cancellation exited"
-    finally:
-        with backend._lock:
-            if backend._teardown_waiters:
-                backend._release_teardown_locked()
-
-
-def test_cancel_interrupts_background_generation_waiting_for_generation_lock(
-    fake_runtime, tmp_path
-):
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-
-    # Stand in for a replacement's final placement, which holds _generate_lock after
-    # teardown has drained. The queued worker must reach a terminal state while this
-    # lock remains held rather than waiting for placement to finish.
-    generate_lock = _ObservedLock()
-    backend._generate_lock = generate_lock
-    generate_lock.acquire()
-    try:
-        backend.begin_generate(prompt = "cancel during placement", steps = 2)
-        assert generate_lock.waiting.wait(5), "background generation did not wait for placement"
-        assert backend.cancel_generate() is True
-
-        deadline = time.monotonic() + 5
-        while backend.generate_progress()["active"] and time.monotonic() < deadline:
-            time.sleep(0.01)
-        progress = backend.generate_progress()
-        assert progress["phase"] == "failed", progress
-        assert progress["error"] == VIDEO_CANCELLED_MSG
-    finally:
-        generate_lock.release()
-
-
-def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-
-    waiting = threading.Event()
-    backend._teardown_drained = _RecordingEvent(waiting)
-    with backend._lock:
-        backend._teardown_waiters = 1
-
-    outcome: dict = {}
-
-    def generate():
-        try:
-            backend.generate(prompt = "during", steps = 2)
-        except RuntimeError as exc:
-            outcome["error"] = str(exc)
-
-    worker = threading.Thread(target = generate, daemon = True)
-    worker.start()
-    assert waiting.wait(5), "generation did not wait for unload"
-
-    with backend._lock:
-        backend._teardown_state_locked()
-        backend._release_teardown_locked()
-    worker.join(5)
-    assert not worker.is_alive(), "generation remained blocked after unload"
-    assert outcome["error"] == VIDEO_NOT_LOADED_MSG
-
-
-def test_cancel_generate_does_not_need_the_state_lock(fake_runtime, tmp_path):
-    # A queued Stop must not block on _lock: cancel_generate signals under the independent
-    # cancellation lock and wakes the queued worker via a lock-free Event, so it works while
-    # a load holds the state lock for its (multi-minute) construction.
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-
-    with backend._lock:
-        backend._teardown_waiters = 1
-    backend.begin_generate(prompt = "cancel while a load holds _lock", steps = 2)
-
-    deadline = time.monotonic() + 5
-    while not backend._queued_generate_cancels and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert backend._queued_generate_cancels, "generation never queued behind the teardown"
-
-    try:
-        # The stand-in for the load's construction: _lock is HELD here, yet the Stop still
-        # lands and wakes the worker (neither the signal nor the wake needs the state lock).
-        with backend._lock:
-            assert backend.cancel_generate() is True
-
-        deadline = time.monotonic() + 5
-        while backend.generate_progress()["active"] and time.monotonic() < deadline:
-            time.sleep(0.01)
-        progress = backend.generate_progress()
-        assert progress["phase"] == "failed", progress
-        assert progress["error"] == VIDEO_CANCELLED_MSG
-    finally:
-        with backend._lock:
-            if backend._teardown_waiters:
-                backend._release_teardown_locked()
-
-
-def test_generation_queued_behind_replacement_is_validated_against_the_incoming_family(
-    fake_runtime, tmp_path, monkeypatch
-):
-    # Queuing behind a replacement must not bypass the input contract: with the old pipeline
-    # torn down but the new one not committed, the request is validated synchronously against
-    # the IN-FLIGHT load's family, so malformed conditioning 400s here instead of failing the
-    # queued job asynchronously through polling.
-    import core.inference.video as video_mod
-
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-    replacement_family = dataclasses.replace(backend._state.family, name = "replacement-family")
-
-    judged: list[str] = []
-
-    def record_flow_shifts(fam, engine, flow_shift, audio_flow_shift):
-        judged.append(fam.name)
-        raise ValueError("replacement family rejects this flow shift")
-
-    monkeypatch.setattr(VideoBackend, "_resolve_flow_shifts", staticmethod(record_flow_shifts))
-
-    with backend._lock:
-        backend._state = None
-        backend._teardown_waiters = 1
-        backend._loading = video_mod._VideoLoadingState(
-            repo_id = "unsloth/replacement",
-            base_repo = "unsloth/replacement",
-            family = replacement_family,
-            engine = "diffusers",
-        )
-
-    try:
-        with pytest.raises(ValueError, match = "replacement family rejects this flow shift"):
-            backend.begin_generate(prompt = "queued", flow_shift = 1.5)
-        assert judged == [replacement_family.name]
-        assert not backend._generate_job_active, "a refused request must not reserve the job slot"
-    finally:
-        with backend._lock:
-            if backend._teardown_waiters:
-                backend._release_teardown_locked()
+    backend._teardown_waiters = 0
+    assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
 
 
 def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monkeypatch):
