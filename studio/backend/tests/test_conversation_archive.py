@@ -3319,9 +3319,9 @@ def test_two_sequential_tool_rounds_replay_as_two_exchanges():
     # The text before the second call rides ON it, exactly as the flush builds it.
     second = conversation_archive._normalise(conversation_archive._probe_text(wire[2]))
     assert "pytest" in second and "Now the tests." in second
-    assert conversation_archive._normalise(
-        conversation_archive._probe_text(wire[4])
-    ) == "All green."
+    assert (
+        conversation_archive._normalise(conversation_archive._probe_text(wire[4])) == "All green."
+    )
 
 
 def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn):
@@ -3360,6 +3360,8 @@ def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn)
 
     assert len(set(numbered.values())) == len(numbered), numbered
     assert numbered["earlier turn (user + assistant)"] < numbered["earlier turn (assistant + tool)"]
+
+
 def test_an_answer_corrected_only_in_case_retires_the_archived_copy(conn):
     """Lowercasing the comparison made a case-only correction invisible.
 
@@ -3414,3 +3416,142 @@ def test_a_tool_result_cut_exactly_on_a_line_stays_on_its_branch(conn):
         assert (
             conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True
         ), f"cut {where}"
+
+
+def test_an_empty_tool_result_still_produces_a_tool_message():
+    """Only an ABSENT result is absent.
+
+    `serializeToolResultPart` skips exactly `undefined` and `null`, and emits a `tool`
+    message for everything else: a `{"result": ""}` sentinel for an empty string, since
+    the ChatMessage validator rejects an empty `tool` content, and JSON for containers.
+    Treating "" / {} / [] as nothing dropped a message the wire carries, so the
+    reconstructed run was shorter than the archived one and branch validation could filter
+    the turn out of every recall.
+    """
+
+    def _row(result, *, present = True):
+        call = {
+            "type": "tool-call",
+            "toolCallId": "c1",
+            "toolName": "terminal",
+            "args": {"command": "true"},
+        }
+        if present:
+            call["result"] = result
+        return [{"role": "assistant", "content": [call]}]
+
+    emitted = {
+        result: [
+            message["content"]
+            for message in conversation_archive._as_wire(_row(result))
+            if message["role"] == "tool"
+        ]
+        for result in ("", "ok")
+    }
+    # Byte for byte what `JSON.stringify({ result: "" })` produces: no space after the
+    # colon. `json.dumps` adds one, and every comparison downstream is exact, so the
+    # spaced spelling emits the message and still fails the match.
+    assert emitted[""] == ['{"result":""}']
+    assert emitted["ok"] == ["ok"]
+
+    for container, expected in (({}, "{}"), ([], "[]"), ({"a": 1}, '{"a":1}')):
+        wire = conversation_archive._as_wire(_row(container))
+        assert [message["content"] for message in wire if message["role"] == "tool"] == [expected]
+
+    # A result that is genuinely not there stays not there, matching the serializer.
+    for row in (_row(None), _row(None, present = False)):
+        assert [
+            message for message in conversation_archive._as_wire(row) if message["role"] == "tool"
+        ] == []
+
+    # And the reconstructed row actually matches the document archived from the request,
+    # which is the point: emitting the message and still failing the match looks fixed.
+    wire = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command":"true"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": '{"result":""}'},
+    ]
+    rendered = conversation_archive.render_turn(wire)
+    document = rendered[1] if isinstance(rendered, tuple) else rendered
+    reconstructed = conversation_archive.branch_message_texts(
+        conversation_archive._as_wire(_row(""))
+    )
+
+    assert conversation_archive._on_live_branch(document, reconstructed) is True
+
+
+def test_a_bare_identifier_query_also_reaches_past_the_cap(conn):
+    """A query that is ONLY an identifier shapes to ONE expression.
+
+    Its focused and permissive spellings coincide, and the single-expression path returned
+    the plain one-ended fetch, so the query most likely to tie on the IDF floor got the
+    oldest rows and the newest assignment was never a candidate. The two-expression case
+    was already covered, which is why this went unnoticed.
+    """
+    count = conversation_archive._BRANCH_FILTER_MAX_CANDIDATES + 40
+    for index in range(count - 1):
+        _archive(_turn(f"note {index:03d} about ZQXVARA123", "noted"))
+    _archive(_turn("set ZQXVARA123 to 9999", "done"))
+
+    assert len(store.conversation_match_queries("ZQXVARA123")) == 1
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+
+    assert found is not None
+    assert "9999" in found[0]
+    # The oldest end stays reachable, the invariant the ends-first ordering exists for.
+    assert "note 000" in conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 256)[0]
+
+
+def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
+    """The ordinary agent turn: call, result, then the model's final answer.
+
+    Bucketing the whole message as call, text, result put the answer in the middle, so
+    `_scan_probes` advanced past it to find the result and could not find it again. The
+    document rendered from the request said call, result, answer, and an unchanged evicted
+    tool exchange was classified off-branch: measured end to end, recall came back with
+    the user's question alone and the document holding the answer was filtered out.
+    """
+    stored = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "terminal",
+                    "args": {"command": "cat deploy.yml"},
+                    "result": "token ZQX-5150",
+                },
+                {"type": "text", "text": "The deploy token is ZQX-5150."},
+            ],
+        }
+    ]
+    wire = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "function": {"name": "terminal", "arguments": '{"command": "cat deploy.yml"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "token ZQX-5150"},
+        {"role": "assistant", "content": "The deploy token is ZQX-5150."},
+    ]
+    rendered = conversation_archive.render_turn(wire)
+    text = rendered[1] if isinstance(rendered, tuple) else rendered
+
+    assert conversation_archive._document_matches_one_run(
+        [{"text": text}], conversation_archive.branch_message_texts(stored), 3
+    ) is True
+    # The wire-shaped branch, which every live caller supplies, is unchanged.
+    assert conversation_archive._document_matches_one_run(
+        [{"text": text}], conversation_archive.branch_message_texts(wire), 3
+    ) is True

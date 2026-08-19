@@ -85,13 +85,29 @@ def _text_of(content, *, include_tool_calls: bool = False) -> str:
 def _probe_text(message: dict) -> str:
     """One message flattened in the ORDER ``render_turn`` writes it.
 
-    The branch check matches in order, so both must agree on it: a tool call before any
-    assistant text on the same message, its result after. Laid out that way here for both
-    shapes, the request's ``tool_calls`` and the store's ``tool-call`` content parts.
+    The branch check matches in order, so both must agree on it. Bucketing the whole
+    message as call, text, result only holds while the text came BEFORE the call. A
+    persisted row whose tool call is followed by the model's final answer -- the ordinary
+    agent turn -- renders as call, result, answer, and the buckets put the answer in the
+    middle: `_scan_probes` advanced its cursor past the answer to find the result and then
+    could not find the answer again, so an unchanged evicted tool exchange was classified
+    off-branch and no query could return it. Measured end to end: recall came back with
+    the user's question alone and the document holding the answer was filtered out.
+
+    So the buckets are flushed the way the replay serializer flushes its pending calls,
+    when text arrives after a call. Text before a call still rides ahead of it, which is
+    the shape it is written in.
     """
+    chunks: list[str] = []
     calls: list[str] = []
     texts: list[str] = []
     results: list[str] = []
+
+    def flush() -> None:
+        chunks.extend(part for part in calls + texts + results if part)
+        calls.clear()
+        texts.clear()
+        results.clear()
 
     def rendered(value) -> list[str]:
         """A structured value as the strings a wire-format copy of it could look like.
@@ -131,6 +147,8 @@ def _probe_text(message: dict) -> str:
                 # reset. Skipped on both sides: the wire shape has no reasoning part.
                 continue
             elif part.get("type") in ("text", "input_text") or "text" in part:
+                if calls:
+                    flush()
                 texts.append(str(part.get("text") or ""))
     else:
         texts.append(_text_of(content))
@@ -139,7 +157,8 @@ def _probe_text(message: dict) -> str:
         for value in (function.get("name"), function.get("arguments")):
             if value:
                 calls.append(str(value))
-    return "\n".join(part for part in calls + texts + results if part)
+    flush()
+    return "\n".join(chunks)
 
 
 def _is_injected(message: dict) -> bool:
@@ -723,6 +742,29 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
+# `JSON.stringify({ result: "" })` byte for byte. `json.dumps` puts a space after the
+# colon and `JSON.stringify` does not, so the obvious spelling reconstructs a message that
+# never equals the archived one: every comparison downstream is exact (`_occurrences`
+# compares with `==`, `_scan_probes` with `find`) and `_normalise` collapses whitespace
+# RUNS, not a single space after a colon. Emitting the message and still failing the match
+# is worse than not emitting it, because it looks fixed.
+_EMPTY_TOOL_RESULT = '{"result":""}'
+
+
+def _tool_result_content(result) -> str:
+    """A persisted tool result in the string the replay serializer would have sent.
+
+    An empty string becomes the sentinel above, because the backend's ChatMessage
+    validator rejects a `tool` message with empty content; everything else is JSON with
+    JavaScript's separators. Rendering it any other way makes the reconstructed message
+    differ from the one that was actually archived, which is the whole point of this
+    module comparing the two.
+    """
+    if isinstance(result, str):
+        return result if result else _EMPTY_TOOL_RESULT
+    return json.dumps(result, separators = (",", ":"))
+
+
 def _as_wire(messages: list[dict]) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
@@ -788,14 +830,19 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 ]
             wire.append(entry)
             for call in pending_calls:
-                result = call.get("result")
-                if result in (None, "", {}, []):
+                if "result" not in call or call.get("result") is None:
+                    # Only an ABSENT result is absent. The serializer skips exactly
+                    # `undefined` and `null` and emits a `tool` message for everything
+                    # else, so treating "" / {} / [] as nothing dropped a message the wire
+                    # carries: the reconstructed run was shorter than the archived one, and
+                    # branch validation could filter the turn out of every recall while
+                    # occurrence matching gave it the wrong ordinal.
                     continue
                 wire.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.get("toolCallId"),
-                        "content": result if isinstance(result, str) else json.dumps(result),
+                        "content": _tool_result_content(call.get("result")),
                     }
                 )
             pending_calls.clear()
@@ -1750,10 +1797,13 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     expressions = (
         store.conversation_match_queries(query) if config.CONVERSATION_QUERY_FOCUS else [None]
     )
-    if len(expressions) < 2:
-        return _lexical_pass(
-            conn, scope, query, model, fetch, expressions[0] if expressions else None
-        )
+    # Only the kill switch takes the plain path. A query made ONLY of an identifier
+    # ("ZQXVARA123") shapes to a single expression because its focused and permissive
+    # spellings coincide, and returning here handed that case the one-ended fetch the
+    # comment below exists to prevent: the very query most likely to tie on the IDF floor
+    # got the oldest `fetch` rows and the newest assignment was never a candidate.
+    if not expressions or expressions[0] is None:
+        return _lexical_pass(conn, scope, query, model, fetch, None)
     # Fetched from BOTH ENDS of the tied run, not just the front. The IDF floor above
     # means every hit on the conversation's own identifier scores the same, and SQLite
     # returns a fully tied run in rowid order, so `LIMIT 256` is "the oldest 256": past
@@ -1784,6 +1834,10 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
             ),
         ),
     )
+    # One expression means the two passes would run the same query twice: the filter pass
+    # already IS the ranking pass, and it is ends-first over both halves.
+    if len(expressions) < 2:
+        return strict
     # The ranking pass is fetched to the same bound as the filter pass, not to `fetch`.
     # It ranks the ELIGIBLE chunks, and at `fetch` rows its window can be spent entirely
     # on chunks that never name the identifier: a question's content word ("current") is
