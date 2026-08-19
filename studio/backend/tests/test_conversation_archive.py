@@ -3847,8 +3847,7 @@ def test_an_unfinished_local_tool_call_is_not_replayed_at_all():
     assert [message.get("role") for message in wire] == ["assistant"]
     assert "tool_calls" not in wire[0]
     assert not any(
-        isinstance(part, dict) and part.get("type") == "tool-call"
-        for part in wire[0]["content"]
+        isinstance(part, dict) and part.get("type") == "tool-call" for part in wire[0]["content"]
     ), "an unreplayable call was rebuilt into the wire form"
 
 
@@ -3895,6 +3894,7 @@ def test_two_completed_local_tool_calls_replay_as_two_rounds():
 
 def test_a_new_local_tool_round_starts_a_new_group():
     """`startsNewCodexToolRound`: same round batches, a different round flushes."""
+
     def _call(identifier, round_id):
         return {
             "type": "tool-call",
@@ -3950,19 +3950,22 @@ def test_a_topped_up_copy_keeps_the_transcript_span(conn):
         for row in conn.execute("SELECT sha256 FROM documents WHERE scope=?", (scope,)).fetchall()
     ][0]
 
-    assert conversation_archive._write_copy(
-        conn,
-        scope = scope,
-        thread_id = THREAD,
-        roles = "assistant",
-        digest = digest,
-        identity = "test-embedder",
-        group = archivable,
-        span = len(group),
-        chunks = [],
-        vectors = [],
-        seats = [0, 1],
-    ) is True
+    assert (
+        conversation_archive._write_copy(
+            conn,
+            scope = scope,
+            thread_id = THREAD,
+            roles = "assistant",
+            digest = digest,
+            identity = "test-embedder",
+            group = archivable,
+            span = len(group),
+            chunks = [],
+            vectors = [],
+            seats = [0, 1],
+        )
+        is True
+    )
     conn.commit()
 
     spans = [
@@ -3972,3 +3975,102 @@ def test_a_topped_up_copy_keeps_the_transcript_span(conn):
         ).fetchall()
     ]
     assert spans == [4, 4], spans
+
+
+def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
+    """"Let me check" ahead of a tool call is the ordinary agent turn, not an edge case.
+
+    `_probe_text` offers BOTH JSON spellings of the stored arguments, and that second
+    spelling lands between the arguments and whatever followed them, so the live render
+    (name/args/text) is no longer contiguous inside the stored one (name/args/args/text).
+    The turn matched no transcript position and took a fallback ordinal past the whole
+    transcript, where the recall header presents it as superseding genuinely later
+    instructions.
+    """
+    user = {"role": "user", "content": "what files are here"}
+    row = {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Let me check"},
+            {
+                "type": "tool-call",
+                "toolCallId": "c1",
+                "toolName": "terminal",
+                "args": {"command": "ls"},
+                "result": "main.py",
+            },
+        ],
+    }
+    positions = [
+        [
+            conversation_archive._normalise_cased(conversation_archive._probe_text(message))
+            for message in conversation_archive._as_wire([record])
+        ]
+        for record in (user, row)
+    ]
+    live = [
+        {
+            "role": "assistant",
+            "content": "Let me check",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "main.py"},
+    ]
+
+    assert conversation_archive._occurrences(positions, live) == [1]
+
+
+def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
+    """One document, two spans: the window has to fit the LONGER of them.
+
+    The digest is the rendered text, and `_archivable` strips a retrieval call and its
+    result, so a three-message tool exchange and a four-message batch containing that same
+    exchange render identically. Archived shortest first, the second was skipped as a
+    duplicate and inherited a window of three, which `_document_matches_one_run` then used
+    to bound a four-message live run: the turn was rejected as off-branch and no query
+    could return it.
+    """
+    short = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    long = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    assert conversation_archive.render_turn(
+        conversation_archive._archivable(short)
+    ) == conversation_archive.render_turn(conversation_archive._archivable(long))
+
+    _archive(short)
+    _archive(long)
+
+    scope = store.conversation_archive_scope(THREAD)
+    rows = conn.execute(
+        "SELECT archive_messages, sha256 FROM documents WHERE scope=?", (scope,)
+    ).fetchall()
+    assert [row["archive_messages"] for row in rows] == [4], "the window stayed at the shorter span"
+
+    # And the longer turn now validates against its own four-message run.
+    text = conversation_archive.render_turn(conversation_archive._archivable(long))
+    live = conversation_archive.branch_message_texts(long)
+    assert conversation_archive._document_matches_one_run([{"text": text}], live, 3) is False
+    assert conversation_archive._document_matches_one_run([{"text": text}], live, 4) is True

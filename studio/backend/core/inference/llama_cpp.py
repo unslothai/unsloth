@@ -24041,23 +24041,33 @@ class LlamaCppBackend:
                                 # is already spent. The offset on the other leg is a
                                 # framing correction rather than a total, so it stays valid
                                 # as the conversation grows.
+                                # Unconditionally, not only when the fit dropped nothing.
+                                # Gated on `_prompt_token_offset is None`, a request that
+                                # HAD compacted priced every later search as a character
+                                # estimate plus an offset measured before the loop's own
+                                # tool exchanges existed, so a dense ASCII result appended
+                                # after that fit -- code, minified JSON, command output --
+                                # was undercounted and the recall spent room that was
+                                # already gone. The exact count covers the same ground as
+                                # the offset leg, since it prices the conversation WITH
+                                # the tool catalogue, so the offset stays only as the
+                                # fallback for a tokenizer call that raises.
                                 _exact_prompt_tokens: Optional[int] = None
-                                if _prompt_token_offset is None:
-                                    try:
-                                        _exact_prompt_tokens = self.count_chat_tokens(
-                                            neutralize_control_markup_in_messages(
-                                                conversation, _markup_cache, self.markup_profile
-                                            ),
-                                            None,
-                                            safe_tools,
-                                            strict = True,
-                                            chat_template_kwargs = _reasoning_kw,
-                                        )
-                                    except Exception:
-                                        logger.debug(
-                                            "recall budget: exact prompt count failed",
-                                            exc_info = True,
-                                        )
+                                try:
+                                    _exact_prompt_tokens = self.count_chat_tokens(
+                                        neutralize_control_markup_in_messages(
+                                            conversation, _markup_cache, self.markup_profile
+                                        ),
+                                        None,
+                                        safe_tools,
+                                        strict = True,
+                                        chat_template_kwargs = _reasoning_kw,
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "recall budget: exact prompt count failed",
+                                        exc_info = True,
+                                    )
                                 # Dense on the fallback leg only: `_prompt_token_offset`
                                 # already carries the fit's exact tokenizer count, so it
                                 # needs no correction, while the estimate that stands in

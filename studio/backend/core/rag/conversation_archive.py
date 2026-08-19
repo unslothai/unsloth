@@ -385,6 +385,7 @@ def archive_turns(
                 # archived -- which is the ordinary case on a thread being re-compacted,
                 # and therefore the only chance an upgraded archive gets to converge.
                 _restamp(conn, scope, digest, seats, commit = True)
+                _widen_span(conn, scope, digest, span)
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
@@ -771,9 +772,7 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         if identifier is None:
             return [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
         if identifier not in rendered:
-            rendered[identifier] = [
-                _normalise_cased(_probe_text(m)) for m in _as_wire([record])
-            ]
+            rendered[identifier] = [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
         return rendered[identifier]
 
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
@@ -1192,8 +1191,29 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         # so `_probe_text` offers both JSON spellings for the stored copy and exactly one
         # for the live one. Those two can only ever meet this way. Every other message is
         # compared exactly.
+        #
+        # In two pieces when the whole needle does not fit, because the second spelling is
+        # inserted BETWEEN the arguments and whatever followed them. A tool turn opening
+        # with a preamble -- "Let me check" ahead of the call, which is the ordinary agent
+        # turn -- renders live as name/args/text and stored as name/args/args/text, so the
+        # live string stops being contiguous inside the stored one. Measured: that turn
+        # matched no transcript seat at all while the same turn without a preamble matched
+        # its own, and a seatless turn takes an ordinal past the whole transcript, where
+        # the recall header calls it the conversation's latest word. One split point, so
+        # this tolerates exactly the one insertion `_probe_text` makes and no more.
         if is_call:
-            return bool(live) and live in stored
+            if not live:
+                return False
+            if live in stored:
+                return True
+            words = live.split(" ")
+            for cut in range(1, len(words)):
+                head = " ".join(words[:cut])
+                tail = " ".join(words[cut:])
+                at = stored.find(head)
+                if at >= 0 and stored.find(tail, at + len(head)) >= 0:
+                    return True
+            return False
         return stored == live
 
     return [
@@ -1441,6 +1461,31 @@ def _archived_under(
 ) -> bool:
     """Cheap pre-check before the chunking and embedding pass."""
     return _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
+
+
+def _widen_span(conn, scope: str, digest: str, span: int) -> None:
+    """Grow a stored turn's window when the same text reappears over a LONGER span.
+
+    The digest is the rendered text, so two turns that read the same are one document,
+    but their transcript spans can differ: `_archivable` strips a retrieval call and its
+    result, so a three-message exchange and a four-message batch containing the same
+    exchange render identically. Archived in that order, the second is skipped and keeps
+    the first turn's span of three, and `_document_matches_one_run` then bounds its
+    four-message live run by three and rejects it as off-branch, so no query returns it.
+
+    Only ever UPWARDS. The window is a maximum, so a larger one still matches the shorter
+    turn, while narrowing it would break whichever turn was archived first.
+    """
+    try:
+        conn.execute(
+            "UPDATE documents SET archive_messages = ? "
+            "WHERE scope = ? AND sha256 = ? "
+            "AND (archive_messages IS NULL OR archive_messages < ?)",
+            (int(span), scope, digest, int(span)),
+        )
+        conn.commit()
+    except Exception:
+        logger.debug("conversation_archive.widen_span_failed", exc_info = True)
 
 
 def has_archive(thread_id: str) -> bool:
