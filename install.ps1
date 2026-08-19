@@ -374,11 +374,38 @@ function Install-UnslothStudio {
                 # directory out from under a live process. The owner PID is in the
                 # name; if that PID is still alive, leave it alone. PID reuse only
                 # ever costs a directory its cleanup, never a live one its files.
+                # owner.pid, when present, names the process that INHERITED this
+                # directory as its %TEMP% -- the autostarted Studio, which outlives
+                # the installer. The PID baked into the name is only the installer's,
+                # and it is gone by the time the next sweep runs, so on its own it
+                # would clear a directory a live Studio is still using.
                 $ownerPid = 0
-                if ([int]::TryParse(($stale.Name -split '-')[1], [ref]$ownerPid) -and $ownerPid -gt 0) {
-                    $owner = $null
-                    try { $owner = Get-Process -Id $ownerPid -ErrorAction Stop } catch { $owner = $null }
-                    if ($owner) { continue }
+                $ownerFile = Join-Path $stale.FullName "owner.pid"
+                $recorded = $null
+                try {
+                    if ([System.IO.File]::Exists($ownerFile)) {
+                        $recorded = [System.IO.File]::ReadAllText($ownerFile).Trim()
+                    }
+                } catch { $recorded = $null }
+                if (-not [string]::IsNullOrWhiteSpace($recorded)) {
+                    $null = [int]::TryParse($recorded, [ref]$ownerPid)
+                }
+                if ($ownerPid -le 0) {
+                    $null = [int]::TryParse(($stale.Name -split '-')[1], [ref]$ownerPid)
+                }
+                if ($ownerPid -gt 0) {
+                    $ownerLives = $true
+                    try {
+                        $null = Get-Process -Id $ownerPid -ErrorAction Stop
+                    } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+                        # The only answer that means "abandoned". Any other failure
+                        # (access denied, WMI unavailable) says nothing about whether
+                        # the owner is alive, so keep the directory.
+                        $ownerLives = $false
+                    } catch {
+                        $ownerLives = $true
+                    }
+                    if ($ownerLives) { continue }
                 }
                 # Nothing this script creates here is a reparse point, so anything
                 # that is gets the link itself removed and its target left alone.
@@ -395,6 +422,18 @@ function Install-UnslothStudio {
                 }
                 Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
             }
+        } catch {}
+    }
+
+    function Set-StudioPrivateTempOwner {
+        param([Parameter(Mandatory = $true)][int]$OwnerProcessId)
+        # Only meaningful when this run actually redirected the temp: otherwise the
+        # directory belongs to the host, not to us.
+        if ($null -eq $script:StudioTempOverride) { return }
+        $owned = $script:StudioTempOverride.Path
+        if ([string]::IsNullOrWhiteSpace($owned)) { return }
+        try {
+            [System.IO.File]::WriteAllText((Join-Path $owned "owner.pid"), [string]$OwnerProcessId)
         } catch {}
     }
 
@@ -779,7 +818,16 @@ public static class UnslothStudioFinalPathV2
             if (-not [string]::IsNullOrWhiteSpace($raw)) { $target = [string]$raw }
         }
         if ([string]::IsNullOrWhiteSpace($target)) { return $null }
-        if ($target.StartsWith('\??\')) { $target = $target.Substring(4) }
+        if ($target.StartsWith('\??\')) {
+            $target = $target.Substring(4)
+            # \??\UNC\server\share is the device spelling of \\server\share. Left as
+            # "UNC\server\share" it reads as RELATIVE and gets combined with the
+            # link's local parent, inventing a path that resolves nowhere near the
+            # real target -- and a wrong identity here is a wrong mutex.
+            if ($target.StartsWith('UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $target = '\\' + $target.Substring(4)
+            }
+        }
         try {
             if (-not [System.IO.Path]::IsPathRooted($target)) {
                 $parent = [System.IO.Path]::GetDirectoryName($Path)
@@ -807,10 +855,50 @@ public static class UnslothStudioFinalPathV2
     # callers get told the answer is inexact rather than being handed a lie.
     # Never throws -- a path identity nobody can establish must not be the reason
     # an install stops.
+    $script:StudioSubstMap = $null
+    function Get-StudioSubstTarget {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        # A SUBST drive is a DOS device mapping. Without the native resolver there
+        # is no API on 5.1 that reports it: measured on windows-latest,
+        # Get-PSDrive.DisplayRoot is empty, Win32_LogicalDisk.ProviderName is
+        # empty, GetFullPath and Resolve-Path both hand X:\ straight back, and
+        # (Get-Item X:\).Target reports the target's tail under the SUBST letter
+        # rather than the real one. `subst` with no arguments prints the mapping
+        # in full ("X:\: => D:\real\dir"), so that is what this reads, once.
+        if ($null -eq $script:StudioSubstMap) {
+            $script:StudioSubstMap = @{}
+            try {
+                foreach ($line in @(& "$env:SystemRoot\System32\subst.exe" 2>$null)) {
+                    $m = [regex]::Match([string]$line, '^([A-Za-z]):\\?:\s*=>\s*(\S.*)$')
+                    if ($m.Success) {
+                        $script:StudioSubstMap[$m.Groups[1].Value.ToUpperInvariant()] =
+                            $m.Groups[2].Value.TrimEnd()
+                    }
+                }
+            } catch {}
+        }
+        if ($script:StudioSubstMap.Count -eq 0) { return $null }
+        if ($Path.Length -lt 2 -or $Path[1] -ne ':') { return $null }
+        $letter = ([string]$Path[0]).ToUpperInvariant()
+        if (-not $script:StudioSubstMap.ContainsKey($letter)) { return $null }
+        $tail = $Path.Substring(2).TrimStart('\', '/')
+        $target = $script:StudioSubstMap[$letter]
+        if ([string]::IsNullOrWhiteSpace($tail)) { return $target }
+        try { return [System.IO.Path]::Combine($target, $tail) } catch { return $null }
+    }
+
     function Get-StudioLexicalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         $current = $null
         try { $current = [System.IO.Path]::GetFullPath($Path) } catch { return $Path }
+        # Fold a SUBST drive to what it maps to BEFORE walking components. The
+        # Python runtime gate resolves it (Path.resolve does), so leaving it here
+        # would give the two sides different mutex names for one directory, and
+        # would hide a running Studio from the in-use scan.
+        $substituted = Get-StudioSubstTarget -Path $current
+        if ($substituted) {
+            try { $current = [System.IO.Path]::GetFullPath($substituted) } catch {}
+        }
         # A plain hashtable, not a generic HashSet: PowerShell's is already
         # case-insensitive, and constructing a generic type is one of the things a
         # locked-down host can forbid -- which is the kind of host that got here.
@@ -958,6 +1046,9 @@ public static class UnslothStudioFinalPathV2
             $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
+            # Same reason as the --tauri rejection above: resolving a path can have
+            # redirected TMP/TEMP, and this throw is still before the lock finally.
+            Restore-StudioTempEnvironment
             throw "$envOverrideVar=$envOverride cannot be created or accessed."
         }
         $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
@@ -967,6 +1058,7 @@ public static class UnslothStudioFinalPathV2
             Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         } catch {
             Write-StudioLine "ERROR: $envOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
         $StudioDataDir = Join-Path $StudioHome "share"
@@ -2829,6 +2921,9 @@ exit 0
         # below would then find nothing and let the install overwrite a venv Studio
         # has open. So when the identity is inexact, compare the paths below their
         # roots as well: fail closed, the way an unresolved identity does elsewhere.
+        # Note the two senses of "exact" here: the -Exact PARAMETER is the caller's
+        # match mode (this path is one executable, no prefix match), while
+        # $venvInfo.Exact is how much the resolver trusts its own answer.
         $rootRelaxed = -not $venvInfo.Exact
         $resolvedBelowRoot = $null
         if ($rootRelaxed) {
@@ -6154,6 +6249,12 @@ exit 0
                 $studioAutoStartProcess = Start-Process -FilePath $VenvPython `
                     -ArgumentList (Get-ManagedUnslothCliCommandLine -Arguments @("studio", "-p", "8888")) `
                     -NoNewWindow -PassThru
+                # This process inherits the private %TEMP% and outlives the
+                # installer, so it -- not $PID -- is what the next sweep must see
+                # as the owner before it decides the directory is abandoned.
+                if ($null -ne $studioAutoStartProcess) {
+                    Set-StudioPrivateTempOwner -OwnerProcessId $studioAutoStartProcess.Id
+                }
             } finally {
                 if ($null -eq $_runtimeGateHandoff) {
                     Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue

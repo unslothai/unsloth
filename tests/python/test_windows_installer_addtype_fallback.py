@@ -63,6 +63,7 @@ LOCK_CHAIN = (
     "Write-StudioFinalPathDegraded",
     "Initialize-StudioFinalPathNativeType",
     "Resolve-StudioLinkTarget",
+    "Get-StudioSubstTarget",
     "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Get-StudioFinalPath",
@@ -437,6 +438,121 @@ def _dead_pid() -> int:
 
 
 _DEAD_PID = _dead_pid()
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("\\??\\UNC\\server\\share\\dir", "\\\\server\\share\\dir"),
+        ("\\??\\unc\\server\\share", "\\\\server\\share"),
+        ("\\??\\C:\\real\\target", "C:\\real\\target"),
+    ],
+    ids = ["unc-device-form", "lowercase-unc", "ordinary-device-form"],
+)
+def test_the_nt_device_prefix_becomes_a_usable_path(raw: str, expected: str):
+    """\\??\\UNC\\server\\share is the device spelling of \\\\server\\share.
+
+    Dropping the first four characters leaves "UNC\\server\\share", which reads as
+    a RELATIVE path and gets combined with the link's own parent, inventing an
+    identity that matches nothing real -- and a wrong identity here is a wrong
+    mutex. Whether the rewritten form counts as rooted is platform-dependent, so
+    what is asserted is the rewrite; the Windows end of it is covered on the 5.1
+    probe.
+    """
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _helpers("Resolve-StudioLinkTarget"),
+                "function Get-Item {",
+                "    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)",
+                "    $item = New-Object psobject",
+                f'    $item | Add-Member -MemberType NoteProperty -Name Target -Value "{raw}"',
+                "    Write-Output $item",
+                "}",
+                "Write-Output \"TARGET:[$(Resolve-StudioLinkTarget -Path '/some/link')]\"",
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    got = _lines(result, "TARGET:")[0]
+    assert expected in got
+    assert "UNC\\" not in got and "unc\\" not in got
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("X:\\", "D:\\real\\dir"),
+        ("X:", "D:\\real\\dir"),
+        ("x:\\venv", "D:\\real\\dir"),
+        ("C:\\other", ""),
+    ],
+    ids = ["drive-root", "bare-drive", "lowercase-letter", "unmapped-drive"],
+)
+def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
+    """The Python runtime gate resolves a SUBST drive; Path.resolve does that.
+
+    Left unresolved here, one directory reached under two spellings produces two
+    different install mutexes, and a Studio running from the physical spelling is
+    invisible to the in-use scan. Measured on windows-latest: subst.exe is the
+    only source available without a compiler -- Get-PSDrive.DisplayRoot,
+    Win32_LogicalDisk.ProviderName, GetFullPath and Resolve-Path all reveal
+    nothing about the mapping.
+    """
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _helpers("Get-StudioSubstTarget"),
+                '$script:StudioSubstMap = @{ "X" = "D:\\real\\dir" }',
+                f"Write-Output \"SUBST:[$(Get-StudioSubstTarget -Path '{path}')]\"",
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    got = _lines(result, "SUBST:")[0][len("SUBST:[") : -1]
+    if expected:
+        assert got.startswith(expected)
+    else:
+        assert got == ""
+
+
+@requires_pwsh
+def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
+    """The PID in the name is the INSTALLER's, and it exits.
+
+    The process that keeps using the directory is the Studio the installer
+    autostarted, which is what owner.pid records. Reading only the name would
+    clear a live Studio's %TEMP% on the next run.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    # Name says dead, owner.pid says alive: keep it.
+    keep = root / f"ust-{_DEAD_PID}-a"
+    keep.mkdir()
+    (keep / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    # Name says alive, owner.pid says dead: the recorded owner wins, so sweep it.
+    drop = root / f"ust-{os.getpid()}-b"
+    drop.mkdir()
+    (drop / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+
+    aged = time.time() - 3 * 24 * 3600
+    for d in (keep, drop):
+        os.utime(d, (aged, aged))
+
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert keep.exists()
+    assert not drop.exists()
 
 
 @requires_pwsh
