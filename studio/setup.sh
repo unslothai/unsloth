@@ -606,6 +606,7 @@ _source_smoke_install_kind() {
             esac
             ;;
         rocm) printf '%s' "linux-rocm" ;;
+        sycl) printf '%s' "linux-sycl" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -2023,12 +2024,16 @@ _has_intel_xpu_gpu() {
         return 1
     fi
     if command -v sycl-ls >/dev/null 2>&1; then
-        if _setup_run_smi sycl-ls 2>/dev/null | grep -qi "gpu"; then
+        if _setup_run_smi sycl-ls 2>/dev/null | grep -Eqi 'intel.*gpu|gpu.*intel'; then
             return 0
         fi
     fi
     if command -v xpu-smi >/dev/null 2>&1; then
-        return 0
+        _setup_xpu_smi_out=$(_setup_run_smi xpu-smi discovery 2>/dev/null) || _setup_xpu_smi_out=""
+        if printf '%s\n' "$_setup_xpu_smi_out" | grep -qi 'Device Type:[[:space:]]*GPU' && \
+           printf '%s\n' "$_setup_xpu_smi_out" | grep -qi 'Vendor Name:[[:space:]]*Intel'; then
+            return 0
+        fi
     fi
     if [ -d /sys/bus/pci/devices ]; then
         for _pci_dev in /sys/bus/pci/devices/*; do
@@ -2039,8 +2044,11 @@ _has_intel_xpu_gpu() {
                 read -r _d < "$_pci_dev/device" 2>/dev/null || continue
                 _d=$(printf '%s' "$_d" | tr '[:upper:]' '[:lower:]')
                 case "$_d" in
-                    0x56*|0x0bd*|0x7d*|0xe2*)
-                        return 0
+                    0x56*|0x0bd*|0x64*|0x7d*|0xe2*)
+                        for _pci_render in "$_pci_dev"/drm/renderD*; do
+                            _render_node="/dev/dri/${_pci_render##*/}"
+                            [ -r "$_render_node" ] && [ -w "$_render_node" ] && return 0
+                        done
                         ;;
                 esac
             fi
