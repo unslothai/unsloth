@@ -2624,7 +2624,8 @@ def test_a_re_embed_after_a_rewind_retires_the_surplus_copy_too(conn, monkeypatc
     identity = {"name": "st:model-a"}
     real = embeddings.encode_with_identity
     monkeypatch.setattr(
-        embeddings, "encode_with_identity",
+        embeddings,
+        "encode_with_identity",
         lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
     )
     monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])

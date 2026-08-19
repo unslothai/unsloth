@@ -670,7 +670,14 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     ]
 
 
-def _retire_surplus(conn, scope: str, digest: str, seats: list[int], *, rows = None) -> bool:
+def _retire_surplus(
+    conn,
+    scope: str,
+    digest: str,
+    seats: list[int],
+    *,
+    rows = None,
+) -> bool:
     """Delete copies of this turn the conversation no longer holds. True if any went.
 
     More copies than occurrences means a rewind removed one. The survivors are
