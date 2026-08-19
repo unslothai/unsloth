@@ -442,7 +442,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body; behind a proxy/NAT it's
             # misleading or an info leak.
-            detail = (f"Too many failed login attempts. Try again in {blocked_for} seconds."),
+            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 

@@ -3433,9 +3433,8 @@ def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_target_is_vision",
-        lambda path, variant = None, need_image = True: (
-            probed.append((path, variant, need_image)) or True
-        ),
+        lambda path, variant = None, need_image = True: probed.append((path, variant, need_image))
+        or True,
     )
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
