@@ -204,7 +204,7 @@ def _block_items(text: str) -> list[str]:
                     items.append("\n".join(current))
                 current = [line[2:]]
             elif current is not None and line.startswith(_CONTINUATION):
-                current.append(line[len(_CONTINUATION):])
+                current.append(line[len(_CONTINUATION) :])
             elif current:
                 items.append("\n".join(current))
                 current = None
