@@ -176,7 +176,7 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
         )
-        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", set())
+        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
         before = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         assert before["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
 
@@ -190,6 +190,29 @@ class TestLinuxUnchanged:
         sidecar = _llama_server_child_env(str(binary))
         assert "/opt/rocm/lib" not in sidecar["LD_LIBRARY_PATH"].split(":")
 
+    def test_a_replaced_runtime_retests_the_system_rocm_prepend(
+        self, monkeypatch, binary, tmp_path
+    ):
+        # The in-app updater swaps a new install into the same path. A proof
+        # from the old binary must not force the new runtime to stay bundle-only.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
+        monkeypatch.setattr(
+            llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
+        LlamaCppBackend._remember_bundle_only_rocm(str(binary))
+        assert LlamaCppBackend._prefers_bundle_only_rocm(str(binary))
+
+        replacement = tmp_path / "replacement-llama-server"
+        replacement.write_bytes(b"new runtime binary")
+        os.replace(replacement, binary)
+
+        assert not LlamaCppBackend._prefers_bundle_only_rocm(str(binary))
+        env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
+
     def test_a_different_build_dir_still_gets_the_prepend(self, monkeypatch, binary, tmp_path):
         # The proof is about one install tree, not about the host in general.
         monkeypatch.setattr(sys, "platform", "linux")
@@ -198,7 +221,7 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
         )
-        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", set())
+        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
         LlamaCppBackend._remember_bundle_only_rocm(str(binary))
         other = tmp_path / "other" / "llama-server"
         other.parent.mkdir(parents = True)

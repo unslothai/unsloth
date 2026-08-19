@@ -7745,7 +7745,7 @@ class LlamaCppBackend:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
             # which can be incompatible with the host amdkfd driver (#7233).
-            if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary_dir):
+            if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
                 lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
@@ -12677,20 +12677,25 @@ class LlamaCppBackend:
     _ROCM_OBJECT_HINTS = ("libamdhip", "libamd_comgr", "libhsa-runtime", "libhip", "libroc")
 
     # Build dirs where a bundle-only launch has come up healthy after the mix
-    # crashed. Set only from that proof, so a host the prepend is right for can
-    # never land here. In-process: a ROCm or driver upgrade re-tests on restart.
-    _bundle_only_rocm_dirs: set[str] = set()
+    # crashed, paired with the binary revision that proved it. The installer
+    # swaps a new runtime into the same path, so the revision prevents an old
+    # proof from suppressing the system ROCm prepend for the new build.
+    _bundle_only_rocm_dirs: dict[str, tuple] = {}
     _bundle_only_rocm_lock = threading.Lock()
 
     @staticmethod
     def _remember_bundle_only_rocm(binary: str) -> None:
+        resolved = _resolve_llama_binary(binary)
+        revision = LlamaCppBackend._binary_stamp(resolved)
         with LlamaCppBackend._bundle_only_rocm_lock:
-            LlamaCppBackend._bundle_only_rocm_dirs.add(str(_llama_lib_dir(binary)))
+            LlamaCppBackend._bundle_only_rocm_dirs[str(resolved.parent)] = revision
 
     @staticmethod
-    def _prefers_bundle_only_rocm(binary_dir: str) -> bool:
+    def _prefers_bundle_only_rocm(binary: str) -> bool:
+        resolved = _resolve_llama_binary(binary)
+        revision = LlamaCppBackend._binary_stamp(resolved)
         with LlamaCppBackend._bundle_only_rocm_lock:
-            return binary_dir in LlamaCppBackend._bundle_only_rocm_dirs
+            return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
 
     @staticmethod
     def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
