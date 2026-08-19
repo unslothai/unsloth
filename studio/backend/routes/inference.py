@@ -1714,6 +1714,26 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
+_API_MAX_CONCURRENCY_ENV = "UNSLOTH_API_MAX_CONCURRENCY"
+
+
+def _api_max_concurrency_override() -> Optional[int]:
+    """UNSLOTH_API_MAX_CONCURRENCY overrides the admission slot capacity.
+
+    When set, this caps the number of concurrent inference requests regardless
+    of the ``--parallel`` value. Takes the minimum of the override and the
+    backend's own slot count so it never exceeds what llama-server can serve.
+    """
+    raw = os.environ.get(_API_MAX_CONCURRENCY_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
     """Serving slots available for one local llama-server backend.
 
@@ -1721,15 +1741,25 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     ``--parallel`` at load time to keep the model on GPU. The app state is a
     launch-intent fallback for tests and for the short window before a backend
     reports its committed runtime slots.
+
+    UNSLOTH_API_MAX_CONCURRENCY (or --api-max-concurrency) caps the admission
+    capacity independently of --parallel, letting operators control API
+    concurrency without changing the llama-server decode slot count.
     """
     slots = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None))
     if slots is not None:
-        return slots
-    try:
-        slots = getattr(request.app.state, "llama_parallel_slots", None)
-    except Exception:
-        slots = None
-    return _positive_int_or_none(slots) or 1
+        backend_slots = slots
+    else:
+        try:
+            slots = getattr(request.app.state, "llama_parallel_slots", None)
+        except Exception:
+            slots = None
+        backend_slots = _positive_int_or_none(slots) or 1
+
+    override = _api_max_concurrency_override()
+    if override is not None:
+        return min(override, backend_slots)
+    return backend_slots
 
 
 def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
