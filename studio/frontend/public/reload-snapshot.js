@@ -415,13 +415,105 @@
     );
   }
 
-  function hasScrollContainerAncestor(element) {
+  function nearestScrollContainer(element) {
     var ancestor = element.parentElement;
     while (ancestor && ancestor !== document.body) {
-      if (isScrollContainer(ancestor, getComputedStyle(ancestor))) return true;
+      if (isScrollContainer(ancestor, getComputedStyle(ancestor))) {
+        return ancestor;
+      }
       ancestor = ancestor.parentElement;
     }
-    return false;
+    return null;
+  }
+
+  function isOutsideScrollViewport(bounds, scrollContainer) {
+    var containerBounds = scrollContainer.getBoundingClientRect();
+    var top = Math.max(0, containerBounds.top);
+    var right = Math.min(innerWidth, containerBounds.right);
+    var bottom = Math.min(innerHeight, containerBounds.bottom);
+    var left = Math.max(0, containerBounds.left);
+    return (
+      bounds.bottom <= top ||
+      bounds.right <= left ||
+      bounds.top >= bottom ||
+      bounds.left >= right
+    );
+  }
+
+  function hasVisibleLayoutParent(element, scrollContainer) {
+    var parent = element.parentElement;
+    while (parent && parent !== scrollContainer) {
+      var style = getComputedStyle(parent);
+      if (style.display !== "contents") {
+        return !isOutsideScrollViewport(
+          parent.getBoundingClientRect(),
+          scrollContainer,
+        );
+      }
+      parent = parent.parentElement;
+    }
+    return parent === scrollContainer;
+  }
+
+  function replaceWithScrollSpacer(cloned, bounds, scrollContainer) {
+    var vertical = scrollContainer.scrollHeight > scrollContainer.clientHeight;
+    var axis = vertical ? "vertical" : "horizontal";
+    var start = vertical ? bounds.top : bounds.left;
+    var end = vertical ? bounds.bottom : bounds.right;
+    var crossSize = vertical
+      ? bounds.right - bounds.left
+      : bounds.bottom - bounds.top;
+    var next = cloned.nextElementSibling;
+    if (
+      next &&
+      next.getAttribute("data-reload-spacer-axis") === axis
+    ) {
+      start = Math.min(
+        start,
+        Number(next.getAttribute("data-reload-spacer-start")),
+      );
+      end = Math.max(
+        end,
+        Number(next.getAttribute("data-reload-spacer-end")),
+      );
+      crossSize = Math.max(
+        crossSize,
+        Number(next.getAttribute("data-reload-spacer-cross")),
+      );
+      next.remove();
+    }
+    var size = Math.max(0, end - start);
+    crossSize = Math.max(0, crossSize);
+    cloned.replaceChildren();
+    Array.from(cloned.attributes).forEach(function (attribute) {
+      cloned.removeAttribute(attribute.name);
+    });
+    cloned.setAttribute("aria-hidden", "true");
+    cloned.setAttribute("data-reload-spacer", "");
+    cloned.setAttribute("data-reload-spacer-axis", axis);
+    cloned.setAttribute("data-reload-spacer-start", String(start));
+    cloned.setAttribute("data-reload-spacer-end", String(end));
+    cloned.setAttribute("data-reload-spacer-cross", String(crossSize));
+    cloned.setAttribute(
+      "style",
+      "display:block;box-sizing:border-box;flex:none;margin:0;padding:0;" +
+        "border:0;overflow:hidden;" +
+        (vertical
+          ? "height:" +
+            size +
+            "px;min-height:" +
+            size +
+            "px;width:" +
+            crossSize +
+            "px;max-width:100%;"
+          : "width:" +
+            size +
+            "px;min-width:" +
+            size +
+            "px;height:" +
+            crossSize +
+            "px;max-height:100%;"),
+    );
   }
 
   function mirrorScrollState(original, cloned) {
@@ -567,20 +659,37 @@
         var laidOut = !paintsThroughSelect && style.display !== "contents";
         var bounds = laidOut ? original.getBoundingClientRect() : null;
         // Removing children from a scroll container changes its scroll geometry
-        // and can shift the visible slice. Keep that subtree intact and restore
-        // the container's offsets in the retained shell instead.
-        var insideScrollContainer = hasScrollContainerAncestor(original);
+        // and can shift the visible slice. Fully offscreen subtrees become
+        // coalesced spacers at the first laid-out level outside the viewport;
+        // this preserves the slice without serializing an unbounded transcript.
+        var scrollContainer = nearestScrollContainer(original);
+        var outsideViewport =
+          laidOut &&
+          (scrollContainer
+            ? isOutsideScrollViewport(bounds, scrollContainer)
+            : bounds.bottom <= 0 ||
+              bounds.right <= 0 ||
+              bounds.top >= innerHeight ||
+              bounds.left >= innerWidth);
         if (
           style.display === "none" ||
           style.visibility === "hidden" ||
-          (!insideScrollContainer &&
-            laidOut &&
-            (bounds.bottom <= 0 ||
-              bounds.right <= 0 ||
-              bounds.top >= innerHeight ||
-              bounds.left >= innerWidth))
+          outsideViewport
         ) {
-          cloned.remove();
+          if (
+            scrollContainer &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            hasVisibleLayoutParent(original, scrollContainer)
+          ) {
+            replaceWithScrollSpacer(
+              cloned,
+              bounds,
+              scrollContainer,
+            );
+          } else {
+            cloned.remove();
+          }
         } else {
           mirrorFieldState(original, cloned);
           mirrorScrollState(original, cloned);
@@ -616,6 +725,12 @@
             element.removeAttribute(attribute.name);
           }
         });
+      });
+      clone.querySelectorAll("[data-reload-spacer]").forEach(function (element) {
+        element.removeAttribute("data-reload-spacer-axis");
+        element.removeAttribute("data-reload-spacer-start");
+        element.removeAttribute("data-reload-spacer-end");
+        element.removeAttribute("data-reload-spacer-cross");
       });
       var html = clone.innerHTML;
       if (!html || html.length > maxSnapshotLength) {

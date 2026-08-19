@@ -147,6 +147,7 @@ interface StubElement {
   children: StubElement[];
   parent: StubElement | null;
   readonly parentElement: StubElement | null;
+  readonly nextElementSibling: StubElement | null;
   attributes: Array<{ name: string }>;
   closest(selector: string): StubElement | null;
   getBoundingClientRect(): {
@@ -156,6 +157,7 @@ interface StubElement {
     left: number;
   };
   remove(): void;
+  replaceChildren(): void;
   removeAttribute(name: string): void;
   querySelectorAll(selector: string): StubElement[];
   cloneNode(deep: boolean): StubElement;
@@ -226,6 +228,11 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
       );
       element.parent = null;
     },
+    replaceChildren() {
+      for (const child of element.children) child.parent = null;
+      element.children = [];
+      element.textContent = "";
+    },
     setAttribute(name: string, value: string) {
       element.attributeOverrides[name] = value;
     },
@@ -235,6 +242,11 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     get parentElement() {
       return element.parent;
     },
+    get nextElementSibling() {
+      if (!element.parent) return null;
+      const index = element.parent.children.indexOf(element);
+      return element.parent.children[index + 1] ?? null;
+    },
     querySelectorAll(selector: string) {
       const wanted = selector.split(",").map((name) => name.trim());
       const found: StubElement[] = [];
@@ -242,7 +254,13 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
         for (const child of node.children) {
           if (
             selector === "*" ||
-            wanted.includes(child.tagName.toLowerCase())
+            wanted.includes(child.tagName.toLowerCase()) ||
+            wanted.some(
+              (name) =>
+                name.startsWith("[") &&
+                name.endsWith("]") &&
+                child.hasAttribute(name.slice(1, -1)),
+            )
           ) {
             found.push(child);
           }
@@ -1303,7 +1321,7 @@ test("carries visible body portals along with the app root", () => {
   assert.match(html, /Confirm deletion/);
 });
 
-test("keeps scroll-container geometry and serializes its live offset", () => {
+test("keeps scroll-container geometry with a bounded visible slice", () => {
   const environment = createEnvironment({
     navigationType: "navigate",
     styleSheets: ["/assets/index-abc123.css"],
@@ -1338,8 +1356,54 @@ test("keeps scroll-container geometry and serializes its live offset", () => {
 
   const { html } = storedSnapshot(environment.storage);
   assert.match(html, /data-reload-scroll-top="600"/);
-  assert.match(html, /Earlier message keeps the scroll geometry/);
+  assert.doesNotMatch(html, /Earlier message keeps the scroll geometry/);
+  assert.match(html, /data-reload-spacer/);
   assert.match(html, /Visible message/);
+});
+
+test("coalesces a transcript larger than the snapshot cap", () => {
+  const earlierMessages = Array.from({ length: 1100 }, (_, index) => ({
+    tag: "article",
+    rect: [-5000 + index * 4, 900, -4996 + index * 4, 100] as [
+      number,
+      number,
+      number,
+      number,
+    ],
+    text: "Earlier message " + "x".repeat(4096),
+  }));
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "section",
+          overflowY: "auto",
+          clientHeight: 300,
+          scrollHeight: 6000,
+          scrollTop: 5000,
+          children: [
+            ...earlierMessages,
+            {
+              tag: "article",
+              rect: [300, 900, 350, 100],
+              text: "Visible message survives",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /Visible message survives/);
+  assert.equal((html.match(/data-reload-spacer/g) ?? []).length, 1);
+  assert.ok(html.length < 3 * 1024 * 1024);
 });
 
 test("materializes visible blob images and drops expiring media URLs", () => {
