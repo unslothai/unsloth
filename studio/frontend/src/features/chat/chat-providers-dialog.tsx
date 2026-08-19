@@ -1053,7 +1053,15 @@ export function ChatProvidersSettings({
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
     setAvailableModels(picker.catalog);
-    setSelectedModelIds(picker.selected);
+    if (refresh) {
+      // The checkboxes stay live while the request is out, so reconcile against the
+      // latest selection rather than the snapshot taken when the reload began. This is
+      // what the remote-catalog path above already does.
+      const offered = new Set(picker.catalog);
+      setSelectedModelIds((previous) => previous.filter((id) => offered.has(id)));
+    } else {
+      setSelectedModelIds(picker.selected);
+    }
     setManualModelIds("");
   }
 
