@@ -276,9 +276,7 @@ def forget_subscription_models(provider_id: str) -> None:
 
 
 async def list_subscription_models(
-    provider_id: str,
-    access_token: str,
-    account_id: str,
+    provider_id: str, access_token: str, account_id: str
 ) -> list[dict[str, Any]]:
     """Model slugs this ChatGPT plan can reach; anything else is a 400 upstream."""
     cached = cached_subscription_models(provider_id)

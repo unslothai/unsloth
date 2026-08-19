@@ -787,12 +787,16 @@ def test_bare_detail_upstream_error_reaches_the_user():
 
 def _models_response(payload, status = 200):
     import httpx
-
     class FakeClient:
         def __init__(self):
             self.calls = []
 
-        async def get(self, url, headers = None, params = None):
+        async def get(
+            self,
+            url,
+            headers = None,
+            params = None,
+        ):
             self.calls.append((url, params))
             return httpx.Response(status, json = payload)
 
