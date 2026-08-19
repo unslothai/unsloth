@@ -353,6 +353,54 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
         return False
 
 
+def _dedupe_sibling_gguf_folder_entries(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+    """Drop standalone ``.gguf`` rows when a sibling directory already indexes them.
+
+    Custom-folder scans list child directories and root-level ``*.gguf`` independently, so a
+    layout like ``bge-m3/`` plus ``bge-m3-q8_0.gguf`` appears twice in the picker (#9128).
+    """
+    by_parent: dict[str, list[LocalModelInfo]] = {}
+    for model in models:
+        try:
+            parent = str(Path(model.path).parent)
+        except (TypeError, ValueError):
+            parent = ""
+        by_parent.setdefault(parent, []).append(model)
+
+    drop_paths: set[str] = set()
+    for group in by_parent.values():
+        dir_by_name: dict[str, LocalModelInfo] = {}
+        files: list[Path] = []
+        for model in group:
+            try:
+                path = Path(model.path)
+            except (TypeError, ValueError):
+                continue
+            if path.is_dir():
+                dir_by_name[path.name] = model
+            elif path.is_file() and path.suffix.lower() == ".gguf":
+                files.append(path)
+
+        for file_path in files:
+            stem = file_path.stem
+            for dirname, dir_model in dir_by_name.items():
+                if stem == dirname or stem.startswith(f"{dirname}-") or stem.startswith(
+                    f"{dirname}_"
+                ):
+                    drop_paths.add(str(file_path))
+                    break
+                try:
+                    if (Path(dir_model.path) / file_path.name).is_file():
+                        drop_paths.add(str(file_path))
+                        break
+                except OSError:
+                    continue
+
+    if not drop_paths:
+        return models
+    return [model for model in models if model.path not in drop_paths]
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -1060,6 +1108,7 @@ def collect_local_models(
                     folder_path,
                     limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
                 )
+            custom_models = _dedupe_sibling_gguf_folder_entries(custom_models)
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             # Keep the reason so the folder list can show it instead of nothing.
