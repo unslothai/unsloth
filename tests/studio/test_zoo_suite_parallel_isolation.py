@@ -74,14 +74,10 @@ def _zoo_parallel() -> str:
 
 
 def _zoo_serial() -> str:
-    hits = [
-        c
-        for c in _commands()
-        if "-n 4" not in c and all(path in c for path, _ in ISOLATED)
-    ]
-    assert len(hits) == 1, (
-        f"expected exactly one serial rerun naming both isolated files, found {len(hits)}"
-    )
+    hits = [c for c in _commands() if "-n 4" not in c and all(path in c for path, _ in ISOLATED)]
+    assert (
+        len(hits) == 1
+    ), f"expected exactly one serial rerun naming both isolated files, found {len(hits)}"
     return hits[0]
 
 
@@ -127,6 +123,6 @@ def test_the_deselects_survive_on_the_parallel_run() -> None:
     a deliberate 'deselected' into a runtime failure on a GPU-less runner.
     """
     cmd = _zoo_parallel()
-    assert cmd.count("--deselect") == 3, (
-        f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 3"
-    )
+    assert (
+        cmd.count("--deselect") == 3
+    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 3"
