@@ -80,12 +80,12 @@ test("rehydrated context ownership survives same-model model defaults", async ()
     },
     useTrainingConfigStore.getState(),
   );
-  useTrainingConfigStore.setState(rehydrated);
-
-  useTrainingConfigStore.getState().setSelectedModelCacheReference("org/first", {
-    localPath: "/cache/first",
-    modelFormat: null,
+  useTrainingConfigStore.setState({
+    ...rehydrated,
+    modelDefaultsAppliedFor: null,
+    advancedSettingsBaseline: null,
   });
+  useTrainingConfigStore.getState().setSelectedModel("org/first");
   await settle();
 
   const state = useTrainingConfigStore.getState();
