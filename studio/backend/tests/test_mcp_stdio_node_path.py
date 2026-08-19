@@ -363,3 +363,31 @@ def test_posix_split_layout_still_trusts_the_path_node(managed_node_install, mon
     monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
     configured = f"{good}{os.pathsep}{other}"
     assert node_runtime.path_with_managed_node(configured) == configured
+
+
+@pytest.fixture
+def windows_env(monkeypatch):
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+
+
+def test_windows_lowercase_path_key_is_recognized(managed_node, monkeypatch, windows_env):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mcp_client._stdio_env({"Path": "/opt/bin"}, "npx")
+    assert env["Path"] == f"{managed_node}{os.pathsep}/opt/bin"
+    assert "PATH" not in env
+
+
+def test_windows_lowercase_empty_path_is_still_a_sandbox(managed_node, monkeypatch, windows_env):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert mcp_client._stdio_env({"Path": ""}, "npx") == {"Path": ""}
+
+
+def test_windows_lowercase_path_blocks_host_lookup(managed_node, windows_env):
+    assert mcp_client._stdio_argv(["npx"], {"Path": ""}) == ["npx"]
+
+
+def test_posix_treats_path_and_lowercase_path_as_distinct(managed_node, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mcp_client._stdio_env({"Path": "/opt/bin"}, "npx")
+    assert env["Path"] == "/opt/bin"
+    assert env["PATH"] == f"{managed_node}{os.pathsep}/usr/bin"

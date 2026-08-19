@@ -242,6 +242,7 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
+_IS_WINDOWS = os.name == "nt"
 _NODE_COMMANDS = frozenset({"node", "npm", "npx"})
 _WINDOWS_LAUNCHER_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
 
@@ -257,11 +258,22 @@ def _is_node_command(command: str) -> bool:
     return name in _NODE_COMMANDS
 
 
+def _path_key(env: dict) -> str:
+    """The key holding PATH. Windows env names are case-insensitive, so a config may
+    spell it ``Path``; on POSIX only the exact name counts."""
+    if _IS_WINDOWS:
+        for key in env:
+            if key.upper() == "PATH":
+                return key
+    return "PATH"
+
+
 def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
     """Process env for a stdio server: its own vars, plus the managed Node bin dir
     on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
     env = dict(headers or {})
-    base = env.get("PATH")
+    key = _path_key(env)
+    base = env.get(key)
     if isinstance(base, str) and not base:
         # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
         return env
@@ -274,8 +286,8 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
         patched = path_with_managed_node(base)
     except (ImportError, OSError, ValueError):
         patched = base
-    if patched and patched != env.get("PATH"):
-        env["PATH"] = patched
+    if patched and patched != env.get(key):
+        env[key] = patched
     return env or None
 
 
@@ -283,7 +295,7 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     """argv with argv[0] resolved against the child's PATH. Windows resolves the
     command against the parent environment before ``env`` applies, so a managed-only
     ``npx`` has to be handed over as a full path."""
-    path = (env or {}).get("PATH")
+    path = (env or {}).get(_path_key(env or {}))
     if not isinstance(path, str):
         path = os.environ.get("PATH", "")
     try:
