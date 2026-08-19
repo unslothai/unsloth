@@ -263,11 +263,12 @@ def _rocm_inventory_mod(devices):
     return mod
 
 
-def _rocm_test_env(monkeypatch, devices):
-    """Point the inventory helper at a fake ROCm torch: hip 6.2 (so discrete
-    carve-out classification is authoritative) with the given device list."""
+def _rocm_test_env(monkeypatch, devices, hip = "6.2.0"):
+    """Point the inventory helper at a fake ROCm torch with the given HIP
+    version (6.2 fills is_integrated authoritatively; 6.1 exercises the
+    runtime-not-trusted path)."""
     torch_mod = types.SimpleNamespace()
-    torch_mod.version = types.SimpleNamespace(hip = "6.2.0")
+    torch_mod.version = types.SimpleNamespace(hip = hip)
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     mod = _rocm_inventory_mod(devices)
@@ -276,13 +277,14 @@ def _rocm_test_env(monkeypatch, devices):
 
 
 def test_inventory_hybrid_rocm_keeps_igpu_carve_out(monkeypatch):
-    # Desktop dGPU + iGPU (unslothai/unsloth#8942): the integrated member's
-    # GTT/shared pool is not its real VRAM. Reporting it as capacity showed the
-    # iGPU with overinflated VRAM; the fix keeps the dedicated carve-out on a
-    # hybrid host while the discrete card is unchanged.
+    # Desktop dGPU + desktop iGPU (unslothai/unsloth#8942): the integrated member
+    # is a Phoenix (gfx1103) classified unified ONLY through the driver flag; its
+    # GTT/shared pool is not its real VRAM on a hybrid host, so the carve-out is
+    # kept. gfx1150 would be the wrong arch here: it is Strix Point, one of the
+    # genuine shared-pool arches that keeps the GTT pool even in a mixed set.
     devices = [
         ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
-        ("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1150", 24 * _GB),
+        ("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1103", 24 * _GB),
     ]
     _rocm_test_env(monkeypatch, devices)
     inventory = hw._torch_get_device_inventory([0, 1])
@@ -294,12 +296,25 @@ def test_inventory_hybrid_rocm_igpu_first_ordinal(monkeypatch):
     # Same host, iGPU enumerated first: the hybrid guard must not depend on which
     # ordinal the integrated part lands on.
     devices = [
-        ("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1150", 24 * _GB),
+        ("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1103", 24 * _GB),
         ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
     ]
     _rocm_test_env(monkeypatch, devices)
     inventory = hw._torch_get_device_inventory([0, 1])
     assert [d["total_gb"] for d in inventory] == [0.5, 16.0]
+
+
+def test_inventory_hybrid_rocm_strix_halo_keeps_gtt_pool(monkeypatch):
+    # A genuine shared-pool arch (gfx1151 Strix Halo) keeps its GTT pool even
+    # when a discrete card is visible: its carve-out is NOT its real VRAM, and
+    # reporting 8 GiB would budget a 128 GiB Halo as a tiny card and hide models.
+    devices = [
+        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
+        ("AMD Radeon 8060S", 8 * _GB, 1, "gfx1151", 128 * _GB),
+    ]
+    _rocm_test_env(monkeypatch, devices)
+    inventory = hw._torch_get_device_inventory([0, 1])
+    assert [d["total_gb"] for d in inventory] == [16.0, 128.0]
 
 
 def test_inventory_apu_only_still_reports_gtt_pool(monkeypatch):
@@ -312,15 +327,73 @@ def test_inventory_apu_only_still_reports_gtt_pool(monkeypatch):
     assert inventory[0]["total_gb"] == 128.0
 
 
+def test_inventory_apu_only_flag_classified_keeps_gtt_pool(monkeypatch):
+    # A flag-only unified device alone (no discrete card) is NOT a hybrid set:
+    # the GTT substitution applies, so the pool stays the reported capacity.
+    # Pins the hybrid_rocm term of the gate -- dropping it would wrongly keep
+    # the carve-out here.
+    devices = [("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1103", 24 * _GB)]
+    _rocm_test_env(monkeypatch, devices)
+    inventory = hw._torch_get_device_inventory([0])
+    assert inventory[0]["total_gb"] == 24.0
+
+
 def test_inventory_discrete_rocm_set_untouched(monkeypatch):
     # Two discrete cards: nothing unified, no correction, driver totals stand.
+    # gtt_total deliberately differs from total_memory (32/48 vs 16/24), so this
+    # test would FAIL if the correction ever fired for a discrete row.
     devices = [
-        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
-        ("AMD Radeon RX 7900 XTX", 24 * _GB, 0, "gfx1100", 24 * _GB),
+        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 32 * _GB),
+        ("AMD Radeon RX 7900 XTX", 24 * _GB, 0, "gfx1100", 48 * _GB),
     ]
     _rocm_test_env(monkeypatch, devices)
     inventory = hw._torch_get_device_inventory([0, 1])
     assert [d["total_gb"] for d in inventory] == [16.0, 24.0]
+
+
+def test_inventory_hybrid_gate_needs_positive_classification(monkeypatch):
+    # Pins the integrated term of the gate: on hip 6.1 the runtime is not trusted
+    # to fill is_integrated, so _rocm_props_total_is_carve_out says carve-out for
+    # EVERY device -- including the Phoenix (gfx1103) the classifier calls
+    # discrete. Only a positive unified classification trips the hybrid skip; a
+    # gate reduced to `if not hybrid_rocm` would wrongly keep the Phoenix at 0.5.
+    devices = [
+        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
+        ("AMD Radeon 8060S", 8 * _GB, 1, "gfx1151", 128 * _GB),
+        ("AMD Radeon Graphics", int(0.5 * _GB), 0, "gfx1103", 24 * _GB),
+    ]
+    _rocm_test_env(monkeypatch, devices, hip = "6.1.0")
+    inventory = hw._torch_get_device_inventory([0, 1, 2])
+    assert [d["total_gb"] for d in inventory] == [16.0, 128.0, 24.0]
+
+
+def test_inventory_failed_probe_is_not_a_discrete_member(monkeypatch):
+    # A failed probe must not count as "discrete": one APU beside a dead probe is
+    # a single-device set, not a hybrid one, so the APU keeps its GTT pool. The
+    # old gate counted the failed probe as a non-unified member and wrongly
+    # reported the carve-out.
+    def _props(o):
+        if o == 1:
+            raise RuntimeError("device lost")
+        return types.SimpleNamespace(
+            name = "AMD Radeon 8060S",
+            total_memory = 8 * _GB,
+            is_integrated = 1,
+            gcnArchName = "gfx1151",
+        )
+
+    torch_mod = types.SimpleNamespace()
+    torch_mod.version = types.SimpleNamespace(hip = "6.2.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    mod = types.SimpleNamespace(
+        get_device_properties = _props,
+        mem_get_info = lambda o: (128 * _GB - (1 << 30), 128 * _GB),
+    )
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    inventory = hw._torch_get_device_inventory([0, 1])
+    assert [d["total_gb"] for d in inventory] == [128.0]
+    assert [d["index"] for d in inventory] == [0]
 
 
 def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
