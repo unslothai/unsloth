@@ -641,7 +641,7 @@ def test_the_tool_call_exemption_ends_where_the_call_does():
         found = archive._scan_probes(probes, [message], 0, 1)
         if found is None:
             return False
-        position, cursor, opened_at, partial = found
+        position, cursor, opened_at, partial, _opened_index = found
         return not opened_at and (partial or cursor >= len([message][position]))
 
     assert _eligible('{"tool":"search_conversation"}\nold answer') is True
@@ -3978,7 +3978,7 @@ def test_a_topped_up_copy_keeps_the_transcript_span(conn):
 
 
 def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
-    """"Let me check" ahead of a tool call is the ordinary agent turn, not an edge case.
+    """ "Let me check" ahead of a tool call is the ordinary agent turn, not an edge case.
 
     `_probe_text` offers BOTH JSON spellings of the stored arguments, and that second
     spelling lands between the arguments and whatever followed them, so the live render
@@ -4074,3 +4074,102 @@ def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
     live = conversation_archive.branch_message_texts(long)
     assert conversation_archive._document_matches_one_run([{"text": text}], live, 3) is False
     assert conversation_archive._document_matches_one_run([{"text": text}], live, 4) is True
+
+
+def test_a_reasoning_turn_is_reconstructed_without_its_thinking():
+    """Reasoning is not content, and the wire form never carries it as content.
+
+    The serializer puts it in `reasoning_content` or drops it, so forwarding the stored
+    part list rendered a reasoning model's thinking inline where the request sends only
+    the answer. That turn matched no transcript seat and took an ordinal past genuinely
+    later turns, under a header that calls the higher number the latest word.
+    """
+    row = {
+        "role": "assistant",
+        "content": [
+            {"type": "reasoning", "text": "The user wants the file list. I should run ls."},
+            {"type": "text", "text": "There are two files."},
+        ],
+    }
+    live = [
+        {
+            "role": "assistant",
+            "content": "There are two files.",
+            "reasoning_content": "The user wants the file list. I should run ls.",
+        }
+    ]
+
+    stored = [conversation_archive._probe_text(m) for m in conversation_archive._as_wire([row])]
+
+    assert stored == [conversation_archive._probe_text(live[0])] == ["There are two files."]
+    assert conversation_archive._occurrences([stored], live) == [0]
+
+
+def test_a_unicode_tool_result_is_serialised_the_way_javascript_serialises_it():
+    """`JSON.stringify` leaves non-ASCII alone; `json.dumps` escapes it by default.
+
+    The reconstructed `tool` message then reads `Montr\\u00e9al` where the archived wire
+    text carries the character itself, and every comparison downstream is exact, so a
+    multilingual tool exchange loses its seat and is filtered out of recall.
+    """
+    assert (
+        conversation_archive._tool_result_content({"ville": "Montréal"}, "terminal")
+        == '{"ville":"Montréal"}'
+    )
+
+
+def test_a_long_tool_exchange_stays_on_branch_across_a_chunk_boundary():
+    """A chunk's overlap can carry a whole short message into the next chunk.
+
+    `CHUNK_OVERLAP` repeats the previous chunk's tail, and where that tail begins just
+    after a short line -- an assistant tool call sitting in front of a long tool result --
+    the repeat starts in an EARLIER message than the one the previous chunk finished in.
+    Resuming the scan strictly at the finishing message could never match it, so an
+    unedited document was retired as off-branch and that turn became unsearchable. Swept
+    over question lengths, 7 of 89 failed before the fix.
+    """
+    from core.rag import config
+    from core.rag.chunking import chunk_pages
+    from core.rag.parsers import Page
+
+    def _matches(lines: int, count) -> bool:
+        group = [
+            {
+                "role": "user",
+                "content": "\n".join(
+                    f"line {i} of the question about the repo" for i in range(lines)
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "grep", "arguments": '{"pattern":"foo"}'}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "\n".join(
+                    f"result row {i} with some matching text here" for i in range(200)
+                ),
+            },
+            {"role": "assistant", "content": "That is the whole match list."},
+        ]
+        text = conversation_archive.render_turn(group)
+        chunks = chunk_pages(
+            [Page(text = text, page_number = None, char_count = len(text))],
+            max_tokens = config.CHUNK_TOKENS,
+            overlap = config.CHUNK_OVERLAP,
+            count = count,
+        )
+        assert len(chunks) > 1, "this test needs a turn that really crosses a chunk boundary"
+        return conversation_archive._document_matches_one_run(
+            [{"text": chunk.text} for chunk in chunks],
+            conversation_archive.branch_message_texts(group),
+            len(group),
+        )
+
+    for count in (lambda t: max(1, len(t) // 4), lambda t: max(1, len(t.split()))):
+        missed = [lines for lines in range(1, 90) if not _matches(lines, count)]
+        assert not missed, f"unedited turns retired as off-branch at question lengths {missed}"
