@@ -793,3 +793,54 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
         assert calls == [created.id]
     finally:
         codex_client.forget_subscription_models(created.id)
+
+
+def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
+    """Save and chat must judge on the same evidence.
+
+    The inference route treats a known plan catalog as authoritative, so accepting a
+    seed it omits here would persist a model that every send then refuses.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+
+    async def _no_refresh(_provider_id):
+        return set()
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh)
+    codex_client.forget_subscription_models(created.id)
+    codex_client._offered_models[created.id] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
+    try:
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(
+                providers_route.update_provider_config(
+                    created.id,
+                    ProviderUpdate(models = ["gpt-5.4"]),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        assert refused.value.status_code == 400
+
+        kept = asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(models = ["gpt-5.5"]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert kept.models == ["gpt-5.5"]
+    finally:
+        codex_client.forget_subscription_models(created.id)

@@ -624,18 +624,18 @@ export function ChatProvidersSettings({
         (candidate) => candidate.id === editingProviderId,
       );
       setModelsLoading(true);
-      try {
-        // The live checkboxes, not the persisted list: a manual reload re-reads the
-        // catalog, it does not revert edits the user has not saved yet.
-        await applyCodexSubscriptionModels(
-          editingProviderId,
-          selectedModelIds,
-          provider?.authStatus,
-          true,
-        );
-      } finally {
-        setModelsLoading(false);
-      }
+      // The live checkboxes, not the persisted list: a manual reload re-reads the
+      // catalog, it does not revert edits the user has not saved yet.
+      const applied = await applyCodexSubscriptionModels(
+        editingProviderId,
+        selectedModelIds,
+        provider?.authStatus,
+        true,
+      ).catch(() => true);
+      // Only the request that still owns the form clears the shared flag. An abandoned
+      // one would re-enable Save while the newer request is out, letting the form be
+      // saved and then mutated when that request lands.
+      if (applied) setModelsLoading(false);
       return;
     }
     if (isCuratedModelList) {
@@ -1047,7 +1047,7 @@ export function ChatProvidersSettings({
     savedModels: string[],
     authStatus: ProviderAuthStatus | undefined,
     refresh = false,
-  ) {
+  ): Promise<boolean> {
     const request = ++codexCatalogRequestRef.current;
     const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
@@ -1061,7 +1061,7 @@ export function ChatProvidersSettings({
     if (request !== codexCatalogRequestRef.current) {
       // The form moved to another connection while this catalog was in flight, and
       // applying it here would save the first connection's models onto the second.
-      return;
+      return false;
     }
     const capabilities = codexCapabilitiesWithPlanModels(
       registryByType.get("openai_codex"),
@@ -1075,7 +1075,7 @@ export function ChatProvidersSettings({
       // whatever is on screen, including a model checked while the request was out.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
-      return;
+      return true;
     }
     setAvailableModels(picker.catalog);
     if (refresh) {
@@ -1088,6 +1088,7 @@ export function ChatProvidersSettings({
       setSelectedModelIds(picker.selected);
     }
     setManualModelIds("");
+    return true;
   }
 
   async function editProvider(provider: ExternalProviderConfig) {

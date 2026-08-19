@@ -112,14 +112,23 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
     if models is None:
         return
-    allowed = set(info["default_models"])
-    # A plan can expose slugs newer than the seed; read only what was already listed.
-    if provider_id:
-        allowed |= openai_codex_client.offered_subscription_model_ids(provider_id)
-    # Already accepted on this row once, so an upstream outage must not make an
-    # unrelated edit such as a rename unsavable. New slugs still need catalog proof.
-    if persisted_models:
-        allowed |= set(persisted_models)
+    # Same order of evidence the chat route uses, so a save cannot persist a model that
+    # every send would then refuse: the plan's catalog once it is known, otherwise the
+    # seed, plus what this row already carries unless it was left by another account.
+    if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
+        allowed = openai_codex_client.offered_subscription_model_ids(provider_id) | {
+            slug
+            for slug in (persisted_models or [])
+            if openai_codex_client.offered_subscription_model(provider_id, slug) is not None
+        }
+    else:
+        allowed = set(info["default_models"])
+        if persisted_models and not (
+            provider_id and openai_codex_client.subscription_catalog_stale(provider_id)
+        ):
+            # Already accepted on this row once, so an upstream outage must not make an
+            # unrelated edit such as a rename unsavable.
+            allowed |= set(persisted_models)
     if not models or not set(models).issubset(allowed):
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
 
