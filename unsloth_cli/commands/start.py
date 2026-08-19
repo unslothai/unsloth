@@ -3530,12 +3530,18 @@ def _resolved_launch_command(
         # it with WinError 193, so prefer the sibling shim the parser below
         # already understands. Matched on not-a-Windows-suffix rather than
         # no-suffix so a dotted bin name (cmd-shim writes foo.bar.cmd) is
-        # rescued too. .CMD is only for case-sensitive volumes.
-        for extension in (".cmd", ".CMD", ".bat"):
-            sibling = Path(executable + extension)
-            if sibling.is_file():
-                executable = str(sibling)
-                break
+        # rescued too, and only for files opening with a shebang: CreateProcess
+        # can run a PE binary regardless of its name, so a real executable
+        # keeps priority over a stale wrapper beside it. .CMD is only for
+        # case-sensitive volumes.
+        with contextlib.suppress(OSError):
+            with open(executable, "rb") as resolved_file:
+                if resolved_file.read(2) == b"#!":
+                    for extension in (".cmd", ".CMD", ".bat"):
+                        sibling = Path(executable + extension)
+                        if sibling.is_file():
+                            executable = str(sibling)
+                            break
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match

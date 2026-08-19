@@ -1746,6 +1746,24 @@ def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_p
     ]
 
 
+def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_sibling(
+    monkeypatch, tmp_path
+):
+    # CreateProcess can run a PE binary regardless of its name, so a resolved
+    # real executable must keep priority over a stale .cmd wrapper beside it.
+    # Only files opening with a shebang are treated as unlaunchable shims.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.write_bytes(b"MZ\x90\x00")
+    stale = tmp_path / "fake-agent.cmd"
+    stale.write_text("@ECHO off\nold-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
 def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatch, tmp_path):
     # A sibling .cmd that is not an npm shim is still what cmd.exe would have
     # picked over the extensionless file, so it is returned as-is.
