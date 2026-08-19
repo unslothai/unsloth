@@ -221,6 +221,7 @@ function describeModel(model: {
   is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
@@ -251,6 +252,7 @@ function toChatModelSummary(model: {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -263,6 +265,7 @@ function toChatModelSummary(model: {
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
+    hasVideoInput: Boolean(model.has_video_input),
   };
 }
 
@@ -281,6 +284,7 @@ export function syncModelCapabilities(
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
+    has_video_input?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
@@ -291,6 +295,9 @@ export function syncModelCapabilities(
     isAudio: Boolean(resp.is_audio),
     audioType: resp.audio_type ?? null,
     hasAudioInput: Boolean(resp.has_audio_input),
+    // /api/models/list omits this for the active GGUF row, so without it the
+    // video adapter reads false after every load and status hydration.
+    hasVideoInput: Boolean(resp.has_video_input),
   };
   const idx = models.findIndex((m) => m.id === modelId);
   if (idx === -1) {

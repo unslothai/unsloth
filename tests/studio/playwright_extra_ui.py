@@ -27,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     robust_evaluate,
     wait_for_first,
     wait_for_health,
+    click_forced,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -404,7 +405,7 @@ with sync_playwright() as p:
         page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I))
     )
     if plus_btn is not None:
-        plus_btn.click(force = True)
+        click_forced(plus_btn)
         # The menu items get a short wait rather than the full one: a miss here is
         # a real branch (the item lives under "More"), not a slow render, and the
         # fallbacks below must stay quick.
@@ -425,13 +426,13 @@ with sync_playwright() as p:
                     timeout_ms = 2000,
                 )
                 if compare_item is None:
-                    more_trigger.click(force = True)
+                    click_forced(more_trigger)
                     compare_item = wait_for_first(
                         page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)),
                         timeout_ms = 2000,
                     )
         if compare_item is not None:
-            compare_item.click(force = True)
+            click_forced(compare_item)
             compare_opened = True
     if not compare_opened:
         # Which of the two was missing, because "Compare nav not found" sent the

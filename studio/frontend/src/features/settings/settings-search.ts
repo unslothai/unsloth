@@ -150,6 +150,18 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
+  "keyboard-shortcuts": [
+    // Both the section titles and each action label, so searching "sidebar" or
+    // "new chat" from the settings search lands on the row itself.
+    "settings.keyboardShortcuts.title",
+    "settings.keyboardShortcuts.groups.general",
+    "settings.keyboardShortcuts.groups.chat",
+    "settings.keyboardShortcuts.actions.newChat.label",
+    "settings.keyboardShortcuts.actions.searchChats.label",
+    "settings.keyboardShortcuts.actions.toggleSidebar.label",
+    "settings.keyboardShortcuts.actions.openSettings.label",
+    "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
+  ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",
