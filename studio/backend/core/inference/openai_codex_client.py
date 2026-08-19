@@ -273,7 +273,17 @@ def cached_subscription_models(provider_id: str) -> list[dict[str, Any]] | None:
 
 
 def offered_subscription_model_ids(provider_id: str) -> set[str]:
-    return set(_offered_models.get(provider_id, {}))
+    """Slugs the plan offers, and so the only ones a fetch alone may authorize.
+
+    Hidden entries are cached for their metadata and stay usable when they are already
+    on a connection, but a slug the picker never offered must not become invocable just
+    because a catalog fetch happened.
+    """
+    return {
+        model_id
+        for model_id, model in _offered_models.get(provider_id, {}).items()
+        if model.get("listed")
+    }
 
 
 def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any] | None:

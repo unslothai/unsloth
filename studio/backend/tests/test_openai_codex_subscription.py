@@ -859,7 +859,9 @@ def test_subscription_model_list_keeps_only_listable_slugs(monkeypatch):
     assert asyncio.run(list_subscription_models("provider-1", "secret-token", "acct-1")) == models
     assert len(fake.calls) == 1
     # Outlives the cache so a slow save is still accepted by the provider routes.
-    assert offered_subscription_model_ids("provider-1") == {"gpt-5.4", "codex-auto-review"}
+    # Cached for its metadata, but a hidden slug is not authorized by the fetch alone.
+    assert offered_subscription_model_ids("provider-1") == {"gpt-5.4"}
+    assert codex_client.offered_subscription_model("provider-1", "codex-auto-review") is not None
     forget_subscription_models("provider-1")
     assert cached_subscription_models("provider-1") is None
     assert offered_subscription_model_ids("provider-1") == set()
@@ -916,7 +918,7 @@ def test_persisting_a_new_account_drops_the_plan_catalog(monkeypatch):
         }
 
     codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
-    codex_client._offered_models["provider-5"] = {"gpt-5.7-nova": {"id": "gpt-5.7-nova"}}
+    codex_client._offered_models["provider-5"] = {"gpt-5.7-nova": {"id": "gpt-5.7-nova", "listed": True}}
     try:
         # A refresh for the same account keeps it: only the account identity matters.
         codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
@@ -1548,14 +1550,14 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
     # A catalog that simply does not list it: the refusal is about the model, not the
     # connection, so the gate never reaches for a refresh.
     forget_subscription_models("codex-1")
-    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4"}}
+    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
     refused = _codex_chat_gate(monkeypatch, listed)
     assert refused.status_code == 400
     assert "Choose a curated Codex model." in str(refused.detail)
 
     # Exactly what a picker fetch records for this connection.
     codex_client._offered_models["codex-1"] = {
-        listed: {"id": listed, "display_name": listed, "vision": True}
+        listed: {"id": listed, "display_name": listed, "vision": True, "listed": True}
     }
     try:
         accepted = _codex_chat_gate(monkeypatch, listed)
@@ -1704,7 +1706,7 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
         return excinfo.value
 
     codex_client._offered_models["codex-1"] = {
-        listed: {"id": listed, "display_name": listed, "vision": False}
+        listed: {"id": listed, "display_name": listed, "vision": False, "listed": True}
     }
     try:
         refused = call()
@@ -1712,7 +1714,7 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
         assert "does not accept image input" in str(refused.detail)
         # The same slug listed as image-capable is carried through to the provider.
         codex_client._offered_models["codex-1"] = {
-            listed: {"id": listed, "display_name": listed, "vision": True}
+            listed: {"id": listed, "display_name": listed, "vision": True, "listed": True}
         }
         accepted = call()
         assert accepted.status_code == 401, accepted.detail
@@ -1732,7 +1734,7 @@ def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
     forget_subscription_models("codex-1")
     # A live catalog that no longer lists the slug, so the gate decides on the catalog
     # rather than reaching for a refresh.
-    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4"}}
+    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
     try:
         refused = _codex_chat_gate(monkeypatch, hidden)
         assert refused.status_code == 400
@@ -1799,5 +1801,36 @@ def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
             asyncio.run(inf._proxy_to_external_provider(payload, request, current_subject = "t"))
         assert excinfo.value.status_code == 401
         assert "does not accept image input" not in str(excinfo.value.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_a_hidden_slug_is_not_invocable_just_because_the_catalog_was_fetched(monkeypatch):
+    """codex-auto-review and its kin are withheld from the picker on purpose.
+
+    They are cached for their metadata and stay usable on a connection that already
+    carries one, but a catalog fetch alone must not make an internal slug invocable.
+    """
+    hidden = "codex-auto-review"
+    fake = _models_response(
+        {
+            "models": [
+                {"slug": "gpt-5.4", "visibility": "list"},
+                {"slug": hidden, "visibility": "hide"},
+            ]
+        }
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("codex-1")
+    asyncio.run(list_subscription_models("codex-1", "token", "acct-1"))
+    try:
+        assert offered_subscription_model_ids("codex-1") == {"gpt-5.4"}
+        refused = _codex_chat_gate(monkeypatch, hidden)
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+
+        # Still reachable when the connection already carries it.
+        accepted = _codex_chat_gate(monkeypatch, hidden, saved_models = [hidden])
+        assert accepted.status_code == 401, accepted.detail
     finally:
         forget_subscription_models("codex-1")

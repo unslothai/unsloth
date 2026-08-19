@@ -665,7 +665,7 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
 
     async def _refresh(provider_id):
         codex_client._offered_models[provider_id] = {
-            listed: {"id": listed, "display_name": listed, "vision": None}
+            listed: {"id": listed, "display_name": listed, "vision": None, "listed": True}
         }
         return {listed}
 
@@ -742,7 +742,7 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
     )
 
     async def _refresh(provider_id):
-        codex_client._offered_models[provider_id] = {listed: {"id": listed}}
+        codex_client._offered_models[provider_id] = {listed: {"id": listed, "listed": True}}
         return {listed}
 
     monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _refresh)
