@@ -191,12 +191,17 @@ def test_explicit_empty_path_still_allows_absolute_command(managed_node):
 
 def test_absent_path_still_inherits(managed_node, monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin")
-    assert mcp_client._stdio_env({"API_KEY": "sk-1"})["PATH"] == f"{managed_node}{os.pathsep}/usr/bin"
+    assert (
+        mcp_client._stdio_env({"API_KEY": "sk-1"})["PATH"] == f"{managed_node}{os.pathsep}/usr/bin"
+    )
 
 
 def test_path_preserves_trailing_empty_component(managed_node):
     """An empty component means the working directory on POSIX; keep it."""
-    assert node_runtime.path_with_managed_node("/usr/bin:") == f"{managed_node}{os.pathsep}/usr/bin{os.pathsep}"
+    assert (
+        node_runtime.path_with_managed_node("/usr/bin:")
+        == f"{managed_node}{os.pathsep}/usr/bin{os.pathsep}"
+    )
 
 
 def test_path_preserves_bare_empty_components(managed_node):
