@@ -357,6 +357,15 @@
         var original = originalElements[index];
         var cloned = clonedElements[index];
         if (original.closest("svg")) continue;
+        // ChartStyle is passive, component-generated CSS needed by the cloned
+        // SVG. It has no layout box, so keep it out of rectangle pruning; every
+        // unmarked style is still removed by the sanitizer below.
+        if (
+          original.tagName === "STYLE" &&
+          original.hasAttribute("data-reload-snapshot-style")
+        ) {
+          continue;
+        }
         var style = getComputedStyle(original);
         // A `display: contents` wrapper generates no box, so its rectangle is
         // empty however much of the viewport its children fill. Judging it by
@@ -387,6 +396,12 @@
       clone
         .querySelectorAll("iframe, object, embed, script, style, link, base")
         .forEach(function (element) {
+          if (
+            element.tagName === "STYLE" &&
+            element.hasAttribute("data-reload-snapshot-style")
+          ) {
+            return;
+          }
           element.remove();
       });
       clone.querySelectorAll("*").forEach(function (element) {

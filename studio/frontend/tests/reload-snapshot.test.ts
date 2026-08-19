@@ -899,6 +899,40 @@ test("materializes visible blob images and drops expiring media URLs", () => {
   assert.doesNotMatch(html, /blob:/);
 });
 
+test("keeps trusted chart CSS while stripping every other style", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "style",
+          rect: [0, 0, 0, 0],
+          attributes: { "data-reload-snapshot-style": "" },
+          text: "[data-chart=loss] { --color-displayLoss: #16a34a; }",
+        },
+        {
+          tag: "style",
+          rect: [0, 0, 0, 0],
+          text: ".untrusted { display: block; }",
+        },
+        {
+          tag: "svg",
+          children: [{ tag: "path", attributes: { "data-chart": "loss" } }],
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /--color-displayLoss: #16a34a/);
+  assert.doesNotMatch(html, /\.untrusted/);
+});
+
 test("skips the shell when the snapshot carries no stylesheets", () => {
   // Without them the copy paints unstyled inside the shadow tree, which reads
   // worse than the blank interval this replaces.
