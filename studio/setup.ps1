@@ -4650,6 +4650,33 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 # the catch: this is the last statement before Fast-Install starts resolving `python`.
 Assert-VenvActivated -VenvDir $VenvDir
 
+$previousUvCacheDir = $env:UV_CACHE_DIR
+$hadPreviousUvCacheDir = ($null -ne $previousUvCacheDir)
+try {
+    # Standalone updates and desktop repairs do not pass through install.ps1, so give every
+    # setup path the same Studio-managed cache default, and the same recovery from a regular
+    # file sitting on it (#8991). An explicit caller override is left alone.
+    # The environment variable rather than `uv --cache-dir`: install_python_stack.py, spawned
+    # further down, runs its own `uv pip install`, and only an inherited variable reaches it.
+    # Restored on every exit, hence the span: .NOTES documents `.\setup.ps1 --verbose`, which
+    # runs in the caller's own PowerShell session, where a left-behind UV_CACHE_DIR would
+    # silently redirect their later, unrelated uv commands into the Studio cache.
+    if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
+        $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioHome "cache") "uv"
+        try {
+            if (Test-Path -LiteralPath $env:UV_CACHE_DIR -PathType Leaf) {
+                $invalidUvCache = "$($env:UV_CACHE_DIR).invalid.$(Get-Date -Format 'yyyyMMddHHmmss').$PID"
+                Move-Item -LiteralPath $env:UV_CACHE_DIR -Destination $invalidUvCache -ErrorAction Stop
+                substep "moved conflicting uv cache file aside to $invalidUvCache" "Yellow"
+            }
+            [System.IO.Directory]::CreateDirectory($env:UV_CACHE_DIR) | Out-Null
+        } catch {
+            # Through Exit-SetupFailure, not a raw throw: the Tauri update path reads
+            # [TAURI:ERROR] and would otherwise surface an unhandled exception with no message.
+            Exit-SetupFailure "could not prepare the uv cache at $($env:UV_CACHE_DIR): $_"
+        }
+    }
+
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
@@ -6863,5 +6890,12 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
         [Console]::Out.Flush()
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
+    }
+}
+} finally {
+    if ($hadPreviousUvCacheDir) {
+        $env:UV_CACHE_DIR = $previousUvCacheDir
+    } else {
+        Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
     }
 }

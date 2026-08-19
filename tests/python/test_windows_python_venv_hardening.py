@@ -18,12 +18,13 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
 
 def _extract(pattern: str, source: str) -> str:
     match = re.search(pattern, source, flags = re.DOTALL)
-    assert match is not None, f"install.ps1 block not found: {pattern}"
+    assert match is not None, f"PowerShell block not found: {pattern}"
     return match.group(0)
 
 
@@ -445,6 +446,23 @@ def _uv_cache_lifecycle_blocks(source: str) -> tuple[str, str, str]:
     return capture, setup, restore
 
 
+def _setup_uv_cache_lifecycle_blocks(source: str) -> tuple[str, str, str]:
+    capture = _extract(
+        r"(?m)^\$previousUvCacheDir = \$env:UV_CACHE_DIR\n"
+        r"\$hadPreviousUvCacheDir = \(\$null -ne \$previousUvCacheDir\)\n",
+        source,
+    )
+    setup = _extract(
+        r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{.*?\n    \}\n",
+        source,
+    )
+    restore = _extract(
+        r"    if \(\$hadPreviousUvCacheDir\) \{.*?\n    \}\n(?=\}\n\Z)",
+        source,
+    )
+    return capture, setup, restore
+
+
 def test_uv_cache_lifecycle_wraps_outer_install_try():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     capture, _, restore = _uv_cache_lifecycle_blocks(source)
@@ -475,14 +493,45 @@ def test_uv_cache_recovery_follows_existing_venv_ownership_guard():
     assert ownership_rejection_at < cache_setup_at < uv_venv_at
 
 
+def test_setup_uv_cache_guard_covers_every_setup_uv_call_after_ownership_validation():
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    capture, cache_setup, restore = _setup_uv_cache_lifecycle_blocks(source)
+    ownership_rejection_at = source.index(
+        'Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"'
+    )
+    capture_at = source.index(capture)
+    outer_try_at = source.index("try {", capture_at)
+    cache_setup_at = source.index(cache_setup, outer_try_at)
+    restore_at = source.index(restore, cache_setup_at)
+    # Every uv/uvx invocation, not just the `uv pip` pair that exists today: the point of
+    # the guard is that a later `uv venv` or `uv sync` cannot land ahead of it.
+    uv_calls = [match.start() for match in re.finditer(r"(?m)^\s*(?:\$\w+ = )?& uvx?\b", source)]
+    # The reason this has to be the environment variable and not `uv --cache-dir`: this child
+    # runs its own `uv pip install`, so it has to inherit the setting.
+    python_stack_at = source.index(r'python "$PSScriptRoot\install_python_stack.py"')
+
+    assert ownership_rejection_at < capture_at < outer_try_at < cache_setup_at < restore_at
+    assert uv_calls
+    assert all(cache_setup_at < call_at < restore_at for call_at in uv_calls)
+    assert cache_setup_at < python_stack_at < restore_at
+
+
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("mode", ["default", "override", "blank"])
+@pytest.mark.parametrize(
+    ("source_path", "lifecycle_blocks"),
+    [
+        (INSTALL_PS1, _uv_cache_lifecycle_blocks),
+        (SETUP_PS1, _setup_uv_cache_lifecycle_blocks),
+    ],
+    ids = ["installer", "setup"],
+)
 def test_uv_cache_defaults_to_studio_root_and_restores_caller(
-    tmp_path: Path, shell: str, mode: str
+    tmp_path: Path, shell: str, mode: str, source_path: Path, lifecycle_blocks
 ):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    capture, cache_setup, restore = _uv_cache_lifecycle_blocks(source)
+    source = source_path.read_text(encoding = "utf-8")
+    capture, cache_setup, restore = lifecycle_blocks(source)
 
     studio_home = tmp_path / "studio"
     default_cache = studio_home / "cache" / "uv"
@@ -506,6 +555,10 @@ def test_uv_cache_defaults_to_studio_root_and_restores_caller(
 $ErrorActionPreference = "Stop"
 $StudioHome = $env:TEST_STUDIO_HOME
 function substep {{ param([string]$Text, [string]$Color) }}
+function Exit-SetupFailure {{
+    param([string]$Message, [int]$Code = 1)
+    throw $Message
+}}
 {capture}
 try {{
 {cache_setup}
@@ -538,15 +591,29 @@ if (Test-Path Env:UV_CACHE_DIR) {{
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_uv_cache_two_runs_in_one_session_use_their_own_studio_root(tmp_path: Path, shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    capture, cache_setup, restore = _uv_cache_lifecycle_blocks(source)
+@pytest.mark.parametrize(
+    ("source_path", "lifecycle_blocks"),
+    [
+        (INSTALL_PS1, _uv_cache_lifecycle_blocks),
+        (SETUP_PS1, _setup_uv_cache_lifecycle_blocks),
+    ],
+    ids = ["installer", "setup"],
+)
+def test_uv_cache_two_runs_in_one_session_use_their_own_studio_root(
+    tmp_path: Path, shell: str, source_path: Path, lifecycle_blocks
+):
+    source = source_path.read_text(encoding = "utf-8")
+    capture, cache_setup, restore = lifecycle_blocks(source)
     first_home = tmp_path / "first-studio"
     second_home = tmp_path / "second-studio"
 
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+function Exit-SetupFailure {{
+    param([string]$Message, [int]$Code = 1)
+    throw $Message
+}}
 function Invoke-UvCacheRun {{
     param([string]$RequestedHome)
     $StudioHome = $RequestedHome
