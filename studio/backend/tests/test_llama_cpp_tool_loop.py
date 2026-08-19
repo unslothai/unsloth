@@ -3025,6 +3025,41 @@ def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
 
 
+def test_clarification_request_is_not_nudged(monkeypatch):
+    """#8907: the model asked what the user wants, so there is nothing to act on.
+
+    The turn signs off with "I'll dig in", which ``INTENT_SIGNAL`` used to read as a
+    plan. Nudging it regenerated the turn and showed two near-identical questions.
+    """
+
+    clarification = (
+        '"balls" is pretty broad, so what would you like to know or do?\n\n'
+        "- Sports: rules of a game\n"
+        "- Physics: projectile motion, volume of a sphere\n\n"
+        "Let me know what you're after and I'll dig in."
+    )
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": clarification}), _done()]],
+        payloads,
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Balls"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    # one payload: a second would be the wasted re-prompted generation.
+    assert len(payloads) == 1
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts and content_texts[-1] == clarification
+
+
 def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)

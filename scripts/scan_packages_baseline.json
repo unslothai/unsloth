@@ -1539,6 +1539,14 @@
       "evidence_hash": "700650886c3879597857b61c13e7bfecec9bf54b28d869d4694608eab01d1e58"
     },
     {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:b08763160ae6f4d638b32f3cc333c4ac4fc0344988c9506efed65e0ef03ec2d5",
+      "evidence_hash": "65b26230747f4b76780dd308ad78a84fc3d2a4e5323894895fc4bdb703e9a5d5"
+    },
+    {
       "package": "ipython",
       "file": "IPython/core/interactiveshell.py",
       "check": "Downloads and executes remote code",
