@@ -12,7 +12,7 @@ pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 2;
 pub(crate) const DESKTOP_BACKEND_MANAGEABILITY_VERSION: u16 = 1;
 // Explicit backend package minimum, not the desktop app Cargo version: backend
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
-pub(crate) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.8.15";
+pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.8.4";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct ParsedVersion {
