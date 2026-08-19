@@ -1082,6 +1082,13 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Cumulative over seeding and every action: a liveness check, not attributable to any one.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
+        # The URLs, not only how many. A count alone says an interaction paid for a
+        # round trip without saying which one, so the failure names a symptom and
+        # nothing else -- the reader has to bisect the frontend to learn what the
+        # harness already knew and threw away. Deduplicated and capped: the point is
+        # to name the endpoints, and a per-message request would otherwise print
+        # hundreds of copies of one line.
+        result["stray_api_urls"] = sorted(set(stray_requests))[:8]
         # Answered inside the page by the smoke entry's allowlist. Reported rather than hidden:
         # these cost no round trip, but they are real requests the app makes and the number
         # should not vanish just because the harness declines to pay for them.
@@ -1628,9 +1635,12 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             # being timed, once per message. A warning storm is the same cost via the console
             # channel. Both scale with content, so both would forge the curve.
             if row["stray_api_requests"]:
+                urls = row.get("stray_api_urls") or []
+                named = ", ".join(urls) if urls else "(urls not recorded)"
                 failures.append(
                     f"{where} let {row['stray_api_requests']} /api/ requests reach the network "
-                    "during the measured actions; the timings include a round trip per request"
+                    f"during the measured actions; the timings include a round trip per "
+                    f"request. Endpoints: {named}"
                 )
             # Console output from inside a timed region is serialised over the debugging channel,
             # so a warning the app emits once per message would both cost time and grow like the

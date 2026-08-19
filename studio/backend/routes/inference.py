@@ -19608,6 +19608,16 @@ async def chat_count_tokens(
                         enabled_tool_names = _count_history_gate,
                     ).strip()
 
+    # Nothing survived the resolution above, so the template would render its generation marker
+    # alone and the total would describe a conversation nobody has started (#8882). Decided here
+    # because only this side knows whether `--enable-tools` put schemas in an otherwise bare prompt,
+    # and the passthrough's own catalog renders with no message to carry it.
+    if not openai_messages and not openai_tools:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for an empty prompt.",
+        )
+
     # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
     # so omitting these prices the template in whatever mode the model was LOADED in.
     _template_kwargs = llama_backend._request_reasoning_kwargs(
