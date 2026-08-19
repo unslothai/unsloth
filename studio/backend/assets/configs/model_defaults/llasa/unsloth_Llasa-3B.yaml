@@ -41,9 +41,5 @@ logging:
 
 inference:
   temperature: 1.2
-  # 1.0 is nucleus sampling off, which is what a value above 1 was reaching for.
-  # top_p is a probability: ChatCompletionRequest is ge=0/le=1 and _SAMPLING_FIELDS
-  # is (0.0, 1.0), so 1.2 was recommended to the Chat UI and then 422'd by the very
-  # endpoint the UI sends it to, failing every generation on this model.
+  # 1.0 disables nucleus sampling and satisfies the API's 0-to-1 constraint.
   top_p: 1.0
-
