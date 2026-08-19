@@ -71,6 +71,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_intel_xpu_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_xpu_python_supported()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
@@ -591,6 +593,14 @@ assert_eq "AMD sycl-ls is not Intel" "no" "$_result"
 # 54) xpu-smi must enumerate an Intel GPU; the executable alone may be stale.
 _result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_usable_nvidia_gpu() { return 1; }; _run_bounded() { \"\$@\"; }; xpu-smi() { return 1; }; _has_intel_xpu_gpu && echo yes || echo no" 2>/dev/null)
 assert_eq "stale xpu-smi is not a GPU" "no" "$_result"
+
+# 55) The curated XPU dependency matrix currently stops at CPython 3.13.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 0; }; _xpu_python_supported() { return 1; }; uname() { case \"\$1\" in -s) echo Linux ;; -m) echo x86_64 ;; esac; }; get_torch_index_url" 2>/dev/null)
+assert_eq "Python 3.14 Intel probe -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
+# 56) A supported interpreter still reaches the XPU index on Linux x86_64.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 0; }; _xpu_python_supported() { return 0; }; uname() { case \"\$1\" in -s) echo Linux ;; -m) echo x86_64 ;; esac; }; get_torch_index_url" 2>/dev/null)
+assert_eq "Python 3.13 Intel probe -> xpu" "https://download.pytorch.org/whl/xpu" "$_result"
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"

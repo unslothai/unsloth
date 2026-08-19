@@ -145,5 +145,6 @@ def test_cached_archive_is_published_atomically():
     function = source[source.index("def _resolve_diffusers_pin_req") :]
     function = function[: function.index("\n\n# -- Main install sequence")]
     assert 'open(cache_tmp, "wb")' in function
+    assert "zipfile.is_zipfile(cache_tmp)" in function
     assert "os.replace(cache_tmp, cache_file)" in function
     assert 'open(cache_file, "wb")' not in function

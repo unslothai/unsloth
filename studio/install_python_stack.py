@@ -24,6 +24,7 @@ import sysconfig
 import tempfile
 import textwrap
 import urllib.request
+import zipfile
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
@@ -4230,6 +4231,8 @@ def _resolve_diffusers_pin_req(pin_file: Path) -> Path:
                 open(cache_tmp, "wb") as out_file,
             ):
                 out_file.write(response.read())
+            if not zipfile.is_zipfile(cache_tmp):
+                raise ValueError("downloaded Diffusers archive is not a valid ZIP file")
             os.replace(cache_tmp, cache_file)
         except Exception as e:
             cache_tmp.unlink(missing_ok = True)

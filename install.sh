@@ -3157,6 +3157,18 @@ _has_intel_xpu_gpu() {
     return 1
 }
 
+_xpu_python_supported() {
+    [ -x "$VENV_DIR/bin/python" ] || return 1
+    _xpu_python_minor=$(
+        "$VENV_DIR/bin/python" -c 'import sys; print("{}.{}".format(*sys.version_info[:2]))' \
+            2>/dev/null
+    ) || return 1
+    case "$_xpu_python_minor" in
+        3.9|3.10|3.11|3.12|3.13) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 _amd_gpu_present_via_pci() {
     [ -d /sys/bus/pci/devices ] || return 1
     for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
@@ -3631,6 +3643,10 @@ get_torch_index_url() {
             Linux:x86_64|Linux:amd64) : ;;
             *) echo "$_base/cpu"; return ;;
         esac
+        if ! _xpu_python_supported; then
+            echo "$_base/cpu"
+            return
+        fi
         if _has_intel_xpu_gpu; then
             echo "$_base/xpu"
         else
