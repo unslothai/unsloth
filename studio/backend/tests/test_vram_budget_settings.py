@@ -459,18 +459,34 @@ class TestPendingOwnership:
         # back and the route reads it before is_active. The release belongs to the
         # lock, not the call: overlapping /load calls hand the lock over before the
         # first returns, so clearing on the way out would discard the queued marker.
+        import ast
         import inspect
+        import textwrap
 
         import core.inference.llama_cpp as lc
 
-        code = [
-            line
-            for line in inspect.getsource(lc.LlamaCppBackend._serial_load_scope).splitlines()
-            if not line.strip().startswith("#")
-        ]
-        compact = "".join("".join(code).split())
-        assert "withself._serial_load_lock:try:yieldfinally:" in compact
-        assert compact.endswith("self._vram_fraction_pending=None")
+        # Read the finalizer as a scope, not as text after "finally": a substring
+        # match also accepts a clear moved below the suite, which an exception
+        # through the yield skips, leaking the pending value.
+        scope = ast.parse(
+            textwrap.dedent(inspect.getsource(lc.LlamaCppBackend._serial_load_scope))
+        ).body[0]
+        held = next(node for node in scope.body if isinstance(node, ast.With))
+        assert ast.unparse(held.items[0].context_expr) == "self._serial_load_lock"
+        guarded = next(node for node in held.body if isinstance(node, ast.Try))
+        assert any(
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Yield)
+            for node in guarded.body
+        )
+        cleared = {
+            ast.unparse(target)
+            for node in guarded.finalbody
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is None
+            for target in node.targets
+        }
+        assert "self._vram_fraction_pending" in cleared
         # And the load has to go through it, or the scope guards nothing.
         load = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
         assert "withself._serial_load_scope():" in load

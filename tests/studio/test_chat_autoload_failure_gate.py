@@ -126,6 +126,11 @@ function resolveInferenceCheckpointId(status: any) {
 function snapshotQueuedChatRunSettings(state: any) {
   return { ...state, params: { ...state.params } };
 }
+function resolvePreserveThinkingOnLoad(_resp: any) {
+  // These failure-gate scenarios never inspect this setting. Keep the
+  // extracted collaborator neutral instead of modeling preference storage.
+  return false;
+}
 
 function makeStore(): any {
   const state: any = {

@@ -19,17 +19,24 @@ class TestNoTorchBackendAutoInInstallSh:
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
-        # Fallback block: from "GPU detection failed" to the next "fi".
+        # The fallback nests conditionals, so only its unindented `fi` closes the
+        # branch; the first stripped `fi` ends the range before the last invocation.
         fallback_start = None
         fallback_end = None
         for i, line in enumerate(lines):
-            if fallback_start is None and "GPU detection failed" in line:
+            if (
+                fallback_start is None
+                and line.strip()
+                == "# Fallback: GPU detection failed to produce a URL -- let uv resolve torch"
+            ):
                 fallback_start = i
-            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
+            elif fallback_start is not None and fallback_end is None and line == "fi":
                 fallback_end = i
                 break
         fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
+            range(fallback_start, fallback_end + 1)
+            if fallback_start is not None and fallback_end is not None
+            else range(0)
         )
 
         matches = [
