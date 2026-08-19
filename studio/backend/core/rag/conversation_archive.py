@@ -396,8 +396,16 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
             stale = _stale_document(conn, scope, digest, identity)
             if stale is _ARCHIVED:
+                # Widened here too, not only on the pre-check. Both turns can arrive in
+                # ONE compaction: the pre-check clears both before either is written, the
+                # shorter is written first, and the longer then meets this re-check, so
+                # leaving without touching the span left the window at the shorter figure
+                # and the longer occurrence unsearchable. Two concurrent passes reach the
+                # same place. Rolled back first, since this is the duplicate path and the
+                # widen carries its own commit.
                 if _write_lock:
                     conn.rollback()
+                _widen_span(conn, scope, digest, span)
                 continue
             if stale is not None:
                 # Same turn, vectors from an embedder the query side no longer asks for.

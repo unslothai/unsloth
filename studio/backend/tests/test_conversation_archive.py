@@ -1873,3 +1873,53 @@ def test_a_long_tool_exchange_stays_on_branch_across_a_chunk_boundary():
     for count in (lambda t: max(1, len(t) // 4), lambda t: max(1, len(t.split()))):
         missed = [lines for lines in range(1, 90) if not _matches(lines, count)]
         assert not missed, f"unedited turns retired as off-branch at question lengths {missed}"
+
+
+def test_one_pass_holding_both_spans_widens_the_window_too(conn):
+    """The window has to grow on the LOCKED duplicate path as well.
+
+    Both turns can arrive in one compaction: the pre-check runs before either is written,
+    so it clears both, and the shorter one is written first. The longer one then meets the
+    re-check under the write lock, which rolls back and moves on without touching the
+    span. The stored window stays at three, the four-message occurrence is bounded by it,
+    and the turn is unsearchable -- the same failure as the unlocked path, one lock down.
+    """
+    short = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    long = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+
+    # One call, both turns, shortest first.
+    _archive(
+        short + [{"role": "user", "content": "and again please"}] + long
+    )
+
+    scope = store.conversation_archive_scope(THREAD)
+    spans = [
+        row["archive_messages"]
+        for row in conn.execute(
+            "SELECT archive_messages FROM documents WHERE scope=? AND archive_messages >= 3",
+            (scope,),
+        ).fetchall()
+    ]
+    assert spans == [4], spans
