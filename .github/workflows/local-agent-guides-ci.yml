@@ -137,9 +137,9 @@ jobs:
           # OpenClaw needs Node 24; everything else is happy on 22.
           - agent: openclaw
             node: '24'
-          # Keep stable covered while also exercising the separate V2 binary.
+          # V2 uses beta until @opencode-ai/cli@latest publishes opencode2.
           - agent: opencode
-            opencode_channel: beta
+            opencode_channel: v2
     env:
       # gemma-4-E4B (128K context, capable enough to drive every agent for a
       # trivial reply; the 270m model produced empty/failed responses for

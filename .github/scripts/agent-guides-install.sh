@@ -73,7 +73,13 @@ case "$AGENT" in
   opencode)
     case "${OPENCODE_CHANNEL:-stable}" in
       stable) package="opencode-ai" ;;
-      beta) package="@opencode-ai/cli@beta" ;;
+      v2)
+        package="@opencode-ai/cli@beta"
+        if latest_bin="$(npm view @opencode-ai/cli@latest bin --json 2>>"$LOG")" \
+            && grep -q '"opencode2"' <<<"$latest_bin"; then
+          package="@opencode-ai/cli@latest"
+        fi
+        ;;
       *) install_fail "unknown OpenCode channel '${OPENCODE_CHANNEL}'" ;;
     esac
     npm_retry "$package" || install_fail "npm install -g $package failed"
