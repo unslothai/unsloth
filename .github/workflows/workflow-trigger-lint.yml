@@ -117,6 +117,7 @@ jobs:
             tests/studio/test_cache_budget_discipline.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
             tests/studio/test_ui_shard_engines.py \
+            tests/studio/test_zoo_suite_parallel_isolation.py \
             tests/studio/test_ci_shell_suite_coverage.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \

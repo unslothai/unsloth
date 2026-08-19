@@ -116,6 +116,7 @@ import {
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   awaitThreadScopedPairing,
@@ -1733,7 +1734,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -2012,6 +2013,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   ggufContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
@@ -2037,6 +2039,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "supportsReasoningOff",
   "reasoningEffortLevels",
   "supportsPreserveThinking",
+  "preserveThinking",
   "supportsTools",
   "toolsEnabled",
   "codeToolsEnabled",
@@ -2142,6 +2145,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
+    preserveThinking: state.preserveThinking,
     ggufContextLength: state.ggufContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
@@ -3137,6 +3141,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3182,6 +3187,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3505,6 +3511,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3602,6 +3609,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
+            preserveThinking: resolvePreserveThinkingOnLoad(status),
             ggufContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
@@ -3835,6 +3843,9 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
+                preserveThinking:
+                  queuedEmptyModelRuntime?.preserveThinking ??
+                  liveRuntime.preserveThinking,
                 ggufContextLength:
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.ggufContextLength
@@ -4194,6 +4205,9 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
+              preserveThinking:
+                queuedEmptyModelRuntime?.preserveThinking ??
+                liveRuntime.preserveThinking,
               ggufContextLength:
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.ggufContextLength
@@ -5639,7 +5653,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(codeToolsEnabled
+                      ? ["python", "terminal", "edit_file"]
+                      : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
