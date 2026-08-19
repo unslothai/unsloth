@@ -7,6 +7,7 @@ import { useChartPreferencesStore } from "./charts/chart-preferences-store";
 import { EvalLossChartCard } from "./charts/eval-loss-chart-card";
 import { GradNormChartCard } from "./charts/grad-norm-chart-card";
 import { LearningRateChartCard } from "./charts/learning-rate-chart-card";
+import { RewardChartCard } from "./charts/reward-chart-card";
 import { TrainingLossChartCard } from "./charts/training-loss-chart-card";
 import type { TrainingChartSeries } from "./charts/types";
 import {
@@ -114,6 +115,10 @@ export function ChartsContent({
   const reducedEvalLossData = useMemo(
     () => compressSeries(metrics.evalLossHistory, MAX_RENDER_POINTS),
     [metrics.evalLossHistory],
+  );
+  const reducedRewardData = useMemo(
+    () => compressSeries(metrics.rewardHistory, MAX_RENDER_POINTS),
+    [metrics.rewardHistory],
   );
 
   const allSteps = useMemo(() => {
@@ -256,6 +261,11 @@ export function ChartsContent({
     [lrOutlierMode, visibleLrDisplayValues],
   );
 
+  const rewardDomain = useMemo(
+    () => buildYDomain(reducedRewardData.map((point) => point.reward)),
+    [reducedRewardData],
+  );
+
   const evalLossDomain = useMemo(() => {
     const vals = reducedEvalLossData.map((point) => point.loss);
     return buildYDomain(vals);
@@ -307,6 +317,14 @@ export function ChartsContent({
         xAxisTicks={xAxisTicks}
         scale={lrScale}
       />
+      {metrics.rewardHistory.length > 0 ? (
+        <RewardChartCard
+          data={reducedRewardData}
+          domain={rewardDomain}
+          visibleStepDomain={visibleStepDomain}
+          xAxisTicks={xAxisTicks}
+        />
+      ) : null}
       <EvalLossChartCard
         data={reducedEvalLossData}
         domain={evalLossDomain}
