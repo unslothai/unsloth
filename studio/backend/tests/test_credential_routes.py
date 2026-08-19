@@ -649,7 +649,9 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
     async def _no_catalog(_provider_id):
         return set()
 
-    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _no_catalog)
+    monkeypatch.setattr(
+        providers_route.openai_codex_client, "ensure_subscription_models", _no_catalog
+    )
     with pytest.raises(HTTPException) as refused:
         asyncio.run(
             providers_route.update_provider_config(
