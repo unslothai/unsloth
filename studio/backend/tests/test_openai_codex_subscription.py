@@ -2470,9 +2470,7 @@ def test_a_token_refresh_keeps_the_catalog_proof(monkeypatch):
 
     monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", _guard)
 
-    token, account = asyncio.run(
-        codex_auth.resolve_access("provider-20", force_refresh = True)
-    )
+    token, account = asyncio.run(codex_auth.resolve_access("provider-20", force_refresh = True))
     assert (token, account) == ("new", "acct-1")
     assert stored["provider-20"]["catalog_account_id"] == "acct-1"
 
@@ -2488,9 +2486,7 @@ def test_recording_the_proof_never_overwrites_newer_credentials(monkeypatch):
     saved = []
 
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: dict(stored))
-    monkeypatch.setattr(
-        codex_auth, "save_oauth_bundle", lambda _pid, value: saved.append(value)
-    )
+    monkeypatch.setattr(codex_auth, "save_oauth_bundle", lambda _pid, value: saved.append(value))
 
     @asynccontextmanager
     async def _guard(_provider_id):

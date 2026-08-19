@@ -888,7 +888,9 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
     async def _no_refresh(_provider_id):
         return set()
 
-    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh)
+    monkeypatch.setattr(
+        providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh
+    )
     # Cold worker, and the credentials carry no proof for this account.
     monkeypatch.setattr(
         providers_route.openai_codex_auth,

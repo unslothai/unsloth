@@ -134,9 +134,7 @@ def _validate_provider_auth_contract(
         if (
             persisted_models
             and proven
-            and not (
-                provider_id and openai_codex_client.subscription_catalog_stale(provider_id)
-            )
+            and not (provider_id and openai_codex_client.subscription_catalog_stale(provider_id))
         ):
             # Already accepted on this row once, so an upstream outage must not make an
             # unrelated edit such as a rename unsavable.
