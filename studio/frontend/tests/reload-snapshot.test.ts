@@ -38,6 +38,10 @@ const imageDropzoneSource = readFileSync(
   new URL("../src/components/image-dropzone.tsx", import.meta.url),
   "utf8",
 );
+const attachmentSource = readFileSync(
+  new URL("../src/components/assistant-ui/attachment.tsx", import.meta.url),
+  "utf8",
+);
 const imagesPageSource = readFileSync(
   new URL("../src/features/images/images-page.tsx", import.meta.url),
   "utf8",
@@ -1350,6 +1354,14 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.match(
     imageDropzoneSource,
     /if \(value\)[\s\S]*?data-reload-snapshot-sensitive/,
+  );
+  assert.match(
+    attachmentSource,
+    /export const ComposerAttachments[\s\S]*?data-reload-snapshot-sensitive/,
+  );
+  assert.match(
+    attachmentSource,
+    /AttachmentPreviewDialog:[\s\S]*?redactFromReload[\s\S]*?data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
   );
 });
 
