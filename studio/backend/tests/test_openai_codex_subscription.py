@@ -1367,7 +1367,11 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
     assert "provide your final answer now" in replayed[-1]["content"]
 
 
-def _codex_chat_gate(monkeypatch, model: str, resolve = None):
+def _codex_chat_gate(
+    monkeypatch,
+    model: str,
+    resolve = None,
+):
     """Drive the chat route far enough to answer "may this model be used?".
 
     The gate is one line inside ``_proxy_to_external_provider`` and is only
@@ -1540,7 +1544,10 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                        },
                     ],
                 }
             ],
@@ -1549,9 +1556,7 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
             stream = True,
         )
         with pytest.raises(HTTPException) as excinfo:
-            asyncio.run(
-                inf._proxy_to_external_provider(payload, request, current_subject = "t")
-            )
+            asyncio.run(inf._proxy_to_external_provider(payload, request, current_subject = "t"))
         return excinfo.value
 
     codex_client._offered_models["codex-1"] = {
