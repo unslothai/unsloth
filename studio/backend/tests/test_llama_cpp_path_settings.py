@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -169,6 +170,28 @@ def test_runtime_resolver_uses_studio_path_and_does_not_silently_fallback(
     assert LlamaCppBackend._find_llama_server_binary() is None
 
 
+def test_runtime_resolver_rejects_a_selected_binary_that_loses_execute_permission(
+    settings_store, monkeypatch, tmp_path
+):
+    from core.inference import llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    selected = tmp_path / "selected"
+    binary = _binary(selected, platform="linux")
+    settings_store[path_settings.CUSTOM_LLAMA_CPP_PATH_SETTING_KEY] = str(selected)
+    real_access = os.access
+
+    monkeypatch.setattr(llama_cpp_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        os,
+        "access",
+        lambda path, mode: False if Path(path) == binary else real_access(path, mode),
+    )
+
+    assert path_settings.custom_llama_cpp_path_status()["available"] is False
+    assert LlamaCppBackend._find_llama_server_binary() is None
+
+
 def test_backend_updater_never_replaces_a_studio_selected_tree(monkeypatch):
     from utils import llama_cpp_update
 
@@ -207,6 +230,23 @@ def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypa
     assert saved.source == "studio"
     assert saved.resolved_binary == str(binary)
     assert loaded == saved
+
+
+def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkeypatch):
+    from routes import inference as inference_route
+    from routes import settings as settings_route
+
+    class _PendingBackend:
+        is_active = False
+        _binary_revision_pending = ("old-binary",)
+
+        @staticmethod
+        def _binary_changed_since_revision(revision):
+            return revision == ("old-binary",)
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _PendingBackend())
+
+    assert settings_route._llama_cpp_path_reload_required() is True
 
 
 def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):

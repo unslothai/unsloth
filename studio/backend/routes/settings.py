@@ -925,11 +925,14 @@ def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
 
 
 def _llama_cpp_path_reload_required() -> bool:
-    """Whether a running GGUF server predates the effective path selection."""
+    """Whether a running or pending GGUF server predates the path selection."""
     try:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
+        pending = getattr(backend, "_binary_revision_pending", None)
+        if pending is not None:
+            return backend._binary_changed_since_revision(pending)
         return bool(backend.is_active and backend._binary_changed_since_launch())
     except Exception:
         return False

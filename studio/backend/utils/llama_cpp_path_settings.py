@@ -8,14 +8,27 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 CUSTOM_LLAMA_CPP_PATH_SETTING_KEY = "custom_llama_cpp_path"
 MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH = 32767
 MANAGED_LLAMA_CPP_PATH_MARKER = "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"
 
-_settings_lock = threading.Lock()
+_settings_lock = threading.RLock()
+
+
+@contextmanager
+def llama_cpp_path_selection_guard() -> Iterator[None]:
+    """Serialize a runtime path snapshot with a settings write.
+
+    A model load uses this while it resolves and stamps its llama-server. A UI
+    save uses the same lock for persistence, so the save response can always
+    tell whether an in-flight load captured the old or new selection.
+    """
+    with _settings_lock:
+        yield
 
 
 def llama_server_binary_name(platform: Optional[str] = None) -> str:

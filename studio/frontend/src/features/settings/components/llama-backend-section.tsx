@@ -44,6 +44,7 @@ const UNSUPPORTED_REASONS: Record<string, TranslationKey> = {
 function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
   const t = useT();
   const [settings, setSettings] = useState<LlamaCppPathSettings | null>(null);
+  const [draftPath, setDraftPath] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +55,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
       .then((next) => {
         if (!active) return;
         setSettings(next);
+        setDraftPath(next.path ?? "");
         setError(null);
       })
       .catch((reason) => {
@@ -71,6 +73,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
     try {
       const next = await updateLlamaCppPathSettings(path);
       setSettings(next);
+      setDraftPath(next.path ?? "");
       setBrowserOpen(false);
       toast.success(t("settings.resources.llamaBackend.customPath.saved"));
       onChanged();
@@ -85,10 +88,9 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
     }
   };
 
-  const displayPath = settings
-    ? (settings.path ??
-      t("settings.resources.llamaBackend.customPath.automatic"))
-    : t("common.loading");
+  const pathDirty = Boolean(
+    settings?.editable && draftPath.trim() !== (settings.path ?? ""),
+  );
   const detail = settings
     ? settings.source === "environment"
       ? t("settings.resources.llamaBackend.customPath.environmentManaged", {
@@ -113,15 +115,36 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
         hint={t("settings.resources.llamaBackend.customPath.hint")}
         className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
       >
-        <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+        <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
           <Input
-            readOnly={true}
+            readOnly={!settings?.editable}
             aria-label={t("settings.resources.llamaBackend.customPath.label")}
-            value={displayPath}
+            value={draftPath}
+            placeholder={
+              settings
+                ? t("settings.resources.llamaBackend.customPath.automatic")
+                : t("common.loading")
+            }
+            onChange={(event) => setDraftPath(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && pathDirty && !saving) {
+                void save(draftPath.trim() || null);
+              }
+            }}
             title={settings?.resolvedBinary ?? settings?.path ?? undefined}
             className="h-8 min-w-0 font-mono text-xs"
             data-testid="llama-cpp-path-input"
           />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            disabled={!pathDirty || saving}
+            onClick={() => void save(draftPath.trim() || null)}
+            data-testid="llama-cpp-path-save"
+          >
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -135,7 +158,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
               : t("settings.resources.llamaBackend.customPath.change")}
           </Button>
           {detail || settings?.source === "studio" ? (
-            <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+            <div className="col-span-3 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
               {detail ? (
                 <span title={detail} className="min-w-0 truncate">
                   {detail}
