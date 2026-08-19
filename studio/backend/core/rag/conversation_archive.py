@@ -638,8 +638,11 @@ def _scan_probes(
                 # A gap is only allowed where it is a label `render_turn` wrote and the
                 # probe therefore had stripped: a pasted transcript legitimately carries
                 # its own "user:" lines. Anything else is content the archive never saw.
-                if not fresh and cursor and not (partial or partial_ok) and not _GAP_IS_LABEL.match(
-                    messages[index][cursor:found]
+                if (
+                    not fresh
+                    and cursor
+                    and not (partial or partial_ok)
+                    and not _GAP_IS_LABEL.match(messages[index][cursor:found])
                 ):
                     return None
                 if opened_at is None:

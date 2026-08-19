@@ -1319,6 +1319,7 @@ def run_safetensors_tool_loop(
                             estimate_messages_tokens_dense,
                             prompt_budget,
                         )
+
                         # Dense, unlike the eviction estimator: four characters per token
                         # undercounts CJK and emoji by about half, and this path has no
                         # rolling fit to recover if the tool exchange it sizes then puts

@@ -132,9 +132,7 @@ def test_the_budget_charges_token_dense_text_at_its_real_rate():
     # The flat estimate is the one that overstates the room. Charged densely, the budget
     # has to be at most what is left after the real cost of what is already there.
     assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens_dense(dense_messages)
-    assert estimate_messages_tokens_dense(dense_messages) > estimate_messages_tokens(
-        dense_messages
-    )
+    assert estimate_messages_tokens_dense(dense_messages) > estimate_messages_tokens(dense_messages)
 
 
 def test_the_dense_estimate_matches_the_flat_one_on_plain_ascii():
@@ -143,7 +141,6 @@ def test_the_dense_estimate_matches_the_flat_one_on_plain_ascii():
         estimate_messages_tokens,
         estimate_messages_tokens_dense,
     )
-
     assert estimate_messages_tokens_dense(MESSAGES) == estimate_messages_tokens(MESSAGES)
 
 
