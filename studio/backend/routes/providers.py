@@ -282,10 +282,16 @@ async def update_provider_config(
         max_output_tokens_requested,
         payload.max_output_tokens,
     )
-    if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
+    if (
+        existing_info.get("auth_kind") == "chatgpt_oauth"
+        and payload.models
+        and not set(payload.models).issubset(set(existing_info["default_models"]))
+    ):
         # The catalog is process-local: a restart between the picker's fetch and this
         # save would otherwise reject a slug the plan really does list. Refresh first,
-        # on the same terms as the chat gate, so both paths authorize alike.
+        # on the same terms as the chat gate, so both paths authorize alike. Only a
+        # slug outside the seed needs it, and reaching upstream when it is down would
+        # make an ordinary save wait out the 20s connect / 120s read timeout.
         await openai_codex_client.ensure_subscription_models(provider_id)
     _validate_provider_auth_contract(
         existing_info,

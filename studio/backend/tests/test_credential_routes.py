@@ -682,3 +682,38 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
         assert updated.models == [listed]
     finally:
         codex_client.forget_subscription_models(created.id)
+
+
+def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
+    """A curated-only save must not wait on /codex/models when upstream is down."""
+    from core.inference import openai_codex_client as codex_client
+
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    codex_client.forget_subscription_models(created.id)
+    calls = []
+
+    async def _refresh(provider_id):
+        calls.append(provider_id)
+        return set()
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _refresh)
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(models = ["gpt-5.4", "gpt-5.5"]),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    assert updated.models == ["gpt-5.4", "gpt-5.5"]
+    assert calls == []

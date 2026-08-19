@@ -439,6 +439,8 @@ export function ChatProvidersSettings({
   }, [onProvidersChange]);
 
   function resetForm() {
+    // Any form transition retires an in-flight Codex catalog request.
+    codexCatalogRequestRef.current += 1;
     setEditingProviderId(null);
     setApiKey("");
 
@@ -991,6 +993,9 @@ export function ChatProvidersSettings({
   }
 
   async function editProvider(provider: ExternalProviderConfig) {
+    // Switching connections retires an in-flight catalog request, including on the
+    // branches below that never reach applyCodexSubscriptionModels.
+    codexCatalogRequestRef.current += 1;
     setEditingProviderId(provider.id);
     autoOpenedAddFormRef.current = true;
     setPage("form");
