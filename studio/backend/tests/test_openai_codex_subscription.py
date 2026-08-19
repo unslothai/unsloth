@@ -1796,9 +1796,7 @@ def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
     )
     try:
         with pytest.raises(HTTPException) as excinfo:
-            asyncio.run(
-                inf._proxy_to_external_provider(payload, request, current_subject = "t")
-            )
+            asyncio.run(inf._proxy_to_external_provider(payload, request, current_subject = "t"))
         assert excinfo.value.status_code == 401
         assert "does not accept image input" not in str(excinfo.value.detail)
     finally:
