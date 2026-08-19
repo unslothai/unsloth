@@ -543,3 +543,68 @@ def test_streaming_does_not_replay_a_slow_generation_after_the_status_window(mon
     assert calls == [f"{_DEAD}/v1/chat/completions"], "the slow generation was replayed"
     assert backend.respawn_calls == 0
     assert "[DONE]" in blob
+
+
+class _SlowRespawnBackend(_Backend):
+    """A relaunch that takes real time, the way reloading a large GGUF does.
+
+    Blocks until the consumer reports a keep-alive that arrived AFTER the reload
+    began, so the stub records whether the downstream connection was still being
+    fed while the model loaded.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.respawn_started = threading.Event()
+        self.keepalive_during_respawn = threading.Event()
+        self.fed_while_loading = False
+
+    def _respawn_if_dead(self):
+        self.respawn_calls += 1
+        self.respawn_started.set()
+        self.fed_while_loading = self.keepalive_during_respawn.wait(timeout = 5.0)
+        self.base_url = _FRESH
+        return True
+
+
+def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch):
+    """The reload is a full model load, minutes for a large GGUF. The response is
+    already committed and this loop keeps it alive every five seconds, so going
+    silent for the reload lets a proxy or client drop the stream before the
+    recovered request is ever submitted."""
+    monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.05)
+    calls = []
+    transport = _SlowDeadTransport(calls)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *_a, **kw: real_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    backend = _SlowRespawnBackend()
+
+    async def _drive():
+        response = await _openai_passthrough_stream_admitted(
+            _Request(),
+            threading.Event(),
+            backend,
+            _payload(),
+            "test-model",
+            "chatcmpl-local",
+            admission_lease = _Lease(),
+            tracker = _Tracker(),
+        )
+        chunks = []
+        async for chunk in response.body_iterator:
+            text = chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk
+            chunks.append(text)
+            if backend.respawn_started.is_set() and text == inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE:
+                backend.keepalive_during_respawn.set()
+        return "".join(chunks)
+
+    blob = asyncio.run(_drive())
+
+    assert backend.respawn_calls == 1
+    assert backend.fed_while_loading, "the stream went silent for the whole reload"
+    assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
+    assert "hi" in blob and "[DONE]" in blob
