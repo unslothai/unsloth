@@ -57,7 +57,6 @@ import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
   DesktopTitlebarNavigation,
-  getClientPlatform,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
@@ -169,6 +168,7 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
+  compareModelDisplayName,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -179,6 +179,7 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
+  useShortcutLabel,
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
@@ -722,8 +723,11 @@ export function AppSidebar() {
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
-  // Mac uses Cmd, others use Ctrl. Not Tauri-gated, so it's right on web too.
-  const [isMacPlatform] = useState(() => getClientPlatform().includes("mac"));
+  // Read from the shortcuts store, not the shipped default: a rebound or
+  // cleared action must not leave the hint advertising a dead chord. Both
+  // already render in the platform's own notation.
+  const searchShortcutLabel = useShortcutLabel("searchChats");
+  const settingsShortcutLabel = useShortcutLabel("openSettings");
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -2518,6 +2522,17 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
+              {/* The model the chat was started on. Only in the quiet states: the
+                  spinner takes the same right-hand slot, and the unread dot sits
+                  over it. The title truncates first, so this never squeezes it out. */}
+              {item.modelId && !showWorkSpinner && !hasUnreadActivity && (
+                <span
+                  className="ml-auto max-w-[45%] shrink-0 truncate text-ui-10 text-muted-foreground/70"
+                  title={item.modelId}
+                >
+                  {compareModelDisplayName(item.modelId)}
+                </span>
+              )}
               {showWorkSpinner && (
                 <Spinner
                   data-testid="chat-row-spinner"
@@ -2903,9 +2918,11 @@ export function AppSidebar() {
                     hidden={isMobile}
                   >
                     {t("shell.navigation.search")}
-                    <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
-                      {isMacPlatform ? "⌘K" : "Ctrl+K"}
-                    </kbd>
+                    {searchShortcutLabel && (
+                      <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
+                        {searchShortcutLabel}
+                      </kbd>
+                    )}
                   </TooltipContent>
                 </Tooltip>
                 {!isMobile && !usesDesktopTitlebar && (
@@ -3794,7 +3811,11 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
-                    <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
+                    {settingsShortcutLabel && (
+                      <DropdownMenuShortcut>
+                        {settingsShortcutLabel}
+                      </DropdownMenuShortcut>
+                    )}
                   </DropdownMenuItem>
                   {/* Optional items follow the order and visibility set in
                       Appearance settings; Settings above and the block after

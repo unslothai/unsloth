@@ -20,6 +20,7 @@ export interface BackendModelDetails {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -217,6 +218,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -237,6 +239,7 @@ export interface LoadModelResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
@@ -305,6 +308,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {
@@ -324,6 +328,7 @@ export interface InferenceStatusResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
@@ -560,6 +565,7 @@ export interface OpenAIChatCompletionsRequest {
   presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
+  video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   reasoning_effort?:

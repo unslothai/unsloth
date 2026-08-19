@@ -3163,8 +3163,13 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         *,
         require_vision = False,
         require_image = True,
+        modality_label = "image or audio",
     ):
-        captured.update(require_vision = require_vision, require_image = require_image)
+        captured.update(
+            require_vision = require_vision,
+            require_image = require_image,
+            modality_label = modality_label,
+        )
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -3172,7 +3177,12 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured == {"require_vision": True, "require_image": False}
+    # The label follows what is attached, not the union the hook guards.
+    assert captured == {
+        "require_vision": True,
+        "require_image": False,
+        "modality_label": "audio",
+    }
 
     # An image in the same request does need the vision tower.
     img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
@@ -3183,7 +3193,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured == {"require_vision": True, "require_image": True}
+    assert captured == {
+        "require_vision": True,
+        "require_image": True,
+        "modality_label": "image or audio",
+    }
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
@@ -3451,7 +3465,7 @@ def test_chat_validates_confirm_and_modality_before_switch():
     assert "require_vision" in src
     hook = inspect.getsource(inference_route._maybe_auto_switch_model)
     assert hook.index("require_vision") < hook.index("_load_model_impl")
-    assert "does not support the image or audio input" in hook
+    assert "does not support the {modality_label} input" in hook
 
 
 def test_messages_have_image_helper():
@@ -7986,3 +8000,86 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
         assert settings.normalize_model_override(
             {"llama_extra_args": ["--top-k", "40"]}, keep_empty_extra_args = keep
         ) == {"llama_extra_args": ["--top-k", "40"]}
+
+
+def _wire_refusing_switch(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
+    return rec
+
+
+def _refusal_detail(monkeypatch, **kwargs) -> str:
+    rec = _wire_refusing_switch(monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "t", require_vision = True, **kwargs
+            )
+        )
+    assert rec.calls == []
+    return json.dumps(exc.value.detail)
+
+
+def test_the_switch_refusal_names_the_modality_the_request_carried(monkeypatch):
+    # Video joins require_vision, so without a label the user who attached a clip
+    # is told the model lacks "image or audio" support and never sees "video".
+    detail = _refusal_detail(monkeypatch, modality_label = "video")
+    assert "video input" in detail
+    assert "image or audio" not in detail
+
+
+def test_the_refusal_lists_every_attached_modality(monkeypatch):
+    detail = _refusal_detail(monkeypatch, modality_label = "image or video")
+    assert "image or video input" in detail
+
+
+def test_the_refusal_wording_is_unchanged_for_callers_that_pass_no_label(monkeypatch):
+    # The image-only callers (/messages, /responses) keep their existing text.
+    detail = _refusal_detail(monkeypatch)
+    assert "image or audio input" in detail
+
+
+def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
+    """End to end through the handler: video joins require_vision, so the label
+    has to follow or the user who attached a clip is told about image or audio."""
+
+    class _Reached(Exception):
+        pass
+
+    captured = {}
+
+    async def _capture(
+        model,
+        request,
+        subject,
+        *,
+        require_vision = False,
+        require_image = True,
+        modality_label = "image or audio",
+    ):
+        captured.update(
+            require_vision = require_vision,
+            require_image = require_image,
+            modality_label = modality_label,
+        )
+        raise _Reached()
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    payload = _chat_request(model = "org/B-GGUF", video_base64 = "AAAA")
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    # No vision tower: a video projector need not carry one, same as audio.
+    assert captured == {
+        "require_vision": True,
+        "require_image": False,
+        "modality_label": "video",
+    }

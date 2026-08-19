@@ -27,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    click_forced,
 )
 
 TABS = [
@@ -134,7 +135,7 @@ def settle_panel(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
 def click_tab_and_observe(page, tab: str) -> dict:
     """Click a tab; record how long the panel keeps the old content and whether it blanks."""
     before = snapshot(page)
-    page.locator(f'[data-testid="settings-tab-{tab}"]').click(force = True, timeout = 15000)
+    click_forced(page.locator(f'[data-testid="settings-tab-{tab}"]'), timeout = 15000)
     started = time.time()
     changed_ms = None
     blank_frames = 0
@@ -272,9 +273,9 @@ def run_chunk_fail(page) -> None:
     """One panel's module is blocked. The dialog must survive it, and so must the app."""
     open_dialog(page)
     settle_panel(page)
-    page.locator('[data-testid="settings-tab-general"]').click(force = True, timeout = 15000)
+    click_forced(page.locator('[data-testid="settings-tab-general"]'), timeout = 15000)
     settle_panel(page)
-    page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]').click(force = True, timeout = 15000)
+    click_forced(page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]'), timeout = 15000)
     page.wait_for_timeout(3000)
     state = page.evaluate(
         """() => ({
@@ -309,7 +310,7 @@ def run_chunk_fail(page) -> None:
     else:
         log("the dialog and its twelve nav entries survived")
     # Another tab must still work.
-    page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
+    click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     after = settle_panel(page)
     report["chunk_fail_recovery"] = after
     if not after.get("present") or after.get("elements", 0) < 5:
@@ -329,7 +330,7 @@ def run(page) -> None:
     open_dialog(page)
     settle_panel(page)
     # Start off the persisted tab, so the first iteration is a real switch.
-    page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
+    click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     settle_panel(page)
     for tab in TABS:
         obs = click_tab_and_observe(page, tab)
@@ -390,7 +391,7 @@ def run(page) -> None:
     if index is None:
         fail(f"search '{query}': '{target_label}' not among results {texts}")
     else:
-        entries.nth(index).click(force = True)
+        click_forced(entries.nth(index))
         flashed = None
         deadline = time.time() + 15
         while time.time() < deadline:
