@@ -3,7 +3,7 @@
 
 """Backend contract for the GGUF reload duplicate-load guard.
 
-``LlamaCppBackend._already_in_target_state`` short-circuits a duplicate /load so
+``LlamaCppBackend.adopt_load_intent_if_matched`` short-circuits a duplicate /load so
 it cannot kill the just-spawned llama-server. Pins local-file identity, the
 HF-mode hf_variant fallback, and ``extra_args`` None-vs-[] inherit semantics.
 """
@@ -46,9 +46,17 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
 
 class _FakeProcess:
@@ -87,6 +95,10 @@ def _loaded_backend(**overrides):
     return backend
 
 
+def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
+    return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
+
+
 # ── Local-file identity via gguf_path ────────────────────────────────
 
 
@@ -98,7 +110,8 @@ def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
         _gguf_path = str(gguf_file),
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = str(gguf_file),
             model_identifier = "owner/repo",
             hf_variant = None,
@@ -113,6 +126,27 @@ def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
     )
 
 
+def test_already_loaded_model_reloads_when_selected_binary_changes():
+    backend = _loaded_backend()
+    backend._binary_changed_since_launch = lambda: True
+
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
 def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
     a = tmp_path / "a.gguf"
     a.write_bytes(b"")
@@ -120,7 +154,8 @@ def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
     b.write_bytes(b"")
     backend = _loaded_backend(_gguf_path = str(a))
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = str(b),
             model_identifier = "owner/repo",
             hf_variant = None,
@@ -141,7 +176,8 @@ def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
 def test_already_in_target_state_falls_back_to_hf_variant_for_hf_loads():
     backend = _loaded_backend(_hf_variant = "Q4_K_M", _gguf_path = None)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "owner/repo",
             hf_variant = "Q8_0",
@@ -159,7 +195,8 @@ def test_already_in_target_state_falls_back_to_hf_variant_for_hf_loads():
 def test_already_in_target_state_hf_same_variant_matches():
     backend = _loaded_backend(_hf_variant = "Q4_K_M", _gguf_path = None)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "owner/repo",
             hf_variant = "Q4_K_M",
@@ -180,7 +217,8 @@ def test_already_in_target_state_hf_same_variant_matches():
 def test_already_in_target_state_none_extras_inherits_stored():
     backend = _loaded_backend(_extra_args = ["--top-k", "20"])
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "owner/repo",
             hf_variant = "Q4_K_M",
@@ -198,7 +236,8 @@ def test_already_in_target_state_none_extras_inherits_stored():
 def test_already_in_target_state_empty_extras_forces_reload_when_stored():
     backend = _loaded_backend(_extra_args = ["--top-k", "20"])
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "owner/repo",
             hf_variant = "Q4_K_M",
@@ -216,7 +255,8 @@ def test_already_in_target_state_empty_extras_forces_reload_when_stored():
 def test_already_in_target_state_explicit_extras_match():
     backend = _loaded_backend(_extra_args = ["--top-k", "20"])
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "owner/repo",
             hf_variant = "Q4_K_M",

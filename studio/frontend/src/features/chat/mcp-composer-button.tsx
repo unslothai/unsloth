@@ -61,18 +61,15 @@ type McpPreset = {
 // Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
+    id: "unsloth-docs",
+    displayName: "Unsloth Docs",
+    url: "https://unsloth.ai/docs/~gitbook/mcp",
+  },
+  {
     id: "context7",
     displayName: "Context7",
     url: "https://mcp.context7.com/mcp",
     label: "Context7 (Realtime Docs)",
-  },
-  {
-    id: "exa",
-    displayName: "Exa",
-    url: "https://mcp.exa.ai/mcp",
-    label: "Exa (Semantic Search)",
-    hint: "Enabling Exa will disable default search",
-    disablesWebSearch: true,
   },
   {
     id: "huggingface",
@@ -164,7 +161,7 @@ export function McpComposerButton({
           });
         }
         setMcpEnabledForChat(true);
-        // Exa is a search server; turn off the built-in Web Search to avoid overlap.
+        // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
         await updateMcpServer(args.existing.id, { isEnabled: false });

@@ -43,9 +43,10 @@ False positives:
     examples and `>>>` doctests cannot trip a finding. Residual findings that
     are genuine library behavior (a HTTP client reading HF_TOKEN, a vendored
     test fixture) are suppressed via a reviewed baseline allowlist, matched on
-    (package, basename(file), check). A NEW kind of finding in an already-listed
-    file is a different check and still fails. This mirrors the Hugging Face Hub
-    approach (ClamAV/picklescan: low-FP, signature/structural, surface status).
+    (package, package-relative file, check, evidence hash). A new check, or
+    changed flagged code under the same check, reopens the finding; version
+    bumps and line shifts do not. This mirrors the Hugging Face Hub approach
+    (ClamAV/picklescan: low-FP, signature/structural, surface status).
 
 Exit codes:
     0 -- no non-baselined CRITICAL or HIGH findings (or --write-baseline)
@@ -55,8 +56,12 @@ Exit codes:
 
 import argparse
 import atexit
+import bisect
+import contextlib
+import hashlib
 import io
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -104,11 +109,15 @@ RE_BASE64 = re.compile(
 RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
+# ``httpx2`` is the pydantic-maintained successor and a separate import name, so the older
+# ``httpx``-only alternative did not see it. openai 3.0.0 requires httpx2 and routes every
+# call through it, which made the SDK's own HTTP invisible to each combined check that needs
+# a network half (secrets + network, IMDS + network, archive + network).
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
     r"|\brequests\s*\.\s*(get|post|put|patch|delete|head|Session)\b"
-    r"|\bhttpx\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
+    r"|\b(?:httpx|httpx2)\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
     r"|\bsocket\s*\.\s*(socket|create_connection)\b"
     r"|\bhttp\.client\b"
     r"|\bhttp\.server\b",
@@ -155,6 +164,9 @@ RE_EMBEDDED_KEYS = re.compile(
     r"|\bMII[A-Za-z0-9+/]{20,}",  # DER-encoded key prefix (base64)
     re.DOTALL,
 )
+
+# Full PEM block (BEGIN..END), used to pin a multiline key body in evidence.
+RE_PEM_BLOCK = re.compile(r"-----BEGIN[^\n]*KEY-----.*?-----END[^\n]*KEY-----", re.DOTALL)
 
 # Cloud metadata / IMDS endpoints
 RE_CLOUD_METADATA = re.compile(
@@ -269,9 +281,18 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    r"|\bhistory\b.*\bread\b"  # reading shell history
-    r"|\b\.bash_history\b"
-    r"|\b\.zsh_history\b"
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned
+    # the whole file and produced 9 of the 11 baselined CRITICALs here (httpx, urllib3, IPython,
+    # torch) -- each allowlisted, which suppressed this check for the whole file.
+    r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
+    # Undotted history files, with a boundary that finds them however the path was built. fish
+    # writes fish_history and PowerShell writes PSReadLine/ConsoleHost_history.txt, neither with a
+    # leading dot. A quote counts as a boundary alongside a separator, so a basename assembled by
+    # Path.home() / "fish" / "fish_history" or os.path.join(h, "fish", "fish_history") still
+    # matches: there the character before the name is the quote, not a slash.
+    r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
+    r"|['\"~/]\.history\b"
+    r"|\bHISTFILE\b"
     r"|/etc/shadow"
     r"|/etc/passwd",
     re.DOTALL,
@@ -416,6 +437,8 @@ class Finding:
     filename: str
     check: str
     evidence: str = ""
+    # Whole-file digest; a baseline entry may pin it (see _load_baseline).
+    file_sha256: str = ""
 
 
 # Checkers
@@ -476,22 +499,26 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Large base64 blob
     if RE_LARGE_BLOB.search(content):
-        blob = RE_LARGE_BLOB.search(content).group()
+        # Digest every blob (not just the first 120 chars, and not just the
+        # first blob), so a later payload that keeps the prefix or appends a
+        # second encoded blob reopens.
+        blob, digest = _blob_digest(content)
         findings.append(
             Finding(
                 CRITICAL,
                 package,
                 filename,
                 f".pth has large base64-like blob ({len(blob)} chars)",
-                blob[:120] + "...",
+                f"{blob[:120]}... sha256:{digest}",
             )
         )
 
-    # Catch-all: any import line in .pth if nothing else triggered
+    # Catch-all: any import line in .pth if nothing else triggered. Bind every
+    # line through a digest so an appended/swapped import reopens the key, but cap
+    # the displayed text so a large .pth of benign-looking imports cannot dump up
+    # to the archive member cap into the logs or baseline JSON.
     if not findings and import_lines:
-        evidence = "\n".join(import_lines[:5])
-        if len(import_lines) > 5:
-            evidence += f"\n... ({len(import_lines)} import lines total)"
+        evidence = _cap_line("\n".join(import_lines))
         findings.append(
             Finding(
                 HIGH,
@@ -505,13 +532,15 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     # Unusually large executable .pth (litellm's was 34 KB; legit ones are <100 bytes)
     size = len(content)
     if size > 500 and import_lines:
+        # Pin the content so a different payload of the same size/import count reopens.
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
         findings.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 f"Unusually large executable .pth ({size} bytes)",
-                f"{len(import_lines)} import line(s) in {size}-byte .pth file",
+                f"{len(import_lines)} import line(s) in {size}-byte .pth file sha256:{digest}",
             )
         )
 
@@ -629,6 +658,13 @@ def _hidden_payload_findings(
     removed = "".join(o if o != s else " " for o, s in zip(original, code))
     out = []
 
+    # The visible exec/eval line is what makes the hidden string executable, so
+    # bind it into every finding's evidence: otherwise a reviewed false positive
+    # that keeps the same hidden text but flips a harmless `eval("1+1")` to
+    # `exec(__doc__)` (now running the payload) keeps the same key and stays
+    # suppressed. Taken from `stripped` (real code), where the exec/eval lives.
+    trigger = _extract_evidence(stripped, RE_EXEC_EVAL)
+
     def _hidden(pat):
         # Carrier present in a blanked region but NOT in real code. A carrier in
         # real code is already caught by the normal check, so restricting to
@@ -643,7 +679,7 @@ def _hidden_payload_findings(
                     package,
                     filename,
                     "exec/eval with payload hidden in a docstring/string",
-                    f"{label}: {_extract_evidence(removed, pat)}",
+                    f"exec: {trigger}\n{label}: {_extract_evidence(removed, pat)}",
                 )
             )
     # Fetch-then-run dropper: a network call AND an os/subprocess exec that both
@@ -657,7 +693,9 @@ def _hidden_payload_findings(
                 package,
                 filename,
                 "exec/eval with hidden network+exec payload",
-                f"network+exec: {_extract_evidence(removed, RE_SUBPROCESS)}",
+                f"exec: {trigger}\n"
+                f"network+exec: {_extract_evidence(removed, RE_NETWORK)} | "
+                f"{_extract_evidence(removed, RE_SUBPROCESS)}",
             )
         )
     return out
@@ -717,14 +755,19 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # openssl encryption + network/key material (encrypted exfiltration)
     if has_openssl_cli and (has_network or has_keys):
+        # Bind whichever side(s) co-occur so a changed endpoint or key reopens.
+        evidence = [f"OpenSSL: {_extract_evidence(content, RE_OPENSSL_CLI)}"]
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_keys:
+            evidence.append(f"Key: {_embedded_key_evidence(content)}")
         findings.append(
             Finding(
                 CRITICAL,
                 package,
                 filename,
                 "openssl encryption + network/key material (encrypted exfiltration)",
-                f"OpenSSL: {_extract_evidence(content, RE_OPENSSL_CLI)}\n"
-                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+                "\n".join(evidence),
             )
         )
 
@@ -896,6 +939,10 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Obfuscated payload: base64 + exec/eval + large blob
     if has_base64 and has_exec_eval and has_blob:
+        # Digest every blob too: a payload may sit on a separate line from the
+        # decode call, and a second encoded blob may be appended later, so
+        # binding only the base64/exec lines or the first blob would miss it.
+        _, blob_digest = _blob_digest(content)
         findings.append(
             Finding(
                 HIGH,
@@ -903,7 +950,8 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 filename,
                 "base64 decode + exec/eval + large encoded blob",
                 f"Base64: {_extract_evidence(content, RE_BASE64)}\n"
-                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}",
+                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}\n"
+                f"Blob: sha256:{blob_digest}",
             )
         )
 
@@ -928,32 +976,48 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Embedded cryptographic key + network calls (encrypted exfil pattern)",
-                f"Key: {_extract_evidence(content, RE_EMBEDDED_KEYS)}\n"
+                f"Key: {_embedded_key_evidence(content)}\n"
                 f"Network: {_extract_evidence(content, RE_NETWORK)}",
             )
         )
 
     # Anti-analysis + any other suspicious pattern
     if has_anti and (has_network or has_subprocess or has_exec_eval):
+        # Bind the suspicious side too so a changed payload reopens.
+        evidence = [f"Anti: {_extract_evidence(content, RE_ANTI_ANALYSIS)}"]
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_subprocess:
+            evidence.append(f"Subprocess: {_extract_evidence(content, RE_SUBPROCESS)}")
+        if has_exec_eval:
+            evidence.append(f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}")
         findings.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 "Anti-analysis/sandbox evasion + suspicious behavior",
-                f"Anti: {_extract_evidence(content, RE_ANTI_ANALYSIS)}",
+                "\n".join(evidence),
             )
         )
 
     # DNS exfiltration with dynamic hostnames
     if has_dns_exfil and (has_base64 or has_network or has_creds):
+        # Bind the co-occurring side so a changed exfil channel reopens.
+        evidence = [f"DNS: {_extract_evidence(content, RE_DNS_EXFIL)}"]
+        if has_base64:
+            evidence.append(f"Base64: {_extract_evidence(content, RE_BASE64)}")
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_creds:
+            evidence.append(f"Creds: {_extract_evidence(content, RE_CRED_ACCESS)}")
         findings.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 "DNS exfiltration / tunneling patterns",
-                _extract_evidence(content, RE_DNS_EXFIL),
+                "\n".join(evidence),
             )
         )
 
@@ -1064,7 +1128,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Embedded cryptographic key material",
-                _extract_evidence(content, RE_EMBEDDED_KEYS),
+                _embedded_key_evidence(content),
             )
         )
 
@@ -1104,42 +1168,355 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
+    digest = hashlib.sha256(original.encode("utf-8", "replace")).hexdigest()
+    for f in findings:
+        f.file_sha256 = digest
     return findings
+
+
+_MAX_MULTILINE_LINES = 12
+# How far a single matched call is followed over its bracket continuations. A call
+# that genuinely closes is bound all the way to its real close, up to the hard
+# limit, so a ``requests.post(`` with many option/header lines before ``data=``
+# binds its whole argument list in the digest and a changed payload on a late
+# continuation line reopens (a 40-line soft cap would hash only the first 40 lines
+# and let a later ``data=``/headers change ride the baseline key). A bracket that
+# never closes within the hard limit is a miscount (a multi-line string the
+# single-line blanker cannot mask) or a stray opener, so it is bound only to the
+# soft cap and cannot swallow unrelated code.
+_MAX_CALL_LINES = 40  # soft cap: how far a NEVER-closing opener is followed
+_MAX_CALL_HARD_LINES = 200  # hard cap: how far a closing call is followed to bind it
+
+# Cap a single rendered line. A short line is shown verbatim; a long (e.g.
+# minified one-liner) line is shown as a bounded prefix plus a sha256 of the full
+# line, so a packed payload cannot dump unbounded content into the evidence and
+# baseline while a change past the cutoff still changes the digest and reopens the
+# finding. The npm scanner bounds its snippets the same way.
+_MAX_LINE_CHARS = 200
+# Cap on recorded spans in one evidence string; beyond it the remaining spans are
+# folded into a digest so a file with thousands of matching lines cannot build a
+# multi-megabyte evidence blob, while an added/removed span past the cap still
+# changes the key. Comfortably above the largest real baseline entry.
+_MAX_EVIDENCE_SPANS = 96
+
+
+def _cap_line(code: str) -> str:
+    """Bound a single line's displayed code: return it verbatim when short, else a
+    ``_MAX_LINE_CHARS`` prefix plus a digest of the whole line so the tail is still
+    pinned (fail-closed) without recording the entire line."""
+    if len(code) <= _MAX_LINE_CHARS:
+        return code
+    digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
+    return f"{code[:_MAX_LINE_CHARS]} sha256:{digest}"
+
+
+_PY_TRIPLE = ("'''", '"""')
+
+
+def _ends_with_odd_backslash(s: str) -> bool:
+    """True if ``s`` ends with an odd run of backslashes, i.e. a trailing
+    backslash that escapes the newline (a string/line continuation) rather than a
+    literal ``\\\\`` pair."""
+    return (len(s) - len(s.rstrip("\\"))) % 2 == 1
+
+
+# Single-line quoted string literal; blanks complete one-line strings (the legacy
+# view) so the single-line and multi-line blanked spans can be unioned below.
+_RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def _blank_code_strings(lines: list[str]) -> list[str]:
+    """Replace string contents (single- and triple-quoted, escapes honoured) with
+    spaces across ``lines``, keeping the line count and every bracket OUTSIDE a
+    string intact. Bracket counting then never miscounts a ``)`` that lives inside
+    a string -- including a triple-quoted string spanning several lines, which a
+    per-line regex cannot blank."""
+    out: list[str] = []
+    in_triple: str | None = None  # active ''' or \"\"\" delimiter, or None
+    in_string: str | None = None  # active ' or " continued via a trailing backslash
+    for line in lines:
+        buf: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if in_triple is not None:
+                end = line.find(in_triple, i)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                else:
+                    buf.append(" " * (end - i + 3))
+                    i = end + 3
+                    in_triple = None
+                continue
+            if in_string is not None:
+                # A single-/double-quoted string continued onto this line by a
+                # backslash-escaped newline. Resume blanking until its closing quote;
+                # if this line also ends on an odd trailing backslash the string
+                # continues again, otherwise it closes (or is unterminated) here. A
+                # per-line regex blanker cannot see this, so a `)` on the
+                # continuation line would otherwise be counted as code and close the
+                # call early -- dropping the URL/body lines that follow.
+                j, closed = i, False
+                while j < n:
+                    if line[j] == "\\":
+                        j += 2
+                        continue
+                    if line[j] == in_string:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                buf.append(" " * (min(j, n) - i))
+                if closed:
+                    in_string = None
+                    i = j
+                else:
+                    i = n
+                    if not _ends_with_odd_backslash(line):
+                        in_string = None  # unterminated without continuation; stop
+                continue
+            ch = line[i]
+            if ch in "'\"":
+                if line[i : i + 3] in _PY_TRIPLE:
+                    delim = line[i : i + 3]
+                    end = line.find(delim, i + 3)
+                    if end == -1:  # opens a triple string that runs past this line
+                        buf.append(" " * (n - i))
+                        in_triple = delim
+                        i = n
+                    else:
+                        buf.append(" " * (end - i + 3))
+                        i = end + 3
+                    continue
+                j = i + 1  # single-line string; skip to its closing quote
+                closed = False
+                while j < n:
+                    if line[j] == "\\":
+                        j += 2
+                        continue
+                    if line[j] == ch:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                buf.append(" " * (min(j, n) - i))
+                if closed:
+                    i = j
+                else:
+                    # Ran off the line without closing: an odd trailing backslash
+                    # escapes the newline and continues the string onto the next
+                    # line, so remember the quote; otherwise it is just unterminated.
+                    i = n
+                    if _ends_with_odd_backslash(line):
+                        in_string = ch
+                continue
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+    return out
+
+
+_RE_BRACKETS = re.compile(r"[()\[\]{}]")
+_OPENERS = frozenset("([{")
+
+
+def _bracket_lr(line: str) -> tuple[int, int]:
+    """Order-aware bracket reduction of one already-string-blanked line: ``(L, R)``
+    where ``L`` is the count of closers with no opener earlier on the line (they
+    need an opener to the LEFT / a prior line) and ``R`` is the count of openers
+    with no closer later on the line (they need a closer to the RIGHT / a later
+    line). A plain net count (opens minus closes) collapses order and so masks a
+    trailing opener that follows leading closers on the same line, e.g.
+    ``]; requests.post(`` nets to 0 and hides the ``(`` that opens the flagged
+    call; tracking the running minimum keeps that opener visible so the call's
+    argument lines still bind. Only bracket characters are walked (pulled out with
+    one C-level regex pass) so a long minified line stays cheap."""
+    depth = 0
+    low = 0
+    for ch in _RE_BRACKETS.findall(line):
+        if ch in _OPENERS:
+            depth += 1
+        else:
+            depth -= 1
+            if depth < low:
+                low = depth
+    return -low, depth - low
+
+
+def _scan_line_end(view: list[str], start: int) -> int:
+    """1-based line where the statement at ``start`` closes its brackets in
+    ``view`` (one blanked view of the file). A call that closes is followed to its
+    real close up to ``_MAX_CALL_HARD_LINES`` so its whole argument list binds; a
+    bracket that never closes within that hard limit (a stray/miscounted opener) is
+    bound only to the ``_MAX_CALL_LINES`` soft cap so it cannot swallow the file.
+    Brackets are applied in order via ``_bracket_lr`` (leading closers clamp at 0)
+    so a closer that precedes the opener on the same line does not cancel it."""
+    depth = 0
+    hard = min(len(view), start + _MAX_CALL_HARD_LINES - 1)
+    for j in range(start, hard + 1):
+        ln = view[j - 1]
+        left, right = _bracket_lr(ln)
+        depth = max(0, depth - left) + right
+        if ln.rstrip().endswith("\\"):
+            continue  # explicit backslash continuation: the call (e.g. its `(` and
+            # URL/body) is on the next physical line, so do not close here
+        if depth <= 0:
+            return j
+    # Never closed within the hard limit: bind only the soft cap so a stray opener
+    # cannot bind a giant unrelated span.
+    return min(len(view), start + _MAX_CALL_LINES - 1)
+
+
+def _logical_line_end(sl_blanked: list[str], ml_blanked: list[str], start: int) -> int:
+    """1-based line where the statement opened at ``start`` closes, so a multi-line
+    call binds its argument lines (a changed URL/body on a continuation line
+    reopens, not just the API line). Returns the LARGER of the spans found in the
+    single-line-blanked view (legacy: a payload embedded inside a string still
+    counts, so its brackets bind the call) and the multi-line-blanked view (a
+    bracket inside a triple-quoted string argument no longer closes the call
+    early). Taking the union never shrinks the bound span below either view, so
+    neither blanking strategy can drop a continuation line a malicious change
+    relies on."""
+    return max(_scan_line_end(sl_blanked, start), _scan_line_end(ml_blanked, start))
 
 
 def _extract_evidence(
     content: str,
     pattern: re.Pattern,
-    max_matches: int = 3,
+    max_matches: int = 0,
 ) -> str:
-    """Pull matching lines as evidence snippets.
+    """Pull matching lines as evidence snippets (``max_matches=0`` means all).
 
-    Falls back to a whole-content search when the pattern only matches across
-    line boundaries (several IOC regexes use ``re.DOTALL``). Without this an
-    anti-analysis / archive-staging finding could report empty evidence, making
-    the baseline entry impossible to review.
+    Records every matching line in full, not a truncated sample, so an extra
+    match (or extra code on a long line) appended to an already-flagged file
+    changes the evidence and the baseline key instead of riding the first few.
+    Leading whitespace is kept so a flagged line moved out of a guarded block
+    reads as changed. Each single-line match is extended over bracket
+    continuations so a multi-line call binds its argument lines too. Cross-line
+    matches the per-line scan cannot see (DOTALL IOC regexes, or a multi-line
+    construct appended under a check that already had a one-line match) are
+    recorded afterwards, so an added multiline payload reopens the finding. A
+    pathological greedy span is bounded to its head line plus a digest of the
+    rest.
     """
     lines = content.splitlines()
-    matches = []
+    sl_blanked = [_RE_STR_LITERAL.sub("", ln) for ln in lines]
+    ml_blanked = _blank_code_strings(lines)
+    out = []
+    seen: set[tuple[int, int]] = set()
+    # Overflow is streamed, not buffered: once `out` holds _MAX_EVIDENCE_SPANS
+    # rendered spans, every further span is folded straight into a running digest
+    # instead of being materialized and sliced off at the end. On a minified or
+    # padded file with hundreds of thousands of matching lines that keeps memory
+    # and work bounded to the display cap rather than the match count, while the
+    # digest still covers every overflow span so an over-cap payload change
+    # reopens. The fold reproduces _canon_evidence(" | ".join(overflow)) exactly
+    # (strip each span to its non-empty L<NN>-less code lines, join with "\n"), so
+    # the digest is identical to buffering the whole list and canonicalizing once.
+    overflow_count = 0
+    overflow_hash = hashlib.sha256()
+    overflow_started = False
+
+    def _emit(rendered: str) -> None:
+        nonlocal overflow_count, overflow_started
+        if len(out) < _MAX_EVIDENCE_SPANS:
+            out.append(rendered)
+            return
+        overflow_count += 1
+        for piece in _RE_EVIDENCE_SPLIT.split(rendered):
+            piece = _RE_EVIDENCE_PREFIX.sub("", piece, count = 1).rstrip()
+            if not piece:
+                continue
+            if overflow_started:
+                overflow_hash.update(b"\n")
+            overflow_hash.update(piece.encode("utf-8", "replace"))
+            overflow_started = True
+
+    def _render(start: int, end: int) -> str:
+        span = lines[start - 1 : end] or ["<multiline match>"]
+        if len(span) > _MAX_MULTILINE_LINES:
+            # Digest the code without the L<NN>: markers so a pure line shift of
+            # the same span stays stable while a code change still reopens. The
+            # head is truncated for display only; the span digest already binds
+            # its full content, so no per-line digest is needed here.
+            code = "\n".join(ln.rstrip() for ln in span)
+            digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
+            head = span[0].rstrip()
+            if len(head) > _MAX_LINE_CHARS:
+                head = head[:_MAX_LINE_CHARS] + "..."
+            return f"L{start}: {head} sha256:{digest}"
+        return "\n".join(f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span))
+
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
-            snippet = line.strip()
-            if len(snippet) > 160:
-                snippet = snippet[:160] + "..."
-            matches.append(f"L{i}: {snippet}")
-            if len(matches) >= max_matches:
-                break
-    if matches:
-        return " | ".join(matches)
-    # Multiline (DOTALL) match: report the line where the match begins.
-    m = pattern.search(content)
-    if m:
-        line_no = content.count("\n", 0, m.start()) + 1
-        snippet = lines[line_no - 1].strip() if line_no - 1 < len(lines) else ""
-        if len(snippet) > 160:
-            snippet = snippet[:160] + "..."
-        return f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>"
-    return ""
+            span = (i, _logical_line_end(sl_blanked, ml_blanked, i))
+            if span in seen:
+                continue
+            # Only track spans while still filling the display list: past the cap
+            # every span is folded into the overflow digest, so growing `seen` with
+            # all of them would keep memory proportional to the match count (the
+            # behavior this cap exists to bound) on a generated file with millions
+            # of one-line matches. The per-line spans are unique by line number, so
+            # dropping them from `seen` past the cap cannot cause a missed dedup
+            # here; at worst the fallback re-folds an over-cap span into the same
+            # digest, which stays deterministic and still reopens on a change.
+            if len(out) < _MAX_EVIDENCE_SPANS:
+                seen.add(span)
+            _emit(_render(*span))
+            if max_matches and len(out) >= max_matches:
+                return " | ".join(out)
+
+    # Precompute newline offsets once so mapping a match offset to its 1-based line
+    # is O(log n) (bisect) rather than O(n) (content.count) per match; the latter
+    # made this fallback quadratic on a minified file with thousands of matches.
+    nl = [p for p, ch in enumerate(content) if ch == "\n"]
+    for m in pattern.finditer(content):
+        start = bisect.bisect_left(nl, m.start()) + 1
+        end = bisect.bisect_left(nl, m.end()) + 1
+        if end <= start or (start, end) in seen:
+            continue  # single-line matches are already covered by the pass above
+        # A giant greedy DOTALL span is bound by the full digest of its content
+        # (via _render, which renders a >12-line span as a head line plus a sha256
+        # of the whole span). Binding only the anchors leaves the bridged interior
+        # unhashed, so an attacker could insert a new cross-line payload (a `/tmp`
+        # line and a later `subprocess` line, sharing no single line so the
+        # per-line pass never binds them) between unchanged outer anchors and keep
+        # the same key. Digesting the interior reopens on any such change; a pure
+        # line shift stays stable because the digest is over the markerless code.
+        if len(out) < _MAX_EVIDENCE_SPANS:
+            seen.add((start, end))
+        _emit(_render(start, end))
+        if max_matches and len(out) >= max_matches:
+            break
+    if overflow_count:
+        # The overflow digest was accumulated from the canonicalized (L<NN>:-less)
+        # spans as they were emitted, so a pure line shift above the overflow
+        # region does not change it and reopen an otherwise-unchanged finding,
+        # matching the per-span key's line-shift stability.
+        out.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
+    return " | ".join(out)
+
+
+def _embedded_key_evidence(content: str) -> str:
+    """Key evidence that also pins the full PEM block(s) via a digest, so a key
+    body swapped under the same BEGIN marker reopens the finding (single-line and
+    DER keys are already bound by their full matched line)."""
+    ev = _extract_evidence(content, RE_EMBEDDED_KEYS)
+    blocks = RE_PEM_BLOCK.findall(content)
+    if blocks:
+        digest = hashlib.sha256("\n".join(blocks).encode("utf-8", "replace")).hexdigest()
+        ev = f"{ev} sha256:{digest}" if ev else f"sha256:{digest}"
+    return ev
+
+
+def _blob_digest(content: str) -> tuple[str, str]:
+    """First large blob (for display) plus a digest binding EVERY large blob, so
+    an appended or swapped encoded payload reopens the finding rather than riding
+    an unchanged first blob. Assumes at least one blob is present (single-blob
+    files keep the prior single-blob digest, so the baseline does not drift)."""
+    blobs = RE_LARGE_BLOB.findall(content)
+    digest = hashlib.sha256("\n".join(blobs).encode("utf-8", "replace")).hexdigest()
+    return blobs[0], digest
 
 
 # Non-Python checkers
@@ -1189,7 +1566,8 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "JS embeds credential regexes AND makes network calls (stealer)",
-                _extract_evidence(content, RE_TOKEN_REGEX),
+                f"Token: {_extract_evidence(content, RE_TOKEN_REGEX)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
             )
         )
     if has_workflow_inj:
@@ -1202,17 +1580,31 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 _extract_evidence(content, RE_WORKFLOW_INJECT),
             )
         )
-    if is_large and not findings:
-        findings.append(
-            Finding(
-                HIGH,
-                package,
-                filename,
-                f"Python wheel ships large ({len(content) // 1024} KB) JS bundle "
-                "(uncommon; manually review)",
-                "",
+    # Pin the whole file's content digest to EVERY JS finding (not just large
+    # bundles). _extract_evidence blanks only Python string forms before counting
+    # brackets, so a JS backtick template literal that contains `)` can close a
+    # call's span early and omit the option/body lines that follow; binding the
+    # full content means a change to those omitted lines still reopens instead of
+    # riding the matched-line evidence. A large bundle with no other heuristic is a
+    # standalone HIGH.
+    if findings or is_large:
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
+        if findings:
+            for f in findings:
+                f.evidence = f"{f.evidence} bundle-sha256:{digest}"
+        else:
+            findings.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    # Size stays out of the check label (from main) so the baseline
+                    # key does not drift when a benign bundle grows; the full-content
+                    # digest below still binds the bytes so a payload swap reopens.
+                    "Python wheel ships large JS bundle (uncommon; manually review)",
+                    f"sha256: {digest}",
+                )
             )
-        )
     return findings
 
 
@@ -1232,6 +1624,12 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
     if RE_DEV_TOOL_HIJACK.search(content) and (
         RE_NETWORK.search(content) or RE_SUBPROCESS.search(content)
     ):
+        # Bind the hook AND the network/exec signal so a changed exfil reopens.
+        evidence = [f"Hook: {_extract_evidence(content, RE_DEV_TOOL_HIJACK)}"]
+        if RE_NETWORK.search(content):
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if RE_SUBPROCESS.search(content):
+            evidence.append(f"Exec: {_extract_evidence(content, RE_SUBPROCESS)}")
         findings.append(
             Finding(
                 CRITICAL,
@@ -1239,7 +1637,7 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
                 filename,
                 "Shell installs developer-tool persistence hook (.bashrc / "
                 "profile.d / vscode tasks) AND has network or exec",
-                _extract_evidence(content, RE_DEV_TOOL_HIJACK),
+                "\n".join(evidence),
             )
         )
     if RE_TOKEN_REGEX.search(content) and RE_NETWORK.search(content):
@@ -1249,7 +1647,8 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
                 package,
                 filename,
                 "Shell embeds credential regexes AND makes network calls",
-                _extract_evidence(content, RE_TOKEN_REGEX),
+                f"Token: {_extract_evidence(content, RE_TOKEN_REGEX)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
             )
         )
     if RE_WORKFLOW_INJECT.search(content):
@@ -1508,6 +1907,25 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
             )
         )
     return findings
+
+
+def _scan_one(task: tuple[str, str]) -> tuple[str, list[Finding]]:
+    """Pool worker: ``scan_archive`` over one (archive_path, package) pair.
+
+    Module-level and pickle-clean on purpose, so the pool can use the "spawn"
+    start method. ``Finding`` is a plain dataclass, so results travel as-is.
+
+    The archive-limit ``[WARN]`` lines go to stderr from deep inside
+    ``iter_archive_files``. Left alone they land in the parent's stream whenever
+    the worker happens to reach them, so two runs of the same input produce logs
+    that differ only in where those lines sit. They are returned instead and the
+    caller prints them in task order, which keeps the whole report reproducible.
+    """
+    archive_path, package = task
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        findings = scan_archive(archive_path, package)
+    return buf.getvalue(), findings
 
 
 # Download packages
@@ -2516,9 +2934,9 @@ def _find_requirements_files(root: str) -> list[str]:
 
 # Baseline allowlist: triaged known-good CRITICAL/HIGH findings so the gate can
 # enforce without drowning in legitimate-library noise. Matched on
-# ``(package, basename(filename), check)`` -- not evidence text -- so a version
-# bump does not reopen a finding, but a *new* kind of finding in a listed file
-# is a different check and still fails. Regenerate with ``--write-baseline``.
+# (package, package-relative file, check, evidence hash); the hash strips
+# ``L<NN>:`` markers so version bumps and line shifts do not reopen an entry,
+# but changed flagged code does. Regenerate with ``--write-baseline``.
 
 _DEFAULT_BASELINE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scan_packages_baseline.json"
@@ -2545,38 +2963,127 @@ def _relpath_in_package(filename: str) -> str:
     return _RE_SDIST_ROOT.sub("", filename, count = 1)
 
 
-def _finding_key(f: Finding) -> tuple[str, str, str]:
-    """Stable allowlist key: normalized package, package-relative path, check.
+# Evidence joins matched spans with " | " and a newline between labelled groups,
+# each span tagged "L<NN>: ". Split only on those real delimiters (a " | " before
+# a marker, or a newline), never on a bare "|" -- matched code may contain a
+# bitwise-or or union type. The prefix strips only a genuine leading marker, an
+# optional "Label: " then "L<NN>: "; a marker-like "L<NN>:" inside raw code (e.g.
+# a .pth import line) has no leading marker and is left intact.
+_RE_EVIDENCE_SPLIT = re.compile(r" \| (?=L\d+:)|\n")
+_RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/+.-]*:\s*)?L\d+:\s?")
 
-    The package-relative path (not just basename) keeps the key stable across
-    version bumps while still distinguishing same-named files like ``utils.py``.
+
+def _canon_evidence(evidence: str) -> str:
+    """Matched code lines in discovery order (markers removed), duplicates kept.
+
+    Splits evidence on its real span delimiters, drops each span's leading
+    label / line-number marker, and keeps the code with its indentation. Line
+    shifts are absorbed by stripping the L<NN>: markers, not by sorting, so order
+    stays significant: reordering matched lines (executable context, e.g. the
+    arguments of a multi-line call) reopens the finding. Keeping duplicates means
+    an appended identical occurrence still changes the key."""
+    spans = []
+    for s in _RE_EVIDENCE_SPLIT.split(evidence or ""):
+        s = _RE_EVIDENCE_PREFIX.sub("", s, count = 1).rstrip()
+        if s:
+            spans.append(s)
+    return "\n".join(spans)
+
+
+def _evidence_hash(evidence: str) -> str:
+    """Stable digest of the canonical matched evidence."""
+    return hashlib.sha256(_canon_evidence(evidence).encode("utf-8", "replace")).hexdigest()
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str, str]:
+    """Allowlist key: package, package-relative path, check, evidence hash.
+
+    The evidence hash is over the set of matched code, so the key survives version
+    bumps, line shifts and reordering but reopens when the flagged code changes --
+    so a future payload in a baselined file/check is not auto-suppressed.
     """
-    return (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check)
+    return (
+        _norm_pkg(f.package),
+        _relpath_in_package(f.filename),
+        f.check,
+        _evidence_hash(f.evidence),
+    )
 
 
-def _load_baseline(path: str) -> set[tuple[str, str, str]]:
-    """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
+def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | None]":
+    """Load an allowlist JSON into {match key: pinned file digests}.
+
+    None means unpinned: the key alone suppresses, as before. A set of digests
+    covers only those exact file contents, so any other edit to the file reopens
+    the finding. For files whose danger sits outside the matched lines, e.g. a
+    credential send whose evidence records the urlopen call but not its destination.
+    """
     try:
         with open(path, "r", encoding = "utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return set()
+        return {}
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
-        return set()
-    keys: set[tuple[str, str, str]] = set()
-    for e in data.get("entries", []):
+        return {}
+    if not isinstance(data, dict):
+        print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
+        return {}
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
+        return {}
+    keys: dict[tuple[str, str, str, str], "set[str] | None"] = {}
+    legacy = 0
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
         try:
-            keys.add((_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"]))
+            # Use the reviewed hash; else recompute it from the stored evidence.
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            if not e.get("evidence_hash"):
+                legacy += 1
+            key = (
+                _norm_pkg(e["package"]),
+                _relpath_in_package(e["file"]),
+                e["check"],
+                evidence_hash,
+            )
         except (KeyError, TypeError):
             continue
+        # None = unpinned (key alone suppresses). A set = only those file digests.
+        # An unpinned entry wins, since it already suppresses the key on its own.
+        pin = e.get("file_sha256")
+        if key not in keys:
+            keys[key] = {pin} if pin else None
+        elif not pin:
+            keys[key] = None
+        elif keys[key] is not None:
+            keys[key].add(pin)
+    if legacy:
+        print(
+            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
+            f"not suppress until regenerated with --write-baseline (findings reopen "
+            f"rather than risk hiding changed code under a coarse key)",
+            file = sys.stderr,
+        )
     return keys
 
 
-def _write_baseline(path: str, findings: list[Finding]) -> None:
-    """Persist CRITICAL/HIGH findings as an allowlist for human triage."""
+def _write_baseline(
+    path: str,
+    findings: list[Finding],
+    source: "str | None" = None,
+) -> None:
+    """Persist CRITICAL/HIGH findings as an allowlist for human triage.
+
+    Pins are carried over from `source`, the baseline in effect for this run, so
+    regenerating cannot silently widen a reviewed entry. Reading them from `path`
+    instead would drop every pin whenever the output goes somewhere new.
+    """
+    pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
     entries = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
         if f.severity not in (CRITICAL, HIGH):
             continue
@@ -2584,20 +3091,27 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
         if key in seen:
             continue
         seen.add(key)
-        entries.append(
-            {
-                "package": f.package,
-                "file": _relpath_in_package(f.filename),
-                "check": f.check,
-                "severity": f.severity,
-                "evidence": f.evidence[:240],
-            }
-        )
+        entry = {
+            "package": f.package,
+            "file": _relpath_in_package(f.filename),
+            "check": f.check,
+            "severity": f.severity,
+            "evidence": f.evidence,
+            "evidence_hash": _evidence_hash(f.evidence),
+        }
+        if key in pinned and f.file_sha256:
+            entry["file_sha256"] = f.file_sha256
+        entries.append(entry)
     doc = {
         "_comment": (
             "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
             "manually judged benign. Matched on (package, package-relative file, "
-            "check); evidence/severity are for review only. Regenerate with "
+            "check, evidence_hash); evidence_hash is over the matched code with "
+            "L<NN>: markers stripped, so version bumps and line shifts do not "
+            "reopen an entry but changed code does. An optional file_sha256 pins an "
+            "entry to that exact file, for danger sitting outside the matched lines "
+            "(a credential send records the urlopen call, not its destination). "
+            "severity and evidence are for review only. Regenerate with "
             "--write-baseline AFTER reviewing every line."
         ),
         "version": 1,
@@ -2610,14 +3124,20 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
 
 
 def _partition_baseline(
-    findings: list[Finding], baseline: set[tuple[str, str, str]]
+    findings: list[Finding], baseline: "dict[tuple[str, str, str, str], set[str] | None]"
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:
         return list(findings), []
     active, suppressed = [], []
     for f in findings:
-        (suppressed if _finding_key(f) in baseline else active).append(f)
+        key = _finding_key(f)
+        hit = key in baseline
+        if hit:
+            pins = baseline[key]
+            # A pinned entry only covers the file it was reviewed against.
+            hit = pins is None or f.file_sha256 in pins
+        (suppressed if hit else active).append(f)
     return active, suppressed
 
 
@@ -2654,6 +3174,12 @@ def main() -> int:
         "--with-deps",
         action = "store_true",
         help = "Also download and scan transitive dependencies (full dependency tree)",
+    )
+    parser.add_argument(
+        "--jobs",
+        type = int,
+        default = 0,
+        help = "Archive-scanning worker processes (default: min(4, cpu count); 1 = serial)",
     )
     parser.add_argument(
         "--fix",
@@ -2751,6 +3277,11 @@ def main() -> int:
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
     download_errors: list[str] = []
+    # Scan-side failures, kept beside the download ones so both reach the SCAN
+    # INCOMPLETE block below. A stall has to exit 2 like any other partial scan:
+    # exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected",
+    # so exiting 1 on a dead worker reports an infrastructure failure as a threat.
+    scan_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
             specs,
@@ -2759,15 +3290,57 @@ def main() -> int:
         )
         print(f"  Downloaded {len(downloaded)} archive(s).")
 
-        for spec, archive_path in downloaded:
-            pkg_name = _extract_pkg_name(spec)
-            findings = scan_archive(archive_path, pkg_name)
-            all_findings.extend(findings)
-            # Delete archive immediately after scanning
-            try:
-                os.remove(archive_path)
-            except OSError:
-                pass
+        # Scanning, not downloading, is the cost here: on the hf-stack shard the
+        # `pip download` above takes 9.7s and the pass below took 306s of a 316s
+        # total. It is pure CPU (regex over decompressed archive members) and
+        # every archive is independent, so it fans out across cores.
+        #
+        # `imap` with chunksize=1 yields in submission order, so the findings
+        # list is assembled in exactly the order the serial loop produced it and
+        # the report is unchanged. chunksize=1 is also what makes `next(timeout=)`
+        # available at all: above 1, CPython's Pool.imap returns a bare generator
+        # with no timeout support (Lib/multiprocessing/pool.py).
+        tasks = [(archive_path, _extract_pkg_name(spec)) for spec, archive_path in downloaded]
+        jobs = args.jobs if args.jobs else max(1, min(4, os.cpu_count() or 1))
+        if jobs > 1 and len(tasks) > 1:
+            print(f"  Scanning {len(tasks)} archive(s) across {jobs} workers...")
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes = jobs) as pool:
+                results = pool.imap(_scan_one, tasks, chunksize = 1)
+                for i, (archive_path, _pkg) in enumerate(tasks):
+                    try:
+                        captured, findings = results.next(timeout = 900)
+                    except multiprocessing.TimeoutError:
+                        # A worker died (OOM or segfault on a hostile archive).
+                        # Without this the iterator blocks forever and the job
+                        # only ends at the workflow timeout, with no reason given.
+                        #
+                        # Recorded rather than raised: `raise SystemExit(<str>)`
+                        # prints the string and exits 1, and 1 already means
+                        # "CRITICAL or HIGH findings detected". Routing it here
+                        # gets the SCAN INCOMPLETE report and exit 2, which is
+                        # what a partial scan is supposed to return.
+                        scan_errors.append(
+                            f"scan stalled after {i}/{len(tasks)} archive(s) with no "
+                            f"result for 900s; a pool worker most likely died"
+                        )
+                        break
+                    if captured:
+                        sys.stderr.write(captured)
+                    all_findings.extend(findings)
+                    # Delete archive immediately after scanning
+                    try:
+                        os.remove(archive_path)
+                    except OSError:
+                        pass
+        else:
+            for archive_path, pkg_name in tasks:
+                all_findings.extend(scan_archive(archive_path, pkg_name))
+                # Delete archive immediately after scanning
+                try:
+                    os.remove(archive_path)
+                except OSError:
+                    pass
     finally:
         shutil.rmtree(tmpdir, ignore_errors = True)
 
@@ -2781,7 +3354,7 @@ def main() -> int:
         baseline_path = _DEFAULT_BASELINE_PATH
     else:
         baseline_path = None
-    baseline = _load_baseline(baseline_path) if baseline_path else set()
+    baseline = _load_baseline(baseline_path) if baseline_path else {}
 
     active, suppressed = _partition_baseline(all_findings, baseline)
 
@@ -2808,15 +3381,15 @@ def main() -> int:
     # Surface pip-download failures BEFORE the exit code so a partial download
     # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
     # Also keeps us from writing a baseline from an incomplete scan.
-    if download_errors:
+    incomplete_errors = download_errors + scan_errors
+    if incomplete_errors:
         print(
             f"\n  {'=' * 72}\n"
-            f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
-            f"failure(s):\n"
+            f"  SCAN INCOMPLETE: {len(incomplete_errors)} failure(s):\n"
             f"  {'=' * 72}",
             file = sys.stderr,
         )
-        for err in download_errors:
+        for err in incomplete_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
             "  Refusing to report 'all clean' on a partial scan; exiting 2.",
@@ -2828,7 +3401,7 @@ def main() -> int:
     # allowlist (ignoring any loaded baseline), then exit 0. Only reached once
     # the scan is known complete.
     if args.write_baseline:
-        _write_baseline(args.write_baseline, all_findings)
+        _write_baseline(args.write_baseline, all_findings, source = baseline_path)
         return 0
 
     # Exit code: 1 only if a NON-baselined CRITICAL or HIGH remains. This is the

@@ -3,12 +3,12 @@
 
 """End-to-end handshake test for the tool-confirmation gate, no model.
 
-The real Studio stream wrappers in ``routes/inference.py`` drive the
+The real Unsloth stream wrappers in ``routes/inference.py`` drive the
 synchronous agentic generator with ``await asyncio.to_thread(next, gen,
 ...)`` so the blocking ``threading.Event`` wait runs off the event loop.
 This test rebuilds that exact pattern around the real
 ``state.tool_approvals`` functions, served by a real uvicorn process on
-loopback (the same server Studio uses), and proves the load-bearing
+loopback (the same server Unsloth uses), and proves the load-bearing
 property:
 
 * ``tool_start`` reaches the client before the gate blocks, and

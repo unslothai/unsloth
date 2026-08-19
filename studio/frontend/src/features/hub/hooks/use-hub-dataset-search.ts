@@ -401,6 +401,9 @@ export function useHubDatasetSearch(
     modelType?: HubModelType | null;
     accessToken?: string;
     enabled?: boolean;
+    /** Hold new requests without hiding what is already on screen. `enabled`
+     *  means "this tab is showing", and returns [] when false. */
+    paused?: boolean;
     sortBy?: DatasetSortKey;
     sortDirection?: DatasetSortDirection;
   },
@@ -409,6 +412,7 @@ export function useHubDatasetSearch(
     modelType,
     accessToken,
     enabled = true,
+    paused = false,
     sortBy = "trendingScore",
     sortDirection = "desc",
   } = options ?? {};
@@ -429,7 +433,9 @@ export function useHubDatasetSearch(
     [useCuratedOnly, hasQuery, query, accessToken, sortBy, sortDirection],
   );
 
-  const search = useHubPaginatedSearch(createIter, mapDataset, { enabled });
+  const search = useHubPaginatedSearch(createIter, mapDataset, {
+    enabled: enabled && !paused,
+  });
 
   const results = useMemo(() => {
     if (!enabled) return [];

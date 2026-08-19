@@ -67,6 +67,18 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
+    # Tauri renders Studio on Linux through GTK3 and the gtk-rs GTK3
+    # bindings are archived at 0.18.2, so `gtk`/`gdk` will never ship
+    # 0.19+. Moving `glib`/`gdk-pixbuf` past 0.18 puts two
+    # incompatible copies in the tree and native_clipboard.rs stops
+    # compiling: `gtk::Clipboard::wait_for_image` returns a 0.18
+    # `Pixbuf` our `gdk_pixbuf` no longer accepts. This also
+    # suppresses security PRs above 0.18, leaving alerts only.
+    ignore:
+      - dependency-name: "glib"
+        versions: [">= 0.19"]
+      - dependency-name: "gdk-pixbuf"
+        versions: [">= 0.19"]
     groups:
       cargo-tauri:
         patterns: ["*"]

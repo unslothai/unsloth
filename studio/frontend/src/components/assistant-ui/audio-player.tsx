@@ -4,9 +4,11 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { PauseIcon, PlayIcon } from "lucide-react";
 import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
@@ -56,10 +58,11 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
   };
 
   const handleDownload = () => {
-    const link = document.createElement("a");
-    link.href = src;
-    link.download = "generated-audio.wav";
-    link.click();
+    void downloadUrl(src, "generated-audio.wav").catch((error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save audio.");
+      }
+    });
   };
 
   const formatTime = (t: number) => {
@@ -100,7 +103,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
           onChange={handleSeek}
           className="h-1.5 w-full cursor-pointer accent-primary"
         />
-        <div className="flex justify-between text-[10px] text-muted-foreground">
+        <div className="flex justify-between text-ui-10 text-muted-foreground">
           <span>{formatTime(progress)}</span>
           <span>{formatTime(duration)}</span>
         </div>

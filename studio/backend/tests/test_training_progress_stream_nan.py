@@ -62,6 +62,16 @@ class _FakeBackend:
 class _FakeRequest:
     headers = {}
 
+    async def is_disconnected(self):
+        return False
+
+
+class _DisconnectedRequest:
+    headers = {}
+
+    async def is_disconnected(self):
+        return True
+
 
 def _collect_events(response, timeout = 15):
     async def _drain():
@@ -114,6 +124,20 @@ def test_inactive_stream_completes_with_live_step_and_null_loss(monkeypatch):
     final = payloads[-1]
     assert final["step"] == 5
     assert final["loss"] is None
+
+
+def test_disconnect_while_active_does_not_emit_complete(monkeypatch):
+    # Client drops mid-run: the stream must end without a terminal "complete"
+    # frame, which a buffered/proxy consumer could otherwise read as a finished
+    # run while training is still active.
+    backend = _FakeBackend(active_polls = 5)
+    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
+
+    response = asyncio.run(
+        rt.stream_training_progress(_DisconnectedRequest(), current_subject = "tester")
+    )
+    raw = _collect_events(response)
+    assert "event: complete" not in raw
 
 
 def test_stream_uses_finite_history_when_progress_in_sync(monkeypatch):

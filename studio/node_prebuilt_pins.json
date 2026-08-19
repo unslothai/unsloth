@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "comment": "Trust anchor for install_node_prebuilt.py: sha256 frozen from the official nodejs.org SHASUMS256.txt. To bump: update default_version and every per-asset digest from the new SHASUMS256.txt.",
+  "default_version": "24.18.0",
+  "versions": {
+    "24.18.0": {
+      "node-v24.18.0-linux-x64.tar.gz": "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
+      "node-v24.18.0-linux-arm64.tar.gz": "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
+      "node-v24.18.0-darwin-x64.tar.gz": "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
+      "node-v24.18.0-darwin-arm64.tar.gz": "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
+      "node-v24.18.0-win-x64.zip": "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
+      "node-v24.18.0-win-arm64.zip": "f274669adb93b1fd0fbf8f21fd078609e9dcc84333d4f2718d2dde3f9a161a01"
+    }
+  }
+}

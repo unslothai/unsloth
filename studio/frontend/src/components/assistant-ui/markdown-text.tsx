@@ -13,28 +13,76 @@ import {
 } from "@/features/chat/artifacts/html-fences";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
-import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { toast } from "@/lib/toast";
+import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
+import {
+  type ComponentProps,
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Block,
+  type BlockProps,
+  Streamdown,
+  type StreamdownProps,
+} from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
+import { stabilizeStreamingMarkdown } from "./streaming-markdown";
+import {
+  IncrementalMarkdownCache,
+  withoutStreamdownAnimationPlugin,
+} from "./streaming-render-schedule";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
+const STREAMDOWN_PLUGINS = { code, math, mermaid } satisfies NonNullable<
+  StreamdownProps["plugins"]
+>;
+const STREAMDOWN_CONTROLS = {
+  code: false,
+  mermaid: {
+    fullscreen: true,
+    download: true,
+    copy: false,
+    panZoom: true,
+  },
+} satisfies NonNullable<StreamdownProps["controls"]>;
+const STREAMDOWN_SHIKI_THEME = [
+  unslothLightTheme,
+  unslothDarkTheme,
+] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
 const { withSmoothContextProvider } = INTERNAL;
 
+// Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React
+// transition. A continuous token stream can starve that transition for seconds.
+// Its animated path commits every block update directly. StreamdownBlock removes
+// the animation transformer while retaining this direct scheduling path.
+const STREAMDOWN_IMMEDIATE_UPDATES = {
+  duration: 0,
+  stagger: 0,
+} satisfies NonNullable<StreamdownProps["animated"]>;
+
 const STREAMDOWN_COMPONENTS = {
-  a: ({ href, children, ...props }: React.ComponentProps<"a">) => (
+  a: ({ href, children, ...props }: ComponentProps<"a">) => (
     <a
       href={href}
       rel="noopener noreferrer"
@@ -65,6 +113,8 @@ function getMermaidSource(blockContent: string): string | null {
 function getCodeFilename(language: string | null) {
   const extByLanguage: Record<string, string> = {
     bash: "sh",
+    "c++": "cpp",
+    csharp: "cs",
     javascript: "js",
     js: "js",
     json: "json",
@@ -73,6 +123,8 @@ function getCodeFilename(language: string | null) {
     md: "md",
     python: "py",
     py: "py",
+    ruby: "rb",
+    rust: "rs",
     shell: "sh",
     sh: "sh",
     sql: "sql",
@@ -115,15 +167,13 @@ function SvgPreview({ source }: { source: string }) {
 }
 
 function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  void downloadFile(text, filename, "text/plain;charset=utf-8").catch(
+    (error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save file.");
+      }
+    },
+  );
 }
 
 function useCopiedState() {
@@ -224,16 +274,53 @@ function CodeBlockActions({
   );
 }
 
+function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
+  // `animated` is needed only to bypass Streamdown's starvable React transition.
+  // Its rehype plugin still wraps every word even with duration and stagger set
+  // to zero. Remove that one plugin before parsing so long streams do not create
+  // thousands of animation spans. Keep the filtered array stable so completed
+  // blocks remain memoised while the final block continues streaming.
+  const rehypePlugins = useMemo(
+    () =>
+      withoutStreamdownAnimationPlugin(
+        props.rehypePlugins,
+        props.animatePlugin,
+      ),
+    [props.animatePlugin, props.rehypePlugins],
+  );
+  return {
+    ...props,
+    animatePlugin: null,
+    rehypePlugins,
+  } satisfies BlockProps;
+}
+
+/**
+ * Whether this message carries a renderable render_html tool part, asked once per message part
+ * instead of once per markdown block.
+ *
+ * The value belongs to the MESSAGE, but the block component is mounted per block, so subscribing
+ * there minted a subscription per block (800 of 10,193 on the 300K-character heavy thread), each
+ * re-scanning `message.parts` on every store update -- and every keystroke is a store update.
+ * One subscription in MarkdownTextImpl plus a context read gives the same blocks the same answer.
+ *
+ * `false` is the right default for a block rendered outside a message part (nothing does today):
+ * no render_html part is visible, which is what the artifact collapse below assumes absent
+ * evidence.
+ */
+const RenderHtmlToolPresenceContext = createContext(false);
+
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
-function StreamdownBlock(props: BlockProps) {
+function StreamdownBlockContent(props: BlockProps) {
+  const blockProps = useAnimationFreeBlockProps(props);
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
       !state.loadedIsDiffusion,
   );
-  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+  const messageHasRenderableRenderHtmlTool = useContext(
+    RenderHtmlToolPresenceContext,
   );
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
@@ -280,7 +367,7 @@ function StreamdownBlock(props: BlockProps) {
   if (mermaidSource) {
     return (
       <div className="relative isolate">
-        <Block {...props} />
+        <Block {...blockProps} />
         <MermaidCopyButton source={mermaidSource} />
       </div>
     );
@@ -308,7 +395,7 @@ function StreamdownBlock(props: BlockProps) {
     return (
       <>
         <div className="relative isolate">
-          <Block {...props} />
+          <Block {...blockProps} />
           <CodeBlockActions
             disabled={props.isIncomplete}
             language={codeFence.language}
@@ -320,77 +407,105 @@ function StreamdownBlock(props: BlockProps) {
     );
   }
 
-  return <Block {...props} />;
+  return <Block {...blockProps} />;
 }
+const StreamdownBlock = memo(StreamdownBlockContent);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
-// Coalesce markdown re-parses to one per frame while streaming: tokens arrive
-// hundreds/sec, faster than the monitor can paint. When not streaming we return
-// live text (not the throttled state) so final text never lags and a reused
-// instance (parts keyed by index) shows completed text instead of a stale frame.
-function useRafCoalescedText(text: string, isStreaming: boolean): string {
-  const [displayed, setDisplayed] = useState(text);
-  const pendingRef = useRef(text);
+// Coalesce only token events that arrive before the browser's next paint, as
+// textgen does. There is no time or length throttle. Incremental block parsing
+// bounds the work performed per paint, and completion returns immediately.
+function useCoalescedStreamingText(
+  text: string,
+  isStreaming: boolean,
+  messageId: string,
+): string {
+  const [displayed, setDisplayed] = useState({ messageId, text });
+  const pendingRef = useRef({ messageId, text });
   const rafRef = useRef<number | null>(null);
+  const activeMessageIdRef = useRef(messageId);
 
-  useEffect(() => {
-    pendingRef.current = text;
-    if (!isStreaming) {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      return;
+  const cancelScheduledRender = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     }
-    if (rafRef.current === null) {
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = null;
-        setDisplayed(pendingRef.current);
-      });
-    }
-  }, [text, isStreaming]);
-
-  // Unmount cleanup: cancel the in-flight rAF and null the handle so a
-  // StrictMode remount isn't gated by a stale id. Separate from the scheduling
-  // effect so it doesn't cancel mid-stream and defeat the throttle.
-  useEffect(() => {
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
   }, []);
 
-  if (isStreaming && text.startsWith(displayed)) {
-    return displayed;
+  useEffect(() => {
+    pendingRef.current = { messageId, text };
+    if (activeMessageIdRef.current !== messageId) {
+      cancelScheduledRender();
+      activeMessageIdRef.current = messageId;
+    }
+    if (!isStreaming) {
+      cancelScheduledRender();
+      return;
+    }
+
+    if (rafRef.current !== null) {
+      return;
+    }
+
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      setDisplayed(pendingRef.current);
+    });
+  }, [cancelScheduledRender, messageId, text, isStreaming]);
+
+  useEffect(() => {
+    return cancelScheduledRender;
+  }, [cancelScheduledRender]);
+
+  // Holding the last painted text is only correct while the reply is being
+  // appended to. A running message can also be replaced, as the audio path does
+  // when it swaps its placeholder for the player, and that must show at once.
+  // The length check rejects most of those before the prefix scan runs; the
+  // scan itself costs about 59 ms across a 175,000 character stream.
+  if (
+    isStreaming &&
+    displayed.messageId === messageId &&
+    text.length >= displayed.text.length &&
+    // Not startsWith, which scans a growing reply. See hasPrefix in
+    // streaming-render-schedule.ts for the measurement.
+    text.slice(0, displayed.text.length) === displayed.text
+  ) {
+    return displayed.text;
   }
   return text;
 }
 
-const safeImageUrl: UrlTransform = (url, _key, node) => {
-  // Only images are restricted; links/other nodes use the default transform.
-  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
-
-  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
-  // "\t//attacker.com" would otherwise slip past the guards below.
-  // eslint-disable-next-line no-control-regex
-  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
-  const lower = normalized.toLowerCase();
-
-  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
-  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
-  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
-  return normalized; // relative -> same-origin
-};
-
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  const displayText = useRafCoalescedText(text, status.type === "running");
-  const processedText = useMemo(
-    () => preprocessLaTeX(displayText),
-    [displayText],
+  // Parts are keyed by index, so switching conversations hands this instance a
+  // different message, and Streamdown only extends its parsed blocks: key it per
+  // message. The cache generation joins the key for the case the Markdown string
+  // cannot express, an edit that drops retained blocks without changing the tail.
+  const messageId = useAuiState(({ message }) => message.id);
+  // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
   );
+  const isStreaming = status.type === "running";
+  const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
+  const processedText = useMemo(
+    () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
+    [displayText, isStreaming],
+  );
+  const incrementalCacheRef = useRef({
+    messageId,
+    cache: new IncrementalMarkdownCache(),
+  });
+  if (incrementalCacheRef.current.messageId !== messageId) {
+    incrementalCacheRef.current = {
+      messageId,
+      cache: new IncrementalMarkdownCache(),
+    };
+  }
+  const incrementalCache = incrementalCacheRef.current.cache;
+  const incrementalRender = isStreaming
+    ? incrementalCache.update(processedText)
+    : null;
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -398,28 +513,28 @@ const MarkdownTextImpl = () => {
   }
 
   return (
-    <div data-status={status.type} className="min-w-0 max-w-full">
-      <Streamdown
-        mode="streaming"
-        isAnimating={status.type === "running"}
-        plugins={{ code, math, mermaid }}
-        components={STREAMDOWN_COMPONENTS}
-        urlTransform={safeImageUrl}
-        controls={{
-          code: false,
-          mermaid: {
-            fullscreen: true,
-            download: true,
-            copy: false,
-            panZoom: true,
-          },
-        }}
-        shikiTheme={[unslothLightTheme, unslothDarkTheme]}
-        BlockComponent={StreamdownBlock}
-      >
-        {processedText}
-      </Streamdown>
-    </div>
+    <RenderHtmlToolPresenceContext.Provider
+      value={messageHasRenderableRenderHtmlTool}
+    >
+      <div data-status={status.type} className="min-w-0 max-w-full">
+        <Streamdown
+          key={`${messageId}:${incrementalCache.renderGeneration}`}
+          mode="streaming"
+          parseIncompleteMarkdown={!incrementalRender}
+          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+          isAnimating={isStreaming}
+          animated={STREAMDOWN_IMMEDIATE_UPDATES}
+          plugins={STREAMDOWN_PLUGINS}
+          components={STREAMDOWN_COMPONENTS}
+          urlTransform={safeMarkdownUrl}
+          controls={STREAMDOWN_CONTROLS}
+          shikiTheme={STREAMDOWN_SHIKI_THEME}
+          BlockComponent={StreamdownBlock}
+        >
+          {incrementalRender?.markdown ?? processedText}
+        </Streamdown>
+      </div>
+    </RenderHtmlToolPresenceContext.Provider>
   );
 };
 

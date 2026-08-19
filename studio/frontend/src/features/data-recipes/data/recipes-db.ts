@@ -16,9 +16,38 @@ db.version(1).stores({
 });
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
+let cachedRecipeList: RecipeRecord[] = [];
+let recipeListReady = false;
+let recipeListRequest: Promise<RecipeRecord[]> | null = null;
 
 export function listRecipes(): Promise<RecipeRecord[]> {
   return db.recipes.orderBy("updatedAt").reverse().toArray();
+}
+
+function cacheRecipeList(recipes: RecipeRecord[]): RecipeRecord[] {
+  for (const recipe of recipes) {
+    writeRecipeCache(recipe);
+  }
+  cachedRecipeList = recipes;
+  recipeListReady = true;
+  return recipes;
+}
+
+export function preloadRecipes(): Promise<RecipeRecord[]> {
+  if (recipeListReady) {
+    return Promise.resolve(cachedRecipeList);
+  }
+  if (recipeListRequest) {
+    return recipeListRequest;
+  }
+
+  const request = listRecipes()
+    .then(cacheRecipeList)
+    .finally(() => {
+      recipeListRequest = null;
+    });
+  recipeListRequest = request;
+  return request;
 }
 
 export function getRecipe(id: string): Promise<RecipeRecord | undefined> {
@@ -55,12 +84,21 @@ export async function saveRecipe(
   };
   await db.recipes.put(record);
   writeRecipeCache(record);
+  if (recipeListReady) {
+    cachedRecipeList = [
+      record,
+      ...cachedRecipeList.filter((recipe) => recipe.id !== record.id),
+    ].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
   return record;
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
   await db.recipes.delete(id);
   recentRecipeCache.delete(id);
+  if (recipeListReady) {
+    cachedRecipeList = cachedRecipeList.filter((recipe) => recipe.id !== id);
+  }
 }
 
 export function createRecipeDraft(): Promise<RecipeRecord> {
@@ -87,15 +125,13 @@ export function useRecipes(): {
   recipes: RecipeRecord[];
   ready: boolean;
 } {
-  const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
-  const [ready, setReady] = useState(false);
+  const [recipes, setRecipes] = useState<RecipeRecord[]>(cachedRecipeList);
+  const [ready, setReady] = useState(recipeListReady);
 
   useEffect(() => {
     const sub = liveQuery(() => listRecipes()).subscribe({
       next: (value) => {
-        for (const recipe of value) {
-          writeRecipeCache(recipe);
-        }
+        cacheRecipeList(value);
         setRecipes(value);
         setReady(true);
       },

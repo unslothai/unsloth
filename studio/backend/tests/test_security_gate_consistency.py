@@ -14,8 +14,7 @@ from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
 
-# Probes read Hub config to classify a model; a token-less call 404s on a gated repo.
-# Scan callers under routes/ and core/ (probe definitions live in utils/).
+# A token-less probe 404s on a gated repo; scan callers under routes/ and core/ (probes live in utils/).
 _PROBE_FUNCS = {"is_vision_model", "is_embedding_model", "detect_audio_type"}
 _PROBE_CALLER_ROOTS = ("routes", "core")
 
@@ -43,7 +42,7 @@ def test_capability_probes_thread_the_hf_token():
     offenders = []
     for path in _iter_caller_files():
         try:
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
         except SyntaxError:
             continue
         for node in ast.walk(tree):
@@ -60,7 +59,7 @@ def test_capability_probes_thread_the_hf_token():
 def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
     """GGUF never executes auto_map, so requires_trust_remote_code is reported via the
     resolver or False, never the raw YAML bool() (the round-6 regression)."""
-    src = (_BACKEND / "routes" / "inference.py").read_text()
+    src = (_BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8")
     assert "requires_trust_remote_code = bool(" not in src, (
         "Report requires_trust_remote_code via _resolve_loaded_trust_remote_code "
         "(non-GGUF) or set it False (GGUF); never bool(inference_config.get(...))."
@@ -70,12 +69,21 @@ def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
 def test_capability_detection_caches_are_token_aware():
     """Every capability cache is keyed by (model, token_fingerprint) so an unauthenticated
     miss cannot poison a later authenticated lookup (the audio-cache regression)."""
-    src = (_BACKEND / "utils" / "models" / "model_config.py").read_text()
+    src = (_BACKEND / "utils" / "models" / "model_config.py").read_text(encoding = "utf-8")
+    # Resolve type aliases first: an aliased cache is still tuple-keyed, so matching "Dict[Tuple" fails.
+    tuple_aliases = {
+        line.split("=", 1)[0].strip()
+        for line in src.splitlines()
+        if "=" in line
+        and not line.startswith((" ", "\t"))
+        and ("Tuple[" in line.split("=", 1)[1] or "tuple[" in line.split("=", 1)[1])
+    }
     offenders = []
     for line in src.splitlines():
         stripped = line.strip()
         if "_detection_cache:" in stripped and stripped.endswith("= {}"):
-            if "Dict[Tuple" not in stripped and "Dict[tuple" not in stripped:
+            key = stripped.split("Dict[", 1)[-1].split(",", 1)[0].strip()
+            if not ("Dict[Tuple" in stripped or "Dict[tuple" in stripped or key in tuple_aliases):
                 offenders.append(stripped)
     assert not offenders, (
         "A capability cache must be keyed by (model, token_fingerprint), not the bare "
@@ -93,9 +101,22 @@ def test_malware_and_consent_gates_cover_the_lora_base():
     ]
     offenders = []
     for rel in gated_workers:
-        src = (_BACKEND / rel).read_text()
+        src = (_BACKEND / rel).read_text(encoding = "utf-8")
         runs_gate = "evaluate_file_security(" in src or "evaluate_remote_code_consent" in src
         resolves_base = "get_base_model_from_lora_identifier(" in src or "base_model" in src
         if runs_gate and not resolves_base:
             offenders.append(f"{rel} runs a load gate but never resolves the LoRA base")
+    assert not offenders, "\n".join(offenders)
+
+
+def test_rag_embedding_path_runs_the_malware_gate():
+    """The RAG embedding model is set through /settings and later loaded by
+    SentenceTransformer, which deserializes pickles; both sites must run the malware gate
+    or a flagged repo loads unscanned (bypassing the normal model-load protections)."""
+    offenders = []
+    for rel in ("routes/settings.py", "core/rag/embeddings.py"):
+        if "evaluate_file_security(" not in (_BACKEND / rel).read_text(encoding = "utf-8"):
+            offenders.append(
+                f"{rel} loads/persists an embedding model without evaluate_file_security"
+            )
     assert not offenders, "\n".join(offenders)

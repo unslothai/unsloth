@@ -13,6 +13,7 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import structlog
 from loggers import get_logger
@@ -25,6 +26,11 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
 
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
@@ -171,6 +177,57 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
     activate_transformers_for_subprocess(model_name, hf_token)
 
 
+@contextlib.contextmanager
+def _offline_window_if_unreachable(step = "loading"):
+    """Force HF offline for a network-touching step (transformers version activation, or the
+    load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
+    env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
+    own probe, while letting this persistent worker re-decide per operation once back online.
+
+    Post-ML-import (the load preflights), huggingface_hub has already read its in-process
+    offline constant and cached sessions, so env alone is too late: defer to the loader's
+    _force_hf_offline (env + in-process flags + session reset). Pre-import (activation),
+    huggingface_hub is not loaded yet, so setting the env vars suffices for its urllib probes."""
+    saved: dict[str, str | None] = {}
+    force_ctx = None
+    try:
+        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+            logger.warning("Hugging Face endpoint unreachable; %s offline", step)
+            if "huggingface_hub" in sys.modules:
+                try:
+                    from unsloth.models.loader_utils import _force_hf_offline
+                    force_ctx = _force_hf_offline()
+                    force_ctx.__enter__()  # sets env + in-process flags + resets sessions
+                except Exception:
+                    force_ctx = None
+            if force_ctx is None:
+                for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+                    saved[k] = os.environ.get(k)
+                    os.environ[k] = "1"
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if force_ctx is not None:
+            try:
+                force_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def _send_response(resp_queue: Any, response: dict) -> None:
     """Send a response to the parent process."""
     try:
@@ -184,6 +241,17 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     checkpoint_path = cmd["checkpoint_path"]
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
+    # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
+    # expert weights into unvalidated paths (same flip as the chat worker).
+    if load_in_4bit:
+        from utils.transformers_version import latest_tier_active_for
+        if latest_tier_active_for(checkpoint_path, cmd.get("hf_token")):
+            load_in_4bit = False
+            logger.info(
+                "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                "export load (4-bit is disabled for brand-new architectures)",
+                checkpoint_path,
+            )
     trust_remote_code = cmd.get("trust_remote_code", False)
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
@@ -209,22 +277,36 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # trust_remote_code False, so check HF's security scan (metadata-only) every
     # load. Local checkpoints have no Hub scan and are skipped in the helper; a
     # LoRA merges its base weights, so gate that repo too.
-    from utils.security import evaluate_file_security, security_load_subdirs
+    from utils.security import evaluate_file_security, load_scan_target, security_load_subdirs
 
-    malware_targets = [checkpoint_path]
+    requested_security_targets = [checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
         _base = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
         if _base:
-            malware_targets.append(_base)
+            requested_security_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
     _hf_token = cmd.get("hf_token")
-    for target in dict.fromkeys(malware_targets):
+    security_targets: list[str] = []
+    consent_load_subdirs: dict[str, tuple] = {}
+    for requested_target in dict.fromkeys(requested_security_targets):
+        load_subdirs = security_load_subdirs(requested_target, _hf_token)
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            security_targets.append(target)
+            consent_load_subdirs[target] = ()
+        consent_load_subdirs[target] = tuple(
+            dict.fromkeys((*consent_load_subdirs[target], *load_subdirs))
+        )
+
+    for target in security_targets:
         _fs = evaluate_file_security(
-            target, hf_token = _hf_token, load_subdirs = security_load_subdirs(target, _hf_token)
+            target,
+            hf_token = _hf_token,
+            load_subdirs = consent_load_subdirs[target],
         )
         if _fs.blocked:
             _send_response(
@@ -245,23 +327,14 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
 
-        consent_targets = [checkpoint_path]
-        try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-
-            # Resolve a local or remote adapter's base so its base repo is gated too.
-            base_model = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
-            if base_model:
-                consent_targets.append(base_model)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
         # Scan adapter + base as one combined unit, pinned by a single fingerprint.
         _rc = evaluate_remote_code_consent_for_targets(
-            consent_targets,
-            hf_token = cmd.get("hf_token"),
+            security_targets,
+            hf_token = _hf_token,
             trust_remote_code = True,
             approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
             subject = cmd.get("subject"),
+            load_subdirs_by_target = consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(
@@ -335,6 +408,19 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     # orchestrator spawns a fresh subprocess per checkpoint load, resetting it.
     _log_forward_gate.set()
 
+    # Phase milestone so the heavy export step shows in the server log; the
+    # merge/save/convert itself only forwards stdout to the live panel.
+    _phase = {
+        "merged": f"Exporting merged model ({cmd.get('format_type', '16-bit (FP16)')})...",
+        "gguf": f"Exporting GGUF ({cmd.get('quantization_method', 'Q4_K_M')})...",
+        "lora": "Exporting LoRA adapter...",
+        "base": "Exporting base model...",
+    }.get(export_type, f"Exporting ({export_type})...")
+    _send_response(
+        resp_queue,
+        {"type": "status", "message": _phase, "ts": time.time()},
+    )
+
     output_path: Any = None
     try:
         if export_type == "merged":
@@ -345,6 +431,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
+                compressed_method = cmd.get("compressed_method"),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
@@ -362,6 +449,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
+                imatrix_file = cmd.get("imatrix_file"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -370,6 +458,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
+                gguf = cmd.get("gguf", False),
+                gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
@@ -451,27 +541,35 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
 
+    # This worker's stdout is forwarded to the export dialog once the log gate opens,
+    # and the Hub upload bar is the only live byte progress a long push_to_hub has, so
+    # it keeps its progress bars even though the server turned its own off.
+    from loggers.config import allow_progress_bars
+
+    allow_progress_bars()
     LogConfig.setup_logging(
         service_name = "unsloth-studio-export-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        quiet_progress_bars = False,
     )
 
     checkpoint_path = config["checkpoint_path"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
-    try:
-        _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
-    except Exception as exc:
-        _send_response(
-            resp_queue,
-            {
-                "type": "error",
-                "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            },
-        )
-        return
+    with _offline_window_if_unreachable(step = "activating transformers"):
+        try:
+            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"Failed to activate transformers version: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                },
+            )
+            return
 
     # ── 1b. Check Triton on Windows (must precede import torch) ──
     if sys.platform == "win32":
@@ -534,7 +632,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     try:
         backend = ExportBackend()
 
-        _handle_load(backend, config, resp_queue)
+        # Offline window covers the load preflights (malware/consent scans hit the Hub)
+        # before load_checkpoint runs its own probe; restored after so later loads re-decide.
+        with _offline_window_if_unreachable():
+            _handle_load(backend, config, resp_queue)
 
     except Exception as exc:
         _send_response(
@@ -570,7 +671,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
-                _handle_load(backend, cmd, resp_queue)
+                # Offline window also covers this load's Hub preflights (re-probed per load).
+                with _offline_window_if_unreachable():
+                    _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
                 _handle_export(backend, cmd, resp_queue)

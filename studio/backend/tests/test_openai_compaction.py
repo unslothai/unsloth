@@ -86,7 +86,7 @@ def test_cloud_openai_sets_compaction_block(monkeypatch):
 
 
 def test_cloud_openai_below_default_threshold_passes_through(monkeypatch):
-    # Studio doesn't clamp the OpenAI side -- the API accepts whatever the
+    # Unsloth doesn't clamp the OpenAI side -- the API accepts whatever the
     # caller sends, so a small probe like 60k still goes through.
     captured = _capture(
         monkeypatch,

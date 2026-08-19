@@ -21,7 +21,20 @@ export interface RagDocument {
   kbId?: string | null;
   threadId?: string | null;
   projectId?: string | null;
+  linkedFolderId?: string | null;
+  managed: boolean;
   createdAt?: string | null;
+}
+
+export function isLinkedFolderManaged(document: RagDocument): boolean {
+  return Boolean(document.managed || document.linkedFolderId);
+}
+
+/** RagDocument enriched for the global uploaded-files list (settings Data tab). */
+export interface UploadedDocument extends RagDocument {
+  sizeBytes?: number | null;
+  kbName?: string | null;
+  projectName?: string | null;
 }
 
 export interface DocumentUploadResult {
@@ -30,7 +43,23 @@ export interface DocumentUploadResult {
   filename: string;
 }
 
-export type JobStatus = "pending" | "running" | "completed" | "failed";
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type TerminalJobStatus = Extract<
+  JobStatus,
+  "completed" | "failed" | "cancelled"
+>;
+
+export function terminalJobStatus(status: JobStatus): TerminalJobStatus | null {
+  return status === "completed" || status === "failed" || status === "cancelled"
+    ? status
+    : null;
+}
 
 export interface IndexJob {
   id: string;
@@ -39,6 +68,7 @@ export interface IndexJob {
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
+  numChunks?: number | null;
 }
 
 /** One SSE frame from /jobs/{jobId}/events. */
@@ -47,6 +77,88 @@ export interface JobEvent {
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
+  num_chunks?: number | null;
+}
+
+export type LinkedFolderScopeType = "knowledge_base" | "project";
+
+export interface LinkedFolderScope {
+  type: LinkedFolderScopeType;
+  id: string;
+}
+
+export type LinkedFolderStatus = "idle" | "syncing" | "error";
+
+/** A local directory whose durable access grant is held by the desktop backend. */
+export interface LinkedFolder {
+  id: string;
+  displayName: string;
+  scopeType: LinkedFolderScopeType;
+  scopeId: string;
+  scopeName?: string | null;
+  status: LinkedFolderStatus;
+  documentCount?: number;
+  lastSyncedAt?: string | null;
+  error?: string | null;
+  activeJobId?: string | null;
+  createdAt?: string | null;
+}
+
+export function linkedFolderSourcesChanged(
+  previous: LinkedFolder[] | null,
+  current: LinkedFolder[],
+): boolean {
+  if (!previous) return false;
+  const previousById = new Map(previous.map((folder) => [folder.id, folder]));
+  if (
+    previous.length !== current.length ||
+    previous.some((folder) => !current.some((row) => row.id === folder.id))
+  ) {
+    return true;
+  }
+  return current.some((folder) => {
+    const prior = previousById.get(folder.id);
+    return (
+      prior !== undefined &&
+      (prior.documentCount !== folder.documentCount ||
+        prior.lastSyncedAt !== folder.lastSyncedAt)
+    );
+  });
+}
+
+export type FolderSyncMode = "sync" | "rebuild";
+
+/** Aggregate job for discovering and indexing all changes in a linked folder. */
+export interface FolderSyncJob {
+  id: string;
+  linkedFolderId: string;
+  mode: FolderSyncMode;
+  status: JobStatus;
+  stage?: string | null;
+  progress?: number | null;
+  discoveredFiles?: number;
+  processedFiles?: number;
+  indexedFiles?: number;
+  removedFiles?: number;
+  failedFiles?: number;
+  error?: string | null;
+}
+
+/** One SSE frame from /linked-folder-jobs/{jobId}/events. */
+export interface FolderSyncJobEvent extends Partial<FolderSyncJob> {
+  type: "progress" | "complete" | "error";
+}
+
+export function retainActiveFolderJobs(
+  folders: LinkedFolder[],
+  jobs: Record<string, FolderSyncJob>,
+): Record<string, FolderSyncJob> {
+  const retained: Record<string, FolderSyncJob> = {};
+  for (const folder of folders) {
+    const job = jobs[folder.id];
+    if (job && folder.activeJobId === job.id) retained[folder.id] = job;
+  }
+  return retained;
 }
 
 /** Coords 0..1, top-left origin. */
