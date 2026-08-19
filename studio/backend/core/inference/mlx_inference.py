@@ -852,6 +852,7 @@ def _kv_quant_status(requested_bits, model, is_vlm):
 PROMPT_CACHE_MEMORY_FRACTION = 0.15
 PROMPT_CACHE_FALLBACK_BYTES = 2 * 1024**3
 MLX_VLM_PREFILL_STEP_SIZE = 2048
+MLX_VLM_BLOCK_CACHE_PREFILL_STEP_SIZE = 256
 MLX_VLM_PROMPT_CACHE_MIN_VERSION = "0.6.12"
 MLX_VLM_EXACT_PROMPT_CACHE_MIN_VERSION = "0.6.13"
 
@@ -1079,6 +1080,133 @@ def _vlm_prompt_cache_clone_expands(cache):
         return True
 
 
+def _vlm_block_cache_allowed(model):
+    """Whether Studio can reproduce mlx-vlm's cold prefill partition."""
+    language_model = getattr(model, "language_model", None)
+    candidates = (model, language_model) if language_model is not model else (model,)
+    return all(
+        candidate is None
+        or (
+            not getattr(candidate, "no_chunked_prefill", False)
+            and not callable(getattr(candidate, "chunked_prefill_policy", None))
+        )
+        for candidate in candidates
+    )
+
+
+def _trim_vlm_state_to_prompt(state, prompt_tokens):
+    """Remove decode-produced state before publishing a reusable prompt."""
+    tokens = list(getattr(state, "token_ids", None) or ())
+    cache = getattr(state, "cache", None) or ()
+    try:
+        prompt_tokens = int(prompt_tokens)
+    except (TypeError, ValueError):
+        return False
+    covered = _kv_prefix_coverage(cache)
+    if prompt_tokens <= 0 or covered is None or not 0 < prompt_tokens <= covered <= len(tokens):
+        return False
+    n_drop = covered - prompt_tokens
+    if n_drop:
+        trimmers = [getattr(entry, "trim", None) for entry in cache]
+        if not all(callable(trim) for trim in trimmers):
+            return False
+        try:
+            for trim in trimmers:
+                trim(n_drop)
+        except Exception:
+            return False
+    if _kv_prefix_coverage(cache) != prompt_tokens:
+        return False
+    state.token_ids = tokens[:prompt_tokens]
+    return True
+
+
+class _ShapeStableVLMPromptCacheState:
+    """Align reuse so warm prefill follows the cold chunk sequence."""
+
+    def __init__(self, state, boundary):
+        self._state = state
+        self._boundary = boundary
+        self.reused_prefix_length = 0
+
+    @property
+    def cache(self):
+        return self._state.cache
+
+    @cache.setter
+    def cache(self, value):
+        self._state.cache = value
+
+    @property
+    def token_ids(self):
+        return self._state.token_ids
+
+    @token_ids.setter
+    def token_ids(self, value):
+        self._state.token_ids = value
+
+    def find_prefix_length(self, new_ids):
+        prefix = self._state.find_prefix_length(new_ids)
+        boundary = self._boundary
+        aligned = prefix // boundary * boundary
+        # mlx-vlm reserves the final prompt token only when the remaining input
+        # is larger than the prefill step. Cap reuse at an earlier cold boundary
+        # so the warm suffix takes the same chunked path.
+        max_prefix = max(0, (len(new_ids) - boundary - 1) // boundary * boundary)
+        self.reused_prefix_length = min(aligned, max_prefix)
+        return self.reused_prefix_length
+
+    def update(self, token_ids, cache):
+        return self._state.update(token_ids, cache)
+
+
+@contextmanager
+def _temporary_vlm_full_position_metadata(model, cache_state):
+    """Keep upstream full-prompt positions when a visual prefix is reused."""
+    get_embeddings = getattr(model, "get_input_embeddings", None)
+    instance_attributes = getattr(model, "__dict__", {})
+    had_instance_override = "get_input_embeddings" in instance_attributes
+    instance_override = instance_attributes.get("get_input_embeddings")
+    language_model = getattr(model, "language_model", None)
+    if (
+        cache_state is None
+        or not callable(get_embeddings)
+        or language_model is None
+        or not callable(getattr(language_model, "get_rope_index", None))
+    ):
+        yield
+        return
+
+    def preserving_get_embeddings(*args, **kwargs):
+        features = get_embeddings(*args, **kwargs)
+        prefix = int(getattr(cache_state, "reused_prefix_length", 0) or 0)
+        pixel_values = kwargs.get("pixel_values", args[1] if len(args) > 1 else None)
+        input_ids = kwargs.get("input_ids", args[0] if args else None)
+        full_positions = getattr(language_model, "_position_ids", None)
+        suffix_length = int(getattr(input_ids, "shape", (0, 0))[-1])
+        if (
+            prefix > 0
+            and pixel_values is None
+            and getattr(features, "position_ids", None) is not None
+            and full_positions is not None
+            and int(full_positions.shape[-1]) >= prefix + suffix_length
+        ):
+            features.position_ids = full_positions
+            full_rope_deltas = getattr(language_model, "_rope_deltas", None)
+            if full_rope_deltas is not None and hasattr(features, "rope_deltas"):
+                features.rope_deltas = full_rope_deltas
+        return features
+
+    try:
+        model.get_input_embeddings = preserving_get_embeddings
+        yield
+    finally:
+        if had_instance_override:
+            model.get_input_embeddings = instance_override
+        else:
+            delattr(model, "get_input_embeddings")
+
+
 class _MLXVLMPromptCacheHistory:
     """Retain only committed, byte-bounded VLM state snapshots.
 
@@ -1087,9 +1215,15 @@ class _MLXVLMPromptCacheHistory:
     and owns trimming, RoPE priming, and cache-layout compatibility.
     """
 
-    def __init__(self, max_entries, max_bytes):
+    def __init__(
+        self,
+        max_entries,
+        max_bytes,
+        reuse_boundary = MLX_VLM_BLOCK_CACHE_PREFILL_STEP_SIZE,
+    ):
         self._max_entries = max_entries
         self._max_bytes = max_bytes
+        self._reuse_boundary = reuse_boundary
         self._nbytes = 0
         self._entries = OrderedDict()
         self._next_id = 0
@@ -1120,6 +1254,7 @@ class _MLXVLMPromptCacheHistory:
         state = state_cls()
         state.cache = copied_cache
         state.token_ids = list(getattr(retained, "token_ids", None) or ())
+        state = _ShapeStableVLMPromptCacheState(state, self._reuse_boundary)
         self._entries.move_to_end(matched_id)
         return state, list(getattr(state, "token_ids", None) or ()), continued_id
 
@@ -1425,6 +1560,8 @@ class MLXInferenceBackend:
             self._vlm_prompt_cache_unavailable = True
             return None, None, [], None
         state_cls, apc_cls, cache_mode, clone = api
+        if cache_mode == "block" and not _vlm_block_cache_allowed(self._model):
+            return None, None, [], None
         max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
         if max_bytes <= 0:
             self._vlm_prompt_cache_unavailable = True
@@ -1442,6 +1579,7 @@ class MLXInferenceBackend:
             self._vlm_prompt_cache_history = _MLXVLMPromptCacheHistory(
                 PROMPT_CACHE_ENTRIES,
                 max_bytes,
+                MLX_VLM_BLOCK_CACHE_PREFILL_STEP_SIZE,
             )
         scope = (
             self.active_model_name,
@@ -2282,10 +2420,10 @@ class MLXInferenceBackend:
                 request_kwargs = dict(vlm_kwargs)
                 if cache_state is not None:
                     request_kwargs["prompt_cache_state"] = cache_state
+                    request_kwargs["prefill_step_size"] = MLX_VLM_BLOCK_CACHE_PREFILL_STEP_SIZE
                 if exact_manager is not None:
                     request_kwargs["apc_manager"] = exact_manager
                     request_kwargs["apc_tenant"] = f"adapter:{_adapter_state!r}"
-                if cache_state is not None or exact_manager is not None:
                     request_kwargs["prefill_step_size"] = MLX_VLM_PREFILL_STEP_SIZE
                 final_response = None
                 cached_n = 0
@@ -2304,15 +2442,19 @@ class MLXInferenceBackend:
                         nonlocal cache_abandoned
                         yielded = False
                         try:
-                            for response in vlm_stream(
+                            with _temporary_vlm_full_position_metadata(
                                 self._model,
-                                self._processor,
-                                prompt,
-                                images,
-                                **request_kwargs,
+                                cache_state,
                             ):
-                                yielded = True
-                                yield response
+                                for response in vlm_stream(
+                                    self._model,
+                                    self._processor,
+                                    prompt,
+                                    images,
+                                    **request_kwargs,
+                                ):
+                                    yielded = True
+                                    yield response
                         except ValueError as error:
                             if yielded or not _vlm_rejects_image_padding(error):
                                 raise
@@ -2357,10 +2499,16 @@ class MLXInferenceBackend:
                         history = self._vlm_prompt_cache_history
                         if history is not None:
                             try:
-                                history.insert(
-                                    cache_commit,
+                                if _trim_vlm_state_to_prompt(
                                     cache_state,
-                                )
+                                    getattr(final_response, "prompt_tokens", 0),
+                                ):
+                                    history.insert(cache_commit, cache_state)
+                                else:
+                                    logger.debug(
+                                        "MLX VLM prompt cache: could not retain "
+                                        "the prompt boundary"
+                                    )
                             except Exception as exc:
                                 logger.debug("MLX VLM prompt cache insert failed: %s", exc)
                     if (
