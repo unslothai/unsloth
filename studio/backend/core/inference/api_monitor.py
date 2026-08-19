@@ -1,18 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small in-memory monitor for OpenAI-compatible API traffic."""
+"""In-memory API monitor with an optional content-free terminal receipt sink."""
 
 from __future__ import annotations
 
 import math
+import logging
 import os
 import threading
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from storage.api_usage_db import ApiUsageReceipt
+
+
+logger = logging.getLogger(__name__)
+TerminalCallback = Callable[[ApiUsageReceipt], None]
 
 
 _MAX_ENTRIES = 50
@@ -197,6 +204,7 @@ class ApiMonitor:
         max_entries: int = _MAX_ENTRIES,
         *,
         enabled: bool = True,
+        terminal_callback: Optional[TerminalCallback] = None,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
         # Shared rows one subject cleared: deleting would erase another caller's history.
@@ -204,12 +212,18 @@ class ApiMonitor:
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
         self._enabled = enabled
+        self._terminal_callback = terminal_callback
 
     @property
     def enabled(self) -> bool:
         """Whether rows are being recorded. Read-only: the kill switch is a
         startup env var, so nothing may flip it on a live monitor."""
         return self._enabled
+
+    def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
+        """Replace the terminal receipt sink without exposing the monitor lock."""
+        with self._lock:
+            self._terminal_callback = callback
 
     def start(
         self,
@@ -337,7 +351,7 @@ class ApiMonitor:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.finished_at is not None:
                 return
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
@@ -477,7 +491,7 @@ class ApiMonitor:
         context_length = _token_count_or_none(context_length)
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.finished_at is not None:
                 return
             if prompt_tokens is not None:
                 entry.prompt_tokens = prompt_tokens
@@ -503,6 +517,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -520,22 +535,28 @@ class ApiMonitor:
             self._entries.remove(entry)
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def fail_open(self, entry_id: Optional[str], error: str) -> None:
         """Fail only a still-open row: unlike :meth:`fail`, a catch-all in a
         ``finally`` cannot stamp an error onto a request that already succeeded."""
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
             # Same lock as the check, so a finish() cannot land in between.
             self._fail_locked(entry, error)
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -546,6 +567,8 @@ class ApiMonitor:
                     entry.error = _trim(error, 1000)
                 return
             self._fail_locked(entry, error)
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
         self._settle_stop_reason_locked(entry, False)
@@ -558,6 +581,47 @@ class ApiMonitor:
         self._entries.remove(entry)
         self._entries.appendleft(entry)
         self._trim_terminal_locked()
+
+    def _terminal_notification_locked(
+        self, entry: ApiMonitorEntry
+    ) -> Optional[tuple[TerminalCallback, ApiUsageReceipt]]:
+        callback = self._terminal_callback
+        if (
+            callback is None
+            or entry.kind != "request"
+            or entry.via_api_key is not True
+            or not entry.subject
+            or entry.finished_at is None
+        ):
+            return None
+        return (
+            callback,
+            ApiUsageReceipt(
+                id = entry.id,
+                subject = entry.subject or "",
+                endpoint = entry.endpoint,
+                model = entry.model,
+                status = entry.status,
+                prompt_tokens = entry.prompt_tokens or 0,
+                completion_tokens = entry.completion_tokens or 0,
+                total_tokens = entry.total_tokens or 0,
+                created_at = int(entry.finished_at * 1000),
+                kind = entry.kind,
+                via_api_key = entry.via_api_key,
+            ),
+        )
+
+    @staticmethod
+    def _notify_terminal(
+        notification: Optional[tuple[TerminalCallback, ApiUsageReceipt]],
+    ) -> None:
+        if notification is None:
+            return
+        callback, receipt = notification
+        try:
+            callback(receipt)
+        except Exception:  # noqa: BLE001 - monitoring must never break inference.
+            logger.warning("api_monitor.terminal_callback_failed", exc_info = True)
 
     def snapshot(
         self,

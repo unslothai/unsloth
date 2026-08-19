@@ -4,15 +4,15 @@
 """
 Profile usage statistics derived from studio.db.
 
-Read-only aggregation over rows the app already writes: chat threads/messages
-(with their per-message ``metadata_json``) and training runs/metrics. Nothing
-is recorded specifically for stats, so the numbers are only as complete as the
-local history.
+Read-only aggregation over chat threads/messages (with their per-message
+``metadata_json``), content-free API usage receipts, and training runs/metrics.
+The numbers are only as complete as the local history retained after each
+feature was introduced.
 
 Token counts live inside each message's metadata blob, so they cannot be summed
 in SQL portably (JSON1 is not guaranteed on every bundled SQLite). Rows are
 streamed once in (thread, time) order and every metric is folded in that single
-pass, then memoised against a (count, max created_at) fingerprint so reopening
+pass, then memoised against per-source count/timestamp fingerprints so reopening
 the Profile tab is free until history changes.
 """
 
@@ -191,6 +191,70 @@ class _MessageFold:
         bucket["tokens"] += tokens
         bucket["messages"] += 1
         bucket["threads"].add(thread_id)
+
+
+class _ApiUsageFold:
+    """Scalar-only API receipts folded separately from chat-only metrics."""
+
+    def __init__(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.by_day: dict[date, int] = {}
+        self.models: dict[str, dict[str, Any]] = {}
+        self.requests = 0
+
+
+def _fold_api_usage(conn, zone) -> _ApiUsageFold:
+    fold = _ApiUsageFold()
+    rows = conn.execute(
+        """
+        SELECT model, prompt_tokens, completion_tokens, total_tokens, created_at
+        FROM api_usage_events
+        ORDER BY created_at
+        """
+    )
+    for row in rows:
+        prompt_tokens = _as_int(row["prompt_tokens"])
+        completion_tokens = _as_int(row["completion_tokens"])
+        total_tokens = _as_int(row["total_tokens"])
+        fold.prompt_tokens += prompt_tokens
+        fold.completion_tokens += completion_tokens
+        # Preserve the provider's authoritative total even when it differs
+        # from the input/output sum.
+        fold.total_tokens += total_tokens
+        fold.requests += 1
+
+        stamp = _local_stamp(_as_int(row["created_at"]), zone)
+        if stamp is not None:
+            day = stamp.date()
+            fold.by_day[day] = fold.by_day.get(day, 0) + total_tokens
+
+        model_id = _clean_str(row["model"])
+        if model_id:
+            model = fold.models.setdefault(
+                model_id,
+                {"id": model_id, "label": _model_label(model_id), "messages": 0, "tokens": 0},
+            )
+            # One terminal API request represents one model response in the
+            # combined leaderboard.
+            model["messages"] += 1
+            model["tokens"] += total_tokens
+    return fold
+
+
+def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
+    """Merge only combined activity surfaces, leaving chat counters intact."""
+    for day, tokens in api.by_day.items():
+        bucket = chat.by_day.setdefault(day, {"tokens": 0, "messages": 0, "threads": set()})
+        bucket["tokens"] += tokens
+    for model_id, api_model in api.models.items():
+        model = chat.models.setdefault(
+            model_id,
+            {"id": model_id, "label": api_model["label"], "messages": 0, "tokens": 0},
+        )
+        model["messages"] += api_model["messages"]
+        model["tokens"] += api_model["tokens"]
 
 
 def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
@@ -555,7 +619,10 @@ def _fingerprint(conn) -> tuple:
     run_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(started_at), '') FROM training_runs"
     ).fetchone()
-    return (message_row[0], message_row[1], run_row[0], run_row[1])
+    api_row = conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM api_usage_events"
+    ).fetchone()
+    return (message_row[0], message_row[1], run_row[0], run_row[1], api_row[0], api_row[1])
 
 
 def compute_profile_stats(
@@ -583,6 +650,8 @@ def compute_profile_stats(
 
         started = time.perf_counter()
         fold = _fold_messages(conn, zone)
+        api_fold = _fold_api_usage(conn, zone)
+        _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)
 
         # "Today" has to match the buckets above, or the newest column and the
@@ -609,9 +678,15 @@ def compute_profile_stats(
                 "messages": fold.messages,
                 "userMessages": fold.user_messages,
                 "assistantMessages": fold.assistant_messages,
-                "promptTokens": fold.prompt_tokens,
-                "completionTokens": fold.completion_tokens,
-                "totalTokens": fold.total_tokens,
+                "promptTokens": fold.prompt_tokens + api_fold.prompt_tokens,
+                "completionTokens": fold.completion_tokens + api_fold.completion_tokens,
+                "totalTokens": fold.total_tokens + api_fold.total_tokens,
+                "chatPromptTokens": fold.prompt_tokens,
+                "chatCompletionTokens": fold.completion_tokens,
+                "chatTokens": fold.total_tokens,
+                "apiPromptTokens": api_fold.prompt_tokens,
+                "apiCompletionTokens": api_fold.completion_tokens,
+                "apiTokens": api_fold.total_tokens,
                 "cachedTokens": fold.cached_tokens,
                 "toolCalls": fold.tool_calls,
                 "attachments": fold.attachments,
@@ -656,9 +731,10 @@ def compute_profile_stats(
         }
 
         logger.debug(
-            "profile stats computed in %.1f ms (%d messages)",
+            "profile stats computed in %.1f ms (%d messages, %d API requests)",
             (time.perf_counter() - started) * 1000,
             fold.messages,
+            api_fold.requests,
         )
 
         with _cache_lock:

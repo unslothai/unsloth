@@ -4,12 +4,14 @@
 """Profile statistics aggregation over local chat/training history."""
 
 import json
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from storage import profile_stats_db, studio_db
+from storage.api_usage_db import ApiUsageReceipt, record_api_usage
 from storage.profile_stats_db import compute_profile_stats, invalidate_profile_stats_cache
 
 
@@ -26,6 +28,31 @@ def stats_db(tmp_path, monkeypatch):
 # _seed_thread writes the assistant reply this far after the user turn, and
 # fork_chat_thread copies created_at verbatim, so clones must reuse it.
 REPLY_DELAY = timedelta(seconds = 10)
+
+
+def _api_receipt(
+    receipt_id: str,
+    when: datetime,
+    *,
+    prompt: int = 40,
+    completion: int = 10,
+    total: int = 50,
+    model: str = "unsloth/api-model",
+    status: str = "completed",
+    via_api_key: bool = True,
+) -> ApiUsageReceipt:
+    return ApiUsageReceipt(
+        id = receipt_id,
+        subject = "external-client",
+        endpoint = "/v1/chat/completions",
+        model = model,
+        status = status,
+        prompt_tokens = prompt,
+        completion_tokens = completion,
+        total_tokens = total,
+        created_at = _ms(when),
+        via_api_key = via_api_key,
+    )
 
 
 def _ms(when: datetime) -> int:
@@ -98,11 +125,179 @@ def test_empty_history_returns_zeroed_payload(stats_db):
 
     assert stats["totals"]["messages"] == 0
     assert stats["totals"]["totalTokens"] == 0
+    assert stats["totals"]["chatTokens"] == 0
+    assert stats["totals"]["apiTokens"] == 0
     assert stats["streak"] == {"current": 0, "longest": 0, "lastActiveDay": None}
     assert stats["peakDay"] is None
     assert stats["longestChat"] is None
     assert len(stats["daily"]) == 30
     assert all(day["tokens"] == 0 for day in stats["daily"])
+
+
+def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
+    today = datetime.now(timezone.utc).replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(
+            conn,
+            "mixed",
+            "unused-thread-model",
+            [(today, _metadata(100, 25))],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert record_api_usage(
+        _api_receipt(
+            "api-mixed",
+            today,
+            model = "unsloth/gpt-oss-20b",
+        )
+    )
+    stats = compute_profile_stats(days = 7, tz_name = "UTC")
+    totals = stats["totals"]
+
+    assert totals["promptTokens"] == 140
+    assert totals["completionTokens"] == 35
+    assert totals["totalTokens"] == 175
+    assert totals["chatPromptTokens"] == 100
+    assert totals["chatCompletionTokens"] == 25
+    assert totals["chatTokens"] == 125
+    assert totals["apiPromptTokens"] == 40
+    assert totals["apiCompletionTokens"] == 10
+    assert totals["apiTokens"] == 50
+    # API requests do not inflate the chat-only counters.
+    assert totals["threads"] == 1
+    assert totals["messages"] == 2
+    assert totals["cachedTokens"] == 5
+    assert stats["daily"][-1] == {
+        "date": today.date().isoformat(),
+        "tokens": 175,
+        "messages": 2,
+        "chats": 1,
+    }
+    assert stats["peakDay"] == {"date": today.date().isoformat(), "tokens": 175}
+    assert stats["models"][0]["id"] == "unsloth/gpt-oss-20b"
+    assert stats["models"][0]["messages"] == 2
+    assert stats["models"][0]["tokens"] == 175
+
+
+def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
+    now = datetime.now(timezone.utc).replace(microsecond = 0)
+    initial = compute_profile_stats(days = 7, tz_name = "UTC")
+    receipt = _api_receipt("api-only", now)
+
+    assert record_api_usage(receipt) is True
+    assert record_api_usage(receipt) is False
+    after_insert = compute_profile_stats(days = 7, tz_name = "UTC")
+    assert after_insert is not initial
+    assert after_insert["totals"]["messages"] == 0
+    assert after_insert["totals"]["apiTokens"] == 50
+    assert after_insert["totals"]["totalTokens"] == 50
+    assert after_insert["models"][0]["id"] == "unsloth/api-model"
+    assert after_insert["streak"]["current"] == 1
+
+    # A fresh process/schema initialization still reads the same receipt.
+    studio_db._schema_ready = False
+    invalidate_profile_stats_cache()
+    after_restart = compute_profile_stats(days = 7, tz_name = "UTC")
+    assert after_restart["totals"]["apiTokens"] == 50
+    assert after_restart["daily"][-1]["tokens"] == 50
+
+
+def test_api_fingerprint_invalidates_cache_for_independent_database_writers(stats_db):
+    now = datetime.now(timezone.utc)
+    cached = compute_profile_stats(days = 1, tz_name = "UTC")
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO api_usage_events
+                (id, subject, endpoint, model, status,
+                 prompt_tokens, completion_tokens, total_tokens, created_at)
+            VALUES ('external-writer', 'alice', '/v1/responses', 'm',
+                    'completed', 4, 6, 10, ?)
+            """,
+            (_ms(now),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refreshed = compute_profile_stats(days = 1, tz_name = "UTC")
+    assert refreshed is not cached
+    assert refreshed["totals"]["apiTokens"] == 10
+
+
+def test_api_usage_filters_internal_and_zero_receipts_but_keeps_partial_failures(stats_db):
+    now = datetime.now(timezone.utc)
+    assert record_api_usage(
+        _api_receipt("internal", now, via_api_key = False)
+    ) is False
+    assert record_api_usage(
+        _api_receipt("zero", now, prompt = 0, completion = 0, total = 0, status = "error")
+    ) is False
+    assert record_api_usage(
+        _api_receipt(
+            "partial",
+            now,
+            prompt = 3,
+            completion = 4,
+            total = 9,
+            status = "cancelled",
+        )
+    ) is True
+
+    stats = compute_profile_stats(days = 1, tz_name = "UTC")
+    assert stats["totals"]["apiPromptTokens"] == 3
+    assert stats["totals"]["apiCompletionTokens"] == 4
+    # The authoritative total is retained instead of recomputing 3 + 4.
+    assert stats["totals"]["apiTokens"] == 9
+    conn = studio_db.get_connection()
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(api_usage_events)")}
+        assert "prompt" not in columns
+        assert "reply" not in columns
+        assert "api_key" not in columns
+    finally:
+        conn.close()
+
+
+def test_api_usage_uses_iana_timezone_across_dst_dates(stats_db):
+    winter = datetime(2026, 1, 15, 4, 30, tzinfo = timezone.utc)
+    summer = datetime(2026, 7, 15, 3, 30, tzinfo = timezone.utc)
+    assert record_api_usage(_api_receipt("winter", winter, total = 11))
+    assert record_api_usage(_api_receipt("summer", summer, total = 13))
+
+    stats = compute_profile_stats(days = 366, tz_name = "America/New_York")
+    by_date = {day["date"]: day["tokens"] for day in stats["daily"]}
+    # Both UTC instants are before local midnight using the date-specific
+    # standard/daylight offset.
+    assert by_date["2026-01-14"] == 11
+    assert by_date["2026-07-14"] == 13
+
+
+def test_existing_database_gets_additive_api_usage_schema(stats_db):
+    db_path = studio_db.studio_db_path()
+    db_path.parent.mkdir(parents = True, exist_ok = True)
+    legacy = sqlite3.connect(db_path)
+    try:
+        legacy.execute("CREATE TABLE legacy_marker (value TEXT)")
+        legacy.execute("INSERT INTO legacy_marker VALUES ('kept')")
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    studio_db._schema_ready = False
+    conn = studio_db.get_connection()
+    try:
+        assert conn.execute("SELECT value FROM legacy_marker").fetchone()[0] == "kept"
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_usage_events'"
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def test_tokens_streaks_and_models_are_aggregated(stats_db):

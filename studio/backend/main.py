@@ -742,7 +742,18 @@ async def lifespan(app: FastAPI):
         "lifespan startup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
+    # Persist only terminal scalar usage from authenticated third-party API
+    # requests. The monitor itself stays storage-agnostic until the production
+    # lifespan is ready, which keeps imports and unit tests deterministic.
+    from core.inference.api_monitor import api_monitor as _api_monitor
+    from storage.api_usage_db import record_api_usage as _record_api_usage
+
+    _api_monitor.set_terminal_callback(_record_api_usage)
     yield
+
+    # Stop accepting new persistence callbacks before shutdown awaits allow
+    # in-flight cleanup and independent test lifespans to overlap.
+    _api_monitor.set_terminal_callback(None)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
