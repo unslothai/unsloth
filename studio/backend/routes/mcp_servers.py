@@ -23,6 +23,7 @@ from core.inference.mcp_client import (
     invalidate_tool_cache,
     is_stdio,
     list_tools_async,
+    mcp_server_snapshot_guard,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
@@ -242,13 +243,18 @@ async def update_mcp_server(
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
-    mcp_servers_db.update_server(server_id, changes)
     # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
     # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
     # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
     # resends url/headers/oauth unchanged on a rename, which must not drop the session.
-    if any(changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS):
-        invalidate_tool_cache(server_id)
+    invalidates_tools = any(
+        changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
+    )
+    async with mcp_server_snapshot_guard():
+        mcp_servers_db.update_server(server_id, changes)
+        if invalidates_tools:
+            invalidate_tool_cache(server_id)
+    if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
@@ -262,8 +268,9 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
-    mcp_servers_db.delete_server(server_id)
-    invalidate_tool_cache(server_id)
+    async with mcp_server_snapshot_guard():
+        mcp_servers_db.delete_server(server_id)
+        invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
 
 

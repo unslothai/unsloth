@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from typing import Any, Optional
+from weakref import WeakKeyDictionary
 
 from loggers import get_logger
 
@@ -840,6 +841,18 @@ _tool_cache: dict[str, list[dict]] = {}
 # re-probed (see record_probe_failure). Cleared on a successful probe or
 # eviction.
 _probe_cooloff_until: dict[str, float] = {}
+
+# Token counting reads SQLite in a worker, so an async guard coordinates that snapshot with
+# the event-loop mutations that commit a row and then invalidate its cached schemas.
+_mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+
+
+def mcp_server_snapshot_guard() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    return _mcp_server_snapshot_locks.setdefault(loop, asyncio.Lock())
+
 
 # MCP server fields whose change invalidates a server's discovered tools: the
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at

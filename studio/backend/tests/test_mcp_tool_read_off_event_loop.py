@@ -11,7 +11,10 @@ import threading
 from pathlib import Path
 
 import core.inference.tools as tools
+import core.inference.mcp_client as mcp_client
 import routes.inference as inference_routes
+import routes.mcp_servers as mcp_routes
+from models.mcp_servers import McpServerUpdate
 from storage import mcp_servers_db
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
@@ -103,3 +106,73 @@ def test_the_token_count_reads_the_cached_tools_off_the_event_loop_thread(tmp_pa
 
     assert threads, "the count never read the enabled MCP servers"
     assert loop_thread not in threads, "cached_mcp_tools read mcp_servers on the event loop thread"
+
+
+def test_the_cached_row_and_tools_are_one_snapshot_during_an_edit(monkeypatch):
+    state = {
+        "row": {
+            "id": "s1",
+            "display_name": "Saved",
+            "url": "https://old.example/mcp",
+            "headers_json": None,
+            "is_enabled": True,
+            "use_oauth": False,
+        },
+        "cache": {"s1": [{"name": "old_tool"}]},
+    }
+    row_read = threading.Event()
+    release_row = threading.Event()
+
+    def _list_servers():
+        row = dict(state["row"])
+        row_read.set()
+        assert release_row.wait(2), "the concurrent update never reached the row read"
+        return [row]
+
+    def _update_server(_server_id, changes):
+        state["row"].update(changes)
+        return True
+
+    def _invalidate(_server_id):
+        state["cache"].pop("s1", None)
+
+    monkeypatch.setattr(tools.mcp_servers_db, "list_servers", _list_servers)
+    monkeypatch.setattr(tools, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(tools, "get_cached_tools", lambda server_id: state["cache"].get(server_id))
+    monkeypatch.setattr(tools, "in_failure_cooloff", lambda _server_id: False)
+    monkeypatch.setattr(
+        tools,
+        "_mcp_specs_for_server",
+        lambda server, payload: [(server["url"], payload[0]["name"])],
+    )
+    monkeypatch.setattr(
+        mcp_routes.mcp_servers_db, "get_server", lambda _server_id: dict(state["row"])
+    )
+    monkeypatch.setattr(mcp_routes.mcp_servers_db, "update_server", _update_server)
+    monkeypatch.setattr(mcp_routes, "invalidate_tool_cache", _invalidate)
+    monkeypatch.setattr(mcp_routes, "close_stdio_sessions", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_routes, "_row_to_response", lambda row: row)
+
+    async def _read_snapshot():
+        async with mcp_client.mcp_server_snapshot_guard():
+            return await asyncio.to_thread(tools.cached_mcp_tools)
+
+    async def _drive():
+        read = asyncio.create_task(_read_snapshot())
+        assert await asyncio.to_thread(row_read.wait, 2), "the cached read never started"
+        update = asyncio.create_task(
+            mcp_routes.update_mcp_server(
+                "s1",
+                McpServerUpdate(url = "https://new.example/mcp"),
+                current_subject = "u",
+                via_api_key = False,
+            )
+        )
+        release_row.set()
+        return await read, await update
+
+    (specs, complete), _response = asyncio.run(_drive())
+    assert complete is True
+    assert specs == [("https://old.example/mcp", "old_tool")]
+    assert state["row"]["url"] == "https://new.example/mcp"
+    assert state["cache"] == {}

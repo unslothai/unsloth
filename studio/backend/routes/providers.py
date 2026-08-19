@@ -28,6 +28,7 @@ from routes.provider_credentials import (
     current_credential_write,
     require_ui_session,
     resolve_provider_api_key_or_400,
+    serialize_provider_config,
 )
 from core.inference.key_exchange import (
     get_public_key_fingerprint,
@@ -257,6 +258,7 @@ async def create_provider_config(
 
 
 @router.put("/{provider_id}", response_model = ProviderResponse)
+@serialize_provider_config
 async def update_provider_config(
     provider_id: str,
     payload: ProviderUpdate,
@@ -365,6 +367,7 @@ async def update_provider_config(
 
 
 @router.put("/{provider_id}/api-key/migrate", response_model = ProviderResponse)
+@serialize_provider_config
 async def migrate_provider_api_key(
     provider_id: str,
     payload: ProviderCredentialMigration,
@@ -387,6 +390,7 @@ async def migrate_provider_api_key(
 
 
 @router.delete("/{provider_id}", status_code = 204)
+@serialize_provider_config
 async def delete_provider_config(
     provider_id: str,
     credential: tuple = Depends(get_current_credential),

@@ -2386,7 +2386,7 @@ from core.inference.studio_tool_loop import (
     stream_with_studio_tools,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
-from routes.provider_credentials import resolve_provider_api_key_or_400
+from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
@@ -12255,6 +12255,7 @@ async def _proxy_to_external_provider(
     # Resolve provider type and base URL
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
+    saved_provider_snapshot: Optional[dict] = None
 
     if payload.provider_id and not payload.encrypted_api_key:
         # Off the event loop thread: every chat routed to a saved provider reads it, and a
@@ -12272,6 +12273,7 @@ async def _proxy_to_external_provider(
             )
         # A saved credential is scoped to this saved provider. Never pair it with
         # request-controlled routing metadata.
+        saved_provider_snapshot = config
         provider_type = config["provider_type"]
         base_url = config["base_url"]
 
@@ -12637,20 +12639,42 @@ async def _proxy_to_external_provider(
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    api_key = resolve_provider_api_key_or_400(
-        payload.provider_id,
-        payload.encrypted_api_key,
-        # A durable Deep Research hop authenticates with an internal workflow key,
-        # which is still an API key, so the plain check would drop the saved
-        # provider id and fail before the provider is ever contacted. The run's
-        # connection was already validated as an enabled saved one by
-        # research_runs._sanitize_config, and the key is verified against storage.
-        # Scoped to that one workflow rather than to "internal", because the other
-        # internal key Studio mints is held by a user-authored recipe subprocess.
-        allow_saved_key = (
-            not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
-        ),
-    )
+    api_key: Optional[str] = None
+    if saved_provider_snapshot is not None:
+        async with provider_config_guard(payload.provider_id):
+            current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
+            routing_fields = ("provider_type", "base_url", "is_enabled")
+            if current is None or any(
+                current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
+            ):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Provider changed while the request was starting; retry.",
+                )
+            api_key = await asyncio.to_thread(
+                resolve_provider_api_key_or_400,
+                payload.provider_id,
+                None,
+                allow_saved_key = (
+                    not _request_has_api_key(request)
+                    or _request_is_saved_credential_workflow(request)
+                ),
+            )
+    else:
+        api_key = resolve_provider_api_key_or_400(
+            payload.provider_id,
+            payload.encrypted_api_key,
+            # A durable Deep Research hop authenticates with an internal workflow key,
+            # which is still an API key, so the plain check would drop the saved
+            # provider id and fail before the provider is ever contacted. The run's
+            # connection was already validated as an enabled saved one by
+            # research_runs._sanitize_config, and the key is verified against storage.
+            # Scoped to that one workflow rather than to "internal", because the other
+            # internal key Studio mints is held by a user-authored recipe subprocess.
+            allow_saved_key = (
+                not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
+            ),
+        )
 
     model = payload.external_model or payload.model
     if model == "default":
@@ -19572,9 +19596,11 @@ async def chat_count_tokens(
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
         from core.inference.tools import cached_mcp_tools
+        from core.inference.mcp_client import mcp_server_snapshot_guard
 
-        # cached_mcp_tools reads SQLite, so keep it off the event loop.
-        _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
+        # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
+        async with mcp_server_snapshot_guard():
+            _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
         if not _mcp_complete:
             raise HTTPException(
                 status_code = 503,
