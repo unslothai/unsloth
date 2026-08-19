@@ -184,7 +184,7 @@ type RefreshOptions =
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
+/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {

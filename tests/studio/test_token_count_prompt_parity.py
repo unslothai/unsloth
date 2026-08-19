@@ -32,10 +32,11 @@ from _node_harness import (
 
 ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
+MODEL_SIZE = source_path("studio/frontend/src/lib/model-size.ts")
 
 TEMP = WORKDIR / "temp" / "token_count_prompt_parity"
 
-SOURCES = (ADAPTER, CAPABILITIES)
+SOURCES = (ADAPTER, CAPABILITIES, MODEL_SIZE)
 
 
 def _canvas_constants() -> str:
@@ -64,11 +65,26 @@ def _outbound_builder() -> str:
 
 
 def _extras_builder() -> str:
-    """buildLocalTokenCountExtras, the tool flags the count sends."""
-    return slice_between(
+    """buildLocalTokenCountExtras, the tool flags the count sends, and the Auto-inject
+    resolution it shares with the request build."""
+    autoinject = slice_between(
         read(ADAPTER),
-        "export async function buildLocalTokenCountExtras(",
-        "\n\nasync function resolveUseAdapter(",
+        "const AUTOINJECT_AUTO_MAX_SIZE_B =",
+        "\n\ntype ThreadRecordReader",
+    ) + slice_between(
+        read(ADAPTER),
+        "function resolveAutoInject(",
+        "\n\n/** Server-side usage data",
+    )
+    size = read(MODEL_SIZE).split("\n", 2)[2]
+    return (
+        size
+        + autoinject
+        + slice_between(
+            read(ADAPTER),
+            "export async function buildLocalTokenCountExtras(",
+            "\n\nasync function resolveUseAdapter(",
+        )
     )
 
 
@@ -358,3 +374,38 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
         "keys"
     ), "an empty rag_scope is falsy server-side and drops the tool and the nudge"
     assert (out.get("scope") or {}).get("thread_id") == expected_thread_id
+
+
+def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
+    """The backend prices the tool loop the settings describe: which gate holds it, how many
+    calls it may make, and whether it retrieves. Omitting one priced the server's defaults."""
+    settings = RAG_ON.rstrip(" }") + ', permissionMode: "ask", maxToolCallsPerMessage: 0 }'
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({settings});
+            const on = await buildLocalTokenCountExtras("thread-a");
+            seed({{ residentCheckpoint: "org/Model-70B" }});
+            const large = await buildLocalTokenCountExtras("thread-a");
+            seed({{ ragAutoInject: "off", residentCheckpoint: "org/Model-4B" }});
+            const injectOff = await buildLocalTokenCountExtras("thread-a");
+            seed({{ supportsTools: false }});
+            const off = await buildLocalTokenCountExtras("thread-a");
+            console.log(JSON.stringify({{ on, large, injectOff, off }}));
+            """
+        )
+    )
+    on, off = out["on"], out["off"]
+    assert on.get("permission_mode") == "ask", "the gate that holds the loop's retrieval"
+    assert on.get("max_tool_calls_per_message") == 0, "Off suppresses the loop entirely"
+    assert (on.get("rag_scope") or {}).get("autoinject") is True
+    # The values, not the keys: unknown size on, Auto off above the threshold, Off saying so.
+    assert (out["large"].get("rag_scope") or {}).get("autoinject") is False
+    off_scope = out["injectOff"].get("rag_scope") or {}
+    assert (off_scope.get("autoinject"), off_scope.get("whole_doc")) == (False, False)
+    # Explicit, and with no budget beside it, as the send is: an omitted flag would let
+    # `unsloth studio run --enable-tools` answer for the count.
+    assert off.get("enable_tools") is False
+    assert "max_tool_calls_per_message" not in off

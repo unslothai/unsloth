@@ -485,9 +485,9 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Unsloth starting against an already-resident GGUF: history can load before this first
-        // status refresh has a checkpoint or window, so its own recount never runs. A null thread
-        // would publish an empty count, hence the mounted-thread guard.
+        // Studio starting against a model that was already resident: history can load before
+        // this first status refresh has a checkpoint or window, so its own recount never runs.
+        // A null thread would publish an empty count, hence the mounted-thread guard.
         const hydrated = useChatRuntimeStore.getState();
         if (
           !selectedCheckpoint &&
