@@ -22,6 +22,7 @@ from hub.utils.hf_cache_state import (
     same_existing_path,
     validated_repo_cache_path,
 )
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 
 TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
@@ -190,7 +191,7 @@ def processed_dataset_cache_has_artifacts(path: Path) -> bool:
             continue
         for filename in filenames:
             entry = base / filename
-            if entry.suffix.lower() != ".arrow":
+            if entry.suffix.lower() != ".arrow" or is_appledouble_metadata(entry):
                 continue
             try:
                 if entry.is_symlink() or not entry.is_file():
@@ -569,9 +570,9 @@ def cached_dataset_candidates(
     preferred_extensions: tuple[str, ...] = TRAINING_DATA_EXTS,
 ) -> list[Path]:
     try:
-        files = [
-            p for p in snapshot.rglob("*") if p.is_file() and p.name.lower().endswith(extensions)
-        ]
+        files = drop_appledouble_metadata(
+            [p for p in snapshot.rglob("*") if p.is_file() and p.name.lower().endswith(extensions)]
+        )
     except OSError:
         return []
     if not files:

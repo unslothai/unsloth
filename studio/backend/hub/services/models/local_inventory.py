@@ -37,6 +37,7 @@ from hub.utils.paths import (
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
+from utils.paths.path_utils import is_appledouble_metadata
 from utils.paths.scan_folder_health import (
     annotate_scan_folders,
     note_scan_folder_scanned,
@@ -92,6 +93,8 @@ _gguf_variant_state_summary = model_common._gguf_variant_state_summary
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:
+    if is_appledouble_metadata(path):
+        return False
     suffix = path.suffix.lower()
     if suffix == ".safetensors":
         return True
@@ -225,7 +228,12 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
+            is_gguf_file = (
+                not is_dir
+                and child.suffix.lower() == ".gguf"
+                and child.is_file()
+                and not is_appledouble_metadata(child)
+            )
             if not is_dir and not is_gguf_file:
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
@@ -488,7 +496,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             break
         try:
             if not child.is_dir():
-                if child.suffix.lower() == ".gguf" and child.is_file():
+                if (
+                    child.suffix.lower() == ".gguf"
+                    and child.is_file()
+                    and not is_appledouble_metadata(child)
+                ):
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -542,7 +554,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                                 updated_at = updated_at,
                             )
                         )
-                    elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
+                    elif (
+                        model_dir.suffix.lower() == ".gguf"
+                        and model_dir.is_file()
+                        and not is_appledouble_metadata(model_dir)
+                    ):
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
