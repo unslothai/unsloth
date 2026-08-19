@@ -349,3 +349,18 @@ def test_rejected_response_format_records_nothing(monkeypatch):
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
     assert resp.status_code == 400
     assert api_monitor.snapshot(include_details = False) == []
+
+
+def test_client_abort_records_a_cancelled_row(monkeypatch):
+    # The disconnect watcher turns a client abort into a 499, not a CancelledError,
+    # so the monitor must read it as cancelled rather than a failure.
+    async def _cancelled(text):
+        raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+
+    cli, calls, saved = _make_client(monkeypatch, generate = _cancelled)
+    api_monitor.clear()
+    assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 499
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "cancelled"
+    assert not rows[0]["error"]

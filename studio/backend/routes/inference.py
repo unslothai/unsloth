@@ -4203,6 +4203,12 @@ async def _monitored_media_request(
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except HTTPException as exc:
+        # A client abort reaches these routes as a 499 from the disconnect watchers, not as a
+        # CancelledError, so without this an ordinary stop is a red error row. Same pairing the
+        # text routes use: finish("cancelled") alongside every 499 they raise.
+        if getattr(exc, "status_code", None) == 499:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         # The route's own message ("No model loaded."), not the llama-server mapping.
         detail = exc.detail
         if isinstance(detail, dict):

@@ -230,3 +230,17 @@ def test_sidecar_failure_records_an_error_row(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     assert rows[0]["error"] == "Model is busy."
+
+
+def test_client_abort_records_a_cancelled_row(monkeypatch):
+    # SttTranscriptionCancelledError surfaces as a 499, so the row is a cancellation.
+    async def _cancelled(raw):
+        raise HTTPException(status_code = 499, detail = "Transcription cancelled")
+
+    cli, calls = _make_client(monkeypatch, transcribe = _cancelled)
+    api_monitor.clear()
+    assert _post(cli).status_code == 499
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "cancelled"
+    assert not rows[0]["error"]
