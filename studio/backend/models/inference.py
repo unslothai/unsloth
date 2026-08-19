@@ -35,6 +35,11 @@ class LoadRequest(BaseModel):
         pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description = "Opaque client attempt ID for scoped in-flight cancellation",
     )
+
+    force_reload: bool = Field(
+        False,
+        description = "Start a fresh runtime even when the active settings already match",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -334,6 +339,15 @@ class ValidateModelRequest(BaseModel):
         None, description = "Frontend-visible signed native path grant"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server args the follow-up /load will send. Sized with, "
+            "not validated here: a --ctx-size or cache override changes the memory this "
+            "preflight estimates, so omitting it would approve a different command from "
+            "the one that runs."
+        ),
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -441,6 +455,94 @@ class TransformersUpgradeInfo(BaseModel):
         False,
         description = "True if transformers GitHub main ships this model_type (dev-only; "
         "not installable through Unsloth yet).",
+    )
+
+
+class TransformersUpgradeCheckRequest(BaseModel):
+    """Ask whether loading a model needs a newer transformers than any installed overlay."""
+
+    model_name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 1024,
+        description = "Model identifier, local path or checkpoint directory to check.",
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token, so gated repos resolve their config.json"
+    )
+    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by
+    # the same precedence: a cached model loads from its pinned snapshot, whose
+    # config.json can name a different architecture than the repo's current one.
+    prefer_local_cache: bool = Field(
+        False,
+        description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
+    )
+    model_local_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Cache directory the caller selected for this model, if any.",
+    )
+    model_snapshot_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Exact snapshot the load is pinned to; takes precedence over "
+        "model_local_path, as it does for the remote-code scan.",
+    )
+    model_snapshot_repo_id: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "Repository the pinned snapshot belongs to, when it differs from model_name.",
+    )
+    resume_run_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Run this check precedes a resume of. Lets the answer say whether "
+        "installing would strand that checkpoint's exact 4-bit resume.",
+    )
+
+
+class TransformersUpgradeCheckResponse(BaseModel):
+    """Upgrade + quantization preflight for a load that does not run /validate.
+
+    /validate answers this for a chat load as part of a much larger check (GGUF
+    placement, VRAM coexistence, security review). Training needs the same two answers
+    on their own, before starting a worker that would die at model load with an
+    unrecognized-architecture error.
+    """
+
+    model_name: str = Field(..., description = "The identifier that was checked")
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the architecture is unknown to every installed transformers "
+        "but a newer transformers ships it; the caller should raise the install consent "
+        "dialog before starting the load.",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the consent dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model can load on the CURRENT transformers through its own "
+        "repo code, so a declined (or unavailable) install still has a path forward.",
+    )
+    latest_tier_active: bool = Field(
+        False,
+        description = "Whether the latest-transformers sidecar already routes this model.",
+    )
+    forces_16bit: bool = Field(
+        False,
+        description = "Whether a run started now would load 16-bit rather than bnb 4-bit: true "
+        "when the latest sidecar already routes the model, and when an install-only upgrade "
+        "would put it there. Lets the UI state the real precision before the run starts.",
+    )
+    install_breaks_exact_resume: bool = Field(
+        False,
+        description = "Set only for a resume_run_id: installing the offered release would "
+        "activate the latest sidecar, which permanently refuses that checkpoint's attested "
+        "4-bit model load mode. The caller must not offer the install when the run can "
+        "start without it.",
     )
 
 
@@ -711,6 +813,18 @@ class _InferenceRuntimeFields(BaseModel):
             "hard-crashed and the same launch became healthy with GPU devices disabled."
         ),
     )
+
+    mmproj_fallback_reason: Optional[
+        Literal["cpu_offload", "projector_incompatible", "projector_startup_failure"]
+    ] = Field(
+        None,
+        description = (
+            "How an automatic GGUF multimodal-projector recovery changed the load. "
+            "'cpu_offload' keeps vision with the projector on CPU; "
+            "'projector_incompatible' and 'projector_startup_failure' mean the "
+            "model recovered text-only."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
@@ -769,6 +883,17 @@ class _InferenceRuntimeFields(BaseModel):
             "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
+    requested_llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server arguments the running load was INVOKED "
+            "with, or None for a non-GGUF load and for a load that passed none. "
+            "Published so a client that attached to an already-running server "
+            "(a fresh tab, or another browser) knows what it is running: without "
+            "it, a rollback after a failed switch restores the previous model "
+            "without the arguments it had."
+        ),
+    )
 
 
 class LoadResponse(_InferenceRuntimeFields):
@@ -820,6 +945,71 @@ class LoadProgressResponse(BaseModel):
         description = "Total bytes across all GGUF shards for the active model.",
     )
     fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
+
+
+class LlamaFlagCatalogResponse(BaseModel):
+    """Every llama-server flag THIS build documents, for validating pass-through args.
+
+    Read from the installed binary's ``--help`` rather than a list bundled with
+    Unsloth: a custom or newer llama.cpp is exactly the case where a bundled list
+    would reject a flag that works, or accept one that does not exist.
+    """
+
+    flags: dict[str, str] = Field(
+        default_factory = dict,
+        description = "Flag name -> its help text, e.g. {'--top-k': 'top-k sampling ...'}",
+    )
+    managed: list[str] = Field(
+        default_factory = list,
+        description = "Flags Unsloth Studio owns; validate_extra_args rejects these outright",
+    )
+    switch_flags: list[str] = Field(
+        default_factory = list,
+        description = (
+            "Flags this build documents as taking no value, so an editor can tell "
+            "'--verbose foo' (which llama-server refuses) from '--numa distribute'"
+        ),
+    )
+    max_bytes: int = Field(
+        0,
+        description = (
+            "Size limit validate_extra_args applies on THIS host; smaller on Windows, "
+            "where the whole command line shares one 32767-character budget"
+        ),
+    )
+    windows_command_budget: int = Field(
+        0,
+        description = (
+            "Characters the quoted command may take on Windows, or 0 elsewhere. An "
+            "editor mirrors it because the quoting can double a backslash-heavy value."
+        ),
+    )
+    default_parallel_slots: int = Field(
+        1,
+        description = (
+            "Serving slots a load gets when it names none, the server-wide "
+            "--parallel. An editor needs it to judge a pass-through --batch-size: "
+            "llama-server aborts on a batch below the slots it serves, and with the "
+            "Slots field blank this is the number the launch will use."
+        ),
+    )
+    parallel_slots_clamped: bool = Field(
+        False,
+        description = (
+            "True when this build serves ONE slot however many are asked for, because "
+            "it has no --kv-unified and load_model falls back. The default above is "
+            "already effective, but an EXPLICIT Slots value is not: without this an "
+            "editor sizes its batch floor from a count the launch will not use, and "
+            "refuses a --batch-size the backend accepts."
+        ),
+    )
+    probe_ok: bool = Field(
+        False,
+        description = (
+            "False when --help could not be read. `flags` is then empty and callers "
+            "must not report a flag as unknown, only as unverified."
+        ),
+    )
 
 
 class InferenceStatusResponse(_InferenceRuntimeFields):
@@ -883,7 +1073,87 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
             "None when the requested strategy engaged or was not requested."
+        ),
+    )
+    spec_fallback_binary_changed: Optional[bool] = Field(
+        None,
+        description = (
+            "For a 'binary_no_mtp' / 'binary_outdated' stand-down only: whether a "
+            "different llama-server is installed than the live one launched from, "
+            "which is the necessary condition in "
+            "LlamaCppBackend.spec_binary_fallback_can_retry. False -> an identical "
+            "/load cannot repair the drafter and dedupes, so a client need not "
+            "reload for it. None for every other reason, and on a backend too old "
+            "to report it."
+        ),
+    )
+    spec_probe_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "The capability probe has started answering since a launch it degraded, so "
+            "an identical /load is rejected once to re-derive the runtime "
+            "(_runtime_matches_intent's _capability_probe_inconclusive arm). No "
+            "speculative mode gates it. None on a backend too old to report it."
+        ),
+    )
+    spec_dflash_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "A DFlash sidecar fetch failed retryably, which under Auto records no "
+            "spec_fallback_reason at all, so an identical /load is rejected to fetch "
+            "again. Applies to the 'auto' and 'dflash' modes. None on a backend too old "
+            "to report it."
+        ),
+    )
+    spec_dspark_sidecar_absent: Optional[bool] = Field(
+        None,
+        description = (
+            "The DSpark drafter is absent rather than transiently unfetchable, which is "
+            "the permanent state of every repo but one. _runtime_matches_intent excludes "
+            "it from the drafter_not_found retry arm, so an identical /load dedupes and a "
+            "client need not reload for it. None on a backend too old to report it."
+        ),
+    )
+    tensor_parallel_dropped_by_arch_gate: Optional[bool] = Field(
+        None,
+        description = (
+            "The GPU architecture gate normalized a tensor-parallel request to layer "
+            "mode, so tensor_parallel reads false while the request that produced it was "
+            "true. _runtime_matches_intent accepts the same true request against this "
+            "runtime. None on a backend too old to report it."
+        ),
+    )
+    gpu_placement_paravirtual: Optional[bool] = Field(
+        None,
+        description = (
+            "Metal is a virtualised Apple GPU, so paravirtual_normalized_request rewrites "
+            "every GGUF request to manual / zero layers / no split / no MoE before the "
+            "duplicate-load comparators run. Placement cannot tell two requests apart "
+            "here. None on a backend too old to report it."
+        ),
+    )
+    audio_probe_pending: bool = Field(
+        False,
+        description = (
+            "The post-launch audio probe did not finish and has to be retried. The route "
+            "refuses its own already-loaded answer while this is true so load_model can "
+            "re-probe, and nothing else does, so a client must not skip /load for it."
+        ),
+    )
+    diffusion_split_supported: Optional[bool] = Field(
+        None,
+        description = (
+            "A diffusion launch right now would honour --ngl. _runtime_matches_intent "
+            "rejects an otherwise identical request once this is true and gpu_layers "
+            "differs from diffusion_requested_ngl, so a split an older shim dropped can "
+            "be applied. None off a diffusion runner, and on a backend too old to report "
+            "it."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -3486,6 +3756,12 @@ class VideoGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
+    )
+    model: Optional[str] = Field(
+        None,
+        description = "Video model to generate on. Only read when media auto-switch is on, "
+        "where a downloaded model that is not the resident one is loaded first; omit to use "
+        "whatever is loaded. The Video page never sends it.",
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
     # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The

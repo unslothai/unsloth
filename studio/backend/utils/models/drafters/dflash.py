@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from utils.models.gguf_metadata import read_gguf_general_metadata
+from utils.models.gguf_metadata import read_gguf_architecture
 from utils.models.drafters.common import (
     _drafter_launch_path,
     _drafter_matches_weight,
@@ -50,8 +50,7 @@ def is_dflash_architecture(path: str) -> bool:
     apply it -- a remote path that trusted the prefix alone would download
     gigabytes the launch then cannot use.
     """
-    meta = read_gguf_general_metadata(str(path)) or {}
-    return (meta.get("general.architecture") or "").strip().lower() == "dflash"
+    return (read_gguf_architecture(str(path)) or "").lower() == "dflash"
 
 
 def detect_dflash_file(
@@ -205,7 +204,7 @@ def detect_dflash_file(
                 # Re-read only on the reject path, and header reads are cached by
                 # (path, mtime, size), so naming the offending architecture in the
                 # log costs nothing.
-                (read_gguf_general_metadata(launch) or {}).get("general.architecture"),
+                read_gguf_architecture(launch),
             )
             continue
         logger.info("Detected DFlash drafter: %s", launch)
