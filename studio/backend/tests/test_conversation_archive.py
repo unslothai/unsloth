@@ -522,6 +522,33 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_a_line_inserted_INTO_an_archived_turn_retires_it():
+    """An edit that adds a line BETWEEN two archived lines is still an edit.
+
+    The two anchors either side of this covered an edit that prepends to a message the run
+    stepped into and one that appends to a message it is leaving. A correction dropped
+    between two archived lines matched both probes with the new line sitting unexamined in
+    the gap, so the pre-edit turn stayed recallable and could be quoted back as current.
+
+    A label `render_turn` wrote is still allowed in that gap, or a pasted chat log carrying
+    its own "user:" lines would retire turns nobody touched.
+    """
+    from core.rag import conversation_archive as archive
+
+    probes = [("A: drain traffic", False), ("B: flip the flag", False)]
+
+    assert archive._scan_probes(probes, ["A: drain traffic\nB: flip the flag"], 0, 1) is not None
+    assert (
+        archive._scan_probes(
+            probes, ["A: drain traffic\ncorrection: hold on\nB: flip the flag"], 0, 1
+        )
+        is None
+    )
+    assert (
+        archive._scan_probes(probes, ["A: drain traffic\nuser: B: flip the flag"], 0, 1) is not None
+    )
+
+
 def test_a_pasted_transcript_cannot_widen_a_turns_run(conn):
     """Counting role labels counts lines the USER wrote, not just the renderer's.
 
@@ -2100,6 +2127,32 @@ def test_a_floor_nothing_clears_still_returns_nothing(conn, monkeypatch):
     assert conversation_archive.recall(THREAD, "pelican", top_k = 4) is not None
 
 
+def test_the_newest_revision_survives_a_tied_run_LONGER_than_the_cap(conn):
+    """Reordering a window cannot reach a turn that never entered it.
+
+    Every hit on the conversation's own identifier ties at the IDF floor, and SQLite
+    returns a fully tied run in rowid order, so the candidate cap took the OLDEST rows.
+    Past that many chunks on the subject, the newest assignment was unreachable at any k:
+    the ends-first ordering ran inside the cap and could only pick both ends of the window
+    it was handed. The existing tie tests patch the cap down instead of exceeding it,
+    which is why this went unnoticed.
+    """
+    count = conversation_archive._BRANCH_FILTER_MAX_CANDIDATES + 40
+    for index in range(count - 1):
+        _archive(_turn(f"note {index:03d} about ZQXVARA123", "noted"))
+    _archive(_turn("set ZQXVARA123 to 9999", "done"))
+
+    found = conversation_archive.recall(THREAD, "what is ZQXVARA123 currently", top_k = 4)
+
+    assert found is not None
+    assert "9999" in found[0]
+    # And the oldest end is still reachable, which is the invariant the ends-first
+    # ordering exists for: a fix that just returns the newest turns fails here.
+    oldest = conversation_archive.recall(THREAD, "what was ZQXVARA123 originally", top_k = 4)
+    assert oldest is not None
+    assert "note 000" in oldest[0]
+
+
 def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
     """A tie in the score is not an order, and truncating it silently picked the past.
 
@@ -2307,6 +2360,60 @@ def test_a_repeat_still_in_the_prompt_is_not_archived_early(conn):
         ).fetchall()
     ]
     assert ordinals == [0, 1, 2]
+
+
+def test_a_re_embed_does_not_swallow_a_repeat_evicted_later(conn, monkeypatch):
+    """A REPLACEMENT is not an addition, and the two used to be confused.
+
+    When the embedder identity changes between the first copy of a repeated turn being
+    archived and the second occurrence being evicted, the re-embed branch swaps that one
+    copy's vectors and keeps the count where it was, so the newly evicted occurrence was
+    never written. With a contradicting turn in between, the chronological block then
+    presents the contradiction as the conversation's last word, on the very response the
+    eviction triggered.
+    """
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    middle = _turn("set ZQXVARA123 to 2", "ok")
+    tail = _turn("and now something else about ZQXVARA123", "fine")
+    conversation = repeat + middle + list(repeat) + tail
+    _save_thread(THREAD, conversation)
+
+    # The first copy and the contradiction are evicted while the repeat is still live.
+    live = list(repeat) + tail
+    conversation_archive.archive_turns(THREAD, repeat + middle, live = live)
+
+    # The embedder changes, and only then does the repeat itself get evicted. Handed over
+    # ALONE, which is what four of the five call sites do: the tool-loop and respawn
+    # refits pass the already-fitted list, so only the newly evicted turns are in it.
+    identity["name"] = "st:model-b"
+    conversation_archive.archive_turns(THREAD, list(repeat), live = tail)
+
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+            (scope,),
+        ).fetchall()
+    ]
+    assert ordinals == [0, 1, 2]
+
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    # The conversation's last word on the identifier is 1, and the block is rendered
+    # oldest first under a header saying the later turn supersedes.
+    assert "set ZQXVARA123 to 1" in found[1][-1]["text"]
 
 
 def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):

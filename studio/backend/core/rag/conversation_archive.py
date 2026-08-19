@@ -439,6 +439,39 @@ def archive_turns(
             _retire_surplus(conn, scope, digest, seats)
             conn.commit()
             written += 1
+            # A REPLACEMENT is not an addition. The re-embed branch above swaps one copy's
+            # vectors and keeps the count where it was, so a repeat evicted while the
+            # embedder identity happened to change was never written at all: measured as
+            # ordinals [0, 1] where [0, 1, 2] was due, with the recall then presenting an
+            # intervening contradiction as the conversation's last word. Top the copies up
+            # to the budget here, reusing the vectors already in hand.
+            #
+            # Only where the budget is a real count of EVICTED occurrences, which is what
+            # `live` buys. Without it the budget falls back to every seat in the
+            # transcript, and topping up to that would write the second copy of a turn
+            # whose repeat is still in the prompt -- the thing `_write_budget` exists to
+            # stop. Every direct caller therefore behaves exactly as before.
+            while (
+                stale is not None
+                and live_texts is not None
+                and len(store.documents_by_hash(conn, scope, digest)) < budget
+            ):
+                if not _write_copy(
+                    conn,
+                    scope = scope,
+                    thread_id = thread_id,
+                    roles = roles,
+                    digest = digest,
+                    identity = identity,
+                    group = group,
+                    chunks = chunks,
+                    vectors = group_vectors,
+                    seats = seats,
+                ):
+                    break
+                _retire_surplus(conn, scope, digest, seats)
+                conn.commit()
+                written += 1
             if _INGEST_FAILED:
                 globals()["_INGEST_FAILED"] = False
     except Exception:
@@ -718,6 +751,48 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     ]
 
 
+def _write_copy(
+    conn,
+    *,
+    scope: str,
+    thread_id: str,
+    roles: str,
+    digest: str,
+    identity: str,
+    group: list[dict],
+    chunks,
+    vectors,
+    seats: list[int],
+) -> bool:
+    """One more copy of an already-embedded turn, at the next unfilled seat.
+
+    Only for topping up after a re-embed, which replaces a copy rather than adding one.
+    Returns False when there is no seat left to fill, so the caller stops rather than
+    allocating a fresh ordinal and putting a repeat at the end of its own conversation.
+    """
+    copies = store.documents_by_hash(conn, scope, digest)
+    if not seats or len(copies) >= len(seats):
+        return False
+    document_id = store.create_document(
+        conn,
+        scope = scope,
+        thread_id = thread_id,
+        filename = f"earlier turn ({roles})",
+        sha256 = digest,
+        status = "completed",
+        embedding_model = identity,
+        archive_messages = len(group),
+        archive_ordinal = seats[len(copies)],
+        commit = False,
+    )
+    try:
+        store.add_chunks(conn, scope, document_id, chunks, vectors)
+    except Exception:
+        conn.rollback()
+        raise
+    return True
+
+
 def _live_texts(live: Optional[list[dict]]) -> Optional[set[str]]:
     """The fitted conversation as the probe texts a transcript position is compared to."""
     if live is None:
@@ -985,6 +1060,14 @@ _ROLE_PREFIX = re.compile(
 # every archived tool line misses and the turn looks rolled back. The name goes with it
 # when arguments follow; with none, the bare name is what the transcript has.
 _TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
+# What may sit between two probes of the same message: nothing, or a label the probe had
+# stripped. A pasted transcript carries its own "user:" lines, so the gap is real there
+# and the turn is unedited. Any other text in that gap is content the archive never saw.
+_GAP_IS_LABEL = re.compile(
+    r"^\s*(?:(?:user|assistant|system|developer|tool result|message):"
+    r"|assistant called (?:[^:\n]+:)?)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _probes_for(text: str) -> list[str]:
@@ -1075,6 +1158,23 @@ def _scan_probes(
                 # spellings of its arguments while the archived copy has one line of one
                 # of them. Nothing there can line up character for character.
                 if fresh and found != 0 and not partial_ok:
+                    return None
+                # And text inserted BETWEEN two probes of the same message. The two checks
+                # around this one cover an edit that prepends to a message the run stepped
+                # into and one that appends to a message it is leaving; a correction
+                # dropped between two archived lines matched both of them with the new
+                # line sitting unexamined in the gap, so the pre-edit turn stayed
+                # recallable. Measured on "A\nB" becoming "A\ncorrection\nB".
+                #
+                # A gap is only allowed where it is a label `render_turn` wrote and the
+                # probe therefore had stripped: a pasted transcript legitimately carries
+                # its own "user:" lines. Anything else is content the archive never saw.
+                if (
+                    not fresh
+                    and cursor
+                    and not (partial or partial_ok)
+                    and not _GAP_IS_LABEL.match(messages[index][cursor:found])
+                ):
                     return None
                 if opened_at is None:
                     # Same exemption at the front of the run as inside it.
@@ -1307,7 +1407,18 @@ def _ends_first_within_ties(conn, hits: list) -> list:
     return ordered
 
 
-def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> list:
+def _lexical_pass(
+    conn, scope: str, query: str, model, k: int, expression, *, newest_first: bool = False
+) -> list:
+    if newest_first:
+        # The archive's lexical legs are always mode "lexical", so this is the same call
+        # one layer down, with the tie-break reversed.
+        return _ends_first_within_ties(
+            conn,
+            retrieval.retrieve_lexical(
+                conn, scope, query, k, match_query = expression, newest_first = True
+            ),
+        )
     return _ends_first_within_ties(
         conn,
         retrieval.retrieve_hybrid(
@@ -1320,6 +1431,12 @@ def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> li
             lexical_query = expression,
         ),
     )
+
+
+def _both_ends(oldest: list, newest: list) -> list:
+    """One candidate list from a run fetched from each end, oldest side first, no repeats."""
+    seen = {hit.chunk_id for hit in oldest}
+    return oldest + [hit for hit in newest if hit.chunk_id not in seen]
 
 
 def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
@@ -1347,7 +1464,32 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
         return _lexical_pass(
             conn, scope, query, model, fetch, expressions[0] if expressions else None
         )
-    strict = _lexical_pass(conn, scope, query, model, _BRANCH_FILTER_MAX_CANDIDATES, expressions[0])
+    # Fetched from BOTH ENDS of the tied run, not just the front. The IDF floor above
+    # means every hit on the conversation's own identifier scores the same, and SQLite
+    # returns a fully tied run in rowid order, so `LIMIT 256` is "the oldest 256": past
+    # that many chunks naming the identifier the newest assignment never became a
+    # candidate at all, and `_ends_first_within_ties` could only reorder the window it was
+    # given. Measured on a 300-turn archive: the window held ordinals 0-255 of 0-299 and
+    # the value set by the last turn was unreachable. Half from each end keeps "what is it
+    # now" and "what was it originally" both answerable, which is the same invariant the
+    # ends-first ordering exists for.
+    _newest_half = _BRANCH_FILTER_MAX_CANDIDATES // 2
+    # Re-ordered over the MERGED run, not per half: each half is ends-first within itself,
+    # so concatenating them leaves the newest end sitting behind a full window of old
+    # turns and the caller's top few slots never reach it.
+    strict = _ends_first_within_ties(conn, _both_ends(
+        _lexical_pass(
+            conn,
+            scope,
+            query,
+            model,
+            _BRANCH_FILTER_MAX_CANDIDATES - _newest_half,
+            expressions[0],
+        ),
+        _lexical_pass(
+            conn, scope, query, model, _newest_half, expressions[0], newest_first = True
+        ),
+    ))
     # The ranking pass is fetched to the same bound as the filter pass, not to `fetch`.
     # It ranks the ELIGIBLE chunks, and at `fetch` rows its window can be spent entirely
     # on chunks that never name the identifier: a question's content word ("current") is
@@ -1357,9 +1499,17 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     # is dropped -- measured on a 41-turn archive (20 turns discussing the variable, the
     # assignment, 20 ordinary turns using "current"/"value" about other things): the
     # assignment ranked 21st of 21 in the filter pass and never reached the caller.
-    loose = _lexical_pass(
-        conn, scope, query, model, max(fetch, _BRANCH_FILTER_MAX_CANDIDATES), expressions[-1]
-    )
+    # Two-ended for the same reason, and it matters MORE here: the merged order is taken
+    # from this pass, so a newest-end candidate the filter pass found still lands behind a
+    # full window of old turns if the ranking pass never saw it.
+    _loose_k = max(fetch, _BRANCH_FILTER_MAX_CANDIDATES)
+    _loose_newest = _loose_k // 2
+    loose = _ends_first_within_ties(conn, _both_ends(
+        _lexical_pass(conn, scope, query, model, _loose_k - _loose_newest, expressions[-1]),
+        _lexical_pass(
+            conn, scope, query, model, _loose_newest, expressions[-1], newest_first = True
+        ),
+    ))
     # Eligibility is asked of the index, not read off the strict pass's top rows. That
     # pass is capped, and its order is the arbitrary one described above, so a chunk
     # naming the identifier can be missing from it purely because the archive is long:

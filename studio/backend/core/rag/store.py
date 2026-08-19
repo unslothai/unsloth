@@ -554,6 +554,7 @@ def search_lexical(
     k: int,
     *,
     match_query: str | None = None,
+    newest_first: bool = False,
 ):
     """BM25 lexical search over one scope or several. Returns
     [(chunk_id, score)], higher = better.
@@ -561,6 +562,13 @@ def search_lexical(
     `match_query` lets a caller supply the FTS5 expression itself; the conversation
     archive shapes its own (see `conversation_match_queries`). Omitted, this is byte for
     byte what every other caller has always got.
+
+    `newest_first` breaks TIES the other way round. FTS5 floors the IDF of a term the
+    whole index shares, so every hit on a per-thread archive's own subject scores the
+    same, and `ORDER BY s LIMIT k` then returns the k OLDEST rows: past k chunks on that
+    subject the newest assignment is unreachable at any k. Ordering is by rowid, which is
+    insertion order rather than exact conversation order, so this widens the candidate
+    set and does not decide anything; the caller still orders what it gets.
     """
     mq = match_query if match_query is not None else _match_query(query)
     if not mq:
@@ -579,7 +587,20 @@ def search_lexical(
         # The filtered form joins chunks and documents and runs both subqueries for every
         # matched row BEFORE the LIMIT, so it costs more the commoner the query terms are.
         # With nothing linked that work is provably wasted (linked_folder_rows_exist).
-        if linked_folder_rows_exist(conn):
+        if newest_first:
+            # Ordered by the archive ordinal, not by rowid. Rowid is insertion order, and
+            # a re-embed deletes and reinserts a chunk while keeping its ordinal, so rowid
+            # scrambles exactly the rows this leg exists to reach: measured, a rowid DESC
+            # window returned ordinals 70, 193, 116, ... and still missed the newest turn.
+            # NULLs (rows archived before the column) sort last here, which is oldest.
+            sql = (
+                f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
+                f"JOIN documents d ON d.id=c.document_id "
+                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC LIMIT ?"
+            )
+        elif linked_folder_rows_exist(conn):
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
