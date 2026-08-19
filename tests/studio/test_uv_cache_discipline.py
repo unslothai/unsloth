@@ -114,9 +114,9 @@ def test_the_cache_is_saved_on_main_only() -> None:
     assert saves, "the cache is never saved, so it can never be restored either"
     for step in saves:
         condition = str(step.get("if", ""))
-        assert "refs/heads/main" in condition, (
-            f"a cache/save step is not gated on main: if: {condition!r}"
-        )
+        assert (
+            "refs/heads/main" in condition
+        ), f"a cache/save step is not gated on main: if: {condition!r}"
 
 
 @pytest.mark.parametrize("name", COLD_INSTALL_WORKFLOWS)
@@ -138,5 +138,9 @@ def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
 
 def test_the_action_is_actually_used() -> None:
     """Otherwise every assertion above guards something nothing runs."""
-    users = [p.name for p in WORKFLOWS.glob("*.yml") if "install-unsloth-local" in p.read_text(encoding = "utf-8")]
+    users = [
+        p.name
+        for p in WORKFLOWS.glob("*.yml")
+        if "install-unsloth-local" in p.read_text(encoding = "utf-8")
+    ]
     assert len(users) >= 5, f"only {len(users)} workflows use the action: {users}"
