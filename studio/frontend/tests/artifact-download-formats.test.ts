@@ -7,9 +7,11 @@ import test from "node:test";
 import {
   ARTIFACT_DOWNLOAD_FORMATS,
   buildArtifactDownloadContent,
+  buildArtifactDownloadPayload,
   getArtifactDownloadExtension,
   getArtifactDownloadMimeType,
   getArtifactFilename,
+  isBinaryArtifactDownloadFormat,
 } from "../src/features/chat/artifacts/types.ts";
 
 const CODE = "<h1>hi</h1>";
@@ -28,6 +30,10 @@ test("getArtifactFilename suffixes the slug with the requested format's extensio
   assert.equal(getArtifactFilename(artifact, "html"), "quarterly-report.html");
   assert.equal(getArtifactFilename(artifact, "md"), "quarterly-report.md");
   assert.equal(getArtifactFilename(artifact, "txt"), "quarterly-report.txt");
+  assert.equal(getArtifactFilename(artifact, "docx"), "quarterly-report.docx");
+  assert.equal(getArtifactFilename(artifact, "pptx"), "quarterly-report.pptx");
+  assert.equal(getArtifactFilename(artifact, "xlsx"), "quarterly-report.xlsx");
+  assert.equal(getArtifactFilename(artifact, "pdf"), "quarterly-report.pdf");
   assert.equal(getArtifactFilename(artifact), "quarterly-report.html");
 });
 
@@ -41,9 +47,72 @@ test("html and text downloads keep the raw source untouched", () => {
   assert.equal(buildArtifactDownloadContent(CODE, "txt"), CODE);
 });
 
-// The canvas has no binary-document converter, so offering .docx/.pdf and the
-// rest would save raw HTML under an extension nothing can open. Every offered
-// format must be one buildArtifactDownloadContent can actually produce.
-test("only text formats the canvas can actually produce are offered", () => {
-  assert.deepEqual([...ARTIFACT_DOWNLOAD_FORMATS], ["html", "md", "txt"]);
+test("only html/md/txt are classified as non-binary formats", () => {
+  assert.equal(isBinaryArtifactDownloadFormat("html"), false);
+  assert.equal(isBinaryArtifactDownloadFormat("md"), false);
+  assert.equal(isBinaryArtifactDownloadFormat("txt"), false);
+  assert.equal(isBinaryArtifactDownloadFormat("docx"), true);
+  assert.equal(isBinaryArtifactDownloadFormat("pptx"), true);
+  assert.equal(isBinaryArtifactDownloadFormat("xlsx"), true);
+  assert.equal(isBinaryArtifactDownloadFormat("pdf"), true);
+});
+
+test("text-format payloads match buildArtifactDownloadContent", async () => {
+  const artifact = { title: "Quarterly Report", code: CODE };
+  for (const format of ["html", "md", "txt"] as const) {
+    const payload = await buildArtifactDownloadPayload(artifact, format);
+    assert.equal(payload, buildArtifactDownloadContent(CODE, format));
+  }
+});
+
+// docx/pptx/xlsx are all zip containers (their signature is the same as any
+// zip: "PK"), so this checks the bytes actually produced a zip rather than
+// raw HTML saved under the wrong extension — the failure mode the old
+// "only text formats" test guarded against.
+async function readBlobBytes(blob: Blob): Promise<Uint8Array> {
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+test("docx downloads produce a real zip (OOXML) container", async () => {
+  const payload = await buildArtifactDownloadPayload(
+    { title: "Report", code: CODE },
+    "docx",
+  );
+  assert.ok(payload instanceof Blob);
+  const bytes = await readBlobBytes(payload as Blob);
+  assert.equal(bytes[0], 0x50); // "P"
+  assert.equal(bytes[1], 0x4b); // "K"
+});
+
+test("pptx downloads produce a real zip (OOXML) container", async () => {
+  const payload = await buildArtifactDownloadPayload(
+    { title: "Report", code: CODE },
+    "pptx",
+  );
+  assert.ok(payload instanceof Blob);
+  const bytes = await readBlobBytes(payload as Blob);
+  assert.equal(bytes[0], 0x50);
+  assert.equal(bytes[1], 0x4b);
+});
+
+test("xlsx downloads produce a real zip (OOXML) container", async () => {
+  const payload = await buildArtifactDownloadPayload(
+    { title: "Report", code: CODE },
+    "xlsx",
+  );
+  assert.ok(payload instanceof Blob);
+  const bytes = await readBlobBytes(payload as Blob);
+  assert.equal(bytes[0], 0x50);
+  assert.equal(bytes[1], 0x4b);
+});
+
+test("pdf downloads produce a real PDF file", async () => {
+  const payload = await buildArtifactDownloadPayload(
+    { title: "Report", code: CODE },
+    "pdf",
+  );
+  assert.ok(payload instanceof Blob);
+  const bytes = await readBlobBytes(payload as Blob);
+  const header = new TextDecoder().decode(bytes.slice(0, 5));
+  assert.equal(header, "%PDF-");
 });

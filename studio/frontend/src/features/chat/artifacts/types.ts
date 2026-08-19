@@ -80,7 +80,14 @@ export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {
   };
 }
 
-export type ArtifactDownloadFormat = "html" | "md" | "txt";
+export type ArtifactDownloadFormat =
+  | "html"
+  | "md"
+  | "txt"
+  | "docx"
+  | "pptx"
+  | "xlsx"
+  | "pdf";
 
 interface ArtifactDownloadFormatMeta {
   label: string;
@@ -107,6 +114,29 @@ const ARTIFACT_DOWNLOAD_FORMAT_META: Record<
     extension: "txt",
     mimeType: "text/plain;charset=utf-8",
   },
+  docx: {
+    label: "Word Document",
+    extension: "docx",
+    mimeType:
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  },
+  pptx: {
+    label: "PowerPoint Presentation",
+    extension: "pptx",
+    mimeType:
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  },
+  xlsx: {
+    label: "Excel Spreadsheet",
+    extension: "xlsx",
+    mimeType:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  },
+  pdf: {
+    label: "PDF Document",
+    extension: "pdf",
+    mimeType: "application/pdf",
+  },
 };
 
 // Order the canvas download menu is rendered in.
@@ -114,7 +144,27 @@ export const ARTIFACT_DOWNLOAD_FORMATS: readonly ArtifactDownloadFormat[] = [
   "html",
   "md",
   "txt",
+  "pdf",
+  "docx",
+  "pptx",
+  "xlsx",
 ];
+
+// Formats whose content buildArtifactDownloadContent can produce directly, as
+// plain text. The remaining formats are binary documents built lazily by
+// buildArtifactDownloadPayload (see below) so their generator libraries are
+// only loaded when a user actually picks one of them.
+const TEXT_DOWNLOAD_FORMATS: ReadonlySet<ArtifactDownloadFormat> = new Set([
+  "html",
+  "md",
+  "txt",
+]);
+
+export function isBinaryArtifactDownloadFormat(
+  format: ArtifactDownloadFormat,
+): boolean {
+  return !TEXT_DOWNLOAD_FORMATS.has(format);
+}
 
 export function getArtifactDownloadFormatLabel(
   format: ArtifactDownloadFormat,
@@ -169,4 +219,36 @@ export function buildArtifactDownloadContent(
   format: ArtifactDownloadFormat,
 ): string {
   return format === "md" ? buildArtifactHtmlFence(code) : code;
+}
+
+// The binary formats embed the raw canvas source (monospaced, one row per
+// source line) inside a real .docx/.pptx/.xlsx/.pdf container, rather than
+// attempting a lossy HTML→layout conversion — the canvas has no renderer
+// available outside the browser sandbox to drive such a conversion from.
+export async function buildArtifactDownloadPayload(
+  artifact: Pick<ChatArtifact, "title" | "code">,
+  format: ArtifactDownloadFormat,
+): Promise<string | Blob> {
+  if (!isBinaryArtifactDownloadFormat(format)) {
+    return buildArtifactDownloadContent(artifact.code, format);
+  }
+  const title = normalizeArtifactTitle(artifact.title);
+  const {
+    buildArtifactDocxBlob,
+    buildArtifactPptxBlob,
+    buildArtifactXlsxBlob,
+    buildArtifactPdfBlob,
+  } = await import("./document-formats.ts");
+  switch (format) {
+    case "docx":
+      return buildArtifactDocxBlob(title, artifact.code);
+    case "pptx":
+      return buildArtifactPptxBlob(title, artifact.code);
+    case "xlsx":
+      return buildArtifactXlsxBlob(title, artifact.code);
+    case "pdf":
+      return buildArtifactPdfBlob(title, artifact.code);
+    default:
+      throw new Error(`Unhandled binary download format: ${format}`);
+  }
 }
