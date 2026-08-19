@@ -1461,6 +1461,7 @@ def _codex_chat_gate(
     monkeypatch,
     model: str,
     resolve = None,
+    saved_models = None,
 ):
     """Drive the chat route far enough to answer "may this model be used?".
 
@@ -1482,6 +1483,7 @@ def _codex_chat_gate(
             "base_url": OPENAI_CODEX_API_BASE,
             "display_name": "ChatGPT subscription",
             "is_enabled": True,
+            "models": list(saved_models or []),
         },
     )
 
@@ -1692,5 +1694,28 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
         accepted = call()
         assert accepted.status_code == 401, accepted.detail
         assert "does not accept image input" not in str(accepted.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
+    """visibility is how a slug is presented, not whether the account may call it.
+
+    An aged slug flips to "hide" and drops out of the normalized catalog. Rebuilding the
+    allowlist from that catalog alone would refuse a model the user saved while it was
+    listed and may still be using.
+    """
+    hidden = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+    # A live catalog that no longer lists the slug, so the gate decides on the catalog
+    # rather than reaching for a refresh.
+    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4"}}
+    try:
+        refused = _codex_chat_gate(monkeypatch, hidden)
+        assert refused.status_code == 400
+
+        accepted = _codex_chat_gate(monkeypatch, hidden, saved_models = [hidden])
+        assert accepted.status_code == 401, accepted.detail
+        assert "Choose a curated Codex model." not in str(accepted.detail)
     finally:
         forget_subscription_models("codex-1")

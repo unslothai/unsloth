@@ -1057,6 +1057,13 @@ export function ChatProvidersSettings({
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    if (refresh && listed?.source !== "subscription") {
+      // A curated fallback is not the account's catalog, so it retires nothing: keep
+      // whatever is on screen, including a model checked while the request was out.
+      setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
+      setManualModelIds("");
+      return;
+    }
     setAvailableModels(picker.catalog);
     if (refresh) {
       // The checkboxes stay live while the request is out, so reconcile against the

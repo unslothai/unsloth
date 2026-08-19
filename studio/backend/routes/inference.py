@@ -12442,6 +12442,10 @@ async def _proxy_to_external_provider(
         # Gating chat on the seed alone rejects the model the picker just offered.
         allowed_models = set(info.get("default_models", []))
         allowed_models |= offered_subscription_model_ids(payload.provider_id)
+        # A slug already saved on this connection was authorized when it was accepted.
+        # "visibility" is a picker-presentation flag, so a later flip to "hide" retires
+        # the model from what is offered, not from what the user may still call.
+        allowed_models |= set(config.get("models") or [])
         if model not in allowed_models:
             # The catalog is process-local, so a restart leaves a saved plan slug with
             # nothing to authorize it. Refresh once before refusing what the user picked.
