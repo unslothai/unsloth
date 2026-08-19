@@ -1355,7 +1355,14 @@ def _ends_first_within_ties(conn, hits: list) -> list:
 
 
 def _lexical_pass(
-    conn, scope: str, query: str, model, k: int, expression, *, newest_first: bool = False
+    conn,
+    scope: str,
+    query: str,
+    model,
+    k: int,
+    expression,
+    *,
+    newest_first: bool = False,
 ) -> list:
     if newest_first:
         # The archive's lexical legs are always mode "lexical", so this is the same call
@@ -1424,19 +1431,22 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     # Re-ordered over the MERGED run, not per half: each half is ends-first within itself,
     # so concatenating them leaves the newest end sitting behind a full window of old
     # turns and the caller's top few slots never reach it.
-    strict = _ends_first_within_ties(conn, _both_ends(
-        _lexical_pass(
-            conn,
-            scope,
-            query,
-            model,
-            _BRANCH_FILTER_MAX_CANDIDATES - _newest_half,
-            expressions[0],
+    strict = _ends_first_within_ties(
+        conn,
+        _both_ends(
+            _lexical_pass(
+                conn,
+                scope,
+                query,
+                model,
+                _BRANCH_FILTER_MAX_CANDIDATES - _newest_half,
+                expressions[0],
+            ),
+            _lexical_pass(
+                conn, scope, query, model, _newest_half, expressions[0], newest_first = True
+            ),
         ),
-        _lexical_pass(
-            conn, scope, query, model, _newest_half, expressions[0], newest_first = True
-        ),
-    ))
+    )
     # The ranking pass is fetched to the same bound as the filter pass, not to `fetch`.
     # It ranks the ELIGIBLE chunks, and at `fetch` rows its window can be spent entirely
     # on chunks that never name the identifier: a question's content word ("current") is
@@ -1451,12 +1461,15 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     # full window of old turns if the ranking pass never saw it.
     _loose_k = max(fetch, _BRANCH_FILTER_MAX_CANDIDATES)
     _loose_newest = _loose_k // 2
-    loose = _ends_first_within_ties(conn, _both_ends(
-        _lexical_pass(conn, scope, query, model, _loose_k - _loose_newest, expressions[-1]),
-        _lexical_pass(
-            conn, scope, query, model, _loose_newest, expressions[-1], newest_first = True
+    loose = _ends_first_within_ties(
+        conn,
+        _both_ends(
+            _lexical_pass(conn, scope, query, model, _loose_k - _loose_newest, expressions[-1]),
+            _lexical_pass(
+                conn, scope, query, model, _loose_newest, expressions[-1], newest_first = True
+            ),
         ),
-    ))
+    )
     # Eligibility is asked of the index, not read off the strict pass's top rows. That
     # pass is capped, and its order is the arbitrary one described above, so a chunk
     # naming the identifier can be missing from it purely because the archive is long:
