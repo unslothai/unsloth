@@ -529,6 +529,12 @@ _ROLE_PREFIX = re.compile(
 # every archived tool line misses and the turn looks rolled back. The name goes with it
 # when arguments follow; with none, the bare name is what the transcript has.
 _TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
+# The same label with the NAME captured, for the probe that has to keep it. Stripping the
+# label whole discarded which tool was called, so a retry that kept the arguments and
+# changed the tool (`terminal` to `python`) left the archived pre-edit turn matching.
+# `_probe_text` renders a live call as "<name> <arguments>", so the name is there to be
+# found; only our own "assistant called " wrapper and the colon are not.
+_TOOL_CALL_NAME = re.compile(r"^assistant called ([^:\n]+):\s*", re.IGNORECASE)
 # What may sit between two probes of the same message: nothing, or a label the probe had
 # stripped. A pasted transcript carries its own "user:" lines, so the gap is real there
 # and the turn is unedited. Any other text in that gap is content the archive never saw.
@@ -549,7 +555,20 @@ def _probes_for(text: str) -> list[str]:
     """
     probes = []
     for line in (text or "").splitlines():
-        stripped = _normalise(_TOOL_CALL_PREFIX.sub("", _ROLE_PREFIX.sub("", line)))
+        without_role = _ROLE_PREFIX.sub("", line)
+        named = _TOOL_CALL_NAME.match(without_role.strip())
+        if named:
+            # Its own probe, ahead of the arguments, which is the order `_probe_text`
+            # renders them in. Without it the arguments alone decided, and a call to a
+            # different tool with the same arguments matched.
+            #
+            # Except "tool", which is `render_turn`'s own fallback for a call that
+            # arrived without a name. The live text carries no name there either, so
+            # requiring it would reject every one of those turns.
+            name = _normalise(named.group(1))
+            if name and name != "tool":
+                probes.append(name)
+        stripped = _normalise(_TOOL_CALL_PREFIX.sub("", without_role))
         # The WHOLE line, except where render_turn cut something short: a prefix probe
         # cannot see an edit past its cut-off, leaving a rewritten tail eligible.
         # Keyed off the marker, not a "tool result:" label: a long tool result is ONE
@@ -573,6 +592,15 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
     for line in (text or "").splitlines():
         without_role = _ROLE_PREFIX.sub("", line)
         is_call = bool(_TOOL_CALL_PREFIX.match(without_role.strip()))
+        named = _TOOL_CALL_NAME.match(without_role.strip())
+        if named:
+            # See `_probes_for`: the tool's NAME is a probe of its own, or the arguments
+            # alone decide and a retry that swapped the tool still matches. Flagged as a
+            # call so it keeps the haystack comparison the rest of the line gets.
+            # "tool" is `render_turn`'s fallback for a nameless call; see `_probes_for`.
+            name = _normalise(named.group(1))
+            if name and name != "tool":
+                entries.append((name, True))
         stripped = _normalise(_TOOL_CALL_PREFIX.sub("", without_role))
         truncated = stripped.endswith(_TRUNCATION_MARKER.strip())
         if truncated:
