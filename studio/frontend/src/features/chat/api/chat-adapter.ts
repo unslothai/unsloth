@@ -1689,8 +1689,20 @@ export async function buildLocalTokenCountExtras(
     ragTopK,
     autoHealToolCalls,
     bypassPermissions,
+    permissionMode,
+    maxToolCallsPerMessage,
+    ragAutoInject,
+    ragAutoInjectMinScore,
+    residentCheckpoint,
   } = useChatRuntimeStore.getState();
-  if (!supportsTools) return {};
+  // Explicit false, as the completion sends for the same model: an omitted field lets the
+  // launcher's tools-on default answer, and the server would then render a catalog for a
+  // model the completion renders none for. No budget here, because the completion sends
+  // none either -- a policy that injects tools past this false gets the server default on
+  // both sides, and sending the UI's value would suppress a loop the completion still runs.
+  if (!supportsTools) {
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
+  }
 
   const ragProjectId = await resolveProjectId(threadId);
   const projectRagEnabled = ragProjectId
@@ -1718,6 +1730,12 @@ export async function buildLocalTokenCountExtras(
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
+    // Ask holds the loop's first-pass retrieval behind the confirmation gate, so the count
+    // can price a pending RAG turn instead of declining one the completion never retrieves for.
+    permission_mode: permissionMode,
+    // Max tool calls at Off suppresses the loop entirely, and the relay renders no schemas
+    // and no nudge; the count has to see the same zero.
+    max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
     // sentence, so the count needs the flag to price the same prompt.
     bypass_permissions: bypassPermissions,
@@ -1728,8 +1746,8 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
-    // in the prompt; no retrieval runs for a count.
+    // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
+    // a count, but the scope's ids and switches are read to decide whether one would.
     ...(ragOn
       ? {
           rag_scope: {
@@ -1745,6 +1763,11 @@ export async function buildLocalTokenCountExtras(
             // and {} is falsy in Python, so the count alone would drop the tool and its nudge.
             default_top_k: ragTopK,
             mode: ragMode,
+            // Retrieval turned off means the loop renders exactly these messages, so the
+            // count can price the turn instead of declining a retrieval that never runs.
+            autoinject: resolveAutoInject(ragAutoInject, residentCheckpoint ?? ""),
+            autoinject_min_score: ragAutoInjectMinScore,
+            ...(ragAutoInject === "off" ? { whole_doc: false } : {}),
           },
         }
       : {}),
