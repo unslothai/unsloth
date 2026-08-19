@@ -105,6 +105,19 @@ fn adopted_failure_is_a_stall(verified: bool, served_alive: bool, different_owne
     !verified && served_alive && !different_owner
 }
 
+/// Whether the last-chance probe brought back evidence that a generation is still running.
+///
+/// Not `alive && inference_active`. On the adopted path `alive` means "the ownership probe
+/// re-verified us", and that probe's two extra loopback requests are exactly what a
+/// saturated backend drops -- the one this probe exists to reach. Such a backend answers
+/// the pre-probe with the busy marker set and then goes quiet, so requiring verification
+/// threw away the answer and cleared a backend mid-response, which is the loss this whole
+/// path is for. A stalled port that says it is generating is kept; silence is not, and a
+/// port a different Unsloth backend took over never reaches here with the marker set.
+fn watchdog_confirm_keeps_backend(confirmed: &BackendLiveness) -> bool {
+    confirmed.inference_active && (confirmed.alive || confirmed.probe_timed_out)
+}
+
 /// Whether to spend one long last-chance probe before declaring a backend dead.
 ///
 /// The busy budget can only widen on a marker that some probe actually brought back, and
@@ -422,7 +435,9 @@ struct BackendLiveness {
     /// The backend answered but has not finished its background warm, so the ML-stack
     /// imports on its warm thread are still in flight. Alive, but not yet done starting.
     warming_up: bool,
-    /// The backend answered and had at least one generation in flight.
+    /// The backend answered and had at least one generation in flight. On the adopted path
+    /// this is the pre-probe's reading, which survives an ownership re-check that went
+    /// silent; readers that need "answered right now" pair it with `alive`.
     inference_active: bool,
     /// The probe ran out of budget rather than being refused, so a process is still
     /// holding the port. Silence from a closed port is death; silence from an accepted
@@ -597,13 +612,34 @@ async fn check_watchdog_health(
     // stack, and the app relaunches straight onto it. Without a warm-up signal that host is
     // declared dead three probes later while it is perfectly healthy.
     //
-    // Both markers stay gated on verification, so a foreign process on the port can neither
-    // hold the grace open nor widen the failure budget. The busy marker is gated for the
-    // same reason: an adopted backend serves the same generations an owned one does.
+    adopted_backend_liveness(verified, &served, different_owner)
+}
+
+/// Fold the adopted path's two readings -- what the backend served and what the ownership
+/// probe made of it -- into one verdict.
+///
+/// `alive` and `warming_up` stay gated on verification, so a foreign process on the port
+/// cannot hold the startup grace open.
+fn adopted_backend_liveness(
+    verified: bool,
+    served: &BackendLiveness,
+    different_owner: bool,
+) -> BackendLiveness {
     BackendLiveness {
         alive: verified,
         warming_up: verified && served.warming_up,
-        inference_active: verified && served.inference_active,
+        // NOT gated on verification, for the same reason `probe_timed_out` below is not.
+        // The ownership probe's extra requests are the ones a saturated backend drops, so
+        // requiring verification here discards the one thing the pre-probe did bring back:
+        // this backend, on this port, said a generation was in flight. That is precisely
+        // the evidence the last-chance confirmation spends, and gating it meant a stalled
+        // adopted backend answered "still generating" and was cleared anyway, mid-response.
+        //
+        // A takeover still clears it: `different_owner` is a complete answer naming someone
+        // else, so the generation it reports is not ours to protect. Every other reader
+        // gates on `alive` already (`watchdog_inference_active_after` returns the previous
+        // latch when the probe did not answer), so nothing else changes shape here.
+        inference_active: served.inference_active && !different_owner,
         // The read above answering does not mean the whole check answered. The ownership
         // probe issues two more loopback requests -- its own `/api/liveness` and the
         // `/api/auth/desktop-login` compatibility POST -- each with its own budget, and it
@@ -1603,6 +1639,50 @@ mod tests {
     }
 
     #[test]
+    fn a_stalled_adopted_backend_that_says_it_is_generating_survives_the_confirmation() {
+        // The shape the last-chance probe really brings back from a saturated adopted
+        // backend: the pre-probe answered with the busy marker, and the ownership probe's
+        // two extra loopback requests timed out behind it, so nothing is verified. Judging
+        // that on `alive` threw the answer away and cleared the backend with the response
+        // still streaming, which is the kill this whole path exists to prevent.
+        let served = super::BackendLiveness {
+            alive: true,
+            warming_up: false,
+            inference_active: true,
+            probe_timed_out: false,
+        };
+        let confirmed = super::adopted_backend_liveness(false, &served, false);
+        assert!(
+            !confirmed.alive,
+            "an unverified re-check is not a live answer"
+        );
+        assert!(super::watchdog_confirm_keeps_backend(&confirmed));
+
+        // Silence is still death: the same unverified re-check with nothing served.
+        let quiet =
+            super::adopted_backend_liveness(false, &super::BackendLiveness::default(), false);
+        assert!(!super::watchdog_confirm_keeps_backend(&quiet));
+
+        // So is an idle backend that answered: only a generation buys the reprieve.
+        let idle = super::adopted_backend_liveness(
+            true,
+            &super::BackendLiveness {
+                alive: true,
+                warming_up: false,
+                inference_active: false,
+                probe_timed_out: false,
+            },
+            false,
+        );
+        assert!(!super::watchdog_confirm_keeps_backend(&idle));
+
+        // And a port a different Unsloth backend took over answers with its own generation,
+        // which is not ours to hold the port open for.
+        let taken_over = super::adopted_backend_liveness(false, &served, true);
+        assert!(!super::watchdog_confirm_keeps_backend(&taken_over));
+    }
+
+    #[test]
     fn a_port_another_backend_took_over_stays_on_the_normal_budget() {
         // An adopted backend that exits mid-generation leaves the busy latch set, and the
         // freed port is routinely rebound by the next Unsloth backend the user starts. That
@@ -2177,7 +2257,7 @@ async fn health_watchdog(
                     HEALTH_CONFIRM_PROBE_TIMEOUT,
                 )
                 .await;
-                if confirmed.alive && confirmed.inference_active {
+                if watchdog_confirm_keeps_backend(&confirmed) {
                     warn!(
                         "Health watchdog: backend on port {} answered the last-chance probe and is still generating, not declaring it dead",
                         port
