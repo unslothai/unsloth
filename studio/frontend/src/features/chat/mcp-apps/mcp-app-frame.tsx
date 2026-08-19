@@ -17,7 +17,7 @@ import type { McpUiEnvelope } from "../api/chat-adapter";
 
 // Reported in the ui/initialize result so a view can adapt rather than guess.
 const UI_PROTOCOL_VERSION = "2026-01-26";
-const HOST_NAME = "Unsloth Studio";
+const HOST_NAME = "Unsloth";
 // No build-stamped version here, so this tracks the bridge itself.
 const HOST_VERSION = "1.0.0";
 

@@ -258,7 +258,7 @@ def test_an_oversized_widget_result_is_refused():
 
 def _csp_helpers():
     """Load the CSP builder without importing the whole inference route module."""
-    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     start = source.index("_MCP_APP_DOMAIN_RE = _re.compile")
     end = source.index('@studio_router.get("/mcp-app-frame"')
     namespace = {
