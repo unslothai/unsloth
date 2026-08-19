@@ -196,7 +196,55 @@ def _archivable(group: list[dict]) -> list[dict]:
     """
     if any(str(message.get("role") or "") in _SKIP_ROLES for message in group):
         return []
-    return [message for message in group if not _is_injected(message)]
+    kept = [message for message in group if not _is_injected(message)]
+    return _without_retrieval(kept)
+
+
+def _retrieval_names() -> frozenset:
+    """The tool names whose results are retrieved passages, not conversation."""
+    try:
+        from core.inference.tool_call_parser import RAG_SEARCH_TOOLS
+        return frozenset(RAG_SEARCH_TOOLS)
+    except Exception:  # noqa: BLE001 -- fall back to the name this module owns
+        return frozenset({"search_conversation", "search_knowledge_base"})
+
+
+def _without_retrieval(group: list[dict]) -> list[dict]:
+    """The group with retrieval calls and their results removed.
+
+    `_is_injected` recognises the ids this feature and the RAG auto-inject generate, but a
+    search the MODEL asked for gets an ordinary `call_N` id from the parser, so both the
+    call and its retrieved passage were archived as new conversation. Measured: a second
+    search then indexed the first one's output inside its own, one nesting level per
+    distinct search, each copy competing for the four recall slots.
+
+    Removed by NAME, and only the retrieval parts: an assistant message can carry a
+    retrieval call alongside an ordinary one, and the reply that follows a search is real
+    conversation that must still be archived.
+    """
+    names = _retrieval_names()
+    dropped_ids = set()
+    out = []
+    for message in group:
+        calls = message.get("tool_calls") or []
+        if calls:
+            keep_calls = []
+            for call in calls:
+                function = (call or {}).get("function") or {}
+                if str(function.get("name") or "") in names:
+                    dropped_ids.add(str((call or {}).get("id") or ""))
+                else:
+                    keep_calls.append(call)
+            if len(keep_calls) != len(calls):
+                if not keep_calls and not _text_of(message.get("content")).strip():
+                    # Nothing left of it but the search.
+                    continue
+                message = {**message, "tool_calls": keep_calls}
+        if str(message.get("role") or "") == "tool":
+            if str(message.get("tool_call_id") or "") in dropped_ids:
+                continue
+        out.append(message)
+    return out
 
 
 def enabled() -> bool:
