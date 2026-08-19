@@ -5,6 +5,7 @@
   var storageKey = "unsloth.reload-snapshot.v1";
   var maxSnapshotLength = 3 * 1024 * 1024;
   var maxSnapshotAgeMs = 10 * 1000;
+  var maxMaterializedMediaPixels = 1500 * 1000;
   var overlay = null;
   var removalTimer = null;
   // Appearance reaches the page as inline custom properties on <html> plus
@@ -272,6 +273,75 @@
     }
   }
 
+  function materializeBlobMedia(original, cloned, bounds) {
+    var tag = original.tagName;
+    var source = original.currentSrc || original.getAttribute("src") || "";
+    if (source.slice(0, 5) !== "blob:") return;
+
+    // Audio controls remain a useful visual shell without their expiring
+    // source. Images and video frames can additionally carry their rendered
+    // pixels across the document boundary through a bounded data URL.
+    if (tag !== "IMG" && tag !== "VIDEO") {
+      cloned.removeAttribute("src");
+      return;
+    }
+    if (!bounds) {
+      cloned.removeAttribute("src");
+      return;
+    }
+    if (
+      bounds.bottom <= 0 ||
+      bounds.right <= 0 ||
+      bounds.top >= innerHeight ||
+      bounds.left >= innerWidth
+    ) {
+      cloned.removeAttribute("src");
+      return;
+    }
+
+    var sourceWidth = tag === "IMG" ? original.naturalWidth : original.videoWidth;
+    var sourceHeight =
+      tag === "IMG" ? original.naturalHeight : original.videoHeight;
+    if (!sourceWidth || !sourceHeight) {
+      cloned.removeAttribute("src");
+      return;
+    }
+    try {
+      var pixelRatio = window.devicePixelRatio || 1;
+      var scale = Math.min(
+        1,
+        ((bounds.right - bounds.left) * pixelRatio) / sourceWidth,
+        ((bounds.bottom - bounds.top) * pixelRatio) / sourceHeight,
+      );
+      var width = Math.max(1, Math.round(sourceWidth * scale));
+      var height = Math.max(1, Math.round(sourceHeight * scale));
+      if (width * height > maxMaterializedMediaPixels) {
+        var pixelScale = Math.sqrt(
+          maxMaterializedMediaPixels / (width * height),
+        );
+        width = Math.max(1, Math.round(width * pixelScale));
+        height = Math.max(1, Math.round(height * pixelScale));
+      }
+      var canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      var context = canvas.getContext("2d");
+      if (!context) throw new Error("Canvas 2D context unavailable");
+      context.drawImage(original, 0, 0, width, height);
+      var dataUrl = canvas.toDataURL("image/webp", 0.82);
+      if (!dataUrl || dataUrl === "data:,") throw new Error("Empty media frame");
+      if (tag === "IMG") {
+        cloned.setAttribute("src", dataUrl);
+        cloned.removeAttribute("srcset");
+      } else {
+        cloned.setAttribute("poster", dataUrl);
+        cloned.removeAttribute("src");
+      }
+    } catch (error) {
+      cloned.removeAttribute("src");
+    }
+  }
+
   function saveSnapshot() {
     var root = document.getElementById("root");
     if (!root || !root.firstElementChild) return;
@@ -310,6 +380,7 @@
         } else {
           mirrorFieldState(original, cloned);
           mirrorScrollState(original, cloned);
+          materializeBlobMedia(original, cloned, bounds);
         }
       }
       clone
@@ -323,6 +394,12 @@
         // SVG fill="url(#gradient-id)" and aria-labelledby.
         element.removeAttribute("autofocus");
         element.removeAttribute("srcdoc");
+        ["src", "srcset", "poster"].forEach(function (name) {
+          var value = element.getAttribute(name);
+          if (value && value.indexOf("blob:") !== -1) {
+            element.removeAttribute(name);
+          }
+        });
         Array.from(element.attributes).forEach(function (attribute) {
           if (attribute.name.toLowerCase().startsWith("on")) {
             element.removeAttribute(attribute.name);

@@ -40,6 +40,11 @@ interface ElementSpec {
   scrollWidth?: number;
   clientHeight?: number;
   clientWidth?: number;
+  currentSrc?: string;
+  naturalWidth?: number;
+  naturalHeight?: number;
+  videoWidth?: number;
+  videoHeight?: number;
   /** [top, right, bottom, left]. Ignored for a `display: contents` box. */
   rect?: [number, number, number, number];
   text?: string;
@@ -65,6 +70,11 @@ interface StubElement {
   scrollWidth: number;
   clientHeight: number;
   clientWidth: number;
+  currentSrc: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  videoWidth: number;
+  videoHeight: number;
   textContent: string;
   attributeOverrides: Record<string, string>;
   hasAttribute(name: string): boolean;
@@ -104,6 +114,11 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     scrollWidth: spec.scrollWidth ?? spec.clientWidth ?? 1440,
     clientHeight: spec.clientHeight ?? 900,
     clientWidth: spec.clientWidth ?? 1440,
+    currentSrc: spec.currentSrc ?? spec.attributes?.src ?? "",
+    naturalWidth: spec.naturalWidth ?? 0,
+    naturalHeight: spec.naturalHeight ?? 0,
+    videoWidth: spec.videoWidth ?? 0,
+    videoHeight: spec.videoHeight ?? 0,
     textContent: "",
     children: [] as StubElement[],
     parent,
@@ -295,6 +310,14 @@ function createEnvironment(options: {
         ? (options.styleSheets ?? []).map((href) => ({ href }))
         : [],
     createElement: (tag?: string) => {
+      if (tag === "canvas") {
+        return {
+          width: 0,
+          height: 0,
+          getContext: () => ({ drawImage() {} }),
+          toDataURL: () => "data:image/webp;base64,retained-frame",
+        };
+      }
       const element = {
         tagName: (tag ?? "div").toUpperCase(),
         className: "",
@@ -831,6 +854,41 @@ test("keeps scroll-container geometry and serializes its live offset", () => {
   assert.match(html, /data-reload-scroll-top="600"/);
   assert.match(html, /Earlier message keeps the scroll geometry/);
   assert.match(html, /Visible message/);
+});
+
+test("materializes visible blob images and drops expiring media URLs", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "img",
+          rect: [100, 900, 700, 100],
+          naturalWidth: 1024,
+          naturalHeight: 768,
+          attributes: { src: "blob:https://studio.test/generated-image" },
+        },
+        {
+          tag: "audio",
+          rect: [720, 900, 780, 100],
+          attributes: {
+            controls: "",
+            src: "blob:https://studio.test/generated-audio",
+          },
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /src="data:image\/webp;base64,retained-frame"/);
+  assert.match(html, /<audio controls="">/);
+  assert.doesNotMatch(html, /blob:/);
 });
 
 test("skips the shell when the snapshot carries no stylesheets", () => {
