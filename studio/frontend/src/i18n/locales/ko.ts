@@ -198,6 +198,50 @@ export const ko = {
       agents: "에이전트",
       debugging: "로그",
       voice: "음성",
+      keyboardShortcuts: "단축키",
+    },
+    keyboardShortcuts: {
+      title: "키보드 단축키",
+      description:
+        "단축키를 바꾸거나, 지워서 해당 조합을 브라우저나 운영체제에 넘길 수 있습니다.",
+      searchPlaceholder: "단축키 검색…",
+      noResults: "검색과 일치하는 단축키가 없습니다.",
+      unassigned: "지정 안 됨",
+      recording: "키를 누르세요…",
+      recordingHint: "새 조합을 누르거나 Esc로 취소하세요.",
+      needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
+      conflict: "다른 단축키도 이 조합을 사용합니다",
+      conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",
+      edit: "단축키 변경",
+      clear: "단축키 제거",
+      reset: "기본값 복원",
+      resetAll: "모두 기본값으로 초기화",
+      groups: {
+        general: "일반",
+        chat: "채팅",
+      },
+      actions: {
+        newChat: {
+          label: "새 채팅",
+          description: "새 채팅을 시작합니다",
+        },
+        searchChats: {
+          label: "채팅 검색",
+          description: "채팅 검색 창을 엽니다",
+        },
+        toggleSidebar: {
+          label: "사이드바 토글",
+          description: "사이드바를 표시하거나 숨깁니다",
+        },
+        openSettings: {
+          label: "설정 열기",
+          description: "설정 창을 엽니다",
+        },
+        openKeyboardShortcuts: {
+          label: "키보드 단축키",
+          description: "이 단축키 목록을 엽니다",
+        },
+      },
     },
     debugging: {
       logSection: "로그 파일",

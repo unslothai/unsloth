@@ -198,6 +198,50 @@ export const ar = {
       agents: "الوكلاء",
       debugging: "السجلات",
       voice: "الصوت",
+      keyboardShortcuts: "الاختصارات",
+    },
+    keyboardShortcuts: {
+      title: "اختصارات لوحة المفاتيح",
+      description:
+        "غيّر أي اختصار، أو امسحه لتحرير التركيبة لمتصفحك أو نظام التشغيل.",
+      searchPlaceholder: "بحث في الاختصارات…",
+      noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
+      unassigned: "غير معيّن",
+      recording: "اضغط المفاتيح…",
+      recordingHint: "اضغط التركيبة الجديدة، أو Esc للإلغاء.",
+      needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
+      conflict: "مستخدم أيضاً في اختصار آخر",
+      conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",
+      edit: "تغيير الاختصار",
+      clear: "إزالة الاختصار",
+      reset: "استعادة الافتراضي",
+      resetAll: "إعادة تعيين الكل إلى الافتراضي",
+      groups: {
+        general: "عام",
+        chat: "المحادثة",
+      },
+      actions: {
+        newChat: {
+          label: "محادثة جديدة",
+          description: "بدء محادثة جديدة",
+        },
+        searchChats: {
+          label: "بحث في المحادثات",
+          description: "فتح مربع حوار بحث المحادثات",
+        },
+        toggleSidebar: {
+          label: "تبديل الشريط الجانبي",
+          description: "إظهار الشريط الجانبي أو إخفاؤه",
+        },
+        openSettings: {
+          label: "فتح الإعدادات",
+          description: "فتح مربع حوار الإعدادات",
+        },
+        openKeyboardShortcuts: {
+          label: "اختصارات لوحة المفاتيح",
+          description: "فتح قائمة الاختصارات هذه",
+        },
+      },
     },
     debugging: {
       logSection: "ملف السجل",

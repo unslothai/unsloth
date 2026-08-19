@@ -3,19 +3,27 @@
 
 import { create } from "zustand";
 
-export type SettingsTab =
-  | "general"
-  | "profile"
-  | "appearance"
-  | "resources"
-  | "chat"
-  | "voice"
-  | "connections"
-  | "data"
-  | "api-keys"
-  | "agents"
-  | "debugging"
-  | "about";
+/**
+ * One list, so the type and the persisted-tab check cannot drift: a tab added
+ * to the union alone used to be rejected on reload and fall back to General.
+ */
+export const SETTINGS_TABS = [
+  "general",
+  "profile",
+  "appearance",
+  "resources",
+  "chat",
+  "voice",
+  "connections",
+  "data",
+  "api-keys",
+  "agents",
+  "keyboard-shortcuts",
+  "debugging",
+  "about",
+] as const;
+
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
 
@@ -66,21 +74,7 @@ function loadInitialTab(): SettingsTab {
   } catch {
     return "general";
   }
-  const valid: SettingsTab[] = [
-    "general",
-    "profile",
-    "appearance",
-    "resources",
-    "chat",
-    "voice",
-    "connections",
-    "data",
-    "api-keys",
-    "agents",
-    "debugging",
-    "about",
-  ];
-  return valid.includes(stored as SettingsTab)
+  return (SETTINGS_TABS as readonly string[]).includes(stored ?? "")
     ? (stored as SettingsTab)
     : "general";
 }

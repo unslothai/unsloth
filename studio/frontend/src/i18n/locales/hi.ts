@@ -201,6 +201,50 @@ export const hi = {
       agents: "एजेंट",
       debugging: "लॉग",
       voice: "आवाज़",
+      keyboardShortcuts: "शॉर्टकट",
+    },
+    keyboardShortcuts: {
+      title: "कीबोर्ड शॉर्टकट",
+      description:
+        "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
+      searchPlaceholder: "शॉर्टकट खोजें…",
+      noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
+      unassigned: "असाइन नहीं",
+      recording: "कुंजियाँ दबाएँ…",
+      recordingHint: "नया संयोजन दबाएँ, या रद्द करने के लिए Esc।",
+      needsModifier: "⌘, Ctrl या Alt जोड़ें। अकेली कुंजी टाइपिंग निगल लेगी।",
+      conflict: "यह किसी और शॉर्टकट में भी इस्तेमाल हो रहा है",
+      conflictShadowed: "यह संयोजन किसी और शॉर्टकट के पास है और उसके बदले वही चलता है",
+      edit: "शॉर्टकट बदलें",
+      clear: "शॉर्टकट हटाएँ",
+      reset: "डिफ़ॉल्ट पर लौटाएँ",
+      resetAll: "सभी को डिफ़ॉल्ट पर रीसेट करें",
+      groups: {
+        general: "सामान्य",
+        chat: "चैट",
+      },
+      actions: {
+        newChat: {
+          label: "नई चैट",
+          description: "नई चैट शुरू करें",
+        },
+        searchChats: {
+          label: "चैट खोजें",
+          description: "चैट खोज संवाद खोलें",
+        },
+        toggleSidebar: {
+          label: "साइडबार टॉगल करें",
+          description: "साइडबार दिखाएँ या छिपाएँ",
+        },
+        openSettings: {
+          label: "सेटिंग्स खोलें",
+          description: "सेटिंग्स संवाद खोलें",
+        },
+        openKeyboardShortcuts: {
+          label: "कीबोर्ड शॉर्टकट",
+          description: "यह शॉर्टकट सूची खोलें",
+        },
+      },
     },
     debugging: {
       logSection: "लॉग फ़ाइल",
