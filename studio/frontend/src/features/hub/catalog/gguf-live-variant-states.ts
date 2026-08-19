@@ -91,8 +91,20 @@ export function applyLiveGgufVariantStates(
     // Subtracting the job's transfer from expectedBytes, which takes the larger
     // of the two scopes, would add that baseline straight back: 1 GB reused and
     // 1 GB fetched of a 5 GB plan would read 4 GB left rather than 3 GB.
+    //
+    // Only while the job is running. `transferredBytes` is the last progress
+    // reading, not bytes a resume can reuse, and the two part company the
+    // moment the worker exits: from huggingface_hub 1.18 the partial is opened
+    // "wb" under a process-unique name and unlinked in a finally, so an
+    // interrupted in-file transfer is refetched whole. `existing_blob_bytes`
+    // already prices it that way, whole shards and resumable partials only, so
+    // subtracting the dead job's progress here overwrote a correct backend
+    // reading with a far smaller one: cancelling a one-file 18 GB download at
+    // 17 GB read "1.0 GB left" for a transfer with all 18 GB still to fetch.
     const liveRemaining =
-      live.expectedBytes > 0 && live.transferredBytes > 0
+      activeDownloadState(live.state) &&
+      live.expectedBytes > 0 &&
+      live.transferredBytes > 0
         ? Math.max(live.expectedBytes - live.transferredBytes, 0)
         : null;
     return {

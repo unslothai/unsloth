@@ -94,6 +94,35 @@ test("a completed download is left alone, so no row reads as partial", () => {
   assert.equal(ggufVariantTransferLabel(row), "4.0 GB");
 });
 
+test("a cancelled job keeps the remainder the backend measured", () => {
+  // Progress is not reusable bytes. From huggingface_hub 1.18 the partial is
+  // process-unique, opened "wb" and unlinked in a finally, so an interrupted
+  // in-file transfer is refetched whole -- which is how existing_blob_bytes
+  // already prices it. Subtracting the dead job's 17 GB reported "1.0 GB left"
+  // for a resume that still has all 18 GB to fetch.
+  for (const state of ["cancelled", "error"]) {
+    const [row] = applyLiveGgufVariantStates(
+      [
+        variant({
+          size_bytes: 18 * GB,
+          download_size_bytes: 18 * GB,
+          partial: true,
+          download_remaining_bytes: 18 * GB,
+        }),
+      ],
+      live({
+        state,
+        expectedBytes: 18 * GB,
+        transferredBytes: 17 * GB,
+      }) as never,
+    );
+
+    assert.equal(row.partial, true);
+    assert.equal(row.download_remaining_bytes, 18 * GB);
+    assert.equal(ggufVariantTransferLabel(row), "18 GB left");
+  }
+});
+
 test("a variant with no live job is returned untouched", () => {
   const original = variant({ partial: true, download_remaining_bytes: 2 * GB });
   const [row] = applyLiveGgufVariantStates([original], new Map() as never);
