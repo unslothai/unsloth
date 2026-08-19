@@ -851,7 +851,7 @@ def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    dirs = [line[len("DIR:"):] for line in _lines(result, "DIR:")]
+    dirs = [line[len("DIR:") :] for line in _lines(result, "DIR:")]
     assert len(dirs) == 2, dirs
     assert any(d.startswith(dead) for d in dirs), dirs
     assert all(d.rstrip("\\/").endswith("Unsloth Studio") for d in dirs), dirs
