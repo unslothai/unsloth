@@ -30,6 +30,10 @@ const chatPageSource = readFileSync(
   new URL("../src/features/chat/chat-page.tsx", import.meta.url),
   "utf8",
 );
+const sharedComposerSource = readFileSync(
+  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+  "utf8",
+);
 const imagesPageSource = readFileSync(
   new URL("../src/features/images/images-page.tsx", import.meta.url),
   "utf8",
@@ -1270,6 +1274,23 @@ test("carries live form state, except what sensitive fields hide", () => {
           text: "Authorization: Bearer rendered-api-key",
           attributes: { "data-reload-snapshot-sensitive": "" },
         },
+        {
+          tag: "div",
+          rect: [0, 1440, 600, 0],
+          attributes: { "data-reload-snapshot-sensitive": "" },
+          children: [
+            {
+              tag: "img",
+              rect: [530, 100, 590, 40],
+              naturalWidth: 1024,
+              naturalHeight: 768,
+              attributes: {
+                src: "blob:https://studio.test/pending-local-attachment",
+                alt: "pending-local-attachment",
+              },
+            },
+          ],
+        },
       ],
     },
   });
@@ -1287,6 +1308,11 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.doesNotMatch(html, /revealed-api-key/);
   assert.doesNotMatch(html, /secret-header|stale-header/);
   assert.doesNotMatch(html, /rendered-api-key/);
+  assert.doesNotMatch(html, /pending-local-attachment|retained-frame/);
+  assert.match(
+    sharedComposerSource,
+    /function PendingImageThumb[\s\S]*?data-reload-snapshot-sensitive/,
+  );
 });
 
 test("keeps native select options that paint the closed control label", () => {

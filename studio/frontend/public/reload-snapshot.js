@@ -384,7 +384,7 @@
       // cloneNode can retain input attributes, textarea text, or a secret
       // rendered into an ordinary code/span subtree.
       cloned.removeAttribute("value");
-      if (tag !== "INPUT") cloned.textContent = "";
+      if (tag !== "INPUT") cloned.replaceChildren();
       return;
     }
     if (tag === "TEXTAREA") {
