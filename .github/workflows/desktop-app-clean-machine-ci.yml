@@ -25,6 +25,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
 
       - '.github/scripts/resolve-desktop-release.py'
       - '.github/scripts/clean-machine-env.sh'
@@ -389,12 +390,18 @@ jobs:
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        # The apt preamble below is bounded by the shared helper; the `.deb` install
+        # after it deliberately is not, because whether that package resolves its own
+        # dependencies is the question this job asks. A step budget bounds it anyway,
+        # so a stall there names this step instead of cancelling the job silently.
+        timeout-minutes: 25
         run: |
           # Deliberately no build-essential/cmake/git: a user installing a .deb has none.
           # Xvfb and WebKit are runtime requirements and apt pulls the .deb's declared
           # deps, so a wrong dependency list fails here.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends xvfb
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
             sudo apt-get install -y ./dl/*.deb || {
               echo "::error::the .deb does not declare its runtime dependencies correctly"
