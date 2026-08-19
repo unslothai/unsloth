@@ -253,11 +253,19 @@ export interface LoadModelResponse {
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  mlx_speculative_mode?: MlxSpeculativeMode;
+  mlx_speculative_mode?: MlxSpeculativeResolvedMode;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_speculative_mode_requested?: MlxSpeculativeMode;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_draft_model?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_draft_model_requested?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   mlx_draft_block_size?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_draft_block_size_requested?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_speculative_reason?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
@@ -364,11 +372,19 @@ export interface InferenceStatusResponse {
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
-  mlx_speculative_mode?: MlxSpeculativeMode;
+  mlx_speculative_mode?: MlxSpeculativeResolvedMode;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_speculative_mode_requested?: MlxSpeculativeMode;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_draft_model?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_draft_model_requested?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   mlx_draft_block_size?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_draft_block_size_requested?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_speculative_reason?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;

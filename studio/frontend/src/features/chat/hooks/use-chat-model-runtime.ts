@@ -1284,13 +1284,6 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.mlxKvBits ?? null)
               : useChatRuntimeStore.getState().mlxKvBits;
-          // Same source again: the rollback re-loads the model that is resident now,
-          // and the picker pre-applies the incoming model's request before the switch
-          // starts, so the live control is the outgoing one only without previousConfig.
-          const residentMlxSpeculative =
-            typeof selection !== "string" && selection.previousConfig
-              ? selection.previousConfig
-              : useChatRuntimeStore.getState();
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -1673,6 +1666,14 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                mlxSpeculativeMode:
+                  pendingLoadConfig?.mlxSpeculativeMode ?? "auto",
+                mlxDraftModel: pendingLoadConfig?.mlxDraftModel ?? null,
+                mlxDraftBlockSize: pendingLoadConfig?.mlxDraftBlockSize ?? null,
+                loadedMlxSpeculativeMode: null,
+                loadedMlxDraftModel: null,
+                loadedMlxDraftBlockSize: null,
+                mlxSpeculativeReason: null,
                 // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
@@ -2145,18 +2146,13 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
                   mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
-                  // The resident model's own request, captured before this switch
-                  // staged anything. Sending nothing would restore it with speculation
-                  // off, since that is the backend's default, while the load that
-                  // started the switch sent Auto.
-                  ...mlxSpeculativeLoadFields(
-                    residentMlxSpeculative,
-                    isServedByMlx(
-                      previousIsGguf,
-                      loadPlatform.deviceType,
-                      loadPlatform.chatOnlyReason,
-                    ),
-                  ),
+                  // What that runtime ran, not what was requested: a preset writes the
+                  // request without loading, so the request may name settings it never had.
+                  mlx_speculative_mode:
+                    stateBeforeUnload.loadedMlxSpeculativeMode ?? "off",
+                  mlx_draft_model: stateBeforeUnload.loadedMlxDraftModel,
+                  mlx_draft_block_size:
+                    stateBeforeUnload.loadedMlxDraftBlockSize,
                   speculative_type:
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:

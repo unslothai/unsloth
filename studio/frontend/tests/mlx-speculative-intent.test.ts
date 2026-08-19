@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the requested MLX speculation tuple is allowed to be, wherever it is stored.
-// The pin and the method are one setting: a drafter pinned for MTP that outlived a
-// switch back to Auto would override the pick Auto exists to make.
+// The requested tuple and what a runtime may overwrite. Pin and method are one setting.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,6 +20,9 @@ const {
   normalizeMlxDraftModel,
   normalizeMlxSpeculativeMode,
 } = await import("../src/lib/speculative-modes.ts");
+const { mlxRuntimeStateFrom, reconcileMlxSpeculativeStatus } = await import(
+  "../src/features/chat/lib/mlx-runtime-state.ts"
+);
 const { toApiOverride } = await import(
   "../src/features/model-picker/api/model-overrides.ts"
 );
@@ -95,4 +96,55 @@ test("a load sends the tuple only for a model MLX will serve", () => {
   });
   // A model with nothing remembered asks for Auto, not for Off: Off is a choice.
   assert.equal(mlxSpeculativeLoadFields({}, true).mlx_speculative_mode, "auto");
+});
+
+const MLX_STATUS = {
+  is_mlx: true,
+  mlx_speculative_mode: "auto",
+  mlx_draft_model: "org/d",
+  mlx_draft_block_size: 4,
+  mlx_speculative_reason: null,
+} as const;
+
+test("a verdict is read only from an MLX response, and never over the request", () => {
+  const off = mlxRuntimeStateFrom({ ...MLX_STATUS, is_mlx: false });
+  assert.equal(off.loadedMlxSpeculativeMode, null);
+  assert.equal(off.mlxSpeculativeReason, null);
+  // The request itself is dormant off MLX, not wrong, so it is left alone.
+  assert.equal("mlxSpeculativeMode" in off, false);
+  const on = mlxRuntimeStateFrom(MLX_STATUS);
+  // Auto is what was asked for and stays that, and pins no drafter beside it.
+  assert.equal(on.loadedMlxSpeculativeMode, "auto");
+  assert.equal(on.loadedMlxDraftModel, null);
+});
+
+// Auto drops the pinned drafter but keeps the block size: the size is a drafting depth,
+// not a choice of drafter, so Auto still runs at it.
+const RESIDENT = {
+  mlxSpeculativeMode: "auto" as const,
+  mlxDraftModel: null,
+  mlxDraftBlockSize: 4,
+  loadedMlxSpeculativeMode: "auto" as const,
+  loadedMlxDraftModel: null,
+  loadedMlxDraftBlockSize: 4,
+  mlxSpeculativeReason: null,
+};
+
+test("a status refresh does not overwrite an edit that has not been sent yet", () => {
+  // Otherwise the refresh overwrites the staged values and the reload comparison finds nothing.
+  const staged = { ...RESIDENT, mlxSpeculativeMode: "dflash" as const };
+  const fields = reconcileMlxSpeculativeStatus(staged, MLX_STATUS, false);
+  assert.equal(fields.mlxSpeculativeMode, undefined);
+  // The runtime's own half is still adopted: only the request is the user's to hold.
+  assert.equal(fields.loadedMlxSpeculativeMode, "auto");
+  // A model that has reported nothing holds no edit, so its first status is adopted.
+  const fresh = reconcileMlxSpeculativeStatus(
+    { ...RESIDENT, loadedMlxSpeculativeMode: null },
+    MLX_STATUS,
+    false,
+  );
+  assert.equal(fresh.mlxSpeculativeMode, "auto");
+  // Hydrating a different model adopts that model's request instead of holding the edit.
+  const hydrated = reconcileMlxSpeculativeStatus(staged, MLX_STATUS, true);
+  assert.equal(hydrated.mlxSpeculativeMode, "auto");
 });

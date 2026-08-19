@@ -2231,6 +2231,13 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   // Or a background autoload leaves its width and verdict on the restored model.
   // The rest of the group mlxRuntimeStateFrom writes.
   "mlxKvBits",
+  "mlxSpeculativeMode",
+  "mlxDraftModel",
+  "mlxDraftBlockSize",
+  "loadedMlxSpeculativeMode",
+  "loadedMlxDraftModel",
+  "loadedMlxDraftBlockSize",
+  "mlxSpeculativeReason",
   "loadedMlxKvBitsRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
