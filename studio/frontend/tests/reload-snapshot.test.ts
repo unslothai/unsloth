@@ -14,23 +14,178 @@ const indexHtml = readFileSync(
   new URL("../index.html", import.meta.url),
   "utf8",
 );
+const indexCss = readFileSync(
+  new URL("../src/index.css", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
+
+/** A node of the fake #root subtree the capture walks. */
+interface ElementSpec {
+  tag: string;
+  display?: string;
+  visibility?: string;
+  /** [top, right, bottom, left]. Ignored for a `display: contents` box. */
+  rect?: [number, number, number, number];
+  text?: string;
+  children?: ElementSpec[];
+}
+
+interface ShadowStub {
+  mode: string;
+  children: Array<Record<string, unknown>>;
+  appendChild(child: Record<string, unknown>): Record<string, unknown>;
+}
+
+interface StubElement {
+  tagName: string;
+  spec: ElementSpec;
+  children: StubElement[];
+  parent: StubElement | null;
+  attributes: Array<{ name: string }>;
+  closest(selector: string): StubElement | null;
+  getBoundingClientRect(): {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+  remove(): void;
+  removeAttribute(name: string): void;
+  querySelectorAll(selector: string): StubElement[];
+  cloneNode(deep: boolean): StubElement;
+  readonly firstElementChild: StubElement | undefined;
+  readonly innerHTML: string;
+  readonly outerHTML: string;
+}
+
+function createElement(spec: ElementSpec, parent: StubElement | null = null) {
+  const element = {
+    tagName: spec.tag.toUpperCase(),
+    spec,
+    children: [] as StubElement[],
+    parent,
+    attributes: [] as Array<{ name: string }>,
+    closest(selector: string) {
+      let node: StubElement | null = element;
+      while (node) {
+        if (node.tagName.toLowerCase() === selector) return node;
+        node = node.parent;
+      }
+      return null;
+    },
+    getBoundingClientRect() {
+      // Chromium, Firefox and WebKit all report an empty rectangle for a box
+      // that is not laid out, whatever its children cover.
+      const [top, right, bottom, left] =
+        spec.display === "contents"
+          ? [0, 0, 0, 0]
+          : (spec.rect ?? [0, 1440, 900, 0]);
+      return { top, right, bottom, left };
+    },
+    remove() {
+      if (!element.parent) return;
+      element.parent.children = element.parent.children.filter(
+        (child) => child !== element,
+      );
+      element.parent = null;
+    },
+    removeAttribute() {
+      // Attribute scrubbing is covered by the browser, not this stub.
+    },
+    querySelectorAll(selector: string) {
+      const wanted = selector.split(",").map((name) => name.trim());
+      const found: StubElement[] = [];
+      const walk = (node: StubElement) => {
+        for (const child of node.children) {
+          if (
+            selector === "*" ||
+            wanted.includes(child.tagName.toLowerCase())
+          ) {
+            found.push(child);
+          }
+          walk(child);
+        }
+      };
+      walk(element);
+      return found;
+    },
+    cloneNode() {
+      return createElement(spec);
+    },
+    get firstElementChild() {
+      return element.children[0];
+    },
+    get innerHTML() {
+      return element.children
+        .map((child) => child.outerHTML)
+        .concat(spec.text ?? "")
+        .join("");
+    },
+    get outerHTML() {
+      return `<${spec.tag}>${element.innerHTML}</${spec.tag}>`;
+    },
+  } as StubElement;
+  element.children = (spec.children ?? []).map((child) =>
+    createElement(child, element),
+  );
+  return element;
+}
+
+/** Enough of CSSStyleDeclaration for the inline custom properties on <html>. */
+type StubStyle = {
+  length: number;
+  getPropertyValue(name: string): string;
+  setProperty(name: string, value: string): void;
+  removeProperty(name: string): void;
+} & Record<number, string>;
+
+function createStyle(initial: Record<string, string> = {}) {
+  const values = new Map(Object.entries(initial));
+  const style = {
+    getPropertyValue: (name: string) => values.get(name) ?? "",
+    setProperty: (name: string, value: string) => {
+      values.set(name, value);
+      index();
+    },
+    removeProperty: (name: string) => {
+      values.delete(name);
+      index();
+    },
+    get length() {
+      return values.size;
+    },
+  } as StubStyle;
+  const index = () => {
+    [...values.keys()].forEach((name, position) => {
+      style[position] = name;
+    });
+  };
+  index();
+  return style;
+}
 
 function createEnvironment(options: {
   navigationType: "navigate" | "reload";
   storage?: Map<string, string>;
   rootHtml?: string;
+  rootTree?: ElementSpec;
+  viewport?: { width: number; height: number };
+  htmlVariables?: Record<string, string>;
+  htmlAttributes?: Record<string, string>;
+  styleSheets?: string[];
 }) {
   const storage = options.storage ?? new Map<string, string>();
   const listeners = new Map<string, Listener[]>();
   const animationFrames: Array<() => void> = [];
   const appended: Array<{ innerHTML: string; removed: boolean }> = [];
+  const tree = options.rootTree ? createElement(options.rootTree) : null;
   const clone = {
     innerHTML: options.rootHtml ?? "<main>Chat is ready</main>",
     querySelectorAll: () => [],
   };
-  const root = {
+  const root = tree ?? {
     firstElementChild: {},
     cloneNode: () => clone,
     querySelectorAll: () => [],
@@ -43,43 +198,76 @@ function createEnvironment(options: {
       listeners.set(name, current);
     },
   };
+  const htmlAttributes = new Map(Object.entries(options.htmlAttributes ?? {}));
+  const documentElement = {
+    style: createStyle(options.htmlVariables),
+    getAttribute: (name: string) => htmlAttributes.get(name) ?? null,
+    setAttribute: (name: string, value: string) => {
+      htmlAttributes.set(name, value);
+    },
+    appendChild(element: { innerHTML: string; removed: boolean }) {
+      appended.push(element);
+    },
+  };
   const document = {
     body: {
       appendChild(element: { innerHTML: string; removed: boolean }) {
         appended.push(element);
       },
     },
-    documentElement: {
-      appendChild(element: { innerHTML: string; removed: boolean }) {
-        appended.push(element);
-      },
-    },
+    documentElement,
     getElementById: () => root,
-    createElement: () => ({
-      className: "",
-      inert: false,
-      innerHTML: "",
-      removed: false,
-      setAttribute() {
-        // DOM stub.
-      },
-      remove() {
-        this.removed = true;
-      },
-    }),
+    querySelectorAll: (selector: string) =>
+      selector === 'link[rel="stylesheet"]'
+        ? (options.styleSheets ?? []).map((href) => ({ href }))
+        : [],
+    createElement: () => {
+      const element = {
+        className: "",
+        rel: "",
+        href: "",
+        inert: false,
+        innerHTML: "",
+        removed: false,
+        shadow: null as ShadowStub | null,
+        attachShadow(init: { mode: string }) {
+          const shadow: ShadowStub = {
+            mode: init.mode,
+            children: [],
+            appendChild(child: Record<string, unknown>) {
+              shadow.children.push(child);
+              return child;
+            },
+          };
+          element.shadow = shadow;
+          return shadow;
+        },
+        setAttribute() {
+          // DOM stub.
+        },
+        remove() {
+          element.removed = true;
+        },
+      };
+      return element;
+    },
   };
 
   vm.runInNewContext(script, {
     Array,
     Date,
     JSON,
+    Object,
     clearTimeout() {
       // Timer bookkeeping is outside this lifecycle test.
     },
     document,
-    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
-    innerHeight: 900,
-    innerWidth: 1440,
+    getComputedStyle: (element: StubElement) => ({
+      display: element.spec?.display ?? "block",
+      visibility: element.spec?.visibility ?? "visible",
+    }),
+    innerHeight: options.viewport?.height ?? 900,
+    innerWidth: options.viewport?.width ?? 1440,
     location: { pathname: "/chat", search: "" },
     performance: {
       getEntriesByType: () => [{ type: options.navigationType }],
@@ -99,6 +287,25 @@ function createEnvironment(options: {
   return {
     storage,
     appended,
+    htmlVariables: documentElement.style,
+    htmlAttributes,
+    /** The host element of the retained shell, if one was restored. */
+    get shell() {
+      const host = appended[0] as unknown as
+        | { shadow: ShadowStub | null; removed: boolean }
+        | undefined;
+      if (!host?.shadow) return null;
+      const children = host.shadow.children;
+      return {
+        host,
+        mode: host.shadow.mode,
+        stylesheets: children
+          .filter((child) => child.rel === "stylesheet")
+          .map((child) => child.href as string),
+        html: (children[children.length - 1]?.innerHTML ?? "") as string,
+        rootClass: (children[children.length - 1]?.className ?? "") as string,
+      };
+    },
     dispatch(name: string, event: Record<string, unknown> = {}) {
       for (const listener of listeners.get(name) ?? []) {
         listener(event);
@@ -113,10 +320,25 @@ function createEnvironment(options: {
   };
 }
 
+function storedSnapshot(storage: Map<string, string>) {
+  const raw = storage.get("unsloth.reload-snapshot.v1");
+  assert.ok(raw, "expected a stored snapshot");
+  return JSON.parse(raw) as {
+    html: string;
+    styles?: string[];
+    rootClass?: string;
+    appearance?: {
+      variables: Record<string, string>;
+      attributes: Record<string, string>;
+    };
+  };
+}
+
 test("carries the rendered shell through a reload until the new shell is ready", () => {
   const outgoing = createEnvironment({
     navigationType: "navigate",
     rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
   });
   outgoing.dispatch("pageswap", {
     activation: { navigationType: "reload" },
@@ -127,7 +349,7 @@ test("carries the rendered shell through a reload until the new shell is ready",
     storage: outgoing.storage,
   });
   assert.equal(incoming.appended.length, 1);
-  assert.equal(incoming.appended[0].innerHTML, "<main>Existing chat</main>");
+  assert.equal(incoming.shell?.html, "<main>Existing chat</main>");
   assert.equal(incoming.storage.size, 0);
 
   incoming.dispatch("unsloth:app-shell-ready");
@@ -152,4 +374,144 @@ test("does not retain the shell for a non-reload navigation", () => {
     activation: { navigationType: "push" },
   });
   assert.equal(environment.storage.size, 0);
+});
+
+test("keeps what a display:contents wrapper renders, drops what is offscreen", () => {
+  // A `display: contents` box is not laid out, so its rectangle is empty even
+  // while its children fill the viewport: /studio wraps its whole page in one.
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    rootTree: {
+      tag: "div",
+      rect: [0, 1440, 900, 0],
+      children: [
+        {
+          tag: "div",
+          display: "contents",
+          children: [
+            { tag: "main", rect: [0, 1440, 900, 0], text: "Studio is ready" },
+          ],
+        },
+        { tag: "aside", rect: [-400, 1440, -100, 0], text: "Scrolled past" },
+        { tag: "footer", display: "none", text: "Collapsed" },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /Studio is ready/);
+  assert.doesNotMatch(html, /Scrolled past/);
+  assert.doesNotMatch(html, /Collapsed/);
+});
+
+test("carries the appearance customization so the shell paints in its own colors", () => {
+  // theme-boot.js resolves mode and palette only; the rest lands in a React
+  // effect, which is well after the restored shell has painted.
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    htmlVariables: { "--background": "#241b2f", "--font-sans": '"Inter"' },
+    htmlAttributes: {
+      "data-contrast-adjust": "",
+      "data-panel-resizing": "true",
+    },
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { appearance } = storedSnapshot(outgoing.storage);
+  assert.deepEqual(appearance?.variables, {
+    "--background": "#241b2f",
+    "--font-sans": '"Inter"',
+  });
+  assert.deepEqual(appearance?.attributes, { "data-contrast-adjust": "" });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.equal(
+    incoming.htmlVariables.getPropertyValue("--background"),
+    "#241b2f",
+  );
+  assert.equal(incoming.htmlAttributes.get("data-contrast-adjust"), "");
+  // Transient state (a panel mid-drag) is not appearance and must not be replayed.
+  assert.equal(incoming.htmlAttributes.has("data-panel-resizing"), false);
+});
+
+test("drops the retained shell's animations instead of pausing them", () => {
+  // Not reachable from the script tests: a paused animation holds its FIRST
+  // keyframe, so `animate-in fade-in` entrances would render at opacity 0 for
+  // as long as the shell is up. Only the stylesheet can express this.
+  const start = indexCss.indexOf(".reload-snapshot-shell *,");
+  assert.ok(start > 0);
+  const rule = indexCss.slice(start, indexCss.indexOf("}", start));
+  assert.doesNotMatch(rule, /animation-play-state:\s*paused/);
+  assert.match(rule, /animation:\s*none\s*!important/);
+});
+
+test("leaves the retained shell click-through", () => {
+  // A full-viewport overlay that takes pointer events swallows every click for
+  // as long as it is up, which is up to the five-second fail-open.
+  const start = indexCss.indexOf(".reload-snapshot {");
+  assert.ok(start > 0);
+  const rule = indexCss.slice(start, indexCss.indexOf("}", start));
+  assert.match(rule, /pointer-events:\s*none/);
+});
+
+test("builds the retained shell inside a closed shadow tree", () => {
+  // The copy duplicates the live markup, so leaving it in the page tree makes
+  // every `textarea[aria-label=...]` style query ambiguous while it is up.
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css", "/assets/chat-def456.css"],
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const stored = storedSnapshot(outgoing.storage);
+  assert.deepEqual(stored.styles, [
+    "/assets/index-abc123.css",
+    "/assets/chat-def456.css",
+  ]);
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.equal(incoming.shell?.mode, "closed");
+  assert.equal(incoming.shell?.html, "<main>Existing chat</main>");
+  // Selectors do not cross the boundary, so the copy needs its own styles.
+  assert.deepEqual(incoming.shell?.stylesheets, [
+    "/assets/index-abc123.css",
+    "/assets/chat-def456.css",
+  ]);
+  // The shell's own rules live in that stylesheet and hang off this marker.
+  assert.match(incoming.shell?.rootClass ?? "", /^reload-snapshot-shell /);
+});
+
+test("skips the shell when the snapshot carries no stylesheets", () => {
+  // Without them the copy paints unstyled inside the shadow tree, which reads
+  // worse than the blank interval this replaces.
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+  assert.deepEqual(storedSnapshot(outgoing.storage).styles, []);
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.equal(incoming.appended.length, 0);
 });

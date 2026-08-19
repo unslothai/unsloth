@@ -70,11 +70,23 @@ function RouteFallback() {
   );
 }
 
+// Retires the retained reload shell (public/reload-snapshot.js). It rides
+// inside the route's own Suspense boundary, so a lazy page that is still
+// resolving keeps the shell up instead of uncovering RouteFallback.
 function ReloadSnapshotReady() {
   useLayoutEffect(() => {
     window.dispatchEvent(new Event("unsloth:app-shell-ready"));
   }, []);
   return null;
+}
+
+function RouteBoundary({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      <ReloadSnapshotReady />
+      {children}
+    </Suspense>
+  );
 }
 
 // ImagesPage is mounted persistently below (not via the /images route) so an in-flight batch survives leaving the tab,
@@ -373,7 +385,6 @@ function RootLayout() {
 
   const content = (
     <>
-      <ReloadSnapshotReady />
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
@@ -386,9 +397,9 @@ function RootLayout() {
       <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
-          <Suspense fallback={<RouteFallback />}>
+          <RouteBoundary>
             <Outlet />
-          </Suspense>
+          </RouteBoundary>
         </main>
       ) : (
         <SidebarProvider
@@ -418,6 +429,7 @@ function RootLayout() {
                   }
                   inert={!isChatRoute || undefined}
                 >
+                  <ReloadSnapshotReady />
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}
@@ -431,9 +443,9 @@ function RootLayout() {
                   }
                   inert={!isImagesRoute || undefined}
                 >
-                  <Suspense fallback={<RouteFallback />}>
+                  <RouteBoundary>
                     <ImagesPage active={isImagesRoute} />
-                  </Suspense>
+                  </RouteBoundary>
                 </div>
               )}
               {/* Same keep-alive treatment for Video so a long generation keeps running off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
@@ -446,9 +458,9 @@ function RootLayout() {
                   }
                   inert={!isVideoRoute || undefined}
                 >
-                  <Suspense fallback={<RouteFallback />}>
+                  <RouteBoundary>
                     <VideoPage active={isVideoRoute} />
-                  </Suspense>
+                  </RouteBoundary>
                 </div>
               )}
               {/* Same keep-alive treatment for Audio so generation and training UI state survive off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
@@ -461,9 +473,9 @@ function RootLayout() {
                   }
                   inert={!isAudioRoute || undefined}
                 >
-                  <Suspense fallback={<RouteFallback />}>
+                  <RouteBoundary>
                     <AudioPage active={isAudioRoute} />
-                  </Suspense>
+                  </RouteBoundary>
                 </div>
               )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
@@ -481,9 +493,9 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <Suspense fallback={<RouteFallback />}>
+                    <RouteBoundary>
                       <Outlet />
-                    </Suspense>
+                    </RouteBoundary>
                   </motion.div>
                 </AnimatePresence>
               )}

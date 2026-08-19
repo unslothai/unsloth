@@ -3240,18 +3240,29 @@ html[data-chat-font] .aui-root {
 	}
 }
 
+/* The retained reload shell. Its contents live in a closed shadow tree styled
+   by public/reload-snapshot.css; only the host box is styled from here, so it
+   is painted by the render-blocking stylesheet. Click-through: the copy is a
+   picture, and the live document underneath keeps taking input. */
 .reload-snapshot {
 	position: fixed;
 	inset: 0;
 	z-index: 2147483647;
-	pointer-events: auto;
+	pointer-events: none;
 	background: var(--background);
 }
 
-.reload-snapshot *,
-.reload-snapshot *::before,
-.reload-snapshot *::after {
-	pointer-events: none !important;
-	animation-play-state: paused !important;
+/* The copy is a still, so it must not animate at all. Pausing is not the same
+   thing: a paused animation holds its FIRST keyframe, which for the
+   animate-in/fade-in entrances is opacity 0, so those elements would render
+   invisible for as long as the shell is up. Even collapsing the duration
+   leaves them blank for the frame the animation starts on. Dropping the
+   animation paints the settled style straight away. This rule reaches the copy
+   because the shadow tree loads this same stylesheet and marks its root
+   .reload-snapshot-shell. */
+.reload-snapshot-shell *,
+.reload-snapshot-shell *::before,
+.reload-snapshot-shell *::after {
+	animation: none !important;
 	transition: none !important;
 }
