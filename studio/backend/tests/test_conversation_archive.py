@@ -2494,9 +2494,7 @@ def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
     assert (
         archive._write_budget([["a"], ["a"]], [0, 1], archive._live_positions(one_live), group) == 1
     )
-    assert (
-        archive._write_budget([["a"], ["a"]], [], archive._live_positions(one_live), group) == 1
-    )
+    assert archive._write_budget([["a"], ["a"]], [], archive._live_positions(one_live), group) == 1
     # Live occurrences are COUNTED, not tested for membership: three seats with one copy
     # still in the prompt owes two writes, not one.
     assert (
