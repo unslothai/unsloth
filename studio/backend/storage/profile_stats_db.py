@@ -9,6 +9,9 @@ Read-only aggregation over chat threads/messages (with their per-message
 The numbers are only as complete as the local history retained after each
 feature was introduced.
 
+Chat and training tables predate authenticated subjects and therefore remain
+install-wide. API usage receipts are filtered to the requesting subject.
+
 Token counts live inside each message's metadata blob, so they cannot be summed
 in SQL portably (JSON1 is not guaranteed on every bundled SQLite). Rows are
 streamed once in (thread, time) order and every metric is folded in that single
@@ -25,6 +28,7 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
+from storage.api_usage_db import canonical_api_subject
 from storage.studio_db import count_chat_message_attachments, get_connection
 
 logger = get_logger(__name__)
@@ -205,14 +209,16 @@ class _ApiUsageFold:
         self.requests = 0
 
 
-def _fold_api_usage(conn, zone) -> _ApiUsageFold:
+def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
     fold = _ApiUsageFold()
     rows = conn.execute(
         """
         SELECT model, prompt_tokens, completion_tokens, total_tokens, created_at
         FROM api_usage_events
+        WHERE subject = ?
         ORDER BY created_at
-        """
+        """,
+        (subject,),
     )
     for row in rows:
         prompt_tokens = _as_int(row["prompt_tokens"])
@@ -612,7 +618,7 @@ def _training_stats(conn) -> dict[str, Any]:
     }
 
 
-def _fingerprint(conn) -> tuple:
+def _fingerprint(conn, subject: str) -> tuple:
     message_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages"
     ).fetchone()
@@ -620,25 +626,46 @@ def _fingerprint(conn) -> tuple:
         "SELECT COUNT(*), COALESCE(MAX(started_at), '') FROM training_runs"
     ).fetchone()
     api_row = conn.execute(
-        "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM api_usage_events"
+        """
+        SELECT COUNT(*), COALESCE(MAX(created_at), 0)
+        FROM api_usage_events
+        WHERE subject = ?
+        """,
+        (subject,),
     ).fetchone()
-    return (message_row[0], message_row[1], run_row[0], run_row[1], api_row[0], api_row[1])
+    return (
+        message_row[0],
+        message_row[1],
+        run_row[0],
+        run_row[1],
+        subject,
+        api_row[0],
+        api_row[1],
+    )
 
 
 def compute_profile_stats(
     days: int = MAX_DAILY_DAYS,
     tz_offset_minutes: int = 0,
     tz_name: str = "",
+    *,
+    subject: str = "",
 ) -> dict[str, Any]:
-    """Aggregate every profile statistic in one pass, memoised per history state."""
+    """Aggregate profile statistics, subject-scoping only external API usage.
+
+    Legacy Studio chat and training history is install-wide because those rows
+    have no authenticated owner. An empty subject intentionally sees no API
+    receipts, keeping non-route callers fail-closed.
+    """
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
         -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
     )
     zone = _resolve_zone(tz_name, tz_offset_minutes)
+    subject = canonical_api_subject(subject)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn), days, tz_offset_minutes, tz_name)
+        fingerprint = (_fingerprint(conn, subject), days, tz_offset_minutes, tz_name)
         now = time.monotonic()
         with _cache_lock:
             if (
@@ -650,7 +677,7 @@ def compute_profile_stats(
 
         started = time.perf_counter()
         fold = _fold_messages(conn, zone)
-        api_fold = _fold_api_usage(conn, zone)
+        api_fold = _fold_api_usage(conn, zone, subject)
         _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)
 

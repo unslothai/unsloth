@@ -5,7 +5,15 @@
 
 from __future__ import annotations
 
+import logging
+import hashlib
+import queue
+import sqlite3
+import threading
+import time
+import uuid
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 from storage.studio_db import get_connection
 
@@ -14,6 +22,16 @@ from storage.studio_db import get_connection
 # validates independently because callers can invoke it directly in tests or
 # future integrations.
 MAX_TOKEN_COUNT = 1 << 40
+MAX_RECEIPT_ID_CHARS = 128
+MAX_SUBJECT_CHARS = 256
+MAX_ENDPOINT_CHARS = 512
+MAX_MODEL_CHARS = 1024
+MAX_STATUS_CHARS = 64
+
+_WRITE_BUSY_TIMEOUT_SECONDS = 0.05
+_WRITE_RETRIES = 20
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen = True, slots = True)
@@ -41,6 +59,75 @@ def _valid_token_count(value: object) -> bool:
     )
 
 
+def _bounded_text(value: object, limit: int, *, truncate: bool) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) <= limit:
+        return value
+    return value[:limit] if truncate else None
+
+
+def _canonical_text(value: object, limit: int) -> Optional[str]:
+    """Bound an identity string without merging values with a shared prefix."""
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) <= limit:
+        return value
+    digest = hashlib.blake2s(value.encode("utf-8"), digest_size = 16).hexdigest()
+    return f"{value[: limit - len(digest) - 1]}~{digest}"
+
+
+def canonical_api_subject(subject: object) -> str:
+    """Stable database/cache key for an authenticated subject."""
+    return _canonical_text(subject, MAX_SUBJECT_CHARS) or ""
+
+
+def canonical_api_model(model: object) -> str:
+    """Stable bounded model key that keeps long shared prefixes distinct."""
+    return _canonical_text(model or "default", MAX_MODEL_CHARS) or "default"
+
+
+def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
+def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
+    receipt_id = _bounded_text(receipt.id, MAX_RECEIPT_ID_CHARS, truncate = False)
+    subject = canonical_api_subject(receipt.subject)
+    endpoint = _bounded_text(receipt.endpoint, MAX_ENDPOINT_CHARS, truncate = True)
+    model = canonical_api_model(receipt.model)
+    status = _bounded_text(receipt.status, MAX_STATUS_CHARS, truncate = True)
+    if receipt_id is None or not subject or endpoint is None or not model or status is None:
+        return False
+
+    conn = get_connection(busy_timeout_seconds = _WRITE_BUSY_TIMEOUT_SECONDS)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO api_usage_events
+                (id, subject, endpoint, model, status,
+                 prompt_tokens, completion_tokens, total_tokens, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receipt_id,
+                subject,
+                endpoint,
+                model,
+                status,
+                receipt.prompt_tokens,
+                receipt.completion_tokens,
+                receipt.total_tokens,
+                receipt.created_at,
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
 def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     """Insert one external request receipt, returning whether a row was added.
 
@@ -48,8 +135,6 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     cannot inflate profile totals. Invalid or zero-usage receipts are ignored.
     """
     if receipt.kind != "request" or receipt.via_api_key is not True:
-        return False
-    if not receipt.id or not receipt.subject or not receipt.endpoint or not receipt.status:
         return False
     counts = (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens)
     if not all(_valid_token_count(value) for value in counts) or not any(counts):
@@ -62,31 +147,17 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     ):
         return False
 
-    conn = get_connection()
-    try:
-        cursor = conn.execute(
-            """
-            INSERT OR IGNORE INTO api_usage_events
-                (id, subject, endpoint, model, status,
-                 prompt_tokens, completion_tokens, total_tokens, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                receipt.id,
-                receipt.subject,
-                receipt.endpoint,
-                receipt.model or "default",
-                receipt.status,
-                receipt.prompt_tokens,
-                receipt.completion_tokens,
-                receipt.total_tokens,
-                receipt.created_at,
-            ),
-        )
-        conn.commit()
-        inserted = cursor.rowcount == 1
-    finally:
-        conn.close()
+    for attempt in range(_WRITE_RETRIES):
+        try:
+            inserted = _insert_api_usage(receipt)
+            break
+        except sqlite3.OperationalError as exc:
+            if not _is_busy_error(exc) or attempt + 1 == _WRITE_RETRIES:
+                raise
+            # The worker is the only production writer of these receipts. A
+            # short bounded backoff lets unrelated Studio transactions finish
+            # without ever holding up the inference/streaming caller.
+            time.sleep(min(0.01 * (2**attempt), 0.25))
 
     if inserted:
         # Lazy import avoids making profile aggregation part of schema startup.
@@ -94,3 +165,100 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
 
         invalidate_profile_stats_cache()
     return inserted
+
+
+_STOP = object()
+
+
+class ApiUsageWriter:
+    """One serialized background writer for terminal API usage receipts."""
+
+    def __init__(self, sink: Callable[[ApiUsageReceipt], bool] = record_api_usage):
+        self._sink = sink
+        self._queue: queue.Queue[object] = queue.Queue()
+        self._thread = threading.Thread(
+            target = self._run,
+            name = "api-usage-writer",
+            daemon = True,
+        )
+        self._state_lock = threading.Lock()
+        self._stopped = False
+        self._thread.start()
+
+    def submit(self, receipt: ApiUsageReceipt) -> bool:
+        """Enqueue without waiting for SQLite or running caller-controlled code."""
+        with self._state_lock:
+            if self._stopped:
+                return False
+            self._queue.put_nowait(receipt)
+            return True
+
+    def stop(self) -> None:
+        """Drain all accepted receipts in FIFO order, then stop the worker."""
+        with self._state_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            self._queue.put_nowait(_STOP)
+        # Production calls this through asyncio.to_thread. Waiting until the
+        # sentinel is consumed guarantees no old daemon overlaps a new writer.
+        self._thread.join()
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is _STOP:
+                    return
+                try:
+                    self._sink(item)  # type: ignore[arg-type]
+                except Exception:  # noqa: BLE001 - usage accounting cannot break inference.
+                    logger.warning("api usage receipt persistence failed", exc_info = True)
+            finally:
+                self._queue.task_done()
+
+
+_writer_condition = threading.Condition()
+_writer: Optional[ApiUsageWriter] = None
+_writer_leases: set[str] = set()
+_writer_stopping = False
+
+
+def acquire_api_usage_writer() -> str:
+    """Lease the process writer; overlapping app lifespans share one worker."""
+    global _writer
+    lease = uuid.uuid4().hex
+    with _writer_condition:
+        while _writer_stopping:
+            _writer_condition.wait()
+        if _writer is None:
+            _writer = ApiUsageWriter()
+        _writer_leases.add(lease)
+    return lease
+
+
+def enqueue_api_usage(receipt: ApiUsageReceipt) -> None:
+    """Fast production monitor callback; it performs no database I/O."""
+    with _writer_condition:
+        if _writer is not None:
+            _writer.submit(receipt)
+
+
+def release_api_usage_writer(lease: str) -> None:
+    """Release one lifespan's lease and drain only after the last owner exits."""
+    global _writer, _writer_stopping
+    writer = None
+    with _writer_condition:
+        _writer_leases.discard(lease)
+        if not _writer_leases and _writer is not None and not _writer_stopping:
+            writer = _writer
+            _writer_stopping = True
+    if writer is not None:
+        try:
+            writer.stop()
+        finally:
+            with _writer_condition:
+                if _writer is writer:
+                    _writer = None
+                _writer_stopping = False
+                _writer_condition.notify_all()

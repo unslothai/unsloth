@@ -15,7 +15,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from storage.api_usage_db import ApiUsageReceipt
+from storage.api_usage_db import (
+    MAX_ENDPOINT_CHARS,
+    MAX_STATUS_CHARS,
+    ApiUsageReceipt,
+    canonical_api_model,
+    canonical_api_subject,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -211,8 +217,11 @@ class ApiMonitor:
         self._hidden_shared: dict[str, set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._callback_condition = threading.Condition(self._lock)
         self._enabled = enabled
         self._terminal_callback = terminal_callback
+        self._terminal_callback_leases: dict[str, TerminalCallback] = {}
+        self._terminal_callbacks_inflight: dict[Optional[str], int] = {}
 
     @property
     def enabled(self) -> bool:
@@ -221,9 +230,38 @@ class ApiMonitor:
         return self._enabled
 
     def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
-        """Replace the terminal receipt sink without exposing the monitor lock."""
+        """Replace the unleased terminal sink used by tests and embedders."""
         with self._lock:
             self._terminal_callback = callback
+
+    def acquire_terminal_callback(self, callback: TerminalCallback) -> str:
+        """Register a callback owned by one lifespan and return its lease token.
+
+        Only the newest live lease is notified, so overlapping lifespans do not
+        duplicate durable receipts. Releasing an older lease cannot disable a
+        newer owner, while releasing the newer one falls back to the older.
+        """
+        lease = uuid.uuid4().hex
+        with self._lock:
+            self._terminal_callback_leases[lease] = callback
+        return lease
+
+    def release_terminal_callback(self, lease: str) -> None:
+        """Remove only the terminal callback registration owned by ``lease``."""
+        with self._callback_condition:
+            self._terminal_callback_leases.pop(lease, None)
+            # A notification may already have captured this callback. Let its
+            # fast enqueue finish before the owner drains/stops the writer.
+            while self._terminal_callbacks_inflight.get(lease, 0):
+                self._callback_condition.wait()
+
+    def _terminal_callback_locked(
+        self,
+    ) -> tuple[Optional[str], Optional[TerminalCallback]]:
+        if self._terminal_callback_leases:
+            lease = next(reversed(self._terminal_callback_leases))
+            return lease, self._terminal_callback_leases[lease]
+        return None, self._terminal_callback
 
     def start(
         self,
@@ -240,7 +278,7 @@ class ApiMonitor:
             return ""
         now = time.time()
         entry = ApiMonitorEntry(
-            id = f"apireq_{uuid.uuid4().hex[:12]}",
+            id = f"apireq_{uuid.uuid4().hex}",
             endpoint = endpoint,
             method = method,
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
@@ -584,24 +622,29 @@ class ApiMonitor:
 
     def _terminal_notification_locked(
         self, entry: ApiMonitorEntry
-    ) -> Optional[tuple[TerminalCallback, ApiUsageReceipt]]:
-        callback = self._terminal_callback
+    ) -> Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]:
+        callback_owner, callback = self._terminal_callback_locked()
+        subject = canonical_api_subject(entry.subject)
         if (
             callback is None
             or entry.kind != "request"
             or entry.via_api_key is not True
-            or not entry.subject
+            or not subject
             or entry.finished_at is None
         ):
             return None
+        self._terminal_callbacks_inflight[callback_owner] = (
+            self._terminal_callbacks_inflight.get(callback_owner, 0) + 1
+        )
         return (
+            callback_owner,
             callback,
             ApiUsageReceipt(
                 id = entry.id,
-                subject = entry.subject or "",
-                endpoint = entry.endpoint,
-                model = entry.model,
-                status = entry.status,
+                subject = subject,
+                endpoint = str(entry.endpoint)[:MAX_ENDPOINT_CHARS],
+                model = canonical_api_model(entry.model),
+                status = str(entry.status)[:MAX_STATUS_CHARS],
                 prompt_tokens = entry.prompt_tokens or 0,
                 completion_tokens = entry.completion_tokens or 0,
                 total_tokens = entry.total_tokens or 0,
@@ -611,17 +654,25 @@ class ApiMonitor:
             ),
         )
 
-    @staticmethod
     def _notify_terminal(
-        notification: Optional[tuple[TerminalCallback, ApiUsageReceipt]],
+        self,
+        notification: Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]],
     ) -> None:
         if notification is None:
             return
-        callback, receipt = notification
+        callback_owner, callback, receipt = notification
         try:
             callback(receipt)
         except Exception:  # noqa: BLE001 - monitoring must never break inference.
             logger.warning("api_monitor.terminal_callback_failed", exc_info = True)
+        finally:
+            with self._callback_condition:
+                remaining = self._terminal_callbacks_inflight.get(callback_owner, 0) - 1
+                if remaining > 0:
+                    self._terminal_callbacks_inflight[callback_owner] = remaining
+                else:
+                    self._terminal_callbacks_inflight.pop(callback_owner, None)
+                self._callback_condition.notify_all()
 
     def snapshot(
         self,

@@ -746,14 +746,21 @@ async def lifespan(app: FastAPI):
     # requests. The monitor itself stays storage-agnostic until the production
     # lifespan is ready, which keeps imports and unit tests deterministic.
     from core.inference.api_monitor import api_monitor as _api_monitor
-    from storage.api_usage_db import record_api_usage as _record_api_usage
+    from storage.api_usage_db import (
+        acquire_api_usage_writer as _acquire_api_usage_writer,
+        enqueue_api_usage as _enqueue_api_usage,
+        release_api_usage_writer as _release_api_usage_writer,
+    )
 
-    _api_monitor.set_terminal_callback(_record_api_usage)
+    _api_usage_writer_lease = _acquire_api_usage_writer()
+    _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield
 
-    # Stop accepting new persistence callbacks before shutdown awaits allow
-    # in-flight cleanup and independent test lifespans to overlap.
-    _api_monitor.set_terminal_callback(None)
+    # Remove only this lifespan's callback. A concurrently live sibling keeps
+    # both the monitor sink and the shared serialized writer. The final owner
+    # drains accepted receipts off the event loop before stopping the worker.
+    _api_monitor.release_terminal_callback(_api_usage_callback_lease)
+    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()

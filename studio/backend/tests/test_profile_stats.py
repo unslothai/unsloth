@@ -5,13 +5,29 @@
 
 import json
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from storage import profile_stats_db, studio_db
-from storage.api_usage_db import ApiUsageReceipt, record_api_usage
+from core.inference.api_monitor import ApiMonitor
+import core.inference.api_monitor as api_monitor_module
+from storage.api_usage_db import (
+    MAX_ENDPOINT_CHARS,
+    MAX_MODEL_CHARS,
+    MAX_RECEIPT_ID_CHARS,
+    MAX_STATUS_CHARS,
+    MAX_SUBJECT_CHARS,
+    ApiUsageReceipt,
+    ApiUsageWriter,
+    acquire_api_usage_writer,
+    enqueue_api_usage,
+    record_api_usage,
+    release_api_usage_writer,
+)
 from storage.profile_stats_db import compute_profile_stats, invalidate_profile_stats_cache
 
 
@@ -40,10 +56,11 @@ def _api_receipt(
     model: str = "unsloth/api-model",
     status: str = "completed",
     via_api_key: bool = True,
+    subject: str = "external-client",
 ) -> ApiUsageReceipt:
     return ApiUsageReceipt(
         id = receipt_id,
-        subject = "external-client",
+        subject = subject,
         endpoint = "/v1/chat/completions",
         model = model,
         status = status,
@@ -155,7 +172,7 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
             model = "unsloth/gpt-oss-20b",
         )
     )
-    stats = compute_profile_stats(days = 7, tz_name = "UTC")
+    stats = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     totals = stats["totals"]
 
     assert totals["promptTokens"] == 140
@@ -183,14 +200,46 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
     assert stats["models"][0]["tokens"] == 175
 
 
+def test_api_usage_and_cache_are_subject_scoped_while_legacy_chat_is_shared(stats_db):
+    now = datetime.now(timezone.utc).replace(microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "shared-chat", "unused", [(now, _metadata(10, 5))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert record_api_usage(
+        _api_receipt("alice-api", now, total = 11, prompt = 7, completion = 4, subject = "alice")
+    )
+    assert record_api_usage(
+        _api_receipt("bob-api", now, total = 23, prompt = 20, completion = 3, subject = "bob")
+    )
+
+    alice = compute_profile_stats(days = 1, tz_name = "UTC", subject = "alice")
+    bob = compute_profile_stats(days = 1, tz_name = "UTC", subject = "bob")
+
+    # Chat tables have no subject column and remain install-wide for compatibility.
+    assert alice["totals"]["chatTokens"] == bob["totals"]["chatTokens"] == 15
+    assert alice["totals"]["apiTokens"] == 11
+    assert bob["totals"]["apiTokens"] == 23
+    assert alice["totals"]["totalTokens"] == 26
+    assert bob["totals"]["totalTokens"] == 38
+    # Both subjects deliberately have the same count/max-time fingerprint;
+    # distinct payloads prove the cache key includes identity.
+    assert alice is not bob
+
+
 def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     now = datetime.now(timezone.utc).replace(microsecond = 0)
-    initial = compute_profile_stats(days = 7, tz_name = "UTC")
+    initial = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     receipt = _api_receipt("api-only", now)
 
     assert record_api_usage(receipt) is True
     assert record_api_usage(receipt) is False
-    after_insert = compute_profile_stats(days = 7, tz_name = "UTC")
+    after_insert = compute_profile_stats(
+        days = 7, tz_name = "UTC", subject = "external-client"
+    )
     assert after_insert is not initial
     assert after_insert["totals"]["messages"] == 0
     assert after_insert["totals"]["apiTokens"] == 50
@@ -201,14 +250,195 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     # A fresh process/schema initialization still reads the same receipt.
     studio_db._schema_ready = False
     invalidate_profile_stats_cache()
-    after_restart = compute_profile_stats(days = 7, tz_name = "UTC")
+    after_restart = compute_profile_stats(
+        days = 7, tz_name = "UTC", subject = "external-client"
+    )
     assert after_restart["totals"]["apiTokens"] == 50
     assert after_restart["daily"][-1]["tokens"] == 50
 
 
+def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(stats_db):
+    # Initialize the additive schema before taking the writer lock.
+    lock_conn = studio_db.get_connection()
+    callback_lease = None
+    writer_lease = acquire_api_usage_writer()
+    monitor = ApiMonitor()
+    try:
+        lock_conn.execute("BEGIN IMMEDIATE")
+        callback_lease = monitor.acquire_terminal_callback(enqueue_api_usage)
+        entry_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "private",
+            subject = "alice",
+            via_api_key = True,
+        )
+        monitor.set_usage(entry_id, prompt_tokens = 2, completion_tokens = 3, total_tokens = 5)
+
+        started = time.perf_counter()
+        monitor.finish(entry_id)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.2
+        assert lock_conn.execute(
+            "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)
+        ).fetchone()[0] == 0
+
+        lock_conn.rollback()
+        deadline = time.monotonic() + 5
+        row = None
+        while time.monotonic() < deadline:
+            check = studio_db.get_connection()
+            try:
+                row = check.execute(
+                    "SELECT total_tokens FROM api_usage_events WHERE id = ?", (entry_id,)
+                ).fetchone()
+            finally:
+                check.close()
+            if row is not None:
+                break
+            time.sleep(0.02)
+        assert row is not None
+        assert row[0] == 5
+    finally:
+        if lock_conn.in_transaction:
+            lock_conn.rollback()
+        lock_conn.close()
+        if callback_lease is not None:
+            monitor.release_terminal_callback(callback_lease)
+        release_api_usage_writer(writer_lease)
+
+
+def test_writer_stop_drains_accepted_receipts_and_rejects_late_submit():
+    entered = threading.Event()
+    release = threading.Event()
+    persisted = []
+
+    def blocking_sink(receipt):
+        entered.set()
+        release.wait(timeout = 2)
+        persisted.append(receipt.id)
+        return True
+
+    writer = ApiUsageWriter(sink = blocking_sink)
+    first = _api_receipt("accepted-before-stop", datetime.now(timezone.utc))
+    late = _api_receipt("late-after-stop", datetime.now(timezone.utc))
+    assert writer.submit(first)
+    assert entered.wait(timeout = 1)
+
+    stopper = threading.Thread(target = writer.stop)
+    stopper.start()
+    try:
+        deadline = time.monotonic() + 1
+        while not writer._stopped and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert writer._stopped
+        assert not writer.submit(late)
+        assert stopper.is_alive()
+    finally:
+        release.set()
+        stopper.join(timeout = 2)
+    assert not stopper.is_alive()
+    assert persisted == ["accepted-before-stop"]
+
+
+def test_full_uuid_request_ids_do_not_collapse_same_prefix(stats_db, monkeypatch):
+    uuid_hexes = iter(
+        [
+            "0123456789ab00000000000000000001",
+            "0123456789abffffffffffffffffffff",
+        ]
+    )
+    monkeypatch.setattr(
+        api_monitor_module.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex = next(uuid_hexes)),
+    )
+    monitor = ApiMonitor(max_entries = 0, terminal_callback = record_api_usage)
+    ids = []
+    for total in (3, 7):
+        entry_id = monitor.start(
+            endpoint = "/v1/messages",
+            method = "POST",
+            model = "m",
+            prompt = "private",
+            subject = "alice",
+            via_api_key = True,
+        )
+        ids.append(entry_id)
+        monitor.set_usage(entry_id, total_tokens = total)
+        monitor.finish(entry_id)
+
+    assert ids[0] != ids[1]
+    assert ids[0][:19] == ids[1][:19]
+    conn = studio_db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, total_tokens FROM api_usage_events ORDER BY total_tokens"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [(row["id"], row["total_tokens"]) for row in rows] == [
+        (ids[0], 3),
+        (ids[1], 7),
+    ]
+
+
+def test_api_usage_bounds_every_durable_text_field(stats_db):
+    now = datetime.now(timezone.utc)
+    long_model_prefix = "m" * (MAX_MODEL_CHARS + 100)
+    receipt = ApiUsageReceipt(
+        id = "i" * MAX_RECEIPT_ID_CHARS,
+        subject = "s" * MAX_SUBJECT_CHARS,
+        endpoint = "e" * (MAX_ENDPOINT_CHARS + 100),
+        model = long_model_prefix + "a",
+        status = "x" * (MAX_STATUS_CHARS + 100),
+        prompt_tokens = 1,
+        completion_tokens = 2,
+        total_tokens = 3,
+        created_at = _ms(now),
+    )
+    assert record_api_usage(receipt)
+    assert not record_api_usage(
+        _api_receipt("i" * (MAX_RECEIPT_ID_CHARS + 1), now)
+    )
+    long_subject = "s" * (MAX_SUBJECT_CHARS + 100)
+    assert record_api_usage(
+        _api_receipt("oversized-subject", now, subject = long_subject)
+    )
+    assert record_api_usage(
+        _api_receipt("second-long-model", now, model = long_model_prefix + "b")
+    )
+
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, subject, endpoint, model, status FROM api_usage_events WHERE id = ?",
+            (receipt.id,),
+        ).fetchone()
+        other_model = conn.execute(
+            "SELECT model FROM api_usage_events WHERE id = 'second-long-model'"
+        ).fetchone()[0]
+        stored_long_subject = conn.execute(
+            "SELECT subject FROM api_usage_events WHERE id = 'oversized-subject'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert len(row["id"]) == MAX_RECEIPT_ID_CHARS
+    assert len(row["subject"]) == MAX_SUBJECT_CHARS
+    assert len(row["endpoint"]) == MAX_ENDPOINT_CHARS
+    assert len(row["model"]) == MAX_MODEL_CHARS
+    assert len(row["status"]) == MAX_STATUS_CHARS
+    assert len(stored_long_subject) == MAX_SUBJECT_CHARS
+    assert row["model"] != other_model
+    assert compute_profile_stats(
+        days = 1, tz_name = "UTC", subject = long_subject
+    )["totals"]["apiTokens"] == 50
+
+
 def test_api_fingerprint_invalidates_cache_for_independent_database_writers(stats_db):
     now = datetime.now(timezone.utc)
-    cached = compute_profile_stats(days = 1, tz_name = "UTC")
+    cached = compute_profile_stats(days = 1, tz_name = "UTC", subject = "alice")
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -225,7 +455,7 @@ def test_api_fingerprint_invalidates_cache_for_independent_database_writers(stat
     finally:
         conn.close()
 
-    refreshed = compute_profile_stats(days = 1, tz_name = "UTC")
+    refreshed = compute_profile_stats(days = 1, tz_name = "UTC", subject = "alice")
     assert refreshed is not cached
     assert refreshed["totals"]["apiTokens"] == 10
 
@@ -249,7 +479,7 @@ def test_api_usage_filters_internal_and_zero_receipts_but_keeps_partial_failures
         )
     ) is True
 
-    stats = compute_profile_stats(days = 1, tz_name = "UTC")
+    stats = compute_profile_stats(days = 1, tz_name = "UTC", subject = "external-client")
     assert stats["totals"]["apiPromptTokens"] == 3
     assert stats["totals"]["apiCompletionTokens"] == 4
     # The authoritative total is retained instead of recomputing 3 + 4.
@@ -270,7 +500,11 @@ def test_api_usage_uses_iana_timezone_across_dst_dates(stats_db):
     assert record_api_usage(_api_receipt("winter", winter, total = 11))
     assert record_api_usage(_api_receipt("summer", summer, total = 13))
 
-    stats = compute_profile_stats(days = 366, tz_name = "America/New_York")
+    stats = compute_profile_stats(
+        days = 366,
+        tz_name = "America/New_York",
+        subject = "external-client",
+    )
     by_date = {day["date"]: day["tokens"] for day in stats["daily"]}
     # Both UTC instants are before local midnight using the date-specific
     # standard/daylight offset.
@@ -1054,6 +1288,7 @@ def test_route_does_not_block_the_event_loop(stats_db, monkeypatch):
         days = 366,
         tz_offset_minutes = 0,
         tz_name = "",
+        subject = "",
     ):
         time.sleep(0.5)
         return {"totals": {"messages": 0}}

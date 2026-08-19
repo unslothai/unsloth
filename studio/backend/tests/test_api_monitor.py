@@ -114,6 +114,46 @@ def test_terminal_callback_failure_is_logged_and_swallowed(caplog):
     assert "api_monitor.terminal_callback_failed" in caplog.text
 
 
+def test_overlapping_callback_leases_do_not_disable_the_live_owner():
+    monitor = ApiMonitor()
+    older_receipts = []
+    newer_receipts = []
+    older = monitor.acquire_terminal_callback(older_receipts.append)
+    newer = monitor.acquire_terminal_callback(newer_receipts.append)
+
+    # Lifespan A exits while the later lifespan B remains live.
+    monitor.release_terminal_callback(older)
+    entry_id = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "m",
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, total_tokens = 1)
+    monitor.finish(entry_id)
+
+    assert older_receipts == []
+    assert len(newer_receipts) == 1
+    monitor.release_terminal_callback(newer)
+
+
+def test_request_ids_keep_the_full_uuid(monkeypatch):
+    full_hex = "0123456789ab" + "cdef" * 5
+    monkeypatch.setattr(
+        "core.inference.api_monitor.uuid.uuid4",
+        lambda: type("FakeUuid", (), {"hex": full_hex})(),
+    )
+    monitor = ApiMonitor()
+
+    entry_id = monitor.start(endpoint = "/v1", method = "POST", model = "m", prompt = "")
+    lifecycle_id = monitor.record_lifecycle(event = "unload", model = "m")
+
+    assert entry_id == f"apireq_{full_hex}"
+    assert lifecycle_id == f"apievt_{full_hex[:12]}"
+
+
 def test_non_external_and_non_request_rows_never_emit_usage_receipts():
     receipts = []
     monitor = ApiMonitor(terminal_callback = receipts.append)
