@@ -1411,9 +1411,7 @@ def _codex_chat_gate(monkeypatch, model: str):
         stream = True,
     )
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            inf._proxy_to_external_provider(payload, request, current_subject = "t")
-        )
+        asyncio.run(inf._proxy_to_external_provider(payload, request, current_subject = "t"))
     return excinfo.value
 
 
