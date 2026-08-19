@@ -370,6 +370,13 @@ def windows_env(monkeypatch):
     monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
 
 
+@pytest.fixture
+def posix_env(monkeypatch):
+    """Pin the platform: these assert POSIX semantics and must not follow the runner."""
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", False)
+    monkeypatch.setattr(node_runtime, "_IS_WINDOWS", False)
+
+
 def test_windows_lowercase_path_key_is_recognized(managed_node, monkeypatch, windows_env):
     monkeypatch.setenv("PATH", "/usr/bin")
     env = mcp_client._stdio_env({"Path": "/opt/bin"}, "npx")
@@ -386,7 +393,7 @@ def test_windows_lowercase_path_blocks_host_lookup(managed_node, windows_env):
     assert mcp_client._stdio_argv(["npx"], {"Path": ""}) == ["npx"]
 
 
-def test_posix_treats_path_and_lowercase_path_as_distinct(managed_node, monkeypatch):
+def test_posix_treats_path_and_lowercase_path_as_distinct(managed_node, monkeypatch, posix_env):
     monkeypatch.setenv("PATH", "/usr/bin")
     env = mcp_client._stdio_env({"Path": "/opt/bin"}, "npx")
     assert env["Path"] == "/opt/bin"
