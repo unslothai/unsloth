@@ -184,6 +184,8 @@ export const ru = {
       closeAriaLabel: "Закрыть настройки",
       searchPlaceholder: "Поиск по настройкам…",
       searchNoResults: "Настройки не найдены.",
+      panelFailed: "Не удалось загрузить этот раздел.",
+      panelReload: "Перезагрузить",
     },
     tabs: {
       general: "Общие",
@@ -285,6 +287,8 @@ export const ru = {
         allowMicrophone: "Разрешить доступ к микрофону",
         micAccessBlocked:
           "Доступ к микрофону заблокирован. Разрешите доступ к микрофону для этой страницы Unsloth и повторите попытку.",
+        micAccessBlockedDesktop:
+          "Доступ к микрофону заблокирован. Повторите попытку и выберите «Разрешить» или включите микрофон в системных настройках конфиденциальности.",
         micAccessUnsupported:
           "Доступ к микрофону не поддерживается в этом браузере или контексте.",
         systemDefault: "По умолчанию в системе",
@@ -1118,6 +1122,9 @@ export const ru = {
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
       manageAction: "Управлять",
+      manageChats: "Управление чатами",
+      manageChatsDescription:
+        "Выберите несколько чатов, чтобы переместить, закрепить, архивировать, экспортировать или удалить их.",
       exportArchivedChats: "Экспорт",
       exportingArchivedChats: "Экспорт…",
       exportedOneArchivedChat: "Экспортирован 1 архивный чат",

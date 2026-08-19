@@ -25,6 +25,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+
       - '.github/scripts/resolve-desktop-release.py'
       - '.github/scripts/clean-machine-env.sh'
       - '.github/scripts/clean-machine-assert.sh'
@@ -59,10 +61,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -283,7 +285,14 @@ jobs:
             cp "$f" logs/ 2>/dev/null || true
             tail -60 "$f"
             # The two fields the bug report turned on.
-            grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
             dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
@@ -397,12 +406,18 @@ jobs:
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        # The apt preamble below is bounded by the shared helper; the `.deb` install
+        # after it deliberately is not, because whether that package resolves its own
+        # dependencies is the question this job asks. A step budget bounds it anyway,
+        # so a stall there names this step instead of cancelling the job silently.
+        timeout-minutes: 25
         run: |
           # Deliberately no build-essential/cmake/git: a user installing a .deb has none.
           # Xvfb and WebKit are runtime requirements and apt pulls the .deb's declared
           # deps, so a wrong dependency list fails here.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends xvfb
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
             sudo apt-get install -y ./dl/*.deb || {
               echo "::error::the .deb does not declare its runtime dependencies correctly"
@@ -522,7 +537,14 @@ jobs:
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
             echo "=== $f ==="; cp "$f" logs/ 2>/dev/null || true; tail -60 "$f"
-            grep -E "disposition=|can_auto_repair=|ModuleNotFoundError" "$f" || true
+            # "Managed preflight" is not decoration. The disposition is the symptom;
+            # the reason is the diagnosis, and it is logged on a separate line that
+            # `tail -60` above scrolls away the moment the backend starts chattering.
+            # On 2026-08-19 this went red on all four platforms and printed nothing
+            # but "saw: ManagedStale"; the reason that actually explained it,
+            # studio_install_requirements_changed, had to be recovered by hand from
+            # the uploaded artifact.
+            grep -E "disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
             dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
@@ -579,12 +601,13 @@ jobs:
           persist-credentials: false
 
       - name: Install AppImage build dependencies
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            libxdo-dev libssl-dev patchelf xdg-utils \
-            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -668,28 +691,32 @@ jobs:
           persist-credentials: false
 
       - name: Install only generic display and graphics prerequisites
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-
-            alsa_package=libasound2
-            if apt-cache policy "$alsa_package" | grep -q 'Candidate: (none)'; then
-              alsa_package=libasound2t64
-            fi
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
-              libwayland-client0 libwayland-cursor0 libwayland-egl1 libwayland-server0 \
-              libx11-6 libx11-xcb1 libxcb1 libxcb-randr0 libxcb-render0 libxcb-shm0 \
-              libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
-              libxcomposite1 libxdamage1 libxinerama1 libxau6 libxdmcp6 libxshmfence1 \
-              "$alsa_package" libpulse0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
-            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
-            fi
-            if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
-            fi
+            RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=360 \
+              bash .github/scripts/retry-with-apt-lock.sh bash -c '
+                set -euo pipefail
+                apt-get update -qq
+                alsa_package=libasound2
+                if apt-cache policy "$alsa_package" | grep -q "Candidate: (none)"; then
+                  alsa_package=libasound2t64
+                fi
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
+                  libwayland-client0 libwayland-cursor0 libwayland-egl1 libwayland-server0 \
+                  libx11-6 libx11-xcb1 libxcb1 libxcb-randr0 libxcb-render0 libxcb-shm0 \
+                  libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
+                  libxcomposite1 libxdamage1 libxinerama1 libxau6 libxdmcp6 libxshmfence1 \
+                  "$alsa_package" libpulse0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+                if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
+                fi
+                if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
+                fi
+              '
             forbidden="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | \
               grep -Ei 'webkit|javascriptcore|appindicator|libgtk-3' || true)"
           else
@@ -827,13 +854,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
       - name: Install WebDriver prerequisites
+        timeout-minutes: 20
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 \
-            libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 \
-            libasound2 libpulse0
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0; }'
           cargo install tauri-driver --version 2.0.6 --locked
 
       - name: Download the AppImage built from this PR
@@ -1129,7 +1156,9 @@ jobs:
               Write-Host "=== $f ==="
               Copy-Item $f logs/ -ErrorAction SilentlyContinue
               Get-Content $f -Tail 60
-              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|ModuleNotFoundError' `
+              # See the Linux job: the reason line is what explains a disposition,
+              # and Get-Content -Tail 60 above scrolls it away.
+              Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|Managed preflight|ModuleNotFoundError' `
                 -ErrorAction SilentlyContinue
               $found = $true
               $hits = @(Select-String -Path $f -Pattern 'desktop_preflight completed disposition=(\w+)')
