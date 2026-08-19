@@ -368,6 +368,74 @@ def test_writer_retains_busy_receipt_after_inner_retry_budget(stats_db, monkeypa
     assert persisted == [receipt.id]
 
 
+def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, caplog):
+    entered = threading.Event()
+    unlocked = threading.Event()
+    persisted = []
+
+    def locked_sink(receipt):
+        entered.set()
+        if not unlocked.is_set():
+            raise sqlite3.OperationalError("database is locked")
+        persisted.append(receipt.id)
+        return True
+
+    # Keep the retry responsive without a hot spin in the test process.
+    monkeypatch.setattr(
+        api_usage_db,
+        "_sleep_after_busy",
+        lambda _delay: unlocked.wait(timeout = 0.01),
+    )
+    writer = ApiUsageWriter(sink = locked_sink)
+    receipt = _api_receipt("busy-through-shutdown", datetime.now(timezone.utc))
+    assert writer.submit(receipt)
+    assert entered.wait(timeout = 1)
+
+    try:
+        started = time.perf_counter()
+        assert writer.stop(timeout = 0.03) is False
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.2
+        assert not writer.submit(_api_receipt("rejected-after-stop", datetime.now(timezone.utc)))
+        assert writer._thread.is_alive()
+        assert "may be lost if the process exits" in caplog.text
+    finally:
+        unlocked.set()
+        writer._thread.join(timeout = 1)
+    assert not writer._thread.is_alive()
+    assert writer.stop(timeout = 0) is True
+    assert persisted == [receipt.id]
+
+
+def test_timed_out_writer_release_allows_successor_lifespan(monkeypatch):
+    created = []
+
+    class TimedOutWriter:
+        def __init__(self):
+            self.stopped = False
+            created.append(self)
+
+        def submit(self, _receipt):
+            return not self.stopped
+
+        def stop(self):
+            self.stopped = True
+            return False
+
+    monkeypatch.setattr(api_usage_db, "ApiUsageWriter", TimedOutWriter)
+    first_lease = acquire_api_usage_writer()
+    release_api_usage_writer(first_lease)
+    assert api_usage_db._writer is None
+    assert api_usage_db._writer_stopping is False
+
+    second_lease = acquire_api_usage_writer()
+    try:
+        assert len(created) == 2
+        assert created[0] is not created[1]
+    finally:
+        release_api_usage_writer(second_lease)
+
+
 def test_full_uuid_request_ids_do_not_collapse_same_prefix(stats_db, monkeypatch):
     uuid_hexes = iter(
         [

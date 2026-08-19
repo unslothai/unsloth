@@ -31,6 +31,7 @@ MAX_STATUS_CHARS = 64
 _WRITE_BUSY_TIMEOUT_SECONDS = 0.05
 _WRITE_RETRIES = 20
 _WORKER_BUSY_RETRY_SECONDS = 0.25
+_WORKER_DRAIN_TIMEOUT_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -198,16 +199,29 @@ class ApiUsageWriter:
             self._queue.put_nowait(receipt)
             return True
 
-    def stop(self) -> None:
-        """Drain all accepted receipts in FIFO order, then stop the worker."""
+    def stop(self, timeout: float = _WORKER_DRAIN_TIMEOUT_SECONDS) -> bool:
+        """Stop accepting receipts and wait boundedly for the queue to drain.
+
+        Returns ``True`` once the daemon consumed the stop sentinel. On timeout,
+        the daemon keeps retrying the already accepted head receipt and exits
+        after it succeeds and drains the remaining queue.
+        """
         with self._state_lock:
-            if self._stopped:
-                return
-            self._stopped = True
-            self._queue.put_nowait(_STOP)
-        # Production calls this through asyncio.to_thread. Waiting until the
-        # sentinel is consumed guarantees no old daemon overlaps a new writer.
-        self._thread.join()
+            if not self._stopped:
+                self._stopped = True
+                self._queue.put_nowait(_STOP)
+        # Production calls this through asyncio.to_thread so even the bounded
+        # wait cannot pause inference or the event loop.
+        self._thread.join(timeout = max(0.0, timeout))
+        drained = not self._thread.is_alive()
+        if not drained:
+            logger.warning(
+                "api usage writer drain timed out after %.1f seconds; the daemon will keep "
+                "retrying accepted receipts, which may be lost if the process exits before "
+                "SQLite becomes writable",
+                timeout,
+            )
+        return drained
 
     def _run(self) -> None:
         while True:
@@ -269,7 +283,11 @@ def enqueue_api_usage(receipt: ApiUsageReceipt) -> None:
 
 
 def release_api_usage_writer(lease: str) -> None:
-    """Release one lifespan's lease and drain only after the last owner exits."""
+    """Release one lifespan and boundedly drain after the last owner exits.
+
+    A timed-out daemon retains its accepted queue, but the global gate is always
+    cleared so a successor lifespan can start a fresh writer.
+    """
     global _writer, _writer_stopping
     writer = None
     with _writer_condition:
