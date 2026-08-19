@@ -169,6 +169,26 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
     return has_config and _has_immediate_model_weight(path)
 
 
+def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
+    """A folder another app filled carries none of the downloader markers ``is_snapshot_partial``
+    reads, so its payload is the only evidence of an interrupted download, and nothing here was
+    interrupted by a transport this app could resume.
+
+    ``unknown`` is excluded because the judge reads the names ``from_pretrained`` opens at the root:
+    a diffusers pipeline keeps every weight in a component subdir and would be called short a shard.
+    """
+    if not rows or not scan_path.is_dir():
+        return rows
+    formats = {row.model_format for row in rows}
+    return _apply_format_aware_partial(
+        rows,
+        snapshot_partial = bool(formats - {"gguf", "unknown"})
+        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False),
+        gguf_partial = "gguf" in formats
+        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True),
+    )
+
+
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
     return get_hf_cache_paths().hub_cache
@@ -205,11 +225,12 @@ def _scan_models_dir(
             updated_at = models_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        return _classify_local_path(
+        rows = _classify_local_path(
             models_dir,
             "models_dir",
             updated_at = updated_at,
         )
+        return _apply_payload_partial(models_dir, rows)
 
     found: List[LocalModelInfo] = []
     visited = 0
@@ -244,6 +265,7 @@ def _scan_models_dir(
             "models_dir",
             updated_at = updated_at,
         )
+        rows = _apply_payload_partial(child, rows)
         if limit is not None:
             rows = rows[: max(0, limit - len(found))]
         found.extend(rows)
@@ -464,11 +486,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             updated_at = lm_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        return _classify_local_path(
+        rows = _classify_local_path(
             lm_dir,
             "lmstudio",
             updated_at = updated_at,
         )
+        return _apply_payload_partial(lm_dir, rows)
 
     found: List[LocalModelInfo] = []
     visited = 0
@@ -509,13 +532,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     updated_at = child.stat().st_mtime
                 except OSError:
                     updated_at = None
-                found.extend(
-                    _classify_local_path(
-                        child,
-                        "lmstudio",
-                        updated_at = updated_at,
-                    )
+                rows = _classify_local_path(
+                    child,
+                    "lmstudio",
+                    updated_at = updated_at,
                 )
+                found.extend(_apply_payload_partial(child, rows))
                 continue
 
             # child is a publisher directory -- scan its sub-directories
@@ -533,15 +555,14 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
                             updated_at = None
-                        found.extend(
-                            _classify_local_path(
-                                model_dir,
-                                "lmstudio",
-                                display_name = model_dir.name,
-                                model_id = model_id,
-                                updated_at = updated_at,
-                            )
+                        rows = _classify_local_path(
+                            model_dir,
+                            "lmstudio",
+                            display_name = model_dir.name,
+                            model_id = model_id,
+                            updated_at = updated_at,
                         )
+                        found.extend(_apply_payload_partial(model_dir, rows))
                     elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
                         try:
                             updated_at = model_dir.stat().st_mtime
