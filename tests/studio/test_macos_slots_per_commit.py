@@ -87,7 +87,6 @@ def test_the_scan_finds_the_macos_workflows_it_claims_to():
     names = {name for name, _, _ in _macos_workflows()}
     for expected in (
         "studio-mac-ui-smoke.yml",
-        "studio-mac-inference-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
         "mlx-ci.yml",
@@ -117,7 +116,6 @@ def test_no_macos_workflow_runs_on_every_push_to_main():
     "name",
     [
         "studio-mac-ui-smoke.yml",
-        "studio-mac-inference-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
         "clean-machine-install-ci.yml",
@@ -161,7 +159,6 @@ def _covered(path: str, patterns) -> bool:
     "name",
     [
         "studio-mac-ui-smoke.yml",
-        "studio-mac-inference-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
     ],
@@ -211,7 +208,6 @@ def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
     "name",
     [
         "studio-mac-ui-smoke.yml",
-        "studio-mac-inference-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
     ],
