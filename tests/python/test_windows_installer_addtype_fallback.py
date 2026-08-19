@@ -447,8 +447,17 @@ _DEAD_PID = _dead_pid()
         ("\\??\\UNC\\server\\share\\dir", "\\\\server\\share\\dir"),
         ("\\??\\unc\\server\\share", "\\\\server\\share"),
         ("\\??\\C:\\real\\target", "C:\\real\\target"),
+        (
+            "\\??\\Volume{11111111-2222-3333-4444-555555555555}\\dir",
+            "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\dir",
+        ),
     ],
-    ids = ["unc-device-form", "lowercase-unc", "ordinary-device-form"],
+    ids = [
+        "unc-device-form",
+        "lowercase-unc",
+        "ordinary-device-form",
+        "mounted-folder-volume-guid",
+    ],
 )
 def test_the_nt_device_prefix_becomes_a_usable_path(raw: str, expected: str):
     """\\??\\UNC\\server\\share is the device spelling of \\\\server\\share.

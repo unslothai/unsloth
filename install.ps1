@@ -826,6 +826,12 @@ public static class UnslothStudioFinalPathV2
             # real target -- and a wrong identity here is a wrong mutex.
             if ($target.StartsWith('UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
                 $target = '\\' + $target.Substring(4)
+            } elseif ($target.StartsWith('Volume{', [System.StringComparison]::OrdinalIgnoreCase)) {
+                # A mounted folder reports its target as \??\Volume{GUID}\..., which
+                # is the same trap in a different shape: "Volume{...}\..." is not
+                # rooted either. \\?\ is the extended-length spelling of the same
+                # device path, so it stays the volume it names.
+                $target = '\\?\' + $target
             }
         }
         try {
