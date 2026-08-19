@@ -1452,6 +1452,8 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
+  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
@@ -2320,9 +2322,20 @@ export function ModelConfigPage({
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
-                    Exceeds estimated VRAM capacity (
-                    {loadedMaxContextLength.toLocaleString()} tokens). The model
-                    may use system RAM.
+                    {isUnifiedMemory ? (
+                      <>
+                        Exceeds what fits in unified memory (
+                        {loadedMaxContextLength.toLocaleString()} tokens). The
+                        GPU and the rest of the system share one pool here, so
+                        there is nothing to offload to.
+                      </>
+                    ) : (
+                      <>
+                        Exceeds estimated VRAM capacity (
+                        {loadedMaxContextLength.toLocaleString()} tokens). The
+                        model may use system RAM.
+                      </>
+                    )}
                   </p>
                 )}
             </div>

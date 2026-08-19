@@ -72,6 +72,13 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
+from utils.paths.scan_folder_health import (
+    annotate_scan_folders,
+    note_scan_folder_scanned,
+    record_scan_failure,
+    refresh_failed_scan_folders,
+)
+
 # Shared with the hub inventory scans; private aliases kept for existing importers.
 # ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name"); anything else is a path.
 from utils.hidden_models import (
@@ -1015,7 +1022,10 @@ def collect_local_models(
                 )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            # Keep the reason so the folder list can show it instead of nothing.
+            record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
+        note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
         local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show
@@ -1206,7 +1216,11 @@ async def list_local_models(
 async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
-    return {"folders": list_scan_folders()}
+
+    folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
+    await asyncio.to_thread(refresh_failed_scan_folders, folders)
+    return {"folders": annotate_scan_folders(folders)}
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)

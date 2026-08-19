@@ -110,11 +110,14 @@ jobs:
         run: |
           python3 -m pytest -q -n 4 \
             tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_agent_guides_verdicts.py \
             tests/studio/test_apt_steps_are_bounded.py \
             tests/studio/test_backend_ci_matrix.py \
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
+            tests/studio/test_ui_shard_engines.py \
+            tests/studio/test_zoo_suite_parallel_isolation.py \
             tests/studio/test_ci_shell_suite_coverage.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
@@ -131,5 +134,6 @@ jobs:
             tests/studio/test_playwright_suites_run_in_ci.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
+            tests/studio/test_uv_cache_discipline.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
             tests/studio/test_workflow_guards_run_unfiltered.py

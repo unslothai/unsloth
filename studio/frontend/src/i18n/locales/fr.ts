@@ -202,6 +202,50 @@ export const fr = {
       agents: "Agents",
       debugging: "Journaux",
       voice: "Voix",
+      keyboardShortcuts: "Raccourcis",
+    },
+    keyboardShortcuts: {
+      title: "Raccourcis clavier",
+      description:
+        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
+      searchPlaceholder: "Rechercher des raccourcis…",
+      noResults: "Aucun raccourci ne correspond à cette recherche.",
+      unassigned: "Non attribué",
+      recording: "Appuyez sur les touches…",
+      recordingHint: "Appuyez sur la nouvelle combinaison, ou Échap pour annuler.",
+      needsModifier: "Ajoutez ⌘, Ctrl ou Alt. Une touche seule avalerait la saisie.",
+      conflict: "Également utilisé par un autre raccourci",
+      conflictShadowed: "Un autre raccourci utilise cette combinaison et s'exécute à sa place",
+      edit: "Modifier le raccourci",
+      clear: "Supprimer le raccourci",
+      reset: "Rétablir la valeur par défaut",
+      resetAll: "Tout réinitialiser",
+      groups: {
+        general: "Général",
+        chat: "Discussion",
+      },
+      actions: {
+        newChat: {
+          label: "Nouvelle discussion",
+          description: "Démarrer une nouvelle discussion",
+        },
+        searchChats: {
+          label: "Rechercher dans les discussions",
+          description: "Ouvrir la recherche de discussions",
+        },
+        toggleSidebar: {
+          label: "Afficher/masquer la barre latérale",
+          description: "Afficher ou masquer la barre latérale",
+        },
+        openSettings: {
+          label: "Ouvrir les paramètres",
+          description: "Ouvrir la fenêtre des paramètres",
+        },
+        openKeyboardShortcuts: {
+          label: "Raccourcis clavier",
+          description: "Ouvrir cette liste de raccourcis",
+        },
+      },
     },
     debugging: {
       logSection: "Fichier journal",
@@ -368,6 +412,7 @@ export const fr = {
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
+        openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
         speedLabel: "Vitesse",
@@ -377,6 +422,7 @@ export const fr = {
         previewDescription: "Lire un court extrait",
         previewFailed: "Échec de l’aperçu de la synthèse vocale",
         previewAction: "Écouter",
+        preparingAction: "Génération…",
         stopAction: "Arrêter",
         ttsLabel: "Synthèse vocale",
         notSupported: "Indisponible dans ce navigateur",

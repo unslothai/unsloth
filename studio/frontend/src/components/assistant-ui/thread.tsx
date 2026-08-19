@@ -1728,7 +1728,10 @@ export const Thread: FC<{
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : "pt-[calc(var(--studio-content-top-inset,0px)+48px)]",
+                : // + the chat-model notice, which is an opaque absolute bar
+                  // directly under the header. 0px whenever it is not showing,
+                  // so every other surface keeps the padding it had.
+                  "pt-[calc(var(--studio-content-top-inset,0px)+48px+var(--studio-chat-notice-height,0px))]",
             )}
           >
             {!hideWelcome && (
@@ -2439,6 +2442,17 @@ const Composer: FC<{
   );
   const [materializingDroppedAudio, setMaterializingDroppedAudio] =
     useState(false);
+  const hasPendingVideoAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingVideoAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  const registeringVideoDrops = useNativeIntentStore(
+    (s) => s.registeringVideoDrops > 0,
+  );
+  const [materializingDroppedVideo, setMaterializingDroppedVideo] =
+    useState(false);
   // A parked send must not fire on a failed drop: the user is owed the toast and
   // their text, not a send of the text alone. Assigned below, once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
@@ -2465,6 +2479,16 @@ const Composer: FC<{
     seenAudioDropFailuresRef.current = audioDropFailures;
     cancelQueuedSendRef.current?.();
   }, [audioDropFailures]);
+  const videoDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.videoDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
+  const seenVideoDropFailuresRef = useRef(videoDropFailures);
+  // Cancel the parked send before `endVideoDropRegistration` reopens the gate.
+  useEffect(() => {
+    if (seenVideoDropFailuresRef.current === videoDropFailures) return;
+    seenVideoDropFailuresRef.current = videoDropFailures;
+    cancelQueuedSendRef.current?.();
+  }, [videoDropFailures]);
   // Registering and reading a dropped clip is async, so hold the send gate:
   // the composer sees nothing until `addAttachment` lands.
   useEffect(() => {
@@ -2578,6 +2602,123 @@ const Composer: FC<{
     return () => {
       disposed = true;
       setMaterializingDroppedAudio(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
+
+  // Same drain as audio, one queue over: one clip per message, and the send
+  // gate has to hold across the read either way.
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimVideoAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    // A re-key follows the same composer; a thread switch parks the clip back.
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    // A remount hides the new key, so tag the batch; the next instance claims it.
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addVideoAttachments(key, intents);
+      store.noteVideoDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingVideo = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedVideo(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeVideoAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped video", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              // Do not let a send parked on this clip go out as bare text.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            // The read is async; a chat switch in that window must not steal the clip.
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              // Chat-wide, not per file (no video mmproj, no ffmpeg, too large,
+              // already attached), and every adapter path toasted: stop quietly.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              return;
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        // A drain for a target already left must not touch the flag; cleanup
+        // cleared it, and the live target may have set it again.
+        if (!disposed) {
+          // The early returns requeue mid-batch, and a drop can land while
+          // `draining` gated the subscription.
+          const pending =
+            useNativeIntentStore.getState().pendingVideoAttachments[targetKey]
+              ?.length ?? 0;
+          // Only the instance still owning this composer re-drains; otherwise
+          // the batch stays parked rather than looping here forever.
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingVideo();
+          } else {
+            setMaterializingDroppedVideo(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // A predecessor's requeue can land after setup, so keep watching.
+      const orphaned = Object.entries(state.videoDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimVideoAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if ((state.pendingVideoAttachments[targetKey]?.length ?? 0) > 0) {
+        void drainPendingVideo();
+      }
+    });
+    void drainPendingVideo();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedVideo(false);
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
@@ -2723,6 +2864,10 @@ const Composer: FC<{
     registeringAudioDrops ||
     hasPendingAudioAttachments ||
     materializingDroppedAudio;
+  const hasMaterializingVideoAttachments =
+    registeringVideoDrops ||
+    hasPendingVideoAttachments ||
+    materializingDroppedVideo;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2762,6 +2907,7 @@ const Composer: FC<{
     !hasPendingAttachments &&
     !hasMaterializingImageAttachments &&
     !hasMaterializingAudioAttachments &&
+    !hasMaterializingVideoAttachments &&
     !disabled &&
     !overlay;
   const canQueueCurrentPrompt =
@@ -3595,7 +3741,14 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" | "audio" | "settings" = "indexing") => {
+    (
+      waitingOn:
+        | "indexing"
+        | "images"
+        | "audio"
+        | "video"
+        | "settings" = "indexing",
+    ) => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
@@ -3604,9 +3757,11 @@ const Composer: FC<{
           ? "Waiting for dropped images"
           : waitingOn === "audio"
             ? "Waiting for dropped audio"
-            : waitingOn === "settings"
-              ? "Loading this chat's settings"
-              : "Waiting for documents to finish indexing";
+            : waitingOn === "video"
+              ? "Waiting for dropped video"
+              : waitingOn === "settings"
+                ? "Loading this chat's settings"
+                : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once they are ready.",
         duration: Infinity,
@@ -3622,19 +3777,30 @@ const Composer: FC<{
     if (
       disabled ||
       overlay ||
-      (!hasMaterializingImageAttachments && !hasMaterializingAudioAttachments) ||
+      (!hasMaterializingImageAttachments &&
+        !hasMaterializingAudioAttachments &&
+        !hasMaterializingVideoAttachments) ||
       !hasSendableContent ||
       isComposingRef.current ||
       hasPendingAttachments
     ) {
       return;
     }
-    enqueueSend(hasMaterializingImageAttachments ? "images" : "audio");
+    // Name what is actually being waited on, or a parked video drop reports
+    // itself as audio.
+    enqueueSend(
+      hasMaterializingImageAttachments
+        ? "images"
+        : hasMaterializingAudioAttachments
+          ? "audio"
+          : "video",
+    );
   }, [
     disabled,
     overlay,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
+    hasMaterializingVideoAttachments,
     hasSendableContent,
     hasPendingAttachments,
     isComposingRef,
@@ -3647,9 +3813,11 @@ const Composer: FC<{
       isComposingRef.current ||
       hasPendingAttachments ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments,
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments,
     [
       hasMaterializingAudioAttachments,
+      hasMaterializingVideoAttachments,
       hasMaterializingImageAttachments,
       hasPendingAttachments,
       hasSendableContent,
@@ -3753,7 +3921,8 @@ const Composer: FC<{
       indexingActive ||
       threadScopedSettingsPending ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments
     ) {
       return;
     }
@@ -3790,6 +3959,7 @@ const Composer: FC<{
     threadScopedSettingsPending,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
+    hasMaterializingVideoAttachments,
     aui,
     canQueueCurrentPrompt,
     canQueuePastedTextPrompt,
@@ -3851,7 +4021,8 @@ const Composer: FC<{
     uploading:
       hasPendingAttachments ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments,
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments,
     researchActive: isResearchActive,
     runActive: threadIsRunning || promptQueueActive,
     queueDisabled: Boolean(disableQueue),
