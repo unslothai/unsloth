@@ -156,9 +156,7 @@ def _run_orphan_scan(
     # whatever else happens to be running. test_llama_cpp_wait_for_vram_settle.py
     # stubs this at every one of its call sites for the same reason; this harness
     # stubbed the sibling _reap_recorded_pid and missed this one.
-    monkeypatch.setattr(
-        LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False))
 
     if scan == "procfs":
         # Linux reads /proc directly. Point it at a fixture tree and intercept the
