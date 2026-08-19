@@ -369,7 +369,13 @@ class TestThePinLandsOnTheKeptCard:
     ROCr mask in place, and HIP indexes the agents ROCr left -- so a physical id
     written straight through addresses a different device, or none at all."""
 
-    def _rocr(self, monkeypatch, mask, *, devices = ("gfx1101", "gfx1036")):
+    def _rocr(
+        self,
+        monkeypatch,
+        mask,
+        *,
+        devices = ("gfx1101", "gfx1036"),
+    ):
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", True)
         monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 2)
