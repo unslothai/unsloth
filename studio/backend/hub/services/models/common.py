@@ -424,6 +424,7 @@ def _apply_format_aware_partial(
     snapshot_partial: bool,
     gguf_partial: bool,
     snapshot_partial_transport: Optional[str] = None,
+    snapshot_partial_resumable: bool = False,
 ) -> List[LocalModelInfo]:
     """Rewrite each row's partial flag with format-aware predicates so a hybrid (gguf + safetensors) repo's broken format doesn't taint the clean one; capabilities are recomputed from the new flag."""
     rewritten: List[LocalModelInfo] = []
@@ -440,6 +441,9 @@ def _apply_format_aware_partial(
                 update = {
                     "partial": True,
                     "partial_transport": partial_transport,
+                    "partial_resumable": (
+                        partial_transport is not None and snapshot_partial_resumable
+                    ),
                     "capabilities": _capabilities_for_format(
                         row.model_format,
                         row.source,
