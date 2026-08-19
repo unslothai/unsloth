@@ -155,7 +155,18 @@ def test_research_presentation_is_integrated() -> None:
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
     assert "if (researchRunId || ownsResearchMessage)" in thread
-    assert "parentId === messageId && Boolean(getResearchRunId(message.metadata))" in thread
+    # A prompt whose reply is a research message loses its edit and delete controls. Ownership is
+    # a question about the whole repository, not the visible message list: a reply can sit on a
+    # branch the view is not showing. It used to be one export per user message (quadratic in
+    # thread length); the answer is now shared across the thread, so what is pinned here is the
+    # question and its scope rather than the expression that computed it.
+    owners = source("components/assistant-ui/research-reply-owners.ts")
+    assert "researchReplyOwners(" in thread
+    assert "() => aui.thread().export().messages" in thread
+    # An empty run id still means "no research reply", as Boolean() rather than a null check.
+    assert "Boolean(getResearchRunId(metadata))" in thread
+    assert "isResearchReply(message.metadata)" in owners
+    assert "owners.add(parentId)" in owners
     user_actions = thread.split("const UserActionBar: FC = () =>", 1)[1].split(
         "const EditComposer:", 1
     )[0]
@@ -216,14 +227,13 @@ def test_research_presentation_is_integrated() -> None:
         1
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
-    # #8686 put a chat-scoped override in front of the global read, so the literal
+    # #8686 put a chat-scoped override in front of the global read here, so the literal
     # `const permissionMode = loadPermissionMode();` this used to pin is gone. The read
     # itself is the contract, and it is still per call: toggling deep research re-resolves
     # the permission level, taking the chat's own level when it has one and the persisted
     # global otherwise, rather than reusing a stale value. Scoped to the setter, because
     # over the whole file this would also match the initial-state constant, which is a
-    # different property and would keep passing if this read were dropped. Ported from
-    # main, where the same assertion was updated alongside that refactor.
+    # different property and would keep passing if this read were dropped.
     deep_research_update = store.split("setDeepResearchEnabled: (deepResearchEnabled) =>", 1)[
         1
     ].split("setResearchWebsitePolicy:", 1)[0]
@@ -259,7 +269,7 @@ def test_research_website_limits_are_configurable_and_sent_with_each_run() -> No
     assert 'label="Allow only"' in component
     assert 'label="Always block"' in component
     assert "their subdomains" in component
-    assert "<DialogTitle>Website access</DialogTitle>" in component
+    assert "<DialogTitle>Deep research</DialogTitle>" in component
     assert "DeepResearchWebsiteAccessDialog" in thread
     assert "researchWebsitePolicy" in store
     assert "CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY" in store

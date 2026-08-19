@@ -36,6 +36,7 @@ from storage.studio_db import (
     delete_chat_threads,
     ensure_chat_project_workspace,
     fork_chat_thread,
+    fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
     get_chat_thread,
@@ -399,6 +400,10 @@ class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     inferenceParams: Optional[ChatInferenceSettings] = None
+    # Last-used params per checkpoint id. Deep-merged per key, so patching one
+    # model cannot drop another's.
+    inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
@@ -424,6 +429,9 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
+    # like the run route so a value it would reject cannot be persisted and replayed.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
@@ -449,6 +457,24 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
+
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+    @field_validator("researchModelTimeoutSeconds")
+    @classmethod
+    def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:
+        # The run route takes 0 (unlimited) or at least 10, so a persisted 1..9 would hydrate
+        # and then 400 every later run with nothing pointing at this setting.
+        if value is not None and 0 < value < 10:
+            raise ValueError("researchModelTimeoutSeconds must be 0 (unlimited) or at least 10")
+        return value
 
 
 class ChatSettingsResponse(BaseModel):
@@ -1378,6 +1404,10 @@ class ChatForkCountResponse(BaseModel):
     count: int
 
 
+class ChatThreadForkCountsResponse(BaseModel):
+    counts: dict[str, int]
+
+
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
 def fork_thread(
     thread_id: str,
@@ -1444,6 +1474,15 @@ def get_fork_count(
     current_subject: str = Depends(get_current_subject),
 ):
     return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
+
+
+@router.get(
+    "/threads/{thread_id}/forks",
+    response_model = ChatThreadForkCountsResponse,
+)
+def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_current_subject)):
+    """Every fork count of a thread in one read, so a rendered thread costs one request."""
+    return ChatThreadForkCountsResponse(counts = fork_counts_for_thread(thread_id))
 
 
 @router.get("/export", response_model = ChatExportResponse)
