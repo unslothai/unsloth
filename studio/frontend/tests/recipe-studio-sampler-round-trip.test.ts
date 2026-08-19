@@ -73,6 +73,41 @@ test("a uuid sampler keeps its format across a save and reopen", () => {
   }
 });
 
+test("a uuid prefix survives even when its value is a reserved word", () => {
+  // buildSamplerParams reads "short" / "upper" / "uuid4" as modes, so a prefix whose
+  // own value is one of those has to come back escaped or the next save turns the
+  // prefix into a flag. Checked as payload stability over two save/reopen cycles,
+  // which is what a user actually does.
+  for (const uuidFormat of [
+    "MY-",
+    "short",
+    "upper",
+    "uuid4",
+    "prefix:short",
+    "prefix:upper",
+    "prefix:uuid4",
+    "prefix:prefix:x",
+    "",
+  ] as const) {
+    const config: SamplerConfig = {
+      id: "uuid-1",
+      kind: "sampler",
+      sampler_type: "uuid",
+      name: "row_id",
+      uuid_format: uuidFormat,
+    };
+    const firstSave = buildSamplerColumn(config, []);
+    const reopened = roundTrip(config);
+    const secondSave = buildSamplerColumn(reopened, []);
+
+    assert.deepEqual(
+      secondSave.params,
+      firstSave.params,
+      `uuid_format ${JSON.stringify(uuidFormat)} should re-save to the same params`,
+    );
+  }
+});
+
 test("a gaussian sampler still reads a hand-written std key", () => {
   const parseErrors: string[] = [];
   const parsed = parseSampler(
