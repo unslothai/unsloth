@@ -34,6 +34,10 @@ const sharedComposerSource = readFileSync(
   new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
   "utf8",
 );
+const imageDropzoneSource = readFileSync(
+  new URL("../src/components/image-dropzone.tsx", import.meta.url),
+  "utf8",
+);
 const imagesPageSource = readFileSync(
   new URL("../src/features/images/images-page.tsx", import.meta.url),
   "utf8",
@@ -1301,6 +1305,23 @@ test("carries live form state, except what sensitive fields hide", () => {
             },
           ],
         },
+        {
+          tag: "div",
+          rect: [0, 1440, 700, 0],
+          attributes: { "data-reload-snapshot-sensitive": "" },
+          children: [
+            {
+              tag: "img",
+              rect: [630, 100, 690, 40],
+              naturalWidth: 1024,
+              naturalHeight: 768,
+              attributes: {
+                src: "data:image/png;base64,private-local-picker",
+                alt: "Source",
+              },
+            },
+          ],
+        },
       ],
     },
   });
@@ -1318,10 +1339,17 @@ test("carries live form state, except what sensitive fields hide", () => {
   assert.doesNotMatch(html, /revealed-api-key/);
   assert.doesNotMatch(html, /secret-header|stale-header/);
   assert.doesNotMatch(html, /rendered-api-key/);
-  assert.doesNotMatch(html, /pending-local-attachment|retained-frame/);
+  assert.doesNotMatch(
+    html,
+    /pending-local-attachment|private-local-picker|retained-frame/,
+  );
   assert.match(
     sharedComposerSource,
     /function PendingImageThumb[\s\S]*?data-reload-snapshot-sensitive/,
+  );
+  assert.match(
+    imageDropzoneSource,
+    /if \(value\)[\s\S]*?data-reload-snapshot-sensitive/,
   );
 });
 
