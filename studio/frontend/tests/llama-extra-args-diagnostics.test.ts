@@ -74,7 +74,7 @@ test("a managed flag is an error that names the control that owns it", () => {
 test("a managed flag with no control says who owns it instead", () => {
   // --api-key is not a row in this panel, so pointing at one would be a lie.
   const text = messages("--api-key secret");
-  assert.match(text, /managed by Unsloth Studio/);
+  assert.match(text, /managed by Unsloth/);
   assert.doesNotMatch(text, /above/);
 });
 
