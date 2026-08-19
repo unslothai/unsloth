@@ -35,12 +35,12 @@ check() {
     fi
 }
 
-# Create a mock venv that runs isolated python
+# Create a mock venv that runs Python without site-packages, exercising setup's fallback parser.
 VENV_DIR="$WORK/mock_venv"
 mkdir -p "$VENV_DIR/bin"
 cat << 'EOF' > "$VENV_DIR/bin/python"
 #!/bin/sh
-exec python3 -s "$@"
+exec python3 -S "$@"
 EOF
 chmod +x "$VENV_DIR/bin/python"
 
@@ -87,6 +87,10 @@ check "installed older than desktop requirement (2026.8.4 < 2026.8.15)" \
 
 check "installed older than desktop requirement (2026.8.14 < 2026.8.15)" \
     "$(eval_fastpath '2026.8.14' '2026.8.14' '2026.8.15')" "false"
+
+# 4. Without packaging, a suffix cannot be ordered safely, so force the dependency pass.
+check "post-release requirement forces dependency pass without packaging" \
+    "$(eval_fastpath '2026.8.15' '2026.8.15' '2026.8.15.post1')" "false"
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

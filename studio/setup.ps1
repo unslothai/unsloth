@@ -4793,11 +4793,11 @@ try:
     from packaging.version import parse as parse_v
 except ImportError:
     def parse_v(v):
-        match = re.match(r'^(\d+)\.(\d+)\.(\d+)', (v or '').strip())
-        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else (0, 0, 0)
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
 installed = parse_v(sys.argv[1])
 required = parse_v(sys.argv[2])
-sys.exit(0 if installed >= required else 1)
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
 " "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
                 if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
             } catch {}
