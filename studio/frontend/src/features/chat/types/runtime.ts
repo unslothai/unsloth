@@ -56,6 +56,9 @@ export interface ChatModelSummary {
   isAudio?: boolean;
   audioType?: string | null;
   hasAudioInput?: boolean;
+  /** llama-server takes video for this model: mmproj video support, a build
+   * with video enabled, and ffmpeg installed. */
+  hasVideoInput?: boolean;
 }
 
 export interface ChatLoraSummary {

@@ -202,6 +202,50 @@ export const de = {
       agents: "Agenten",
       debugging: "Protokolle",
       voice: "Sprachfunktionen",
+      keyboardShortcuts: "Kürzel",
+    },
+    keyboardShortcuts: {
+      title: "Tastenkürzel",
+      description:
+        "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
+      searchPlaceholder: "Kürzel suchen…",
+      noResults: "Keine Kürzel passen zu dieser Suche.",
+      unassigned: "Nicht zugewiesen",
+      recording: "Tasten drücken…",
+      recordingHint: "Neue Tastenkombination drücken oder Esc zum Abbrechen.",
+      needsModifier: "⌘, Strg oder Alt hinzufügen. Eine einzelne Taste würde die Eingabe verschlucken.",
+      conflict: "Wird auch von einem anderen Kürzel verwendet",
+      conflictShadowed: "Ein anderes Kürzel belegt diese Kombination und läuft stattdessen",
+      edit: "Kürzel ändern",
+      clear: "Kürzel entfernen",
+      reset: "Standard wiederherstellen",
+      resetAll: "Alle auf Standard zurücksetzen",
+      groups: {
+        general: "Allgemein",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Neuer Chat",
+          description: "Einen neuen Chat starten",
+        },
+        searchChats: {
+          label: "Chats durchsuchen",
+          description: "Die Chat-Suche öffnen",
+        },
+        toggleSidebar: {
+          label: "Seitenleiste umschalten",
+          description: "Seitenleiste ein- oder ausblenden",
+        },
+        openSettings: {
+          label: "Einstellungen öffnen",
+          description: "Den Einstellungsdialog öffnen",
+        },
+        openKeyboardShortcuts: {
+          label: "Tastenkürzel",
+          description: "Diese Kürzelliste öffnen",
+        },
+      },
     },
     debugging: {
       logSection: "Protokolldatei",
@@ -369,6 +413,7 @@ export const de = {
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
+        openAudioAction: "Audio öffnen",
         voiceLabel: "Stimme",
         voiceDescription: "Beste Stimmen auf diesem Gerät",
         speedLabel: "Geschwindigkeit",
@@ -378,6 +423,7 @@ export const de = {
         previewDescription: "Eine kurze Hörprobe abspielen",
         previewFailed: "Die TTS-Vorschau ist fehlgeschlagen",
         previewAction: "Anhören",
+        preparingAction: "Wird erzeugt…",
         stopAction: "Stopp",
         ttsLabel: "Sprachausgabe",
         notSupported: "In diesem Browser nicht unterstützt",
@@ -1150,6 +1196,9 @@ export const de = {
       archivedVideos: "Archivierte Videos",
       archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
+      manageChats: "Chats verwalten",
+      manageChatsDescription:
+        "Wählen Sie mehrere Chats aus, um sie zu verschieben, anzupinnen, zu archivieren, zu exportieren oder zu löschen.",
       exportArchivedChats: "Exportieren",
       exportingArchivedChats: "Wird exportiert...",
       exportedOneArchivedChat: "1 archivierter Chat exportiert",

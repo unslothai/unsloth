@@ -52,6 +52,7 @@ export interface PersistedChatSettings {
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
+  researchModelTimeoutSeconds?: number;
   artifactsEnabled?: boolean;
   showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;

@@ -166,6 +166,50 @@ export const it = {
       agents: "Agenti",
       debugging: "Log",
       about: "Informazioni",
+      keyboardShortcuts: "Scorciatoie",
+    },
+    keyboardShortcuts: {
+      title: "Scorciatoie da tastiera",
+      description:
+        "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
+      searchPlaceholder: "Cerca scorciatoie…",
+      noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
+      unassigned: "Non assegnata",
+      recording: "Premi i tasti…",
+      recordingHint: "Premi la nuova combinazione, o Esc per annullare.",
+      needsModifier: "Aggiungi ⌘, Ctrl o Alt. Un tasto singolo intercetterebbe la digitazione.",
+      conflict: "Usata anche da un'altra scorciatoia",
+      conflictShadowed: "Un'altra scorciatoia usa questa combinazione e viene eseguita al suo posto",
+      edit: "Cambia scorciatoia",
+      clear: "Rimuovi scorciatoia",
+      reset: "Ripristina il valore predefinito",
+      resetAll: "Ripristina tutto",
+      groups: {
+        general: "Generali",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Nuova chat",
+          description: "Avvia una nuova chat",
+        },
+        searchChats: {
+          label: "Cerca nelle chat",
+          description: "Apri la ricerca delle chat",
+        },
+        toggleSidebar: {
+          label: "Mostra/nascondi barra laterale",
+          description: "Mostra o nascondi la barra laterale",
+        },
+        openSettings: {
+          label: "Apri le impostazioni",
+          description: "Apri la finestra delle impostazioni",
+        },
+        openKeyboardShortcuts: {
+          label: "Scorciatoie da tastiera",
+          description: "Apri questo elenco di scorciatoie",
+        },
+      },
     },
     debugging: {
       logSection: "File di log",
@@ -332,6 +376,7 @@ export const it = {
         modelLabel: "Modello TTS",
         modelDescription:
           "Carica un modello audio dal selettore dei modelli (es. Orpheus TTS)",
+        openAudioAction: "Apri Audio",
         voiceLabel: "Voce",
         voiceDescription: "Le migliori voci disponibili su questo dispositivo",
         speedLabel: "Velocità",
@@ -340,6 +385,7 @@ export const it = {
         previewLabel: "Ascolta la voce",
         previewDescription: "Riproduci un breve campione",
         previewAction: "Ascolta",
+        preparingAction: "Generazione…",
         previewFailed: "Impossibile riprodurre l'anteprima TTS",
         stopAction: "Interrompi",
         ttsLabel: "Sintesi vocale",
@@ -1113,6 +1159,9 @@ export const it = {
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
       manageAction: "Gestisci",
+      manageChats: "Gestisci chat",
+      manageChatsDescription:
+        "Seleziona più chat da spostare, fissare, archiviare, esportare o eliminare.",
       exportArchivedChats: "Esporta",
       exportingArchivedChats: "Esportazione...",
       exportedOneArchivedChat: "1 chat archiviata esportata",
