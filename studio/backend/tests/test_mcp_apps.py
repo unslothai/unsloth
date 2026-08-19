@@ -423,7 +423,10 @@ def test_a_rediscovery_does_not_cache_a_row_edited_mid_probe(tmp_path, monkeypat
         routes_mcp,
         "read_resource_sync",
         lambda url, headers, uri, **kwargs: {
-            "uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<p/>", "ui": {},
+            "uri": uri,
+            "mimeType": "text/html;profile=mcp-app",
+            "text": "<p/>",
+            "ui": {},
         },
     )
     from fastapi import HTTPException
