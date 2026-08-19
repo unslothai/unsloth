@@ -4056,8 +4056,7 @@ class LlamaCppBackend:
 
     def _binary_changed_since_revision(self, revision: tuple) -> bool:
         """Whether the current selection differs from a captured binary."""
-        # A launch whose binary could not be statted has no baseline to compare.
-        # Discovering the current binary cannot recover that missing launch state.
+        # No captured revision is no baseline, and discovery cannot recover one.
         if not revision:
             return False
         current = self._binary_revision(

@@ -19,9 +19,8 @@ class TestNoTorchBackendAutoInInstallSh:
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
-        # The fallback contains nested conditionals, so only its unindented `fi`
-        # closes the branch. Stopping at the first stripped `fi` cuts the range
-        # off before the final --torch-backend=auto invocation.
+        # The fallback nests conditionals, so only its unindented `fi` closes the
+        # branch; the first stripped `fi` ends the range before the last invocation.
         fallback_start = None
         fallback_end = None
         for i, line in enumerate(lines):

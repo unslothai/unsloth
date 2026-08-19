@@ -465,9 +465,9 @@ class TestPendingOwnership:
 
         import core.inference.llama_cpp as lc
 
-        # Read the finalizer as a scope, not as text after the word "finally": a
-        # substring match also accepts a clear moved out of the suite, where an
-        # exception through the yield skips it and the pending value leaks.
+        # Read the finalizer as a scope, not as text after "finally": a substring
+        # match also accepts a clear moved below the suite, which an exception
+        # through the yield skips, leaking the pending value.
         scope = ast.parse(
             textwrap.dedent(inspect.getsource(lc.LlamaCppBackend._serial_load_scope))
         ).body[0]
