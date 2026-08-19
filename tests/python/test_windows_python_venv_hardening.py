@@ -417,11 +417,12 @@ def _run_uv_venv_creation_result(
     uv_mode: str,
     fallback_mode: str,
     migrated: bool = False,
+    foreign: bool = False,
 ) -> dict[str, str]:
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     readiness = _extract(r"    function Test-VenvPythonReady \{.*?\n    \}\n", source)
     creation = _extract(
-        r"    \$fallbackVenvExit = \$null\n    if \(-not \(Test-Path -LiteralPath \$VenvPython\)\) \{.*?(?=\n\n    # Mark the managed venv)",
+        r"    \$venvDirExistedBeforeCreation = Test-Path -LiteralPath \$VenvDir\n    \$venvDirHasOwnershipEvidence = \(.*?\n    \$fallbackVenvExit = \$null\n    if \(-not \(Test-Path -LiteralPath \$VenvPython\)\) \{.*?(?=\n\n    # Mark the managed venv)",
         source,
     )
     marker_and_readiness = _extract(
@@ -445,11 +446,12 @@ if ($env:TEST_UV_MODE -eq "ready") {
     Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination (Join-Path $target "Scripts\\python.exe") -Force
 } elseif ($env:TEST_UV_MODE -eq "unlaunchable") {
     New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts\\python.exe") | Out-Null
-} elseif ($env:TEST_UV_MODE -eq "nonzero") {
-    [System.IO.File]::WriteAllText($env:TEST_UV_LOG, ($args -join "|"))
-    exit 17
+} elseif ($env:TEST_UV_MODE -eq "nonzero_ready") {
+    New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
+    Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination (Join-Path $target "Scripts\\python.exe") -Force
 }
 [System.IO.File]::WriteAllText($env:TEST_UV_LOG, ($args -join "|"))
+if ($env:TEST_UV_MODE -eq "nonzero" -or $env:TEST_UV_MODE -eq "nonzero_ready") { exit 17 }
 exit 0
 """.strip(),
         encoding = "utf-8",
@@ -486,6 +488,7 @@ $script:UvExe = $env:TEST_UV_EXE
 $DetectedPython = [pscustomobject]@{{ Path = $env:TEST_DETECTED_PYTHON; Version = "3.13" }}
 $script:TestCallLabels = @()
 $script:FailureMessage = $null
+$script:FailureExitCode = $null
 $script:PackageInstallReached = $false
 
 function step {{ param([string]$Name, [string]$Message, [string]$Color) }}
@@ -494,6 +497,7 @@ function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }
 function Exit-InstallFailure {{
     param([string]$Message, [int]$ExitCode = 1)
     $script:FailureMessage = $Message
+    $script:FailureExitCode = $ExitCode
     return $Message
 }}
 function Get-VenvBaseHome {{ param([string]$VenvRoot) return $null }}
@@ -509,6 +513,10 @@ function Invoke-InstallCommand {{
 if ($env:TEST_MIGRATED -eq "1") {{
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $VenvPython) | Out-Null
     Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination $VenvPython -Force
+}}
+if ($env:TEST_FOREIGN_DIR -eq "1") {{
+    New-Item -ItemType Directory -Force -Path $VenvDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $VenvDir "foreign.txt") -Value "foreign"
 }}
 
 function Invoke-TestCreation {{
@@ -530,6 +538,9 @@ if (Test-Path -LiteralPath $env:TEST_FALLBACK_LOG -PathType Leaf) {{
     }}
     Write-Output ("marker=" + (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf))
 Write-Output ("failure=" + ($null -ne $script:FailureMessage))
+Write-Output ("failure_code=" + $script:FailureExitCode)
+Write-Output ("failure_message=" + $script:FailureMessage)
+Write-Output ("foreign=" + (Test-Path -LiteralPath (Join-Path $VenvDir "foreign.txt") -PathType Leaf))
 Write-Output ("package=" + $script:PackageInstallReached)
 """
     env = os.environ.copy()
@@ -543,6 +554,7 @@ Write-Output ("package=" + $script:PackageInstallReached)
     env["TEST_VENV_DIR"] = str(venv_dir)
     env["TEST_STUDIO_HOME"] = str(tmp_path / "studio home")
     env["TEST_MIGRATED"] = "1" if migrated else "0"
+    env["TEST_FOREIGN_DIR"] = "1" if foreign else "0"
     env["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), env.get("PATH", "")))
     output = _run_powershell(shell, script, env)
     return dict(line.split("=", 1) for line in output.splitlines())
@@ -603,6 +615,18 @@ def test_uv_venv_creation_result_nonzero_uv_uses_selected_python_fallback(
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_uv_venv_creation_result_nonzero_ready_uv_still_uses_fallback(
+    tmp_path: Path, shell: str
+):
+    state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero_ready", "ready")
+    assert state["calls"] == "create virtual environment,repair virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
+    assert state["failure"] == "False", state
+    assert state["package"] == "True", state
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_uv_venv_creation_result_nonzero_fallback_stops_before_packages(
     tmp_path: Path, shell: str
 ):
@@ -611,6 +635,8 @@ def test_uv_venv_creation_result_nonzero_fallback_stops_before_packages(
     _assert_uv_invocation(state, tmp_path)
     assert state["marker"] == "True", state
     assert state["failure"] == "True", state
+    assert state["failure_code"] == "23", state
+    assert "Failed to repair virtual environment (exit code 23)" in state["failure_message"], state
     assert state["package"] == "False", state
 
 
@@ -624,6 +650,25 @@ def test_uv_venv_creation_result_unusable_fallback_stops_before_packages(
     _assert_uv_invocation(state, tmp_path)
     assert state["marker"] == "True", state
     assert state["failure"] == "True", state
+    assert state["failure_code"] == "1", state
+    assert "Managed Python is unavailable" in state["failure_message"], state
+    assert state["package"] == "False", state
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_uv_venv_creation_result_preserves_foreign_target(
+    tmp_path: Path, shell: str
+):
+    state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "ready", foreign = True)
+    assert state["calls"] == "create virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
+    assert state["fallback_args"] == "", state
+    assert state["marker"] == "False", state
+    assert state["failure"] == "True", state
+    assert state["failure_code"] == "1", state
+    assert "unowned virtual environment directory" in state["failure_message"], state
+    assert state["foreign"] == "True", state
     assert state["package"] == "False", state
 
 

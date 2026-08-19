@@ -4155,6 +4155,11 @@ exit 0
         $_Migrated = $true
     }
 
+    $venvDirExistedBeforeCreation = Test-Path -LiteralPath $VenvDir
+    $venvDirHasOwnershipEvidence = (
+        (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $VenvDir "pyvenv.cfg") -PathType Leaf)
+    )
     $fallbackVenvExit = $null
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
@@ -4162,6 +4167,11 @@ exit 0
         $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
         $uvVenvReady = ($venvExit -eq 0 -and (Test-VenvPythonReady -PythonExe $VenvPython))
         if (-not $uvVenvReady) {
+            if ($venvDirExistedBeforeCreation -and -not $venvDirHasOwnershipEvidence) {
+                Write-StudioLine "[ERROR] Refusing to repair an existing directory that is not a managed Studio environment." -ForegroundColor Red
+                Write-StudioLine "        Move $VenvDir aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
+                return (Exit-InstallFailure "Refusing to repair unowned virtual environment directory $VenvDir")
+            }
             Write-StudioLine "[WARN] uv did not produce a usable virtual environment; repairing with the selected Python." -ForegroundColor Yellow
             $fallbackVenvExit = Invoke-InstallCommand -Label "repair virtual environment" { & $DetectedPython.Path -m venv $VenvDir }
         }
@@ -4177,6 +4187,7 @@ exit 0
 
     if ($null -ne $fallbackVenvExit -and $fallbackVenvExit -ne 0) {
         Write-StudioLine "[ERROR] Failed to repair virtual environment (exit code $fallbackVenvExit)" -ForegroundColor Red
+        Write-StudioLine "        Selected Python: $($DetectedPython.Path)" -ForegroundColor Yellow
         Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Failed to repair virtual environment (exit code $fallbackVenvExit)" $fallbackVenvExit)
     }
