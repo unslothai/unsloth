@@ -1080,7 +1080,11 @@ class ExternalProviderClient:
                 neutralize_tool_descriptions,
                 reconciled_tool_choice,
             )
-            messages = neutralize_control_markup_in_messages(messages)
+            from core.inference.tool_loop_controller import coerce_messages_tool_calls_for_wire
+
+            messages = coerce_messages_tool_calls_for_wire(
+                neutralize_control_markup_in_messages(messages)
+            )
             if tools:
                 safe_tools = neutralize_tool_descriptions(tools)
                 # A mixed catalog keeps safe_tools non-empty while dropping the one tool the

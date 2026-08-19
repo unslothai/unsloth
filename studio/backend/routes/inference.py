@@ -12285,7 +12285,9 @@ def _build_external_messages(
                 if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
-    return result
+    from core.inference.tool_loop_controller import coerce_messages_tool_calls_for_wire
+
+    return coerce_messages_tool_calls_for_wire(result)
 
 
 async def _proxy_to_external_provider(

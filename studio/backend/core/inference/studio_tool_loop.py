@@ -255,10 +255,13 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
         parsed = {"_raw": arguments}
     if not isinstance(parsed, dict):
         parsed = {"value": parsed}
+    from core.inference.tool_loop_controller import coerce_tool_call_replay_arguments
+
+    wire_arguments = coerce_tool_call_replay_arguments(arguments, parsed)
     normalized: dict[str, Any] = {
         "id": call_id,
         "type": "function",
-        "function": {"name": name, "arguments": arguments or "{}"},
+        "function": {"name": name, "arguments": wire_arguments},
         "arguments": parsed,
     }
     extra = call.get("extra_content")

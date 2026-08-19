@@ -175,6 +175,97 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
+def coerce_tool_call_replay_arguments(
+    args_text: Any,
+    structured_args: Any = None,
+) -> str:
+    """Return OpenAI-wire ``function.arguments`` JSON text safe to replay upstream.
+
+    Mirrors the frontend ``toolCallReplayArguments`` helper: prefer the streamed
+    text when it parses, otherwise fall back to the structured args the loop
+    already decoded. Unparseable wire text poisons every follow-up request on
+    strict OpenAI-compatible servers (custom vLLM / llama.cpp endpoints, #9039).
+    """
+    if isinstance(args_text, str) and args_text:
+        try:
+            json.loads(args_text)
+            return args_text
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    if isinstance(args_text, Mapping):
+        return json.dumps(
+            dict(args_text),
+            ensure_ascii = False,
+            sort_keys = True,
+            separators = (",", ":"),
+            default = _json_default,
+        )
+    if structured_args is not None:
+        if isinstance(structured_args, Mapping):
+            payload: Any = dict(structured_args)
+        else:
+            payload = structured_args
+        return json.dumps(
+            payload,
+            ensure_ascii = False,
+            sort_keys = True,
+            separators = (",", ":"),
+            default = _json_default,
+        )
+    if isinstance(args_text, str) and args_text:
+        return json.dumps({"_raw": args_text}, ensure_ascii = False, separators = (",", ":"))
+    return "{}"
+
+
+def coerce_tool_call_for_wire(call: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one assistant ``tool_calls[]`` entry to OpenAI wire shape."""
+    if not isinstance(call, dict):
+        return call
+    structured = call.get("arguments") if isinstance(call.get("arguments"), Mapping) else None
+    function = call.get("function")
+    if isinstance(function, dict):
+        wire_args = coerce_tool_call_replay_arguments(function.get("arguments"), structured)
+        cleaned = {key: value for key, value in call.items() if key != "arguments"}
+        if function.get("arguments") != wire_args or "arguments" in call:
+            cleaned["function"] = {**function, "arguments": wire_args}
+            return cleaned
+        return call
+    if structured is not None or "arguments" in call:
+        wire_args = coerce_tool_call_replay_arguments(call.get("arguments"), structured)
+        if call.get("arguments") != wire_args:
+            return {**call, "arguments": wire_args}
+    return call
+
+
+def coerce_messages_tool_calls_for_wire(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure every replayed assistant tool call carries parseable JSON arguments."""
+    if not messages:
+        return messages
+    out: list[dict[str, Any]] = []
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            out.append(message)
+            continue
+        new_calls = []
+        message_changed = False
+        for call in tool_calls:
+            coerced = coerce_tool_call_for_wire(call)
+            if coerced is not call:
+                message_changed = True
+            new_calls.append(coerced)
+        if message_changed:
+            out.append({**message, "tool_calls": new_calls})
+            changed = True
+        else:
+            out.append(message)
+    return out if changed else messages
+
+
 def coerce_tool_arguments(
     raw_args: Any,
     *,
