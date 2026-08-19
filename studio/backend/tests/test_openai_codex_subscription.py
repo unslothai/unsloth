@@ -2207,10 +2207,13 @@ def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monke
     forget_subscription_models("provider-15")
 
     class Slow:
-        async def get(self, _url, headers = None, params = None):
-            return httpx.Response(
-                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
-            )
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
+            return httpx.Response(200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
 
         async def aclose(self):
             return None
