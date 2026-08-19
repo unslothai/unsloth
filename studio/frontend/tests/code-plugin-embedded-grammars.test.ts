@@ -29,9 +29,21 @@ import type {
 import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import {
+  createCodePlugin,
+  MIN_INCREMENTAL_CHARS,
+} from "../src/components/assistant-ui/code-plugin.ts";
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
+
+// REFRESH_MS in code-plugin.ts, plus a margin. A fence past
+// MIN_INCREMENTAL_CHARS that is updated twice inside that window is answered
+// from the throttled approximation, which renders the uncommitted tail plain
+// and never reads the grammar state, so a comparison there cannot fail however
+// badly the resume is broken. Measured, not assumed: drop the wait and the
+// first comparison past the threshold takes that path on correct code too.
+const settle = (): Promise<unknown> =>
+  new Promise((resolve) => setTimeout(resolve, 260));
 
 const highlightOnce = (
   plugin: ReturnType<typeof createCodePlugin>,
@@ -72,20 +84,37 @@ async function reference(code: string, language: HighlightOptions["language"]) {
  * `cuts` are extra prefix lengths to test on top of the `step` walk, for the
  * boundaries that matter here: the character before and after a delimiter that
  * pushes or pops a grammar. A step walk alone can stride straight over them.
+ *
+ * Once the fence is past MIN_INCREMENTAL_CHARS every update has to wait out the
+ * refresh interval to be tokenized at all, so `throttledStep` walks that
+ * stretch on its own coarser stride. Fixtures below the threshold never reach
+ * either and pay nothing.
  */
 async function assertMatchesWholeDocument(
   source: string,
   language: HighlightOptions["language"],
-  { step = 1, cuts = [] as number[] } = {},
+  // Annotated rather than inferred: `throttledStep` defaults to `step`, and TS
+  // cannot infer a binding that another default in the same pattern reads.
+  {
+    step = 1,
+    throttledStep = step,
+    cuts = [],
+  }: { step?: number; throttledStep?: number; cuts?: number[] } = {},
 ) {
   const lengths = new Set<number>(cuts.filter((n) => n > 0 && n <= source.length));
-  for (let length = 1; length <= source.length; length += step) {
+  for (let length = 1; length <= source.length; ) {
     lengths.add(length);
+    length += length >= MIN_INCREMENTAL_CHARS ? throttledStep : step;
   }
   lengths.add(source.length);
 
   const plugin = createCodePlugin({ themes: THEMES });
+  let previous = 0;
   for (const length of [...lengths].sort((a, b) => a - b)) {
+    if (previous >= MIN_INCREMENTAL_CHARS) {
+      await settle();
+    }
+    previous = length;
     const code = source.slice(0, length);
     const streamed = await highlightOnce(plugin, {
       code,
@@ -214,6 +243,71 @@ test("a markdown fence with a multi-line comment matches whole-document tokeniza
       ...cutsAround(MARKDOWN, "```python"),
       ...cutsAround(MARKDOWN, '"""'),
       ...cutsAround(MARKDOWN, "```\n\nMore"),
+    ],
+  });
+});
+
+// ── Markdown whose nested fences open and close again ──────────────────
+
+// Prose that carries no state of its own, here to push the second nested fence
+// past MIN_INCREMENTAL_CHARS.
+const NOTES = Array.from(
+  { length: 17 },
+  (_, index) => `Paragraph ${index + 1} of the notes, long enough that the
+document clears the incremental threshold before the next fence opens.`,
+).join("\n\n");
+
+// MARKDOWN above pushes one shallow level and, as its own comment says, leaves
+// its nested fence's body doing no work. This fixture is the opposite: the body
+// and the pop back out of it are the whole point. A `#` line inside a fence is
+// body text and the same line outside one is a heading, so a resume that stays
+// a level too deep, or comes back a level too shallow, colours them the other
+// way round, and the prose after each fence goes with them.
+const MARKDOWN_NESTED = `# Release notes
+
+The block below is markdown, so a fence in its body opens a second one.
+
+\`\`\`python
+# Collect the rows before rendering them.
+def render(rows):
+    """Return the rows as text.
+
+    * Not a list item, just a docstring line.
+    """
+    return "\\n".join(rows)
+\`\`\`
+
+Prose after the first nested fence, with **bold**, \`inline code\` and a
+[link](https://example.com), none of which is markdown at all unless that
+fence really closed.
+
+${NOTES}
+
+\`\`\`bash
+# Restart the worker after editing the config.
+set -euo pipefail
+./scripts/worker.sh --config config.yaml
+\`\`\`
+
+# A heading the document only has once the second fence has closed too
+
+Trailing prose with **bold** and \`inline code\`.
+`;
+
+test("nested markdown fences match whole-document tokenization", async () => {
+  await assertMatchesWholeDocument(MARKDOWN_NESTED, "markdown", {
+    step: 23,
+    // Every comparison past the threshold waits out a refresh interval, so that
+    // stretch is walked coarsely: 15 of the 119 comparisons are there, and they
+    // are what makes this test take about four seconds.
+    throttledStep: 150,
+    cuts: [
+      // Both sides of every delimiter run, opening and closing alike.
+      ...cutsAround(MARKDOWN_NESTED, "```"),
+      // And after the info string, which is where the nested language is named.
+      ...cutsAround(MARKDOWN_NESTED, "```python"),
+      ...cutsAround(MARKDOWN_NESTED, "```bash"),
+      ...cutsAround(MARKDOWN_NESTED, '"""'),
     ],
   });
 });
