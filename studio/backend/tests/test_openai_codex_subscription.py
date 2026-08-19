@@ -2347,7 +2347,11 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
 
     calls = []
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         calls.append(_provider_id)
         # The gate's own refresh resolves; the chat path's later call stops the request.
         if len(calls) > 1:
@@ -2378,7 +2382,11 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         )
         proven_calls = []
 
-        async def _always_refuse(_provider_id, force_refresh = False, expected_access_token = None):
+        async def _always_refuse(
+            _provider_id,
+            force_refresh = False,
+            expected_access_token = None,
+        ):
             proven_calls.append(_provider_id)
             raise codex_auth.CodexAuthError("stub: past the model gate")
 
