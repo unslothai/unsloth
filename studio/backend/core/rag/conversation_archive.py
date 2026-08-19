@@ -419,6 +419,12 @@ def archive_turns(
                 _restamp(conn, scope, digest, seats, copies = copies)
                 if _write_lock:
                     conn.commit()
+                # Widened here too, not only on the pre-check: both turns can arrive in ONE
+                # compaction, the shorter is written first, and the longer then meets this
+                # re-check, so leaving without touching the span left the window at the
+                # shorter figure and the longer occurrence unsearchable. After the commit
+                # above, since the widen carries its own.
+                _widen_span(conn, scope, digest, span)
                 continue
             ordinal = None
             archived_at = None
