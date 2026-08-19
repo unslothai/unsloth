@@ -14,11 +14,13 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
+import type { KeylessApiAccessScope } from "../api/keyless-api-access";
 import { MonitorLink } from "../components/monitor-link";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
@@ -31,6 +33,10 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [keyless, setKeyless] = useState<{
+    scope: KeylessApiAccessScope;
+    tools: boolean;
+  }>({ scope: "off", tools: false });
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -174,13 +180,19 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
+      <KeylessApiAccessSection onSettingsChange={setKeyless} />
+
       <RemoteAccessSection />
 
       <LanAccessSection />
 
       <ModelAutoSwitchSection />
 
-      <UsageExamples apiKey={revealed} />
+      <UsageExamples
+        apiKey={revealed}
+        keylessScope={keyless.scope}
+        keylessTools={keyless.tools}
+      />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

@@ -31,6 +31,7 @@ import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import type { KeylessApiAccessScope } from "../api/keyless-api-access";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
@@ -312,9 +313,11 @@ for await (const chunk of response) {
 }`;
 }
 
+// every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
   key: string,
+  toolsKey: string,
   model: string,
   os: Os,
 ): Record<ExampleType, string> {
@@ -323,16 +326,18 @@ function buildSnippets(
     curl: curl(base, key, model, "plain"),
     python: pythonSnippet(base, key, model, "plain"),
     javascript: javascriptSnippet(base, key, model, "plain"),
-    curlTools: curl(base, key, model, "tools"),
-    pythonTools: pythonSnippet(base, key, model, "tools"),
-    javascriptTools: javascriptSnippet(base, key, model, "tools"),
-    curlAdvanced: curl(base, key, model, "advanced"),
-    pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
-    javascriptAdvanced: javascriptSnippet(base, key, model, "advanced"),
+    curlTools: curl(base, toolsKey, model, "tools"),
+    pythonTools: pythonSnippet(base, toolsKey, model, "tools"),
+    javascriptTools: javascriptSnippet(base, toolsKey, model, "tools"),
+    curlAdvanced: curl(base, toolsKey, model, "advanced"),
+    pythonAdvanced: pythonSnippet(base, toolsKey, model, "advanced"),
+    javascriptAdvanced: javascriptSnippet(base, toolsKey, model, "advanced"),
   };
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
+// the openai sdks require some api_key, so name one rather than leave it blank
+const KEYLESS_KEY_PLACEHOLDER = "unsloth-local";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 // Slow retry while /v1 has nothing to name: a download or load moves no store state.
 const CATALOG_RETRY_MS = 15000;
@@ -507,7 +512,17 @@ function HighlightedCode({
   );
 }
 
-export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
+export function UsageExamples({
+  apiKey,
+  keylessScope = "off",
+  keylessTools = false,
+}: {
+  apiKey?: string | null;
+  /** which routes keyless api access serves, so a placeholder is only used where it works */
+  keylessScope?: KeylessApiAccessScope;
+  /** whether a keyless caller may drive the server-side tool loop */
+  keylessTools?: boolean;
+}) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
@@ -644,17 +659,25 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   }, [agent, detectedAgents, activeGgufVariant, activeNativePathToken, ggufContextLength]);
 
   const model = useExampleModelName();
-  const key = apiKey || KEY_PLACEHOLDER;
+  // a dummy key is accepted under keyless access, so the snippet runs without creating one
+  const key = apiKey || (keylessScope !== "off" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // a keyless caller gets no tools until the admin grants them, so this names a real key
+  const toolsKey =
+    apiKey ||
+    (keylessScope !== "off" && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // the agent reaches past /v1, so only the full scope lets it run without a real key
+  const agentKey =
+    apiKey || (keylessScope === "full" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
   // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
-    () => (model ? buildSnippets(base, key, model, os) : null),
-    [base, key, model, os],
+    () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
+    [base, key, toolsKey, model, os],
   );
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
-    () => buildAgentCommand(base, key, os, agent),
-    [base, key, os, agent],
+    () => buildAgentCommand(base, agentKey, os, agent),
+    [base, agentKey, os, agent],
   );
 
   const osAware = OS_AWARE[lang];

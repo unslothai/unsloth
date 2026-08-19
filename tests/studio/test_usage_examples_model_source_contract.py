@@ -12,6 +12,7 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 USAGE_EXAMPLES_TSX = SETTINGS / "components/usage-examples.tsx"
 OPENAI_MODELS_TS = SETTINGS / "api/openai-models.ts"
 API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
+KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
 
 
 def test_examples_name_a_model_the_server_can_serve():
@@ -40,7 +41,7 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert "function useExampleModelName(): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
     # Nothing servable means nothing is built, so there is nothing to copy.
-    assert "(model ? buildSnippets(base, key, model, os) : null)" in src
+    assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
     assert "if (!snippets) return;" in src
     assert "{snippets ? (" in src
     assert 't("settings.apiKeys.usageNoModel")' in src
@@ -213,3 +214,32 @@ def test_auto_download_copy_warns_about_api_key_holders():
     assert start != -1
     description = en[start : en.find("\n", en.find('",', start))]
     assert "API key" in description
+
+
+def test_a_tool_snippet_names_a_key_that_actually_gets_tools():
+    # KeylessToolPolicyMiddleware forces tools off for a keyless caller until the admin
+    # grants them, so the tools and advanced snippets ran as plain chat under the dummy key.
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    builder = src[src.find("function buildSnippets") : src.find("const KEY_PLACEHOLDER")]
+    lines = builder.splitlines()
+
+    def built_from(variant: str) -> str:
+        return next(line for line in lines if line.strip().startswith(f"{variant}:"))
+
+    for variant in ("curlTools", "pythonTools", "javascriptTools"):
+        assert "toolsKey" in built_from(variant), variant
+    for variant in ("curlAdvanced", "pythonAdvanced", "javascriptAdvanced"):
+        assert "toolsKey" in built_from(variant), variant
+    # Plain chat needs no grant, so it keeps the scope-only key.
+    for variant in ("curl", "python", "javascript"):
+        assert "base, key," in built_from(variant), variant
+
+    assert 'keylessScope !== "off" && keylessTools' in src
+
+
+def test_the_full_scope_confirmation_names_what_it_lets_a_stranger_destroy():
+    # "read the files and settings" understated a scope that serves the delete routes too.
+    src = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
+    full = src[src.find("  full: {") : src.find("  tools: {")]
+    assert "delete" in full, full
+    assert "read the files and settings in Unsloth" not in src

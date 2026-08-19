@@ -33,6 +33,7 @@ from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
     authenticated_via_desktop_jwt,
+    authenticated_without_credential,
     create_access_token,
     create_refresh_token,
     get_current_credential,
@@ -42,6 +43,24 @@ from auth.authentication import (
 )
 
 router = APIRouter()
+
+
+def _require_a_credential_of_its_own(what: str):
+    """Refuse a caller that nothing but keyless API access let in.
+
+    For effects that outlive the setting: turning keyless access back off does not
+    withdraw a key it handed out, restore one it destroyed, or undo a sign-out it
+    forced. Listing keys is refused with them because it names the key to revoke.
+    """
+
+    def dependency(no_credential: bool = Depends(authenticated_without_credential)) -> None:
+        if no_credential:
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail = f"{what} can only be done from the Unsloth UI or with an existing API key.",
+            )
+
+    return dependency
 
 
 # Byte-identical to _WINDOWS_CLI_ENTRYPOINT in unsloth_cli/commands/studio.py and to
@@ -478,7 +497,9 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
-    request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Signing out")),
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
@@ -691,7 +712,9 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
+    payload: CreateApiKeyRequest,
+    credential: tuple = Depends(get_current_credential),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     current_subject, generation = credential
@@ -720,7 +743,10 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
+async def list_api_keys(
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -729,7 +755,11 @@ async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> 
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
+async def revoke_api_key(
+    key_id: int,
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(
