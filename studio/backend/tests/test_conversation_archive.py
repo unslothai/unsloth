@@ -3217,3 +3217,94 @@ def test_the_branch_seed_falls_back_when_nothing_matches(conn):
     # Branch B is the newest stored row, so both fall back to it: two turns, not three.
     assert len(seeded) == 2, seeded
     assert unmatched == seeded
+
+
+def test_two_sequential_tool_rounds_replay_as_two_exchanges():
+    """One persisted row can hold a whole agent turn, rounds and all.
+
+    `chat-adapter.ts` flushes the pending calls whenever text arrives, so a row reading
+    call, text, call goes out as call/result, then text riding on the second call
+    message, then its result. Collecting every call into one message and appending every
+    result after it rebuilt a different order: `group_turns` glued exchanges that were
+    separate on the wire, and the later calls matched no position and took an invented
+    ordinal.
+    """
+
+    def _call(index, command, result):
+        return {
+            "type": "tool-call",
+            "toolCallId": f"c{index}",
+            "toolName": "terminal",
+            "args": {"command": command},
+            "result": result,
+        }
+
+    wire = conversation_archive._as_wire(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    _call(1, "ls", "a.py"),
+                    {"type": "text", "text": "Now the tests."},
+                    _call(2, "pytest", "2 passed"),
+                    {"type": "text", "text": "All green."},
+                ],
+            }
+        ]
+    )
+
+    assert [message["role"] for message in wire] == [
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert [message.get("tool_call_id") for message in wire if message["role"] == "tool"] == [
+        "c1",
+        "c2",
+    ]
+    # The text before the second call rides ON it, exactly as the flush builds it.
+    second = conversation_archive._normalise(conversation_archive._probe_text(wire[2]))
+    assert "pytest" in second and "now the tests." in second
+    assert conversation_archive._normalise(
+        conversation_archive._probe_text(wire[4])
+    ) == "all green."
+
+
+def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn):
+    """Seats count TRANSCRIPT positions; the archive counter counts what was archived.
+
+    The newest user group is protected from eviction, so during a long tool loop it sits
+    in the transcript and not in the archive. A tool group evicted before its assistant
+    row is persisted matches no seat and took the archive's next number, which the user
+    turn later claimed from the transcript: both documents landed on the same ordinal,
+    and since created_at breaks the tie the tool answer rendered ahead of the prompt that
+    caused it, under the header saying a higher number was said later.
+    """
+    user_turn = _turn("run the deploy", "deploying now")
+    _save_thread(THREAD, user_turn, append = True)
+
+    in_flight = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "deploy"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "deploy failed: port in use"},
+    ]
+    conversation_archive.archive_turns(THREAD, in_flight)
+    conversation_archive.archive_turns(THREAD, user_turn)
+
+    scope = store.conversation_archive_scope(THREAD)
+    numbered = {
+        row["filename"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT filename, archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    }
+
+    assert len(set(numbered.values())) == len(numbered), numbered
+    assert numbered["earlier turn (user + assistant)"] < numbered["earlier turn (assistant + tool)"]

@@ -431,7 +431,7 @@ def archive_turns(
                 ordinal = (
                     seats[len(copies)]
                     if seats and len(copies) < len(seats)
-                    else store.next_archive_ordinal(conn, scope)
+                    else _fallback_ordinal(conn, scope, positions)
                 )
             document_id = store.create_document(
                 conn,
@@ -711,52 +711,73 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 }
             )
             continue
-        # Split by POSITION, not by type. A persisted assistant row holds the whole turn
-        # in generation order, so a text part BEFORE the first call is what the model said
-        # on its way to calling (the live wire form carries that on the call message
-        # itself), and a text part after the calls is the reply that followed the result.
-        # Treating both as "the reply" put pre-call text after the results, three messages
-        # reading call/result/text against the live two reading call+text/result, and
-        # `_occurrences` then matched nothing and the turn took an invented ordinal.
-        first_call = next(
-            index
-            for index, part in enumerate(parts)
-            if isinstance(part, dict) and part.get("type") == "tool-call"
-        )
-        preamble = [
-            part
-            for part in parts[:first_call]
-            if not (isinstance(part, dict) and part.get("type") == "tool-call")
-        ]
-        rest = [
-            part
-            for part in parts[first_call:]
-            if not (isinstance(part, dict) and part.get("type") == "tool-call")
-        ]
-        wire.append(
-            {
-                "role": message.get("role"),
-                "content": [
-                    {key: value for key, value in call.items() if key != "result"} for call in calls
+        # Replayed the way the serializer replays it: parts in order, flushing the
+        # pending calls whenever text arrives. `chat-adapter.ts` does exactly that
+        # (`if (part.type === "text") { if (pendingToolCalls.length > 0) flush... }`), so
+        # a row holding two sequential rounds goes out as call/result/text+call/result.
+        # Collecting every call into one message and appending every result after it
+        # rebuilt a different order, `group_turns` glued exchanges that were separate on
+        # the wire, and the later calls matched no position and took an invented ordinal.
+        # Text accumulated before a flush rides ON that flush's call message, which is
+        # also what the live form does with what the model said on its way to calling.
+        pending_calls: list[dict] = []
+        pending_text: list = []
+
+        def _flush(role = message.get("role")) -> None:
+            if not pending_calls and not pending_text:
+                return
+            body: list = [
+                {key: value for key, value in call.items() if key != "result"}
+                for call in pending_calls
+            ] + pending_text
+            entry: dict = {"role": role, "content": body}
+            if pending_calls:
+                entry["tool_calls"] = [
+                    {"id": call.get("toolCallId"), "function": {}} for call in pending_calls
                 ]
-                + preamble,
-                "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
-            }
-        )
-        for call in calls:
-            result = call.get("result")
-            if result in (None, "", {}, []):
+            wire.append(entry)
+            for call in pending_calls:
+                result = call.get("result")
+                if result in (None, "", {}, []):
+                    continue
+                wire.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.get("toolCallId"),
+                        "content": result if isinstance(result, str) else json.dumps(result),
+                    }
+                )
+            pending_calls.clear()
+            pending_text.clear()
+
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") == "tool-call":
+                pending_calls.append(part)
                 continue
-            wire.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.get("toolCallId"),
-                    "content": result if isinstance(result, str) else json.dumps(result),
-                }
-            )
-        if rest:
-            wire.append({"role": message.get("role"), "content": rest})
+            if pending_calls:
+                _flush()
+            pending_text.append(part)
+        _flush()
     return wire
+
+
+def _fallback_ordinal(conn, scope: str, positions: Optional[list[list[str]]]) -> int:
+    """Where a turn that matched no seat goes: past the archive AND past the transcript.
+
+    The two numbering spaces are different. Seats are TRANSCRIPT positions, while
+    `next_archive_ordinal` counts what has been ARCHIVED, and the newest user group is
+    protected from eviction, so during a long tool loop it is in the transcript and not
+    in the archive. An in-flight tool group evicted before its assistant row is persisted
+    matches no seat and took the archive's next number, which the user turn then claimed
+    from the transcript: measured, both documents landed on ordinal 0, and since
+    `created_at` breaks the tie the tool answer rendered ahead of the prompt that caused
+    it, under the header saying a higher number was said later.
+
+    The transcript length is the right floor because an unmatched group is unmatched for
+    being newer than the saved rows. A gap in the numbering costs nothing: ordinals only
+    have to order.
+    """
+    return max(store.next_archive_ordinal(conn, scope), len(positions or []))
 
 
 def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
