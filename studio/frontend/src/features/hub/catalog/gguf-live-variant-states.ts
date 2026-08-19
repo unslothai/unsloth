@@ -50,7 +50,18 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
         {
           state: job.state,
           expectedBytes: job.expectedBytes,
-          transferredBytes: Math.max(job.downloadedBytes, job.completedBytes),
+          // The in-flight counter alone. snapshot_progress builds the pair as
+          // downloaded = completed + in-progress and nets the same baseline out
+          // of both, so a single reading never has completed above downloaded
+          // and the max could only ever fire on a HELD completed figure -- and a
+          // held one is priced against the PREVIOUS baseline. An XET run that
+          // falls back to HTTP re-claims in the same generation with a baseline
+          // recomputed from disk, which now covers everything the XET attempt
+          // finalized, so the new run reports completed 0 against a shrunken
+          // total while the card still holds the old run's finalized bytes.
+          // Taking the max there subtracted 3 GB from a 0.5 GB remainder and the
+          // row read "0 B left" with the transfer barely started.
+          transferredBytes: job.downloadedBytes,
           startedAt: job.startedAt,
         },
       ]);

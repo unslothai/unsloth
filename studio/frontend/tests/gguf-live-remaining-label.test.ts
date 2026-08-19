@@ -13,9 +13,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { applyLiveGgufVariantStates } = await import(
-  "../src/features/hub/catalog/gguf-live-variant-states.ts"
-);
+const { applyLiveGgufVariantStates, createLiveGgufVariantStatesSelector } =
+  await import("../src/features/hub/catalog/gguf-live-variant-states.ts");
 const { ggufVariantTransferLabel } = await import(
   "../src/features/hub/lib/gguf-variant-sort.ts"
 );
@@ -121,6 +120,44 @@ test("a cancelled job keeps the remainder the backend measured", () => {
     assert.equal(row.download_remaining_bytes, 18 * GB);
     assert.equal(ggufVariantTransferLabel(row), "18 GB left");
   }
+});
+
+test("an XET fallback does not price the retry against the dead run's bytes", () => {
+  // The XET attempt finalized 3 GB of a 3.5 GB quant, then fell back to HTTP.
+  // The reclaim keeps the generation and recomputes completed_baseline_bytes
+  // from disk, so the backend nets those 3 GB out of BOTH counters: the retry
+  // reports a 0.5 GB total with 0.1 GB moved and completed_bytes 0, which
+  // resolveProgressUpdate holds the old 3 GB behind. Pricing the remainder off
+  // the held figure read "0 B left" with 0.4 GB still to fetch.
+  const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
+  const states = select({
+    jobs: {
+      "model:unsloth/model-GGUF:Q4_K_M": {
+        kind: "model",
+        repoId: "unsloth/model-GGUF",
+        variant: "Q4_K_M",
+        state: "running",
+        expectedBytes: 0.5 * GB,
+        downloadedBytes: 0.1 * GB,
+        completedBytes: 3 * GB,
+        startedAt: 0,
+      },
+    },
+  } as never);
+
+  const [row] = applyLiveGgufVariantStates(
+    [
+      variant({
+        size_bytes: 3.5 * GB,
+        download_size_bytes: 3.5 * GB,
+        partial: true,
+        download_remaining_bytes: 3.5 * GB,
+      }),
+    ],
+    states as never,
+  );
+
+  assert.equal(row.download_remaining_bytes, 0.4 * GB);
 });
 
 test("a variant with no live job is returned untouched", () => {
