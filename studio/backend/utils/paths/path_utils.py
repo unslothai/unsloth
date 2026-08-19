@@ -69,7 +69,7 @@ def _shadowed_name(path: str) -> str:
 
 
 def drop_shadowed_appledouble_names(
-    files: list[str], *, subject_key: "Callable[[str], object] | None" = None
+    files: list[str], *, subject_key: Callable[[str], object] | None = None
 ) -> list[str]:
     """*files* without the ``._`` entries whose subject is present in the same listing.
 

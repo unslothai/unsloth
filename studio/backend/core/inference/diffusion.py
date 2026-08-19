@@ -165,7 +165,6 @@ from .diffusion_transformer_quant import (
 )
 from utils.paths.path_utils import (
     any_not_appledouble_metadata,
-    drop_appledouble_metadata,
     is_appledouble_metadata,
 )
 
