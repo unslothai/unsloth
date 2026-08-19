@@ -54,6 +54,7 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
@@ -75,6 +76,7 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
@@ -150,10 +152,18 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '150'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -373,10 +383,18 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '150'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -554,10 +572,18 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '150'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -712,10 +738,18 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '3'
+          RETRY_ATTEMPT_TIMEOUT: '150'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
