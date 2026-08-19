@@ -89,6 +89,64 @@ def test_conversation_searches_share_the_per_turn_cap():
     assert len(executed) == RAG_MAX_SEARCHES_PER_TURN
 
 
+def test_the_budget_charges_token_dense_text_at_its_real_rate():
+    """Four characters per token is about right for English and half the truth for CJK.
+
+    The result side already prices non-ASCII at a token per character; the spend side did
+    not, so a CJK chat reported roughly twice the room it had. This path runs no rolling
+    fit, so nothing downstream recovers: the tool exchange it sized lands in the next
+    prompt and takes it past the window.
+    """
+    from core.inference.context_window import (
+        estimate_messages_tokens,
+        estimate_messages_tokens_dense,
+        prompt_budget,
+    )
+
+    dense_messages = [
+        {"role": "user", "content": "設定を確認してください。" * 40},
+        {"role": "assistant", "content": "承知しました。" * 40},
+        {"role": "user", "content": "先ほどのコードは何でしたか"},
+    ]
+    seen = {}
+    tools = [{"type": "function", "function": {"name": "search_conversation"}}]
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = _searching_model(1),
+            messages = list(dense_messages),
+            tools = tools,
+            execute_tool = lambda name, arguments, **kwargs: (
+                seen.update(kwargs) or "an earlier turn"
+            ),
+            cancel_event = threading.Event(),
+            max_tool_iterations = 2,
+            thread_id = "t-sf",
+            context_length = 4096,
+            max_tokens = 512,
+        )
+    )
+
+    budget = seen.get("conversation_budget_tokens")
+    assert budget is not None
+    # The flat estimate is the one that overstates the room. Charged densely, the budget
+    # has to be at most what is left after the real cost of what is already there.
+    assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens_dense(dense_messages)
+    assert estimate_messages_tokens_dense(dense_messages) > estimate_messages_tokens(
+        dense_messages
+    )
+
+
+def test_the_dense_estimate_matches_the_flat_one_on_plain_ascii():
+    """It corrects a known undercount, it does not make every English chat pessimistic."""
+    from core.inference.context_window import (
+        estimate_messages_tokens,
+        estimate_messages_tokens_dense,
+    )
+
+    assert estimate_messages_tokens_dense(MESSAGES) == estimate_messages_tokens(MESSAGES)
+
+
 def test_the_loop_budgets_its_search_against_this_models_context():
     """Without it the clamp in the tool is skipped and top_k 8 lands unbudgeted.
 

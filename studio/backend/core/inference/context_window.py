@@ -33,6 +33,32 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 
 
+def estimate_messages_tokens_dense(messages: list[dict]) -> int:
+    """The same estimate, but honest about text that tokenises densely.
+
+    Four characters per token is about right for English and badly wrong for CJK and
+    emoji, which run closer to one token per character. Measured on an 81-message CJK
+    chat: 1295 estimated against 2737 real, a 2.1x undercount, which a caller sizing a
+    search budget spends as room it does not have. `_conversation_search_tokens` already
+    charges non-ASCII a token each when pricing the result; this is the same rule applied
+    to the spend, which is the half that was missing.
+
+    Deliberately NOT the default. `truncate_oldest_messages` evicts on the flat estimate,
+    and making eviction pessimistic would drop history a request could have kept. Only a
+    caller deciding how much room is LEFT wants this, where erring high is the safe side.
+    """
+    total = 0
+    for message in messages:
+        try:
+            text = json.dumps(message, ensure_ascii = False)
+        except Exception:
+            total += 1
+            continue
+        dense = sum(1 for char in text if ord(char) > 127)
+        total += max(1, dense + (len(text) - dense) // 4)
+    return total
+
+
 def group_turns(messages: list[dict]) -> list[list[dict]]:
     """Split messages into the turn groups the rolling window evicts as single units.
 

@@ -529,6 +529,14 @@ _ROLE_PREFIX = re.compile(
 # every archived tool line misses and the turn looks rolled back. The name goes with it
 # when arguments follow; with none, the bare name is what the transcript has.
 _TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
+# What may sit between two probes of the same message: nothing, or a label the probe had
+# stripped. A pasted transcript carries its own "user:" lines, so the gap is real there
+# and the turn is unedited. Any other text in that gap is content the archive never saw.
+_GAP_IS_LABEL = re.compile(
+    r"^\s*(?:(?:user|assistant|system|developer|tool result|message):"
+    r"|assistant called (?:[^:\n]+:)?)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _probes_for(text: str) -> list[str]:
@@ -619,6 +627,20 @@ def _scan_probes(
                 # spellings of its arguments while the archived copy has one line of one
                 # of them. Nothing there can line up character for character.
                 if fresh and found != 0 and not partial_ok:
+                    return None
+                # And text inserted BETWEEN two probes of the same message. The two checks
+                # around this one cover an edit that prepends to a message the run stepped
+                # into and one that appends to a message it is leaving; a correction
+                # dropped between two archived lines matched both of them with the new
+                # line sitting unexamined in the gap, so the pre-edit turn stayed
+                # recallable. Measured on "A\nB" becoming "A\ncorrection\nB".
+                #
+                # A gap is only allowed where it is a label `render_turn` wrote and the
+                # probe therefore had stripped: a pasted transcript legitimately carries
+                # its own "user:" lines. Anything else is content the archive never saw.
+                if not fresh and cursor and not (partial or partial_ok) and not _GAP_IS_LABEL.match(
+                    messages[index][cursor:found]
+                ):
                     return None
                 if opened_at is None:
                     # Same exemption at the front of the run as inside it.

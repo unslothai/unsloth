@@ -1316,14 +1316,20 @@ def run_safetensors_tool_loop(
                         execute_tool, "conversation_budget_tokens"
                     ):
                         from core.inference.context_window import (
-                            estimate_messages_tokens,
+                            estimate_messages_tokens_dense,
                             prompt_budget,
                         )
+                        # Dense, unlike the eviction estimator: four characters per token
+                        # undercounts CJK and emoji by about half, and this path has no
+                        # rolling fit to recover if the tool exchange it sizes then puts
+                        # the next prompt over the window. Measured on an 81-message CJK
+                        # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
+                        # room where 335 remained.
                         kwargs["conversation_budget_tokens"] = max(
                             0,
                             prompt_budget(int(context_length), max_tokens)
-                            - estimate_messages_tokens(conversation)
-                            - estimate_messages_tokens(tools or []),
+                            - estimate_messages_tokens_dense(conversation)
+                            - estimate_messages_tokens_dense(tools or []),
                         )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
