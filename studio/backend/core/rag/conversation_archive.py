@@ -646,9 +646,26 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 }
             )
             continue
+        # Split by POSITION, not by type. A persisted assistant row holds the whole turn
+        # in generation order, so a text part BEFORE the first call is what the model said
+        # on its way to calling (the live wire form carries that on the call message
+        # itself), and a text part after the calls is the reply that followed the result.
+        # Treating both as "the reply" put pre-call text after the results, three messages
+        # reading call/result/text against the live two reading call+text/result, and
+        # `_occurrences` then matched nothing and the turn took an invented ordinal.
+        first_call = next(
+            index
+            for index, part in enumerate(parts)
+            if isinstance(part, dict) and part.get("type") == "tool-call"
+        )
+        preamble = [
+            part
+            for part in parts[:first_call]
+            if not (isinstance(part, dict) and part.get("type") == "tool-call")
+        ]
         rest = [
             part
-            for part in parts
+            for part in parts[first_call:]
             if not (isinstance(part, dict) and part.get("type") == "tool-call")
         ]
         wire.append(
@@ -656,7 +673,8 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 "role": message.get("role"),
                 "content": [
                     {key: value for key, value in call.items() if key != "result"} for call in calls
-                ],
+                ]
+                + preamble,
                 "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
             }
         )
@@ -706,7 +724,7 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # already records how many messages a turn holds.
     wire = _as_wire(_active_chain(messages))
     return [
-        [_normalise(_probe_text(message)) for message in group]
+        [_normalise_cased(_probe_text(message)) for message in group]
         for group in group_turns(wire)
         if group
     ]
@@ -734,7 +752,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     """
     if not positions or not group:
         return []
-    texts = [_normalise(_probe_text(message)) for message in group]
+    texts = [_normalise_cased(_probe_text(message)) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
@@ -821,7 +839,7 @@ def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
     except Exception:
         return None
     positions = [
-        [_normalise(_probe_text(message)) for message in group]
+        [_normalise_cased(_probe_text(message)) for message in group]
         for group in group_turns(_as_wire(live))
         if group
     ]
@@ -1013,6 +1031,22 @@ def has_archive(thread_id: str) -> bool:
 
 def _normalise(text: str) -> str:
     return " ".join((text or "").split()).lower()
+
+
+def _normalise_cased(text: str) -> str:
+    """Whitespace-collapsed but CASE-PRESERVING, for transcript seat matching.
+
+    `Set key Foo` and `Set key FOO` are two different turns: they hash differently, so the
+    archive keeps a document for each. Folding case here made `_occurrences` hand BOTH
+    seats to BOTH of them, and a turn that believes it has two occurrences to fill gets
+    written twice at the next compaction. Measured: four documents for two turns, both
+    stamped at both ordinals, and the recall unable to say which spelling was said later
+    -- exactly the duplication the whole-turn comparison was added to stop. The two sides
+    compared here are the same strings from the same thread, so there is no casing to be
+    tolerant of; only the free-text branch filter, which compares a QUERY against saved
+    text, still folds case.
+    """
+    return " ".join((text or "").split())
 
 
 def _live_transcript(thread_id: str) -> Optional[list[str]]:

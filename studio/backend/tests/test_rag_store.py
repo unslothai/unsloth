@@ -393,3 +393,21 @@ def test_query_shaping_stays_cheap_on_a_pasted_log():
     elapsed = time.perf_counter() - started
     assert expressions and expressions[0] == '"zqxvara123"'
     assert elapsed < 1.0, f"shaping a 6000-word paste took {elapsed:.2f}s"
+
+
+def test_a_quoted_function_word_survives_the_stopword_filter():
+    """Quotes are how a user names a word instead of using it.
+
+    `What did I say about "this"?` reduced to '"say"' once the stopword list had it, and
+    an archived `Use this endpoint` was then unreachable: it never contains "say", and if
+    unrelated chunks fill the fetch window `_candidates` never reaches its hybrid
+    fallback. Unquoted, the same word stays a stopword.
+    """
+    quoted = store.conversation_match_queries('What did I say about "this"?')
+    plain = store.conversation_match_queries("What did I say about this?")
+
+    assert quoted == ['"say" OR "this"']
+    assert plain == ['"say"']
+    # Quoting a function word does not make it look like an identifier, so the focused
+    # pass is unchanged and this widens the permissive one only.
+    assert len(quoted) == 1

@@ -3050,3 +3050,55 @@ def test_a_re_embed_after_a_rewind_retires_the_surplus_copy_too(conn, monkeypatc
     found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
     assert found is not None
     assert len(found[1]) == len({source["text"] for source in found[1]})
+
+
+def test_text_said_before_a_tool_call_rides_on_the_call_message():
+    """A persisted assistant row holds the whole turn, in generation order.
+
+    Text BEFORE the first `tool-call` part is what the model said on its way to calling,
+    and the live wire form carries that on the call message itself. Emitting it after the
+    synthesized results instead gave the archived copy three messages reading
+    call/result/text against the live two reading call+text/result, so `_occurrences`
+    matched nothing and the turn took a fallback ordinal. Text AFTER the calls is the
+    reply that followed the result and still belongs last, which is why this splits by
+    POSITION and not by part type.
+    """
+    call = {
+        "type": "tool-call",
+        "toolCallId": "c1",
+        "toolName": "terminal",
+        "args": {"command": "ls"},
+        "result": "main.py readme.md",
+    }
+    before = conversation_archive._as_wire(
+        [{"role": "assistant", "content": [{"type": "text", "text": "Let me check."}, call]}]
+    )
+    after = conversation_archive._as_wire(
+        [{"role": "assistant", "content": [call, {"type": "text", "text": "Two files."}]}]
+    )
+
+    assert [message["role"] for message in before] == ["assistant", "tool"]
+    assert "let me check." in conversation_archive._normalise(
+        conversation_archive._probe_text(before[0])
+    )
+    assert [message["role"] for message in after] == ["assistant", "tool", "assistant"]
+    assert conversation_archive._normalise(
+        conversation_archive._probe_text(after[2])
+    ) == "two files."
+
+
+def test_turns_differing_only_in_case_do_not_share_a_seat(conn):
+    """`Set key Foo` and `Set key FOO` hash differently, so each keeps its own document.
+
+    Folding case when matching the transcript handed BOTH seats to BOTH of them, and a
+    turn that believes it has two occurrences to fill is written twice at the next
+    compaction: four documents for two turns, each stamped at both ordinals, and no way
+    to tell which spelling was said later.
+    """
+    lower = _turn("set key Foo", "done")
+    upper = _turn("set key FOO", "done")
+    _save_thread(THREAD, lower + upper)
+
+    positions = conversation_archive._transcript_positions(THREAD)
+    assert conversation_archive._occurrences(positions, lower) == [0]
+    assert conversation_archive._occurrences(positions, upper) == [1]
