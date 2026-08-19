@@ -294,9 +294,7 @@ async def update_provider_config(
         # the 20s connect / 120s read timeout whenever ChatGPT is unreachable, and would
         # fail an unrelated edit to a connection whose selection was accepted long ago.
         unproven = (
-            set(payload.models)
-            - set(existing_info["default_models"])
-            - set(persisted_models)
+            set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
         )
         if unproven:
             try:

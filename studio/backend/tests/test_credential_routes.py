@@ -762,7 +762,9 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
         calls.append(provider_id)
         return set()
 
-    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _unreachable)
+    monkeypatch.setattr(
+        providers_route.openai_codex_client, "ensure_subscription_models", _unreachable
+    )
     try:
         renamed = asyncio.run(
             providers_route.update_provider_config(
