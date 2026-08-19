@@ -603,17 +603,13 @@ class TestAContextAboveTheModelsNativeLength:
         published = out["backend"].max_context_length
         assert published == loaded
 
-    def test_the_published_bound_never_runs_ahead_of_the_request(
-        self, tmp_path, monkeypatch
-    ):
+    def test_the_published_bound_never_runs_ahead_of_the_request(self, tmp_path, monkeypatch):
         """The fit is bounded by the request, so the bound may rise to the context that
         loaded and no further. A bound past it would invite a context nothing priced."""
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         assert out["backend"].max_context_length <= self._ASKED
 
-    def test_a_refused_request_does_not_raise_the_published_bound(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_refused_request_does_not_raise_the_published_bound(self, tmp_path, monkeypatch):
         """Only an accepted ceiling is published. A refusal measured nothing it can
         stand behind at the request, so the bound stays where the cap left it."""
         with pytest.raises(RuntimeError, match = "unified"):
