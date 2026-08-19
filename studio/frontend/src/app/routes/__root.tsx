@@ -73,9 +73,13 @@ function RouteFallback() {
 // Retires the retained reload shell (public/reload-snapshot.js). It rides
 // inside the route's own Suspense boundary, so a lazy page that is still
 // resolving keeps the shell up instead of uncovering RouteFallback.
+function signalReloadSnapshotReady() {
+  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+}
+
 function ReloadSnapshotReady() {
   useLayoutEffect(() => {
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    signalReloadSnapshotReady();
   }, []);
   return null;
 }
@@ -464,9 +468,12 @@ function RootLayout() {
                   }
                   inert={!isImagesRoute || undefined}
                 >
-                  <RouteBoundary>
-                    <ImagesPage active={isImagesRoute} />
-                  </RouteBoundary>
+                  <Suspense fallback={<RouteFallback />}>
+                    <ImagesPage
+                      active={isImagesRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
+                  </Suspense>
                 </div>
               )}
               {/* Same keep-alive treatment for Video so a long generation keeps running off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
@@ -479,9 +486,12 @@ function RootLayout() {
                   }
                   inert={!isVideoRoute || undefined}
                 >
-                  <RouteBoundary>
-                    <VideoPage active={isVideoRoute} />
-                  </RouteBoundary>
+                  <Suspense fallback={<RouteFallback />}>
+                    <VideoPage
+                      active={isVideoRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
+                  </Suspense>
                 </div>
               )}
               {/* Same keep-alive treatment for Audio so generation and training UI state survive off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
@@ -494,9 +504,12 @@ function RootLayout() {
                   }
                   inert={!isAudioRoute || undefined}
                 >
-                  <RouteBoundary>
-                    <AudioPage active={isAudioRoute} />
-                  </RouteBoundary>
+                  <Suspense fallback={<RouteFallback />}>
+                    <AudioPage
+                      active={isAudioRoute}
+                      onInitialReady={signalReloadSnapshotReady}
+                    />
+                  </Suspense>
                 </div>
               )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when

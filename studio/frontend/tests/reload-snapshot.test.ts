@@ -26,6 +26,18 @@ const runtimeProviderSource = readFileSync(
   new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
   "utf8",
 );
+const imagesPageSource = readFileSync(
+  new URL("../src/features/images/images-page.tsx", import.meta.url),
+  "utf8",
+);
+const videoPageSource = readFileSync(
+  new URL("../src/features/video/video-page.tsx", import.meta.url),
+  "utf8",
+);
+const audioPageSource = readFileSync(
+  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -589,6 +601,25 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   assert.match(
     runtimeProviderSource,
     /createRuntimeHook\(modelType, pairId, initialThreadId\)/,
+  );
+});
+
+test("media pages retire the shell only after gallery and preview hydration", () => {
+  assert.doesNotMatch(
+    rootRouteSource,
+    /<RouteBoundary>\s*<(?:ImagesPage|VideoPage|AudioPage)/,
+  );
+  assert.match(
+    imagesPageSource,
+    /await loadGallery\(\)[\s\S]*?await ensureSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
+  );
+  assert.match(
+    videoPageSource,
+    /await loadGallery\(\)[\s\S]*?await ensureSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
+  );
+  assert.match(
+    audioPageSource,
+    /await refreshGallery\(\)[\s\S]*?await ensureClipSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
   );
 });
 

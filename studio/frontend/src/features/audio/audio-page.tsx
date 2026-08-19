@@ -263,7 +263,14 @@ function formatClipDuration(seconds: number): string {
   return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
-export function AudioPage({ active = true }: { active?: boolean }) {
+export function AudioPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<AudioBusy>(null);
@@ -646,8 +653,28 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     if (!active) return;
     void refreshStatus();
     void refreshSttStatus();
-    void refreshGallery();
-  }, [active, refreshStatus, refreshSttStatus, refreshGallery]);
+    let cancelled = false;
+    void (async () => {
+      const initialClips = await refreshGallery();
+      const initialSelection =
+        initialClips.find((clip) => clip.id === galleryCache.selectedId) ??
+        initialClips[0];
+      if (initialSelection) await ensureClipSrc(initialSelection);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    active,
+    ensureClipSrc,
+    onInitialReady,
+    refreshGallery,
+    refreshStatus,
+    refreshSttStatus,
+  ]);
 
   // Activation alone is not enough: the loaded-models indicator can eject the TTS model
   // out from under a page that stays active, leaving Generate enabled against an empty

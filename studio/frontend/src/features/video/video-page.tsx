@@ -792,8 +792,20 @@ function VideoGate({ children }: { children: ReactNode }) {
  * on the chat-only verdict too would spin through an MLX self-heal /api/health holds it back for,
  * which cannot change a Metal answer.
  */
-export function VideoPage({ active = true }: { active?: boolean }) {
+export function VideoPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
   const hardware = useHardwareInfo();
+
+  useEffect(() => {
+    if (active && hardware.loaded && hardware.videoSupported === false) {
+      onInitialReady?.();
+    }
+  }, [active, hardware.loaded, hardware.videoSupported, onInitialReady]);
 
   if (!hardware.loaded) {
     return (
@@ -821,10 +833,19 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     );
   }
 
-  return <VideoGenerator active={active} />;
+  return (
+    <VideoGenerator active={active} onInitialReady={onInitialReady} />
+  );
 }
 
-function VideoGenerator({ active = true }: { active?: boolean }) {
+function VideoGenerator({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const hostClass = useHostClass();
   const videoModels = useVideoModels(hostClass);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
@@ -1566,8 +1587,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [ensureSrc]);
 
   useEffect(() => {
-    void loadGallery();
-  }, [loadGallery]);
+    if (!active || initialReadySent.current) return;
+    let cancelled = false;
+    void (async () => {
+      await loadGallery();
+      const initialSelection =
+        galleryCache.videos.find(
+          (video) => video.id === galleryCache.selectedId,
+        ) ?? galleryCache.videos[0];
+      if (initialSelection) await ensureSrc(initialSelection);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [active, ensureSrc, loadGallery, onInitialReady]);
 
   // WebM/GIF go through a server-side transcode that can take seconds (and 501s when the codec is missing), so wrap the helper with toasts.
   const handleDownload = useCallback(

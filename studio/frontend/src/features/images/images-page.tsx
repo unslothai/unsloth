@@ -1167,7 +1167,14 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
-export function ImagesPage({ active = true }: { active?: boolean }) {
+export function ImagesPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const imageModels = useImageModels(hostClass);
@@ -1762,8 +1769,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [selected, ensureSrc]);
 
   useEffect(() => {
-    void loadGallery();
-  }, [loadGallery]);
+    if (!active || initialReadySent.current) return;
+    let cancelled = false;
+    void (async () => {
+      await loadGallery();
+      const initialSelection =
+        galleryCache.images.find(
+          (image) => image.id === galleryCache.selectedId,
+        ) ?? galleryCache.images[0];
+      if (initialSelection) await ensureSrc(initialSelection);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [active, ensureSrc, loadGallery, onInitialReady]);
 
 
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
