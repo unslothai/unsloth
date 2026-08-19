@@ -39,6 +39,7 @@ TABS = [
     "voice",
     "connections",
     "data",
+    "keyboard-shortcuts",
     "api-keys",
     "agents",
     "debugging",
@@ -305,10 +306,10 @@ def run_chunk_fail(page) -> None:
             f"blocking the {CHUNK_FAIL} panel unmounted the app: the throw reached the "
             "harness root boundary, and the real app has none"
         )
-    if not state["dialog"] or state["nav"] != 12:
+    if not state["dialog"] or state["nav"] != len(TABS):
         fail(f"blocking the {CHUNK_FAIL} panel took the dialog down ({state})")
     else:
-        log("the dialog and its twelve nav entries survived")
+        log(f"the dialog and its {len(TABS)} nav entries survived")
     # Another tab must still work.
     click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     after = settle_panel(page)

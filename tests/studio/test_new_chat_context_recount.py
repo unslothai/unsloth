@@ -281,6 +281,12 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
+// Video is declined by the same pre-count gate as audio. These context-window
+// scenarios carry neither, so keep that imported collaborator neutral.
+function findLatestUserVideoBase64(_messages: any): string | null {
+  return null;
+}
+
 // The real predicate's rule, so a test can put an image on a branch and see it declined.
 function messagesContainImage(messages: any): boolean {
   const isImage = (p: any) => p?.type === "image" && Boolean(p?.image);

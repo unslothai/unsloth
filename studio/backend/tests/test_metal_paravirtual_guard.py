@@ -196,6 +196,15 @@ def _load_model_source() -> str:
     return inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
 
 
+def _record_launch_binary(backend, monkeypatch, tmp_path):
+    """Give a hand-built healthy backend the binary state a real launch records."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"server")
+    backend._launch_binary_revision = backend._binary_revision(str(binary))
+    assert backend._launch_binary_revision
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda: str(binary))
+
+
 def test_fallback_is_settled_before_the_duplicate_load_check():
     """The launch records the normalized placement ("manual"/0), so a repeat Auto request
     must be normalized before comparison, or every duplicate /load tears down a healthy
@@ -223,11 +232,11 @@ def test_repeat_auto_load_does_not_reload_a_healthy_cpu_server(monkeypatch, tmp_
     # What the first Auto load on a virtualised Mac left behind.
     backend._gpu_memory_mode = "manual"
     backend._gpu_layers = 0
+    _record_launch_binary(backend, monkeypatch, tmp_path)
 
     def _never(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("tore down a healthy server on a duplicate /load")
 
-    monkeypatch.setattr(backend, "_find_llama_server_binary", _never)
     monkeypatch.setattr(backend, "_kill_process", _never)
 
     assert (
@@ -1287,6 +1296,7 @@ def _loaded_cpu_backend(monkeypatch, tmp_path):
     # What the first load on a virtualised Mac left behind.
     backend._gpu_memory_mode = "manual"
     backend._gpu_layers = 0
+    _record_launch_binary(backend, monkeypatch, tmp_path)
     return backend, gguf, drafter
 
 
@@ -1394,7 +1404,6 @@ def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeyp
     def _never(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("tore down a healthy server on a duplicate /load")
 
-    monkeypatch.setattr(backend, "_find_llama_server_binary", _never)
     monkeypatch.setattr(backend, "_kill_process", _never)
 
     assert (

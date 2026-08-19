@@ -470,7 +470,8 @@ class TestPendingOwnership:
         ]
         compact = "".join("".join(code).split())
         assert "withself._serial_load_lock:try:yieldfinally:" in compact
-        assert compact.endswith("self._vram_fraction_pending=None")
+        finalizer = compact.split("finally:", 1)[1]
+        assert "self._vram_fraction_pending=None" in finalizer
         # And the load has to go through it, or the scope guards nothing.
         load = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
         assert "withself._serial_load_scope():" in load
