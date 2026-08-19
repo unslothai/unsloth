@@ -32,13 +32,23 @@ are different:
   location)". m sorts before v, so serial never saw it. Fixed upstream in
   unsloth_zoo#1076, with a teardown hook that fails the next one.
 
-  test_mlx_generate.py -- it installs the MLX-on-torch shim at its own import time,
-  and that shim's own docstring requires it to be in place "BEFORE any unsloth_zoo
-  MLX module is imported". Whoever imports unsloth_zoo.mlx first wins, and under
-  xdist that need not be this file. The clean fix is to install the shim from
-  conftest before any test module imports, but it spoofs platform.system() to
-  Darwin/arm64, which flips _IS_MLX gates suite-wide -- not a change to make
-  casually. The pin gives it the fresh process its contract assumes.
+  test_mlx_generate.py -- CAUSE NOT ESTABLISHED. It installs the MLX-on-torch shim
+  at its own import time and the shim's docstring requires that to happen "BEFORE
+  any unsloth_zoo MLX module is imported", which looked like the answer: the eight
+  failures are all isinstance checks reporting
+
+      TypeError: requests[0] must be GenerationRequest.
+
+  which is what two copies of a class look like. But conftest imports unsloth_zoo
+  and pulls unsloth_zoo.mlx in before any test module loads, so that precondition
+  is violated on every run INCLUDING the ones that pass, and the file passes alone.
+  So the ordering contract is not the trigger, or not the whole one. I checked this
+  by asserting the precondition and watching it fail a green run.
+
+  The pin stands on the observation rather than the explanation: eight tests here
+  fail under xdist and pass serially, reproducibly, on the same commit. Whoever
+  picks this up next should not start from the shim docstring -- I did, and it is a
+  dead end.
 
 So the pair is ignored from the parallel pass and run again in a process of their
 own. That pairing is the thing this file guards, because half of it is silent:
