@@ -512,6 +512,31 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_the_tool_call_exemption_ends_where_the_call_does():
+    """The exemption belongs to the CALL, not to the rest of the message.
+
+    A stored tool call cannot line up character for character with the live text, because
+    the store keeps arguments as an object and offers both JSON spellings, so the cursor
+    after one is not exact and the anchors have to be relaxed. Left set for the remainder
+    of the message, an assistant turn carrying both a call and text stayed matched after a
+    correction was appended to that text, and the pre-edit turn was still recallable.
+    Once an ordinary text probe has matched, the cursor is exact again.
+    """
+    from core.rag import conversation_archive as archive
+
+    probes = [("search_conversation", True), ("old answer", False)]
+
+    def _eligible(message):
+        found = archive._scan_probes(probes, [message], 0, 1)
+        if found is None:
+            return False
+        position, cursor, opened_at, partial = found
+        return not opened_at and (partial or cursor >= len([message][position]))
+
+    assert _eligible('{"tool":"search_conversation"}\nold answer') is True
+    assert _eligible('{"tool":"search_conversation"}\nold answer, correction: new answer') is False
+
+
 def test_a_line_inserted_INTO_an_archived_turn_retires_it():
     """An edit that adds a line BETWEEN two archived lines is still an edit.
 

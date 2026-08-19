@@ -646,7 +646,15 @@ def _scan_probes(
                     # Same exemption at the front of the run as inside it.
                     opened_at = 0 if partial_ok else found
                 cursor = found + len(probe)
-                partial = partial or partial_ok
+                # The exemption belongs to the CALL, not to the rest of the message. It
+                # exists because a stored tool call cannot line up character for character
+                # with the live text (the store keeps arguments as an object and offers
+                # both JSON spellings), so the cursor after one is not exact. Once an
+                # ordinary text probe has matched, the cursor IS exact again and the gap
+                # and trailing-content checks can be enforced. Left sticky, an assistant
+                # turn carrying both a call and text stayed matched after a correction was
+                # appended to that text, so the pre-edit turn was still recallable.
+                partial = partial_ok
                 fresh = False
                 break
             # And leaving one it had entered: whatever is left over is text an edit added.
