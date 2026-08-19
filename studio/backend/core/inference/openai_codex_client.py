@@ -475,7 +475,7 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
         return listed
     try:
         access_token, account_id = await codex_auth.resolve_access(provider_id)
-        await list_subscription_models(provider_id, access_token, account_id)
+        models = await list_subscription_models(provider_id, access_token, account_id)
     except (codex_auth.CodexAuthError, CodexReauthorizationError):
         # The connection needs reconnecting, which is a different answer from "this plan
         # does not list that model". Callers turn this into the reauthorization error the
@@ -483,7 +483,16 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
         raise
     except Exception:
         return set()
-    return offered_subscription_model_ids(provider_id)
+    listed = offered_subscription_model_ids(provider_id)
+    if listed:
+        return listed
+    # A read overtaken by a newer one returns its models without storing them. That
+    # answer still came from upstream for the account resolved above, so use it rather
+    # than reporting an empty plan; only a rebind makes it the wrong account's.
+    current_bundle = codex_auth.load_oauth_bundle(provider_id)
+    if current_bundle and current_bundle.get("account_id") == account_id:
+        return {model["id"] for model in models if model.get("listed")}
+    return set()
 
 
 def _quota_metadata(response: httpx.Response) -> dict[str, Any]:

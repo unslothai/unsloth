@@ -165,7 +165,13 @@ async def list_subscription_models(
         {"id": model, "display_name": model, "context_length": None}
         for model in get_provider_info("openai_codex")["default_models"]
     ]
-    if codex_auth.auth_status(provider_id) != "connected":
+    status = codex_auth.auth_status(provider_id)
+    if status == "reauthorization_required":
+        # Something already marked this bundle, possibly another worker, after the last
+        # provider sync the browser saw. Saying only "curated" here would leave the
+        # editor presenting a dead connection as healthy.
+        return {"models": curated, "source": "reauthorization_required"}
+    if status != "connected":
         return {"models": curated, "source": "curated"}
     try:
         token, account_id = await codex_auth.resolve_access(provider_id)

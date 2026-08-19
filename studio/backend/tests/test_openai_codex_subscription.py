@@ -2232,3 +2232,93 @@ def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monke
         assert offered_subscription_model_ids("provider-15") == {"gpt-5.4"}
     finally:
         forget_subscription_models("provider-15")
+
+
+def test_the_model_route_reports_an_already_marked_connection(monkeypatch):
+    """A bundle marked by someone else still has to reach the editor as reconnect."""
+    from routes import openai_codex_auth as codex_routes
+
+    curated = get_provider_info("openai_codex")["default_models"]
+    monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
+    monkeypatch.setattr(
+        codex_routes.codex_auth, "auth_status", lambda _id: "reauthorization_required"
+    )
+    answered = asyncio.run(
+        codex_routes.list_subscription_models(
+            "provider-16", _credential = ("user", "session"), via_api_key = False
+        )
+    )
+    assert answered["source"] == "reauthorization_required"
+    assert [model["id"] for model in answered["models"]] == curated
+
+    monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "disconnected")
+    plain = asyncio.run(
+        codex_routes.list_subscription_models(
+            "provider-16", _credential = ("user", "session"), via_api_key = False
+        )
+    )
+    assert plain["source"] == "curated"
+
+
+def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
+    """Its models came from upstream for this account even though a newer read owns the cache.
+
+    Reporting nothing listed would let a manual reload overlapping a chat refuse a model
+    the chat's own lookup had just seen.
+    """
+    import httpx
+
+    forget_subscription_models("provider-17")
+
+    class Overtaken:
+        async def get(self, _url, headers = None, params = None):
+            # A newer read for the same connection starts while this one is out.
+            codex_client._begin_catalog_request("provider-17")
+            return httpx.Response(
+                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
+            )
+
+        async def aclose(self):
+            return None
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "token", "acct-1"
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Overtaken())
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-1"})
+    try:
+        listed = asyncio.run(codex_client.ensure_subscription_models("provider-17"))
+        assert listed == {"gpt-5.4"}
+        # Still not stored: the newer read owns the cache.
+        assert codex_client.subscription_catalog_known("provider-17") is False
+    finally:
+        forget_subscription_models("provider-17")
+
+
+def test_an_overtaken_read_is_dropped_when_the_account_moved(monkeypatch):
+    """If a rebind is what overtook it, its models belong to the previous account."""
+    import httpx
+
+    forget_subscription_models("provider-18")
+
+    class Overtaken:
+        async def get(self, _url, headers = None, params = None):
+            codex_client._begin_catalog_request("provider-18")
+            return httpx.Response(
+                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
+            )
+
+        async def aclose(self):
+            return None
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "token", "acct-a"
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Overtaken())
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
+    try:
+        assert asyncio.run(codex_client.ensure_subscription_models("provider-18")) == set()
+    finally:
+        forget_subscription_models("provider-18")
