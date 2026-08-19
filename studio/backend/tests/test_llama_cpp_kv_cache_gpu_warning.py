@@ -36,10 +36,7 @@ BACKENDS = ("cuda", "hip")
     [("auto", -1), ("manual", -1), ("manual", 1)],
 )
 def test_production_warning_path_warns(cache_type, backend, mode, layers):
-    assert (
-        llama_cpp._kv_cache_gpu_fallback_warning(cache_type, mode, layers, backend)
-        is not None
-    )
+    assert llama_cpp._kv_cache_gpu_fallback_warning(cache_type, mode, layers, backend) is not None
 
 
 @pytest.mark.parametrize("cache_type", SAFE)
@@ -149,14 +146,17 @@ def test_production_load_path_applies_advisory_authority(
         )()
 
     with patch.object(subprocess, "Popen", side_effect = fake_popen):
-        assert backend.load_model(
-            llama_cpp.GgufLoadIntent(
-                gguf_path = gguf,
-                model_identifier = "test",
-                cache_type_kv = None if env_cache is not None else "q4_1",
-                extra_args = extra_args,
+        assert (
+            backend.load_model(
+                llama_cpp.GgufLoadIntent(
+                    gguf_path = gguf,
+                    model_identifier = "test",
+                    cache_type_kv = None if env_cache is not None else "q4_1",
+                    extra_args = extra_args,
+                )
             )
-        ) is True
+            is True
+        )
 
     if expected_warning is None:
         assert warnings == []
