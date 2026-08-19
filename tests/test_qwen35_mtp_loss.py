@@ -1,57 +1,19 @@
-import ast
-import inspect
-import types
-from pathlib import Path
-
 import torch
+
+from unsloth.models import mtp
+
+
+def _fast_cross_entropy_loss(logits, labels, **_kwargs):
+    return torch.nn.functional.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]).float(),
+        labels.reshape(-1),
+        ignore_index = -100,
+    )
 
 
 def _load_mtp_loss_helpers():
-    source = Path(__file__).parents[1] / "unsloth" / "models" / "mtp.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
-    names = {
-        "call_mtp_module",
-        "bind_forward_arguments",
-        "build_mtp_packed_attention_mask",
-        "compute_mtp_loss",
-        "filter_mtp_kwargs",
-        "get_config_value",
-        "get_effective_return_dict",
-        "get_forward_argument",
-        "get_mtp_loss_weight",
-        "get_mtp_modules",
-        "get_output_loss_and_hidden_states",
-        "get_tuple_hidden_states",
-        "iter_mtp_outputs",
-        "make_mtp_shift_labels",
-        "mask_mtp_packed_sequence_boundaries",
-        "normalize_mtp_packed_lengths",
-        "patch_mtp_loss",
-        "set_forward_argument",
-        "set_output_loss_and_hidden_states",
-        "should_use_mtp_loss",
-        "unwrap_mtp_output",
-    }
-    helpers = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
-    ]
-    module = ast.Module(body = helpers, type_ignores = [])
-    ast.fix_missing_locations(module)
-
-    def fast_cross_entropy_loss(logits, labels, **_kwargs):
-        return torch.nn.functional.cross_entropy(
-            logits.reshape(-1, logits.shape[-1]).float(),
-            labels.reshape(-1),
-            ignore_index = -100,
-        )
-
-    namespace = {
-        "inspect": inspect,
-        "types": types,
-        "torch": torch,
-        "fast_cross_entropy_loss": fast_cross_entropy_loss,
-    }
-    exec(compile(module, str(source), "exec"), namespace)
+    namespace = {name: getattr(mtp, name) for name in dir(mtp) if not name.startswith("_")}
+    namespace["fast_cross_entropy_loss"] = _fast_cross_entropy_loss
     return namespace
 
 
