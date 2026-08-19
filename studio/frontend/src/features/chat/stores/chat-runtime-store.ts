@@ -1667,6 +1667,8 @@ export function commitHeldThreadScopedEditsToTheirThread(
   closeThreadScopedPairingGate(null);
   if (threadId === null || held.length === 0) return Promise.resolve();
   const changes = heldThreadScopedChanges(held);
+  // Read off the store above, so only now that the values are safely captured.
+  restoreDefaultsOverCommittedEdits(threadId, held);
   if (keepalive) {
     sendThreadScopedSettingsBeacon(threadId, changes, true);
     return Promise.resolve();
@@ -1674,6 +1676,53 @@ export function commitHeldThreadScopedEditsToTheirThread(
   // Returned rather than fired and forgotten: forking copies settings_json server side,
   // so it has to be able to wait for a held edit to reach the row first.
   return mergeThreadScopedSettingsIntoRow(threadId, changes);
+}
+
+/**
+ * Put the installation values back over the edits that have just been written to the
+ * chat the user left. Without this the store keeps showing that chat's temperature and
+ * system prompt, and the next chat opened takes them: a snapshot-less one captures the
+ * store as the installation defaults and is pinned with them, and a brand new one simply
+ * runs on them. The edit belongs to the chat it was made in, and it is stored there now.
+ *
+ * Only when the chat is actually being left. A read that failed and is about to be
+ * retried commits the same way while the chat stays open, and so does a fork; putting the
+ * defaults back there would undo an edit the user is looking at.
+ */
+function restoreDefaultsOverCommittedEdits(
+  threadId: string,
+  held: { field: string }[],
+): void {
+  if (useChatRuntimeStore.getState().activeThreadId === threadId) return;
+  const before = (pairingWindowDefaults ?? globalThreadScopedDefaults) as Record<
+    string,
+    unknown
+  > | null;
+  const fields: Record<string, unknown> = {};
+  const params: Record<string, unknown> = {};
+  for (const edit of held) {
+    // The server answered for this field while the window was open, so that value is
+    // the installation's; the pre-window sample is only what this browser had cached.
+    const value = hydratedDefaultsByHeldField.has(edit.field)
+      ? hydratedDefaultsByHeldField.get(edit.field)
+      : before?.[edit.field];
+    hydratedDefaultsByHeldField.delete(edit.field);
+    // Nothing known to go back to: leaving the edit up is no worse than blanking it.
+    if (value === undefined) continue;
+    if (isThreadScopedParamKey(edit.field)) {
+      params[edit.field] = value;
+    } else {
+      fields[edit.field] = value;
+    }
+  }
+  if (!hasKeys(fields) && !hasKeys(params)) return;
+  // setState and not setParams: these values are already the installation's, and going
+  // through the setter would persist them back to it and to the loaded model's memory.
+  useChatRuntimeStore.setState((state) =>
+    hasKeys(params)
+      ? ({ ...fields, params: { ...state.params, ...params } } as Partial<ChatRuntimeStore>)
+      : (fields as Partial<ChatRuntimeStore>),
+  );
 }
 
 /** What the user actually touched, read off the store, which still holds their edits. */
