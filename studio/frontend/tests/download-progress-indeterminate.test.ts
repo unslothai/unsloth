@@ -36,3 +36,13 @@ test("a nonzero fraction alone is determinate too", () => {
     false,
   );
 });
+
+test("a pending cancellation is not transfer activity", () => {
+  // The row keeps rendering the bar while state is "cancelling", directly above
+  // a "Cancelling..." status. An animated "Transferring..." there would say the
+  // cancel did not take, so the measured reading stands instead.
+  assert.equal(
+    isIndeterminateProgress({ downloadedBytes: 0, fraction: 0 }, true),
+    false,
+  );
+});

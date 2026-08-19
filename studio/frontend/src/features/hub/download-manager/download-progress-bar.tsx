@@ -13,12 +13,14 @@ export interface DownloadProgress {
 export function DownloadProgressBar({
   progress,
   bytesPerSec,
+  cancelling = false,
 }: {
   progress: DownloadProgress;
   bytesPerSec: number;
+  cancelling?: boolean;
 }) {
   const exactPercent = Math.min(Math.max(progress.fraction, 0), 1) * 100;
-  const indeterminate = isIndeterminateProgress(progress);
+  const indeterminate = isIndeterminateProgress(progress, cancelling);
   const totalLabel =
     progress.expectedBytes > 0 ? formatBytes(progress.expectedBytes) : null;
   const rateLabel = formatRate(bytesPerSec);

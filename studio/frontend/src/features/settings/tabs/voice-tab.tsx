@@ -978,6 +978,7 @@ export function VoiceTab() {
                             : 0,
                       }}
                       bytesPerSec={downloadBytesPerSec}
+                      cancelling={sttDownloadCancelling}
                     />
                   </div>
                 ) : (
