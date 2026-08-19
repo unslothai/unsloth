@@ -597,6 +597,37 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     return count
 
 
+def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
+    """The branch as ``_branch_boundary`` counts it: system and developer turns removed."""
+    return [
+        message
+        for message in (branch or ())
+        if message.get("role") not in ("system", "developer")
+    ]
+
+
+def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict]]) -> str:
+    """The text of the first message a fit KEPT, as the branch spells it, or "".
+
+    ``boundary_messages`` is a count against one particular transcript, and the next
+    request's transcript is not guaranteed to be that one plus new turns: deleting an
+    already-evicted prompt shortens the front, so replaying the count unchanged lands the
+    boundary two messages too deep and evicts history that is still live. The anchor names
+    the message the boundary was meant to land ON, which survives a deletion in front of it.
+
+    Text, not an id or an index: ids are per-request objects and an index is the very thing
+    that goes stale. Read back by ``_sticky_compaction_boundary``, which only ever lets the
+    anchor make the boundary SHALLOWER, so a stale or ambiguous anchor costs one extra
+    compaction and can never evict a live turn.
+    """
+    messages = _branch_non_system(branch)
+    live = {id(message) for message in conversation}
+    for message in messages:
+        if id(message) in live:
+            return _archive_message_text(message.get("content"))
+    return ""
+
+
 def _archive_message_text(content) -> str:
     """One stored message flattened the way the branch check flattens it, or ""."""
     try:
@@ -693,7 +724,19 @@ def _sticky_compaction_boundary(
             recorded = truncation.get("boundary_messages")
             if recorded is None:
                 recorded = truncation.get("dropped_messages")
-            boundaries.append(max(0, int(recorded or 0)))
+            recorded = max(0, int(recorded or 0))
+            # A count is only valid against the transcript it was counted on. Deleting an
+            # already-evicted turn shortens the front, and replaying the count then evicts
+            # that many LIVE messages instead. Re-derive it from the anchor's position on
+            # this request's own branch. Only ever downward: an anchor that has moved back
+            # (a repeated text, an edited turn) must not deepen the cut.
+            anchor = truncation.get("boundary_anchor")
+            if isinstance(anchor, str) and anchor:
+                for index, message in enumerate(_branch_non_system(branch_messages)):
+                    if _archive_message_text(message.get("content")) == anchor:
+                        recorded = min(recorded, index)
+                        break
+            boundaries.append(recorded)
         return min(boundaries) if boundaries else 0
     except Exception:
         return 0
@@ -21409,6 +21452,9 @@ class LlamaCppBackend:
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(openai_messages, _before_fit),
+                        "boundary_anchor": _branch_boundary_anchor(
+                            openai_messages, _before_fit
+                        ),
                     }
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
@@ -22055,6 +22101,9 @@ class LlamaCppBackend:
                         truncation = {
                             **truncation,
                             "boundary_messages": _branch_boundary(conversation, _request_branch),
+                            "boundary_anchor": _branch_boundary_anchor(
+                                conversation, _request_branch
+                            ),
                         }
                     # `fits` False too: it carries the does-not-fit diagnosis.
                     if truncation:
@@ -22161,6 +22210,9 @@ class LlamaCppBackend:
                     )
                     if truncation and truncation["fits"]:
                         truncation["boundary_messages"] = _branch_boundary(
+                            conversation, _request_branch
+                        )
+                        truncation["boundary_anchor"] = _branch_boundary_anchor(
                             conversation, _request_branch
                         )
                         _respawn_truncations.append(truncation)
@@ -23458,6 +23510,9 @@ class LlamaCppBackend:
                     truncation = {
                         **truncation,
                         "boundary_messages": _branch_boundary(conversation, _request_branch),
+                        "boundary_anchor": _branch_boundary_anchor(
+                            conversation, _request_branch
+                        ),
                     }
                 # `fits` False too: it carries the diagnosis the client needs to explain
                 # WHY. Otherwise the user only sees llama-server's error, which reports
@@ -23543,6 +23598,9 @@ class LlamaCppBackend:
                 )
                 if truncation and truncation["fits"]:
                     truncation["boundary_messages"] = _branch_boundary(
+                        conversation, _request_branch
+                    )
+                    truncation["boundary_anchor"] = _branch_boundary_anchor(
                         conversation, _request_branch
                     )
                     _final_respawn_truncations.append(truncation)

@@ -509,6 +509,119 @@ def test_sticky_boundary_prefers_the_recorded_branch_boundary(monkeypatch):
     assert llama_cpp._sticky_compaction_boundary("t1") == 4
 
 
+def _anchored_row(boundary, anchor, content = "a"):
+    return {
+        "role": "assistant",
+        "content": content,
+        "metadata": {
+            "custom": {
+                "contextTruncation": {
+                    "fits": True,
+                    "boundary_messages": boundary,
+                    "boundary_anchor": anchor,
+                }
+            }
+        },
+    }
+
+
+def test_sticky_boundary_rebases_after_an_evicted_turn_is_deleted(monkeypatch):
+    """Deleting an already-evicted prompt must not cost a LIVE turn.
+
+    The recorded count is absolute against the transcript it was counted on. Delete two
+    messages in front of the boundary and replaying that count unchanged lands two
+    messages too deep, evicting history the user can still see. The anchor names the
+    message the boundary was meant to land on, so the count is re-derived by position.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(monkeypatch, [_anchored_row(4, "kept first")])
+    # The two turns the boundary used to sit behind are gone; "kept first" is now 3rd.
+    branch = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "kept first"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+
+
+def test_sticky_boundary_anchor_never_deepens_the_cut(monkeypatch):
+    """An anchor that has moved BACK is ignored, never obeyed.
+
+    A repeated text or an edited turn can put the anchor further into the branch than the
+    recorded count. Following it there would evict live history on the strength of a
+    coincidence, so the anchor is allowed to make the boundary shallower and nothing else.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(monkeypatch, [_anchored_row(2, "kept first")])
+    branch = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+        {"role": "user", "content": "kept first"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+
+
+def test_sticky_boundary_ignores_an_anchor_the_branch_no_longer_has(monkeypatch):
+    """The anchor's own turn can be the one deleted. Fall back to the recorded count."""
+    from core.inference import llama_cpp
+
+    _fake_studio_db(monkeypatch, [_anchored_row(2, "a text this branch does not have")])
+    branch = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+
+
+def test_sticky_boundary_anchor_skips_the_system_turn(monkeypatch):
+    """Counted the way `_branch_boundary` counts: system and developer turns do not.
+
+    Studio prefixes every request with a system message, so counting it would put every
+    anchor one place late and quietly deepen every boundary by one.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(monkeypatch, [_anchored_row(4, "kept first")])
+    branch = [
+        {"role": "system", "content": "you are a helpful assistant"},
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "kept first"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+
+
+def test_branch_boundary_anchor_names_the_first_kept_message():
+    """The anchor and the count describe the same cut, or the rebase is meaningless."""
+    from core.inference import llama_cpp
+
+    branch = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "evicted prompt"},
+        {"role": "assistant", "content": "evicted reply"},
+        {"role": "user", "content": "kept prompt"},
+        {"role": "assistant", "content": "kept reply"},
+        {"role": "user", "content": "the turn just sent"},
+    ]
+    conversation = [branch[0]] + branch[3:]
+
+    assert llama_cpp._branch_boundary(conversation, branch) == 2
+    assert llama_cpp._branch_boundary_anchor(conversation, branch) == "kept prompt"
+
+
 def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(monkeypatch):
     """Rows written by an earlier build carry only the dropped count."""
     from core.inference import llama_cpp
