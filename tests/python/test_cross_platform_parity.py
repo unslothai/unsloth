@@ -415,6 +415,14 @@ class TestCudaLeafDigitParity:
             r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text
         ), "install.sh backend export must unset (not force cuda) on an unknown leaf"
 
+    def test_explicit_amd_arch_keeps_the_cpu_reroute_handoff(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        marker = "AMD GPU detected with no readable ROCm version"
+        branch = text[text.index(marker) :]
+        branch = branch[: branch.index("fi")]
+        assert 'echo "$_base/cpu"; return' in branch
+        assert "_fallback_to_intel_or_cpu" not in branch
+
     def test_install_sh_lowercases_backend_leaf(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # The leaf feeding both the backend case and the 2.11 floor case must be

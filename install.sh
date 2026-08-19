@@ -3796,7 +3796,7 @@ get_torch_index_url() {
         if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
            _amd_arch_index_family_for_gfx "$_amd_gfx_probe" >/dev/null 2>&1; then
             echo "[WARN] AMD GPU detected with no readable ROCm version, but UNSLOTH_ROCM_GFX_ARCH=$_amd_gfx_probe is set -- routing to AMD per-arch wheels." >&2
-            _fallback_to_intel_or_cpu; return
+            echo "$_base/cpu"; return
         fi
         echo "[WARN] AMD GPU detected, but no ROCm/HIP install was found to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
         echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
