@@ -4154,3 +4154,38 @@ def test_one_pass_holding_both_spans_widens_the_window_too(conn):
         ).fetchall()
     ]
     assert spans == [4], spans
+
+
+def test_a_repeat_that_came_back_into_the_prompt_keeps_one_copy(conn):
+    """A rewind, or a bigger window, can put an evicted occurrence back in the prompt.
+
+    The already-archived path then re-stamped a copy per transcript SEAT while the
+    live-aware budget had dropped to one, so two byte-identical documents survived. Both
+    pass the branch filter and `recall` dedups on chunk id, which differs, so a recall slot
+    went on text the model could already read: measured, three passages of which two were
+    distinct.
+    """
+    import hashlib
+
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    middle = _turn("tell me about ZQXVARA123 pelicans", "sure")
+    tail = _turn("and now something else about ZQXVARA123", "fine")
+    conversation = repeat + middle + list(repeat) + tail
+    _save_thread(THREAD, conversation)
+    scope = store.conversation_archive_scope(THREAD)
+    digest = hashlib.sha256(
+        conversation_archive.render_turn(repeat).encode("utf-8", "ignore")
+    ).hexdigest()
+
+    # Both occurrences evicted: two copies, one per seat.
+    conversation_archive.archive_turns(THREAD, conversation[:6], live = tail)
+    assert len(store.documents_by_hash(conn, scope, digest)) == 2
+
+    # The newer occurrence is live again, so only one of them is still evicted.
+    conversation_archive.archive_turns(THREAD, repeat, live = list(repeat) + tail)
+
+    assert len(store.documents_by_hash(conn, scope, digest)) == 1
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    texts = [source["text"] for source in found[1]]
+    assert len(texts) == len(set(texts)), texts
