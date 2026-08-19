@@ -64,8 +64,12 @@ def test_posix_skip_systemd_value_parsing(value: str, expected: str):
 def test_install_sh_offers_systemd_before_autostart_prompt():
     source = INSTALL_SH.read_text(encoding = "utf-8")
     assert "_offer_systemd_user_service" in source
-    assert source.index("_offer_systemd_user_service") < source.index("Start Unsloth Studio now? [Y/n]")
-    assert "Install a systemd user service for auto-start on boot and crash recovery? [y/N]" in source
+    assert source.index("_offer_systemd_user_service") < source.index(
+        "Start Unsloth Studio now? [Y/n]"
+    )
+    assert (
+        "Install a systemd user service for auto-start on boot and crash recovery? [y/N]" in source
+    )
 
 
 def test_uninstall_sh_removes_managed_systemd_unit():
