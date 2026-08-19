@@ -150,7 +150,20 @@ def compare_signatures(streamed: dict, seeded: dict,
     elements legitimately differ and gating on exact equality would fail every time for a reason
     that has nothing to do with fidelity.
     """
-    keys = ("assistant_messages", "code_blocks", "highlight_spans", "reasoning_panes")
+    # GATED ON CONTENT, REPORTED ON REASONING.
+    #
+    # A collapsed reasoning pane in a SEEDED thread does not mount its children, while a streamed
+    # one does: it was open while the text arrived, and collapsing afterwards leaves the subtree
+    # in place. Measured directly, the same text carried 1,485 reasoning spans one way and 0 the
+    # other, and open-then-close on the seeded side unmounted them again, so this is not something
+    # seeding can be made to reproduce -- it is a property of how the app builds a thread.
+    #
+    # Gating on total `highlight_spans` therefore asked a question seeding can never pass, and the
+    # answer moved with whatever pane state the film happened to leave behind: two runs of the
+    # same rung reported 2.1% and 36.4% drift. The question worth asking is whether the same text
+    # renders the same CONTENT, which is what these keys are. The reasoning difference is measured
+    # and reported below rather than swept into a pass or a fail.
+    keys = ("assistant_messages", "content_code_blocks", "content_spans", "reasoning_panes")
     fields: dict = {}
     equivalent = True
     for key in keys:
@@ -170,6 +183,23 @@ def compare_signatures(streamed: dict, seeded: dict,
                           "gating": False,
                           "note": "reported, not gated: a streamed reply carries a usage record "
                                   "and a reasoning duration label a seeded one has no source for"}
+    for key, note in (
+        ("reasoning_spans",
+         "reported, not gated: a collapsed reasoning pane mounts its children when the text was "
+         "STREAMED into it and does not when the thread was seeded, so this difference is a "
+         "property of the app and not of the fixture"),
+        ("highlight_spans",
+         "reported, not gated: the total includes reasoning spans, which the two paths cannot "
+         "agree on; content_spans is the gated quantity"),
+        ("assistant_chars",
+         "reported, not gated: textContent counts hidden-but-mounted reasoning text, so it "
+         "carries the same asymmetry as reasoning_spans"),
+    ):
+        a, b = streamed.get(key), seeded.get(key)
+        entry = {"streamed": a, "seeded": b, "gating": False, "note": note}
+        if a is not None and b is not None:
+            entry["drift"] = round(abs(a - b) / max(abs(a), abs(b), 1), 4)
+        fields[key] = entry
     return {"equivalent": equivalent, "tolerance": tolerance, "fields": fields,
             "checked_attempted": True}
 

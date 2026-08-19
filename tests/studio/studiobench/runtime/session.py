@@ -313,8 +313,19 @@ class CellRunner:
                                  f"{field['seeded']} ({field['drift']:.1%} drift)")
                 self.equivalence_failed = True
             else:
-                self.log("  seeded and streamed agree at the 10K rung within "
+                self.log("  seeded and streamed agree on CONTENT at the 10K rung within "
                          f"{eq['tolerance']:.0%}")
+                # Passing the content gate is not the same as the two threads being identical,
+                # and the difference is large enough that leaving it unsaid would mislead: a
+                # seeded rung carries the same rendered content and materially less mounted DOM.
+                fields = eq.get("fields") or {}
+                for key in ("reasoning_spans", "highlight_spans", "assistant_chars"):
+                    field = fields.get(key) or {}
+                    if field.get("drift"):
+                        self.log(f"    but {key}: streamed {field['streamed']} vs seeded "
+                                 f"{field['seeded']} ({field['drift']:.1%}) -- a collapsed "
+                                 "reasoning pane mounts its children only when the text was "
+                                 "streamed into it")
         if self.equivalence_failed and plan.seeded_units:
             row["fidelity"] = "seeded_only"
 

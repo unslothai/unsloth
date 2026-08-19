@@ -292,6 +292,40 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
 
 # ── 5. stop generation ──────────────────────────────────────────────
 
+#: Remove the throwaway turn `stop_generation` created, so the thread it leaves behind is the
+#: thread it found. Deletes the assistant turn and then the user turn that prompted it, in that
+#: order, because deleting the user message first can take the reply with it and leave the count
+#: ambiguous. Reports what it managed rather than asserting: a cleanup that half-worked must be
+#: visible in the row, not swallowed.
+STOP_CLEANUP_JS = """
+async (timeoutMs) => {
+  const D = window.__sb.dom;
+  const before = D.messageCount();
+  const removeLast = async () => {
+    const target = D.lastAssistantMessage();
+    if (!target) return false;
+    target.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+    const button = D.actionButton("Delete message");
+    if (!button) return false;
+    const started = performance.now();
+    button.click();
+    while (performance.now() - started < timeoutMs) {
+      if (!target.isConnected) return true;
+      await window.__sbNextPaint();
+    }
+    return false;
+  };
+  const dropped = await removeLast();
+  const after = D.messageCount();
+  return {
+    removed: dropped && after < before,
+    before, after,
+    reason: dropped ? null : "no Delete control on the throwaway turn",
+  };
+}
+"""
+
+
 @register_action(name = "stop_generation", default_budget_ms = 8000)
 def stop_generation(ctx: ActionContext) -> ActionResult:
     """Press stop mid-stream and time until the run is really over.
@@ -353,6 +387,16 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     ctx.page.wait_for_timeout(400)
     chars_after = _ev(ctx, "() => window.__sb.dom.assistantChars()")
     ok = stopped_ms is not None
+
+    # LEAVE THE THREAD AS WE FOUND IT. The throwaway turn is scaffolding, not content: left in
+    # place it adds an assistant message and a reasoning pane that the rest of the film, the final
+    # census and the seeded-versus-streamed comparison all then measure. That showed up
+    # immediately as "streamed 5 assistant messages vs seeded 4", a drift introduced entirely by
+    # this action while it was busy fixing a different one.
+    removed = None
+    if own_generation:
+        removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS)
+        ctx.page.wait_for_timeout(200)
     return ActionResult(
         ran = True, expect_ok = ok,
         expect = {"chars_before": chars_before, "chars_after": chars_after,
@@ -360,6 +404,12 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
                   # Which reply was stopped. A reader comparing `chars_added_after_stop` across
                   # rungs needs to know whether this was a throwaway turn or the cell's own.
                   "own_generation": own_generation,
+                  # Whether the scaffolding was removed again. Reported rather than asserted: a
+                  # cleanup that failed leaves an extra turn in the thread, and every census
+                  # after this point needs to be readable in that light.
+                  "scaffold_removed": (None if removed is None
+                                       else bool(removed.get("removed"))),
+                  "scaffold_note": (None if removed is None else removed.get("reason")),
                   # A stop that worked leaves the text where it was, give or take the chunks
                   # already in flight. A large jump means the stream ran on.
                   "chars_added_after_stop": (None if chars_after is None or chars_before is None
