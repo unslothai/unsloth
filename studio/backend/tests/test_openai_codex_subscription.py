@@ -2401,8 +2401,13 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
         forget_subscription_models("codex-1")
 
 
-def test_storing_a_catalog_records_the_account_with_the_credentials(monkeypatch):
-    """That record is what a later cold process reads instead of the lost mark."""
+def test_reading_a_catalog_does_not_by_itself_prove_the_saved_row(monkeypatch):
+    """Reading a catalog says which account answered, not that the row was judged by it.
+
+    After a rebind the user can open the editor, which fetches, and then cancel without
+    saving, leaving the previous account's slugs in the row. Recording proof on the read
+    would authorize exactly those on the next cold start.
+    """
     stored = {"provider-19": None}
     bundle = {
         "access_token": "token",
@@ -2421,7 +2426,7 @@ def test_storing_a_catalog_records_the_account_with_the_credentials(monkeypatch)
     forget_subscription_models("provider-19")
     try:
         asyncio.run(list_subscription_models("provider-19", "token", "acct-1"))
-        assert stored["provider-19"]["catalog_account_id"] == "acct-1"
+        assert stored["provider-19"] is None
     finally:
         forget_subscription_models("provider-19")
 

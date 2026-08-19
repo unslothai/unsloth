@@ -421,6 +421,13 @@ async def update_provider_config(
         raise HTTPException(status_code = 400, detail = "No fields to update")
 
     row = providers_db.get_provider(provider_id)
+    if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models is not None:
+        # Record the proof here rather than when a catalog is read: reading one only
+        # shows which account answered, while this is the point where the row's models
+        # were actually judged against it and stored.
+        account = _codex_bundle_account(provider_id)
+        if account:
+            await openai_codex_auth.remember_catalog_account(provider_id, account)
     return _provider_response(row)
 
 

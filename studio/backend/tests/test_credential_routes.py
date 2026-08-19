@@ -926,3 +926,60 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
         assert renamed.models == [listed]
     finally:
         codex_client.forget_subscription_models(created.id)
+
+
+def test_codex_save_records_the_account_it_validated_against(monkeypatch):
+    """Saving the row is what proves it, so that is where the proof is written."""
+    from core.inference import openai_codex_client as codex_client
+
+    recorded = []
+
+    async def _remember(provider_id, account_id):
+        recorded.append((provider_id, account_id))
+
+    monkeypatch.setattr(
+        providers_route.openai_codex_auth,
+        "load_oauth_bundle",
+        lambda _pid: {"account_id": "acct-1", "catalog_account_id": "acct-1"},
+    )
+    monkeypatch.setattr(providers_route.openai_codex_auth, "remember_catalog_account", _remember)
+
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    # Creating does not record: there is no connection behind it yet.
+    assert recorded == []
+
+    codex_client.forget_subscription_models(created.id)
+    try:
+        asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(models = ["gpt-5.4", "gpt-5.5"]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert recorded == [(created.id, "acct-1")]
+
+        # A metadata-only edit carries no selection, so it proves nothing new.
+        recorded.clear()
+        asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(display_name = "Renamed"),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert recorded == []
+    finally:
+        codex_client.forget_subscription_models(created.id)
