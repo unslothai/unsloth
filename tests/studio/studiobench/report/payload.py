@@ -219,6 +219,9 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     # Bookkeeping about HOW the A/B was run, not a measurement of the app. It belongs beside the
     # identity fields so a reader can see whether the order was balanced without digging.
     "ab_plan": "header",
+    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI,
+    # not a timing, and folding it into `actions` would put it in front of the scorer.
+    "surface": "surfaces",
 }
 
 
@@ -267,6 +270,7 @@ def assemble_rows(
         "actions": sections.get("actions", []),
         "cells": cells,
         "samples": sections.get("samples", []),
+        "surfaces": sections.get("surfaces", []),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,

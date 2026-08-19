@@ -27,6 +27,11 @@ ROW_TYPES = frozenset({
     # UNBALANCED, because whether linear drift cancelled is a property of the run that a reader
     # of the table has no other way to recover.
     "ab_plan",
+    # One UI surface swept by the optional `--surfaces` phase: a route, a settings tab, a menu.
+    # A row type of its own rather than an `action` row with a different name, because a surface
+    # has no slot, no budget and no timing to miss -- and reusing `action` would put forty rows
+    # with a null `timings` into the column the report scores actions from.
+    "surface",
 })
 
 # Required keys per row type. Enforced in Recorder.emit, because a row that silently lost its
@@ -40,6 +45,10 @@ ROW_REQUIRED: dict[str, tuple[str, ...]] = {
     "action": ("action", "ran", "expect_ok", "expect", "timings", "slot_missed"),
     "sample": ("t_ms",),
     "failure": ("kind", "detail"),
+    # `reason` is REQUIRED, not optional. A surface row that lost its reason reads as a surface
+    # that was reached, which is the one thing a coverage sweep may never claim by default. It is
+    # null only on the success path, where `reached` is true.
+    "surface": ("surface", "reached", "reason", "parity"),
 }
 
 

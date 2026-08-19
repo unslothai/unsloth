@@ -24,15 +24,21 @@ import time
 from pathlib import Path
 
 TOOL_VERSION = "0.1.0"
-TIERS = ("quick", "standard", "full")
+TIERS = ("fast", "quick", "standard", "full")
 TIER_RUNGS = {
+    # One rung, and it is 100K on purpose. The 10K rung was measured across six PRs and could
+    # not separate any of them from the null control: at that size the UI work disappears
+    # underneath the scene's own scripted timings (copy_markdown read 204 ms on all fourteen
+    # arms). 100K is the smallest rung that carries real load -- jank index 29 against 0.6,
+    # worst frame 1,855 ms against 214 -- so it is the only rung worth an iteration loop.
+    "fast": ["100K"],
     "quick": ["1K", "10K"],
     "standard": ["1K", "10K", "100K"],
     "full": ["1K", "10K", "100K", "500K", "1M"],
 }
 # Wall clock budgets, from the design. The deficit-scheduled pacer is what makes them honest: a
 # slow machine gets the same stream duration, so it misses SLOTS rather than overrunning the tier.
-TIER_BUDGET_S = {"quick": 5 * 60, "standard": 20 * 60, "full": 60 * 60}
+TIER_BUDGET_S = {"fast": 5 * 60, "quick": 5 * 60, "standard": 20 * 60, "full": 60 * 60}
 
 
 def _log(msg: str = "") -> None:
@@ -270,6 +276,12 @@ def run(args, ab_ref = None) -> int:
 
     auth = sides[0]["auth"]
     init_scripts.append(resources.read_text("scene/dom.js"))
+    init_scripts.append(resources.read_text("scene/parity.js"))
+    # Loaded unconditionally, even without --surfaces. It defines selectors and reads dom.js and
+    # parity.js; it never runs on its own. Making the page's JS depend on a CLI flag would mean
+    # the flag changes what is on the page during the FILM as well, and the film's numbers must
+    # not depend on whether a later phase was asked for.
+    init_scripts.append(resources.read_text("scene/surfaces.js"))
 
     procs_before = {}
     try:
@@ -300,6 +312,24 @@ def run(args, ab_ref = None) -> int:
               "rungs": TIER_RUNGS[args.tier], "instrument_level": args.instrument_level})
     rec.gate("production_build", verdict.production, verdict.as_dict())
 
+    if args.tier == "fast":
+        # Said in the log AND recorded in the payload. A fast-tier reading is a DIRECTION, not a
+        # number: it runs one rung, a 47 s film and however few repetitions the caller asked for,
+        # so its detection floor is wider than the standard tier's and it has no null control of
+        # its own unless one is run alongside. The gate exists so the analysis layer can refuse to
+        # pool a fast payload with a standard one -- a fast reading quoted against a standard
+        # floor is the single most likely way this tier gets somebody a wrong answer.
+        _log("")
+        _log("  FAST TIER: for iteration while you are changing something, not for reporting.")
+        _log("  One rung (100K), a 47s film. Use it to see whether a fix moved anything at all,")
+        _log("  then confirm with --tier standard and a null control before quoting a number.")
+        _log("")
+    rec.gate("reportable_tier", args.tier != "fast",
+             {"tier": args.tier, "scene": TIER_RUNGS[args.tier],
+              "reason": ("the fast tier is an iteration loop: one rung, a compressed film, and a "
+                         "wider floor than the standard tier")
+                        if args.tier == "fast" else "standard measurement protocol"})
+
     image_path = ensure_probe_image(paths)
     for side in sides:
         side_seeder = Seeder(base_url = side["base_url"], auth = side["auth"],
@@ -312,6 +342,9 @@ def run(args, ab_ref = None) -> int:
 
     seeder = sides[0]["seeder"]
     runner = sides[0]["runner"]
+
+    if args.surfaces:
+        _sweep_surfaces(sides, ctx, paths)
 
     rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
     cells = build_cells(rungs, corpus, args.tier, ctx.session_id, args.instrument_level,
@@ -370,6 +403,46 @@ def run(args, ab_ref = None) -> int:
     completed = sum(1 for r in rows if r.get("completed"))
     _log(f"\n{completed} of {len(rows)} cells completed. payload: {paths.payload_jsonl}")
     return 0 if completed == len(rows) and rows else 1
+
+
+def _sweep_surfaces(sides: list, ctx, paths) -> None:
+    """The optional surface phase: one sweep per arm, BEFORE the cells.
+
+    Before, not after, and on an empty chat rather than a seeded one. Several surface roots
+    contain the keep-alive chat page, so a sweep taken after the film would carry that film's
+    thread -- and the two messages its last actions deleted -- into the digest of every route and
+    every menu. Running first makes the surface digests about the surfaces.
+
+    A failure here never costs the run. The sweep is additional evidence about the UI; the cells
+    are the measurement, and a broken selector in the registry must not stop them.
+    """
+    from .scene.surface_sweep import render_manifest, sweep
+
+    for side in sides:
+        label = side["label"]
+        _log(f"\n### surface sweep: {label} at {side['base_url']}")
+        try:
+            rows, manifest = sweep(ctx.page, side["base_url"], log = _log,
+                                   cell_id = f"surfaces.{label}", recorder = ctx.recorder)
+        except Exception as exc:                                    # noqa: BLE001
+            # Recorded as a failed gate rather than swallowed. A sweep that raised and a sweep
+            # that found nothing look identical in a payload that only carries the rows.
+            _log(f"  the surface sweep failed: {type(exc).__name__}: {exc}")
+            ctx.recorder.gate(f"surface_sweep:{label}", False,
+                              {"error": f"{type(exc).__name__}: {exc}"})
+            continue
+        for row in rows:
+            row["arm"] = label
+        text = render_manifest(manifest)
+        print("\n" + text)
+        out = paths.out / f"surfaces_{label}.md"
+        out.write_text(text, encoding = "utf-8")
+        _log(f"surface coverage manifest written to {out}")
+        # PASSES only when every non-conditional surface was reached AND the digests were scoped.
+        # An unscoped sweep reports one page-wide digest per surface, which agrees everywhere for
+        # reasons that have nothing to do with the surfaces.
+        passed = manifest["not_reached_hard"] == 0 and manifest["digests_scoped"]
+        ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
 def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
@@ -544,6 +617,12 @@ def main(argv: list) -> int:
     ap.add_argument("--username", default = "unsloth")
     ap.add_argument("--password", default = "")
     ap.add_argument("--out", help = "output directory")
+    ap.add_argument("--surfaces", action = "store_true",
+                    help = "additionally sweep every registered UI surface -- the other routes, "
+                           "the settings tabs, the sidebar menus, the model picker -- and take a "
+                           "parity digest of each. The film covers the chat thread; this covers "
+                           "the rest of the app. Off by default: it costs about a minute per arm "
+                           "and it does not measure performance")
     ap.add_argument("--headed", action = "store_true")
     ap.add_argument("--keep-studio", action = "store_true")
     ap.add_argument("--allow-dev-server", action = "store_true",

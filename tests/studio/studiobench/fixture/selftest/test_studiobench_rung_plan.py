@@ -122,3 +122,48 @@ def test_the_ladder_is_strictly_increasing_in_seeded_mass():
     masses = [plans[r].total_chars for r in order]
     assert masses == sorted(masses)
     assert len(set(masses)) == len(masses)
+
+
+# Actions that need a SETTLED reply. The action bar's More and Copy buttons are not rendered while
+# a turn is streaming, select-all copies a moving target, and delete is hidden on a running
+# message. Each one reports an honest `NOT RUN` rather than a wrong number, which is why this was
+# invisible until somebody counted: on a 36 job sweep the fast film recorded
+# `message_menu: NOT RUN -- no More button` on 312 of 312 attempts, and the four actions it
+# silently stopped exercising include the one carrying the largest measured effect in this
+# codebase (the message menu, 1,164.9 ms to 60.7 ms across the merged campaign).
+SETTLED_ACTIONS = ("message_menu", "copy_markdown", "select_all_copy", "delete_message")
+
+
+def test_settled_actions_open_after_the_follow_up_drains():
+    """A slot needing a finished reply must clear the follow-up turn the preceding send started.
+
+    Only films used at a rung that actually sends follow-ups are checked. Below
+    MULTI_TURN_MIN_CHARS a rung is single-turn, `send_turn` reports an exhausted queue, and there
+    is no follow-up stream to wait for -- so holding the quick film to this bar would be asserting
+    against a stream that never exists.
+    """
+    from studiobench.__main__ import TIER_RUNGS
+    from studiobench.fixture.corpus import FOLLOW_UP_CHARS, MULTI_TURN_MIN_CHARS
+    from studiobench.scene.schedule import SCENES
+
+    drain_s = FOLLOW_UP_CHARS / FIELD_CHARS_PER_SEC
+    plans = _plans()
+    for name, scene in SCENES.items():
+        rungs = TIER_RUNGS.get(name) or []
+        if not any((plans[r].total_chars if r in plans else 0) >= MULTI_TURN_MIN_CHARS
+                   for r in rungs):
+            continue
+        last_send = None
+        for slot in sorted(scene.slots, key = lambda s: s.t_start_ms):
+            if slot.action == "send_turn":
+                last_send = slot.t_start_ms
+            elif slot.action in SETTLED_ACTIONS and last_send is not None:
+                # The slot's WINDOW, not its start. A slot may legitimately open a little before
+                # the follow-up finishes and wait inside its own budget -- the quick film opens
+                # `message_menu` at 4.5 s against a 4.56 s drain and it runs, because it has 3 s
+                # of budget to wait in. What is fatal is a window that CLOSES before the reply
+                # settles, which is what the first fast film did: 1.7 s gap plus 0.8 s budget
+                # against a 4.56 s drain, so the button had not been rendered yet and never
+                # would be inside that window.
+                window_end = (slot.t_start_ms + slot.budget_ms - last_send) / 1000.0
+                assert window_end >= drain_s, (name, slot.action, window_end, drain_s)
