@@ -834,7 +834,11 @@ def _tool_result_content(result, tool_name: str = "") -> str:
     unwrapped = _unwrapped(result, tool_name)
     if unwrapped is not None:
         return unwrapped if unwrapped else _EMPTY_TOOL_RESULT
-    return json.dumps(result, separators = (",", ":"))
+    # `ensure_ascii = False` because `JSON.stringify` does not escape non-ASCII. With the
+    # default, a tool result mentioning "Montreal" with its accent reconstructs as
+    # `Montr\\u00e9al` where the archived wire text carries the character itself, so a
+    # multilingual tool exchange loses its transcript seat and is filtered out of recall.
+    return json.dumps(result, ensure_ascii = False, separators = (",", ":"))
 
 
 def _replayable(part: dict) -> bool:
@@ -908,6 +912,23 @@ def _as_wire(messages: list[dict]) -> list[dict]:
     for message in messages:
         content = message.get("content")
         parts = content if isinstance(content, list) else None
+        # Reasoning is not content. The serializer puts it in `reasoning_content`, or
+        # drops it, and never in `content`; `_probe_text` renders any part carrying a
+        # `text` field, so forwarding the stored list put a reasoning model's thinking
+        # inline where the wire form has only the answer. That turn then matched no
+        # transcript seat and took an ordinal past genuinely later turns, and the branch
+        # check could reject it. Dropped rather than moved: nothing here reads
+        # `reasoning_content` on the live side either, so both sides carry the answer
+        # alone.
+        if parts is not None and any(
+            isinstance(part, dict) and part.get("type") == "reasoning" for part in parts
+        ):
+            parts = [
+                part
+                for part in parts
+                if not (isinstance(part, dict) and part.get("type") == "reasoning")
+            ]
+            content = parts
         # A provider-side builtin with no native part is not replayed at all, so it is
         # not a call here either: counting it made this take the tool-call path and
         # invent an exchange the request never carried.

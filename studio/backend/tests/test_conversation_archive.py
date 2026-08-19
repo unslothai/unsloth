@@ -4023,3 +4023,45 @@ def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
     live = conversation_archive.branch_message_texts(long)
     assert conversation_archive._document_matches_one_run([{"text": text}], live, 3) is False
     assert conversation_archive._document_matches_one_run([{"text": text}], live, 4) is True
+
+
+def test_a_reasoning_turn_is_reconstructed_without_its_thinking():
+    """Reasoning is not content, and the wire form never carries it as content.
+
+    The serializer puts it in `reasoning_content` or drops it, so forwarding the stored
+    part list rendered a reasoning model's thinking inline where the request sends only
+    the answer. That turn matched no transcript seat and took an ordinal past genuinely
+    later turns, under a header that calls the higher number the latest word.
+    """
+    row = {
+        "role": "assistant",
+        "content": [
+            {"type": "reasoning", "text": "The user wants the file list. I should run ls."},
+            {"type": "text", "text": "There are two files."},
+        ],
+    }
+    live = [
+        {
+            "role": "assistant",
+            "content": "There are two files.",
+            "reasoning_content": "The user wants the file list. I should run ls.",
+        }
+    ]
+
+    stored = [conversation_archive._probe_text(m) for m in conversation_archive._as_wire([row])]
+
+    assert stored == [conversation_archive._probe_text(live[0])] == ["There are two files."]
+    assert conversation_archive._occurrences([stored], live) == [0]
+
+
+def test_a_unicode_tool_result_is_serialised_the_way_javascript_serialises_it():
+    """`JSON.stringify` leaves non-ASCII alone; `json.dumps` escapes it by default.
+
+    The reconstructed `tool` message then reads `Montr\\u00e9al` where the archived wire
+    text carries the character itself, and every comparison downstream is exact, so a
+    multilingual tool exchange loses its seat and is filtered out of recall.
+    """
+    assert (
+        conversation_archive._tool_result_content({"ville": "Montréal"}, "terminal")
+        == '{"ville":"Montréal"}'
+    )
