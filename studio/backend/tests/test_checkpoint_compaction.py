@@ -988,7 +988,7 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
                 {"role": "user", "content": "q"},
                 {
                     "role": "assistant",
-                    "content": "a",
+                    "content": "the epoch reply, written out in full",
                     "metadata": {"custom": {"contextTruncation": truncation}},
                 },
             ]
@@ -1000,6 +1000,17 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
 
     _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is True
+
+    # ...but only for the branch the request is on. The stored rows are the whole DAG, so
+    # a Retry that forked BEFORE the turn which recorded the epoch leaves that turn on an
+    # abandoned sibling, and a thread-wide scan would report a checkpoint for a branch
+    # that never reset.
+    on_branch = [{"role": "user", "content": "q"},
+                 {"role": "assistant", "content": "the epoch reply, written out in full"}]
+    off_branch = [{"role": "user", "content": "q"},
+                  {"role": "assistant", "content": "regenerated, sharing none of its words"}]
+    assert inference_routes._thread_has_checkpoint("t1", on_branch) is True
+    assert inference_routes._thread_has_checkpoint("t1", off_branch) is False
 
     # The same thread shape after a ROLLING compaction: archived, never reset.
     _thread({"fits": True, "dropped_messages": 12})

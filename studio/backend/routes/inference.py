@@ -3412,7 +3412,7 @@ def _thread_has_conversation_archive(thread_id) -> bool:
         return False
 
 
-def _thread_has_checkpoint(thread_id) -> bool:
+def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     """Whether an epoch was ever committed on this thread, read from what it persisted.
 
     Having an archive is not the same as having a checkpoint. A thread compacted under the
@@ -3429,9 +3429,22 @@ def _thread_has_checkpoint(thread_id) -> bool:
     if not thread_id:
         return False
     try:
+        from core.rag import conversation_archive
         from storage import studio_db
+
+        # Scoped to the branch the request is on. The stored rows are the whole DAG, so a
+        # Retry that forked BEFORE the turn which recorded the epoch leaves that turn in
+        # the table on an abandoned sibling: a thread-wide scan then reports a checkpoint
+        # for a branch that never reset, and a tools-off request there is forced into the
+        # loop and can newly fail the n > 1 and non-streaming guards. Same filter the
+        # sticky boundary applies, and for the same reason.
+        branch = conversation_archive.branch_message_texts(branch_messages, ("assistant",))
         for message in reversed(studio_db.list_chat_messages(str(thread_id)) or []):
             if message.get("role") != "assistant":
+                continue
+            if branch and not conversation_archive.content_on_branch(
+                message.get("content"), branch
+            ):
                 continue
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
@@ -13988,7 +14001,9 @@ async def openai_chat_completions(
             # the loop would open for a repair that cannot happen, overriding the caller's
             # enable_tools = false and costing the request the n > 1 and non-streaming
             # ask/auto guards below.
-            and _thread_has_checkpoint(getattr(payload, "thread_id", None))
+            and _thread_has_checkpoint(
+                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+            )
         ):
             use_tools = True
 
