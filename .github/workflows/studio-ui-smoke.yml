@@ -129,10 +129,12 @@ jobs:
         env:
           RETRY_ATTEMPTS: '3'
           RETRY_ATTEMPT_TIMEOUT: '180'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get update
-          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get install -y \
-            --no-install-recommends libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -669,10 +671,12 @@ jobs:
         env:
           RETRY_ATTEMPTS: '3'
           RETRY_ATTEMPT_TIMEOUT: '180'
+        # One call, not two: retrying the install after a stalled update just re-reads
+        # the same broken package list, and two calls double the worst case for no
+        # extra coverage.
         run: |
-          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get update
-          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get install -y \
-            --no-install-recommends libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
