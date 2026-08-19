@@ -4916,11 +4916,7 @@ class LlamaCppBackend:
                     # but do not fall through to a different runtime if none works.
                     non_executable = p
             if non_executable is not None:
-                return (
-                    (str(non_executable), None)
-                    if include_denied
-                    else (None, non_executable)
-                )
+                return (str(non_executable), None) if include_denied else (None, non_executable)
             return None, None
 
         # 1. Env var: direct path to binary
@@ -11490,7 +11486,6 @@ class LlamaCppBackend:
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
             try:
                 from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
-
                 if custom_llama_cpp_path_source() != "studio":
                     return binary
             except Exception:

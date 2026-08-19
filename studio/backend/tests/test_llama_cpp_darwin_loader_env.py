@@ -203,9 +203,7 @@ class TestExecPathForLaunch:
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
         assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(target)
 
-    def test_a_selected_installer_entrypoint_still_resolves_by_shape(
-        self, monkeypatch, tmp_path
-    ):
+    def test_a_selected_installer_entrypoint_still_resolves_by_shape(self, monkeypatch, tmp_path):
         from utils import llama_cpp_path_settings as path_settings
 
         monkeypatch.setattr(sys, "platform", "darwin")

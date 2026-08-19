@@ -26,8 +26,8 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
         os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
         return False
     try:
-        managed = Path(directory).expanduser().resolve(strict=False)
-        inherited = Path(configured).expanduser().resolve(strict=False)
+        managed = Path(directory).expanduser().resolve(strict = False)
+        inherited = Path(configured).expanduser().resolve(strict = False)
         is_managed = inherited == managed
     except (OSError, RuntimeError, ValueError):
         is_managed = False

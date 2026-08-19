@@ -182,8 +182,8 @@ def test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout(
     from core.inference.llama_cpp import LlamaCppBackend
 
     root = tmp_path / "custom"
-    root_binary = _binary(root, platform="linux", layout="root")
-    build_binary = _binary(root, platform="linux", layout="build")
+    root_binary = _binary(root, platform = "linux", layout = "root")
+    build_binary = _binary(root, platform = "linux", layout = "build")
     monkeypatch.setattr(path_settings.sys, "platform", "linux")
     monkeypatch.setattr(
         path_settings.os,
@@ -255,9 +255,7 @@ def test_backend_updater_never_replaces_a_studio_selected_tree(monkeypatch):
     assert plan["refusal"]["reason"] == "custom_path"
 
 
-def test_selected_checkout_is_not_given_managed_runtime_repair_advice(
-    settings_store, tmp_path
-):
+def test_selected_checkout_is_not_given_managed_runtime_repair_advice(settings_store, tmp_path):
     from core.inference.llama_cpp import LlamaCppBackend
 
     root = tmp_path / "llama.cpp"
