@@ -26,6 +26,10 @@ const runtimeProviderSource = readFileSync(
   new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
   "utf8",
 );
+const chatPageSource = readFileSync(
+  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+  "utf8",
+);
 const imagesPageSource = readFileSync(
   new URL("../src/features/images/images-page.tsx", import.meta.url),
   "utf8",
@@ -62,6 +66,10 @@ const editRecipePageSource = readFileSync(
 );
 const exportPageSource = readFileSync(
   new URL("../src/features/export/export-page.tsx", import.meta.url),
+  "utf8",
+);
+const studioPageSource = readFileSync(
+  new URL("../src/features/studio/studio-page.tsx", import.meta.url),
   "utf8",
 );
 
@@ -681,7 +689,19 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /createRuntimeHook\(modelType, pairId, initialThreadId\)/,
+    /createRuntimeHook\([\s\S]*?modelType,[\s\S]*?pairId,[\s\S]*?initialThreadId,[\s\S]*?onInitialHistoryReady/,
+  );
+  assert.match(
+    runtimeProviderSource,
+    /if \(pairId && onInitialHistoryReady\) \{\s*onInitialHistoryReady\(\)/,
+  );
+  assert.match(
+    chatPageSource,
+    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(
+    chatPageSource,
+    /\.finally\(\(\) => \{\s*if \(isActive\) setThreadsSettled\(true\)/,
   );
 });
 
@@ -749,6 +769,11 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   assert.match(
     exportPageSource,
     /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(rootRouteSource, /pathname === "\/studio"/);
+  assert.match(
+    studioPageSource,
+    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?unsloth:app-shell-ready/,
   );
 });
 

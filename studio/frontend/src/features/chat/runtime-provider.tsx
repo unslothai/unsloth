@@ -1134,6 +1134,7 @@ function useStudioRuntimeAdapters(
   modelType: ModelType,
   pairId?: string,
   reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
@@ -1303,7 +1304,9 @@ function useStudioRuntimeAdapters(
     () => ({
       async load() {
         const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
-          if (
+          if (pairId && onInitialHistoryReady) {
+            onInitialHistoryReady();
+          } else if (
             modelType === "base" &&
             !pairId &&
             (!reloadReadyThreadId || loadedThreadId === reloadReadyThreadId)
@@ -1540,7 +1543,13 @@ function useStudioRuntimeAdapters(
         return trackHistoryAppend(message.id, write);
       },
     }),
-    [aui, modelType, pairId, reloadReadyThreadId],
+    [
+      aui,
+      modelType,
+      onInitialHistoryReady,
+      pairId,
+      reloadReadyThreadId,
+    ],
   );
 
   // Always register the adapter so the mic stays clickable for any engine. The
@@ -1588,11 +1597,13 @@ function useRuntimeHook(
   modelType: ModelType,
   pairId?: string,
   reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(
     modelType,
     pairId,
     reloadReadyThreadId,
+    onInitialHistoryReady,
   );
   const persistedChatAdapter = useMemo(
     () =>
@@ -1608,9 +1619,15 @@ function createRuntimeHook(
   modelType: ModelType,
   pairId?: string,
   reloadReadyThreadId?: string,
+  onInitialHistoryReady?: () => void,
 ) {
   return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-    return useRuntimeHook(modelType, pairId, reloadReadyThreadId);
+    return useRuntimeHook(
+      modelType,
+      pairId,
+      reloadReadyThreadId,
+      onInitialHistoryReady,
+    );
   };
 }
 
@@ -2180,6 +2197,7 @@ export function ChatRuntimeProvider({
   newThreadNonce,
   syncActiveThreadId = true,
   listThreads = true,
+  onInitialHistoryReady,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -2189,10 +2207,17 @@ export function ChatRuntimeProvider({
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
+  onInitialHistoryReady?: () => void;
 }): ReactElement {
   const runtimeHook = useMemo(
-    () => createRuntimeHook(modelType, pairId, initialThreadId),
-    [initialThreadId, modelType, pairId],
+    () =>
+      createRuntimeHook(
+        modelType,
+        pairId,
+        initialThreadId,
+        onInitialHistoryReady,
+      ),
+    [initialThreadId, modelType, onInitialHistoryReady, pairId],
   );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,

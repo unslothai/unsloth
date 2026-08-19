@@ -610,6 +610,7 @@ function ComparePane({
   handleName,
   header,
   borderClassName,
+  onInitialHistoryReady,
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
@@ -618,7 +619,15 @@ function ComparePane({
   handleName: string;
   header: ReactElement;
   borderClassName?: string;
+  onInitialHistoryReady?: (pane: string) => void;
 }): ReactElement {
+  const signalInitialHistoryReady = useMemo(
+    () =>
+      onInitialHistoryReady
+        ? () => onInitialHistoryReady(modelType)
+        : undefined,
+    [modelType, onInitialHistoryReady],
+  );
   return (
     <div
       className={cn(
@@ -634,12 +643,39 @@ function ComparePane({
           projectId={projectId}
           initialThreadId={initialThreadId}
           syncActiveThreadId={false}
+          onInitialHistoryReady={signalInitialHistoryReady}
         >
           <RegisterCompareHandle name={handleName} />
           <Thread hideComposer={true} hideWelcome={true} />
         </ChatRuntimeProvider>
       </div>
     </div>
+  );
+}
+
+function useCompareReloadReadiness(pairId: string): (pane: string) => void {
+  const stateRef = useRef({
+    pairId,
+    panes: new Set<string>(),
+    sent: false,
+  });
+  if (stateRef.current.pairId !== pairId) {
+    stateRef.current = { pairId, panes: new Set<string>(), sent: false };
+  }
+  return useCallback(
+    (pane: string) => {
+      const state = stateRef.current;
+      if (state.pairId !== pairId || state.sent) {
+        return;
+      }
+      state.panes.add(pane);
+      if (state.panes.size < 2) {
+        return;
+      }
+      state.sent = true;
+      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    },
+    [pairId],
   );
 }
 
@@ -699,6 +735,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [threadsSettled, setThreadsSettled] = useState(false);
+  const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
 
   const compareRunning = useChatRuntimeStore(
@@ -708,6 +746,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   useEffect(() => {
     if (compareRunning) return;
     let isActive = true;
+    setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
@@ -718,6 +757,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+      })
+      .finally(() => {
+        if (isActive) setThreadsSettled(true);
       });
     return () => {
       isActive = false;
@@ -747,6 +789,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           header={
             <div className="shrink-0 px-3 py-1.5">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
@@ -761,6 +806,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
             <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
@@ -874,6 +922,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
   const [model2ThreadId, setModel2ThreadId] = useState<string>();
+  const [threadsSettled, setThreadsSettled] = useState(false);
+  const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -909,6 +959,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   useEffect(() => {
     if (compareRunning) return;
     let isActive = true;
+    setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
@@ -927,6 +978,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+      })
+      .finally(() => {
+        if (isActive) setThreadsSettled(true);
       });
     return () => {
       isActive = false;
@@ -958,6 +1012,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           projectId={projectId}
           initialThreadId={model1ThreadId}
           handleName="model1"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           header={
             <GeneralCompareHeader
               side="left"
@@ -989,6 +1046,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           projectId={projectId}
           initialThreadId={model2ThreadId}
           handleName="model2"
+          onInitialHistoryReady={
+            threadsSettled ? markInitialHistoryReady : undefined
+          }
           borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
           header={
             <GeneralCompareHeader
