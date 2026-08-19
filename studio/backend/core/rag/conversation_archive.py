@@ -1969,7 +1969,10 @@ def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
 
 
 def _delete_scope_without_vec(
-    scope: str, thread_id: str, *, created_before: Optional[str] = None
+    scope: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
 ) -> int:
     """Delete a scope's text-bearing rows over a connection with no sqlite-vec.
 
@@ -1987,8 +1990,7 @@ def _delete_scope_without_vec(
     try:
         conn = rag_db.get_metadata_connection()
         documents = [
-            row["id"]
-            for row in conn.execute(*_scope_select(scope, created_before)).fetchall()
+            row["id"] for row in conn.execute(*_scope_select(scope, created_before)).fetchall()
         ]
         for document_id in documents:
             conn.execute(

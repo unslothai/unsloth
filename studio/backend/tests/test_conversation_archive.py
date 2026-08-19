@@ -3137,9 +3137,9 @@ def test_text_said_before_a_tool_call_rides_on_the_call_message():
         conversation_archive._probe_text(before[0])
     )
     assert [message["role"] for message in after] == ["assistant", "tool", "assistant"]
-    assert conversation_archive._normalise(
-        conversation_archive._probe_text(after[2])
-    ) == "two files."
+    assert (
+        conversation_archive._normalise(conversation_archive._probe_text(after[2])) == "two files."
+    )
 
 
 def test_turns_differing_only_in_case_do_not_share_a_seat(conn):
@@ -3157,6 +3157,7 @@ def test_turns_differing_only_in_case_do_not_share_a_seat(conn):
     positions = conversation_archive._transcript_positions(THREAD)
     assert conversation_archive._occurrences(positions, lower) == [0]
     assert conversation_archive._occurrences(positions, upper) == [1]
+
 
 def test_the_deleted_conversation_goes_even_when_its_id_comes_back(conn):
     """Sparing a recreated id spared the DELETED conversation along with it.
