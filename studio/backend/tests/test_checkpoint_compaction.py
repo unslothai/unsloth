@@ -1618,3 +1618,50 @@ def test_a_block_that_arrives_in_the_system_turn_is_dropped_when_it_will_not_fit
     assert [message["role"] for message in fitted] == ["system", "user"]
     assert "<carried_forward>" not in str(fitted[0]["content"])
     assert truncation["prompt_tokens_after"] < truncation["prompt_tokens_before"] // 10
+
+
+def test_the_checkpoint_check_reads_the_routes_own_message_models(monkeypatch):
+    """The ordinary completions path hands this Pydantic models, not dicts.
+
+    `branch_message_texts` reads messages with `.get`, so it raised, the caller swallowed
+    the exception and every thread reported no checkpoint. A tools-off thread that HAD
+    reset therefore never reopened the tool loop, so `search_conversation` was never
+    offered and the block's promise that the earlier turns are searchable was false for
+    the whole epoch.
+    """
+    import sys
+    import types
+
+    from models.inference import ChatMessage
+    from routes import inference as inference_routes
+
+    reply = "Carrying on."
+    rows = [
+        {
+            "role": "assistant",
+            "content": reply,
+            "metadata": {
+                "custom": {
+                    "contextTruncation": {
+                        "fits": True,
+                        "checkpoint": True,
+                        "checkpoint_started": True,
+                        "dropped_messages": 12,
+                        "boundary_messages": 12,
+                    }
+                }
+            },
+        }
+    ]
+    module = types.SimpleNamespace(list_chat_messages = lambda thread_id: rows)
+    package = types.ModuleType("storage")
+    package.studio_db = module
+    monkeypatch.setitem(sys.modules, "storage", package)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+    models = [
+        ChatMessage(role = "user", content = "q"),
+        ChatMessage(role = "assistant", content = reply),
+    ]
+
+    assert inference_routes._thread_has_checkpoint("t1", models) is True

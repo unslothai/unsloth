@@ -3420,6 +3420,25 @@ def _thread_has_conversation_archive(thread_id) -> bool:
         return False
 
 
+def _as_plain_messages(messages):
+    """Request messages as plain dicts, whatever shape the route received them in."""
+    if not messages:
+        return messages
+    plain = []
+    for message in messages:
+        if isinstance(message, dict):
+            plain.append(message)
+            continue
+        dump = getattr(message, "model_dump", None)
+        if dump is None:
+            return messages
+        try:
+            plain.append(dump())
+        except Exception:
+            return messages
+    return plain
+
+
 def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     """Whether an epoch was ever committed on this thread, read from what it persisted.
 
@@ -3443,7 +3462,14 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         # Retry that forked BEFORE the epoch-recording turn leaves it on an abandoned
         # sibling; a thread-wide scan would then report a checkpoint for a branch that
         # never reset. Same filter the sticky boundary applies, for the same reason.
-        branch = conversation_archive.branch_message_texts(branch_messages, ("assistant",))
+        # As dicts: on the ordinary completions path these are `ChatMessage` models, and
+        # the archive helper reads them with `.get`, so it raised, the caller swallowed it
+        # and every thread reported no checkpoint. A tools-off thread that HAD reset then
+        # never reopened the loop, so the block's promise that the history is searchable
+        # was false for the whole of that epoch.
+        branch = conversation_archive.branch_message_texts(
+            _as_plain_messages(branch_messages), ("assistant",)
+        )
         if branch_messages and not branch:
             # A branch with no reply of its own never recorded an epoch. Without this the
             # filter below is skipped rather than applied and the scan goes thread-wide
