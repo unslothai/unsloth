@@ -246,12 +246,18 @@ def can_archive(thread_id: Optional[str]) -> bool:
         return False
 
 
-def archive_turns(thread_id: str, evicted: list[dict]) -> int:
+def archive_turns(
+    thread_id: str, evicted: list[dict], live: Optional[list[dict]] = None
+) -> int:
     """Index the evicted turns for ``thread_id``. Returns how many were newly written.
 
     Idempotent by content hash: the same turns are evicted again on every later request
     in the session, so re-archiving has to be free. After the first write each repeat
     costs one indexed SELECT and writes nothing.
+
+    ``live`` is the fitted conversation, i.e. what the model can still see. It bounds how
+    many copies of a repeated turn the archive is allowed to hold right now; see
+    ``_write_budget``. Optional, and omitting it keeps the previous behaviour.
     """
     if not thread_id or not evicted or not enabled():
         return 0
@@ -278,6 +284,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     # Conversation order, read once from the persisted thread. See `_transcript_positions`
     # for why it cannot be the order these turns reach the archive.
     positions = _transcript_positions(thread_id)
+    live_texts = _live_texts(live)
     written = 0
     conn = None
     try:
@@ -297,7 +304,8 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
-            if _archived_under(conn, scope, digest, expected_identity, occurrences = len(seats) or 1):
+            budget = _write_budget(positions, seats, live_texts)
+            if _archived_under(conn, scope, digest, expected_identity, occurrences = budget):
                 # Commit here: this path holds no transaction of its own and the loop can
                 # return before ever reaching the write lock, when every turn is already
                 # archived -- which is the ordinary case on a thread being re-compacted,
@@ -311,7 +319,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 count = count,
             )
             if chunks:
-                pending.append((group, digest, chunks, seats))
+                pending.append((group, digest, chunks, seats, budget))
         if not pending:
             return 0
 
@@ -323,7 +331,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             normalize = True,
         )
         offset = 0
-        for group, digest, chunks, seats in pending:
+        for group, digest, chunks, seats, budget in pending:
             group_vectors = vectors[offset : offset + len(chunks)]
             offset += len(chunks)
             roles = " + ".join(
@@ -344,7 +352,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # Already in a transaction: the insert is still atomic with the re-check.
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
             copies = store.documents_by_hash(conn, scope, digest)
-            stale = _stale_document(conn, scope, digest, identity, occurrences = len(seats) or 1)
+            stale = _stale_document(conn, scope, digest, identity, occurrences = budget)
             if stale is _ARCHIVED:
                 _restamp(conn, scope, digest, seats, copies = copies)
                 if _write_lock:
@@ -682,6 +690,48 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
             _same(stored, live, is_call) for stored, live, is_call in zip(position, texts, calls)
         )
     ]
+
+
+def _live_texts(live: Optional[list[dict]]) -> Optional[set[str]]:
+    """The fitted conversation as the probe texts a transcript position is compared to."""
+    if live is None:
+        return None
+    texts = {_normalise(_probe_text(message)) for message in live}
+    texts.discard("")
+    return texts or None
+
+
+def _write_budget(
+    positions: Optional[list[list[str]]],
+    seats: list[int],
+    live_texts: Optional[set[str]],
+) -> int:
+    """How many copies of a repeated turn the archive may hold RIGHT NOW.
+
+    ``seats`` is every place the turn was said, which is what allocates ordinals, but it
+    is the wrong number to spend on writes. A thread can hold the same turn twice with
+    only the older one evicted; the archive then sees one stored copy against two seats,
+    decides it is short, and writes a second document for the occurrence still sitting in
+    the prompt. Both are then recallable, so identical text takes two of the four recall
+    slots and one of them repeats what the model can already read.
+
+    Counted against the LIVE conversation instead: a seat whose every message is still in
+    the prompt has not been evicted and buys no write. When that turn is evicted later the
+    budget rises on its own and the copy is written then, at its own ordinal.
+
+    Floors at 1 so a turn whose seats cannot be told apart from live text is still stored;
+    and with no ``live`` to compare against, this is exactly the old ``len(seats)``.
+    """
+    if not seats:
+        return 1
+    if not live_texts or not positions:
+        return len(seats)
+    evicted = [
+        seat
+        for seat in seats
+        if not all(text in live_texts for text in positions[seat] if text)
+    ]
+    return len(evicted) or 1
 
 
 def _retire_surplus(

@@ -2264,6 +2264,63 @@ def test_a_turn_repeated_later_is_archived_again_at_its_own_position(conn):
     assert "set ZQXVARA123 to 1" in found[1][-1]["text"]
 
 
+def test_a_repeat_still_in_the_prompt_is_not_archived_early(conn):
+    """A turn said twice with only the older one evicted is ONE archived turn, for now.
+
+    Seats come from the persisted transcript, so both occurrences count, and the same
+    evicted group is handed back on every later request while the sticky boundary holds.
+    The second pass then saw one stored copy against two seats, decided it was short, and
+    wrote a document for the occurrence still sitting in the prompt. Both were recallable,
+    so identical text took two of the four recall slots and one of them repeated what the
+    model could already read.
+
+    Bounded by what the fit KEPT instead. The copy is written when its own turn is
+    evicted, at its own ordinal, which is the second half of this test.
+    """
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    middle = _turn("tell me about ZQXVARA123 pelicans", "sure")
+    tail = _turn("and now something else about ZQXVARA123", "fine")
+    conversation = repeat + middle + list(repeat) + tail
+    _save_thread(THREAD, conversation)
+
+    # Only the OLDEST copy has crossed the boundary. The newer one is still in the prompt,
+    # along with everything after it.
+    live = list(repeat) + tail
+    conversation_archive.archive_turns(THREAD, repeat, live = live)
+    conversation_archive.archive_turns(THREAD, repeat, live = live)
+
+    scope = store.conversation_archive_scope(THREAD)
+    assert len(store.list_documents(conn, scope)) == 1
+
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    texts = [source["text"] for source in found[1]]
+    assert len(texts) == len(set(texts))
+
+    # Once the newer copy is evicted too, it is archived at the position it was said.
+    conversation_archive.archive_turns(THREAD, conversation[:6], live = tail)
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+            (scope,),
+        ).fetchall()
+    ]
+    assert ordinals == [0, 1, 2]
+
+
+def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
+    """`live` is optional, and without it the budget is the old count. Direct callers
+    (every other test here, and any caller outside the fit) must not change behaviour."""
+    from core.rag import conversation_archive as archive
+
+    assert archive._write_budget([["a"], ["a"]], [0, 1], None) == 2
+    assert archive._write_budget([["a"], ["a"]], [0, 1], {"a"}) == 1
+    assert archive._write_budget([["a"], ["a"]], [], {"a"}) == 1
+    # A seat whose turn is only PARTLY in the prompt has been evicted.
+    assert archive._write_budget([["q", "a"], ["q", "a"]], [0, 1], {"q"}) == 2
+
+
 def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn):
     """Eviction is not strictly oldest-first, so archive time is not conversation order.
 

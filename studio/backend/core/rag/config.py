@@ -25,9 +25,15 @@ THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
 # Conversation archive: turns evicted by the rolling context window go to a per-thread
-# searchable scope and the relevant ones are recalled on the turn that evicted them. Off
-# restores plain eviction. Only applies once the window evicts, which is itself opt-in
-# per request via context_overflow="truncate_oldest".
+# searchable scope and the relevant ones are recalled on the turn that evicted them. Off,
+# evicted turns are simply dropped again, and the recall reserve is not taken. Only applies
+# once the window evicts, which is itself opt-in per request via
+# context_overflow="truncate_oldest".
+#
+# It does NOT turn the rolling window back into what it was before: the compaction headroom
+# and the sticky boundary belong to the window, not to the archive, and have their own knob
+# (ROLLING_COMPACTION_HEADROOM_RATIO). Gating them here instead would make a host without
+# sqlite-vec silently compact differently.
 CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
 CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
 # Room held back during the fit for the turns recalled straight after it. Sized to

@@ -1014,7 +1014,14 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
-        archived = conversation_archive.archive_turns(thread_id, gone) if gone else 0
+        # `conversation` is the fitted prompt, so it says which repeats of a turn the
+        # model can still read. Without it a turn said twice, only one of them evicted,
+        # gets archived twice and spends two recall slots on text already in the prompt.
+        archived = (
+            conversation_archive.archive_turns(thread_id, gone, live = conversation)
+            if gone
+            else 0
+        )
         counts = {"archived_messages": archived}
 
         if recall_done:
