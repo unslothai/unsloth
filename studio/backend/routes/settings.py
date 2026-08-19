@@ -120,6 +120,11 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.llama_cpp_path_settings import (
+    MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
+    custom_llama_cpp_path_status,
+    set_custom_llama_cpp_path,
+)
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
     get_media_generation_preset_settings,
@@ -626,6 +631,20 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class LlamaCppPathPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
+
+
+class LlamaCppPathResponse(BaseModel):
+    path: Optional[str] = None
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    available: bool
+    resolved_binary: Optional[str] = None
+    environment_variable: Optional[str] = None
+    reload_required: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     # None leaves the stored value untouched (partial updates can't clobber it).
@@ -905,6 +924,27 @@ def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
 
+def _llama_cpp_path_reload_required() -> bool:
+    """Whether a running or pending GGUF server predates the path selection."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = getattr(backend, "_binary_revision_pending", None)
+        if pending is not None:
+            return backend._binary_changed_since_revision(pending)
+        return bool(backend.is_active and backend._binary_changed_since_launch())
+    except Exception:
+        return False
+
+
+def _llama_cpp_path_response() -> LlamaCppPathResponse:
+    return LlamaCppPathResponse(
+        **custom_llama_cpp_path_status(),
+        reload_required = _llama_cpp_path_reload_required(),
+    )
+
+
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
 def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
@@ -923,6 +963,35 @@ def update_hugging_face_cache(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _hugging_face_cache_response()
+
+
+@router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
+    return _llama_cpp_path_response()
+
+
+@router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
+def update_llama_cpp_path(
+    payload: LlamaCppPathPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> LlamaCppPathResponse:
+    # Only the interactive Studio UI may change this executable setting.
+    require_ui_session(via_api_key)
+    try:
+        set_custom_llama_cpp_path(payload.path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            # Validator messages are safe to expose to the UI.
+            str(exc),
+            event = "settings.update_llama_cpp_path_failed",
+            log = logger,
+        ) from exc
+    return _llama_cpp_path_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)

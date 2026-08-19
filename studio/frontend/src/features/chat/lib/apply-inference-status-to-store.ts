@@ -19,6 +19,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -186,6 +187,7 @@ export function applyActiveModelStatusToStore(
       ? (status.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
+  const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentGgufContextLength = status.is_gguf
@@ -344,6 +346,9 @@ export function applyActiveModelStatusToStore(
     reasoningEffortLevels,
     reasoningEffort: clampedReasoningEffort,
     supportsPreserveThinking,
+    ...(hydratingExistingModel && {
+      preserveThinking: preserveThinkingOnLoad,
+    }),
     supportsTools,
     ...resolveToolsEnabledOnLoad(supportsTools),
     reasoningEnabled: supportsReasoning

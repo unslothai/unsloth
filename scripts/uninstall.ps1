@@ -507,7 +507,20 @@ Environment:
 
     # Default install root + default data dir.
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
-    $defaultDataDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth Studio" } else { $null }
+    # BOTH LocalAppData spellings, not just the first that answers. The variable is
+    # dropped entirely in service and CI contexts, and install.ps1 also falls through
+    # from it to the known folder when the variable is merely SET but not usable, so
+    # a non-blank $env:LOCALAPPDATA does not mean that is where "Unsloth Studio\temp"
+    # ended up. Reading one candidate leaves the other behind on exactly the hosts
+    # that needed the fallback.
+    $knownLocalAppData = $null
+    try { $knownLocalAppData = [Environment]::GetFolderPath('LocalApplicationData') } catch { $knownLocalAppData = $null }
+    $defaultDataDirs = @()
+    foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidate = Join-Path $root "Unsloth Studio"
+        if ($defaultDataDirs -notcontains $candidate) { $defaultDataDirs += $candidate }
+    }
     # Default-mode ~/.unsloth holds a SHARED llama.cpp build + .cache that are
     # siblings of studio (not under it), so deleting <studio> misses them -- handle
     # explicitly. No-op in env/custom mode (nested under the custom root, removed
@@ -540,8 +553,8 @@ Environment:
 
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
-    if ($defaultDataDir) {
-        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $knownRoots
+    foreach ($d in $defaultDataDirs) {
+        _StopByPortFile -PortFile (Join-Path $d "studio.port") -KnownRoots $knownRoots
     }
     foreach ($r in $customRoots) {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
@@ -627,7 +640,7 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    $stopRoots = @($knownRoots) + @($defaultDataDirs) + @($defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
@@ -665,7 +678,7 @@ Environment:
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir.
-    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    foreach ($d in $defaultDataDirs) { _RemoveDataDirKeepingWslIcon $d }
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
@@ -756,7 +769,9 @@ Environment:
     # Re-sweep: the first pass may have left unsloth.ico locked by Explorer/SMEH for
     # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
     # keeps the icon -- see the helper.)
-    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    foreach ($d in $defaultDataDirs) {
+        if (Test-Path -LiteralPath $d) { _RemoveDataDirKeepingWslIcon $d }
+    }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."
