@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from storage import profile_stats_db, studio_db
+from storage import api_usage_db, profile_stats_db, studio_db
 from core.inference.api_monitor import ApiMonitor
 import core.inference.api_monitor as api_monitor_module
 from storage.api_usage_db import (
@@ -342,6 +342,32 @@ def test_writer_stop_drains_accepted_receipts_and_rejects_late_submit():
     assert persisted == ["accepted-before-stop"]
 
 
+def test_writer_retains_busy_receipt_after_inner_retry_budget(stats_db, monkeypatch):
+    attempts = 0
+    persisted = []
+
+    def busy_then_success(receipt):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= api_usage_db._WRITE_RETRIES + 2:
+            raise sqlite3.OperationalError("database is locked")
+        persisted.append(receipt.id)
+        return True
+
+    # Exercise all inner record_api_usage retries plus another worker-level
+    # retry without paying the production backoff in this focused unit test.
+    monkeypatch.setattr(api_usage_db, "_insert_api_usage", busy_then_success)
+    monkeypatch.setattr(api_usage_db, "_sleep_after_busy", lambda _delay: None)
+    writer = ApiUsageWriter()
+    receipt = _api_receipt("busy-past-inner-budget", datetime.now(timezone.utc))
+
+    assert writer.submit(receipt)
+    writer.stop()
+
+    assert attempts == api_usage_db._WRITE_RETRIES + 3
+    assert persisted == [receipt.id]
+
+
 def test_full_uuid_request_ids_do_not_collapse_same_prefix(stats_db, monkeypatch):
     uuid_hexes = iter(
         [
@@ -532,6 +558,25 @@ def test_existing_database_gets_additive_api_usage_schema(stats_db):
         ).fetchone()
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "SELECT created_at FROM api_usage_events WHERE subject = ? ORDER BY created_at",
+        "SELECT COUNT(*), MAX(created_at) FROM api_usage_events WHERE subject = ?",
+    ],
+)
+def test_api_usage_subject_queries_use_composite_index(stats_db, query):
+    conn = studio_db.get_connection()
+    try:
+        plan = conn.execute(f"EXPLAIN QUERY PLAN {query}", ("alice",)).fetchall()
+    finally:
+        conn.close()
+
+    detail = " ".join(str(row["detail"]) for row in plan)
+    assert "SEARCH" in detail
+    assert "idx_api_usage_events_subject_created_at" in detail
 
 
 def test_tokens_streaks_and_models_are_aggregated(stats_db):

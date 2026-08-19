@@ -30,6 +30,7 @@ MAX_STATUS_CHARS = 64
 
 _WRITE_BUSY_TIMEOUT_SECONDS = 0.05
 _WRITE_RETRIES = 20
+_WORKER_BUSY_RETRY_SECONDS = 0.25
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,10 @@ def canonical_api_model(model: object) -> str:
 def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
     message = str(exc).lower()
     return "locked" in message or "busy" in message
+
+
+def _sleep_after_busy(delay: float) -> None:
+    time.sleep(delay)
 
 
 def _insert_api_usage(receipt: ApiUsageReceipt) -> bool:
@@ -157,7 +162,7 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
             # The worker is the only production writer of these receipts. A
             # short bounded backoff lets unrelated Studio transactions finish
             # without ever holding up the inference/streaming caller.
-            time.sleep(min(0.01 * (2**attempt), 0.25))
+            _sleep_after_busy(min(0.01 * (2**attempt), _WORKER_BUSY_RETRY_SECONDS))
 
     if inserted:
         # Lazy import avoids making profile aggregation part of schema startup.
@@ -210,10 +215,29 @@ class ApiUsageWriter:
             try:
                 if item is _STOP:
                     return
-                try:
-                    self._sink(item)  # type: ignore[arg-type]
-                except Exception:  # noqa: BLE001 - usage accounting cannot break inference.
-                    logger.warning("api usage receipt persistence failed", exc_info = True)
+                busy_failures = 0
+                while True:
+                    try:
+                        self._sink(item)  # type: ignore[arg-type]
+                        break
+                    except sqlite3.OperationalError as exc:
+                        if not _is_busy_error(exc):
+                            logger.warning("api usage receipt persistence failed", exc_info = True)
+                            break
+                        # record_api_usage already made its bounded fast retries.
+                        # Retain this accepted item at the head of the single
+                        # writer until a normal long Studio transaction releases
+                        # SQLite. The stop sentinel remains behind it, so final
+                        # shutdown drains rather than silently dropping usage.
+                        busy_failures += 1
+                        if busy_failures == 1 or busy_failures % 20 == 0:
+                            logger.warning(
+                                "api usage database remains busy; retaining receipt for retry"
+                            )
+                        _sleep_after_busy(_WORKER_BUSY_RETRY_SECONDS)
+                    except Exception:  # noqa: BLE001 - usage accounting cannot break inference.
+                        logger.warning("api usage receipt persistence failed", exc_info = True)
+                        break
             finally:
                 self._queue.task_done()
 

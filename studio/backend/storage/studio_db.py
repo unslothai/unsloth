@@ -339,6 +339,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_api_usage_events_created_at "
         "ON api_usage_events(created_at)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_usage_events_subject_created_at "
+        "ON api_usage_events(subject, created_at)"
+    )
     # Windows: COLLATE NOCASE so C:\Models and c:\models dedup; elsewhere BINARY keeps them distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
