@@ -61,6 +61,12 @@ def _engines_driven_by(shard: str) -> set[str]:
     for step in _doc()["jobs"]["ui-smoke"]["steps"]:
         run = step.get("run") or ""
         name = step.get("name") or ""
+        # Only steps that RUN something can drive a browser. A `uses:` step cannot, and
+        # reading their names produced a false positive the first time one mentioned an
+        # engine: the apt archive cache is named for the .deb set it holds, which is
+        # webkit's, and that made two chromium-only shards look like webkit users.
+        if not run:
+            continue
         if "playwright install" in run or "probe " in run:
             continue
         cond = str(step.get("if") or "")

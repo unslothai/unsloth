@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -33,15 +34,68 @@ def _extract(pattern: str, source: str) -> str:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    result = subprocess.run(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 30,
-    )
+    # Through a FILE, not -Command: these scripts carry the whole extracted helper
+    # chain, and Windows caps a command line at 32767 characters. Passed inline,
+    # the moment the chain grows past that every test here dies as WinError 206
+    # "The filename or extension is too long" instead of testing anything.
+    # utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI.
+    handle, name = tempfile.mkstemp(suffix = ".ps1")
+    os.close(handle)
+    try:
+        Path(name).write_text(script, encoding = "utf-8-sig")
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
+            check = True,
+            capture_output = True,
+            text = True,
+            # Decoded as utf-8 with replacement, not the console codepage: cp1252
+            # cannot decode what PowerShell writes and the whole test then dies as
+            # a UnicodeDecodeError on a byte in an error message.
+            encoding = "utf-8",
+            errors = "replace",
+            env = env,
+            timeout = 60,
+        )
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
     return result.stdout.strip()
+
+
+def _ps_file(directory: Path, name: str, script: str) -> str:
+    """Same reason as _run_powershell: a 32 KB command line is not available here."""
+    path = directory / name
+    path.write_text(script, encoding = "utf-8-sig")
+    return str(path)
+
+
+# The chain Get-StudioFinalPath dispatches to. It used to compile the native helper
+# inline, so a test could extract it alone; extracting the dispatcher by itself now
+# yields a body whose calls are all undefined, which reads as "could not resolve"
+# rather than as a missing helper (issue #9140).
+_FINAL_PATH_CHAIN = (
+    "Write-StudioLine",
+    "Test-StudioDirectoryUsable",
+    "Remove-StudioStalePrivateTempDirectories",
+    "Get-StudioPrivateTempRoots",
+    "New-StudioPrivateTempDirectory",
+    "Initialize-StudioTempEnvironment",
+    "Write-StudioFinalPathDegraded",
+    "Initialize-StudioFinalPathNativeType",
+    "Resolve-StudioLinkTarget",
+    "Get-StudioSubstTarget",
+    "Get-StudioLexicalPath",
+    "Resolve-StudioFinalPathInfo",
+    "Get-StudioFinalPath",
+)
+
+
+def _final_path_helpers(source: str) -> str:
+    return "\n".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in _FINAL_PATH_CHAIN
+    )
 
 
 def _mutex_helpers(source: str) -> str:
@@ -56,6 +110,19 @@ def _mutex_helpers(source: str) -> str:
             # stub would keep passing if the real call ever went wrong.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
+            # Get-StudioFinalPath is a dispatcher now: it falls back to the pure
+            # PowerShell resolver when the native helper did not compile (#9140).
+            "Test-StudioDirectoryUsable",
+            "Remove-StudioStalePrivateTempDirectories",
+            "Get-StudioPrivateTempRoots",
+            "New-StudioPrivateTempDirectory",
+            "Initialize-StudioTempEnvironment",
+            "Write-StudioFinalPathDegraded",
+            "Initialize-StudioFinalPathNativeType",
+            "Resolve-StudioLinkTarget",
+            "Get-StudioSubstTarget",
+            "Get-StudioLexicalPath",
+            "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
             "Get-StudioPathHash",
             "Get-StudioInstallMutexName",
@@ -76,8 +143,21 @@ def _process_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Write-StudioLine",
+            "Test-StudioDirectoryUsable",
+            "Remove-StudioStalePrivateTempDirectories",
+            "Get-StudioPrivateTempRoots",
+            "New-StudioPrivateTempDirectory",
+            "Initialize-StudioTempEnvironment",
+            "Write-StudioFinalPathDegraded",
+            "Initialize-StudioFinalPathNativeType",
+            "Resolve-StudioLinkTarget",
+            "Get-StudioSubstTarget",
+            "Get-StudioLexicalPath",
+            "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
             "Test-StudioProtectedPathMatch",
+            "Get-StudioProcessImagePath",
             "Get-RunningStudioVenvProcesses",
         )
     )
@@ -94,8 +174,13 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # Long enough that the child outlives the scan itself. Windows PowerShell 5.1
+    # pays a cold start plus a real csc.exe compile of the native helper before it
+    # can look at anything, which alone can outlast a six-ping child; the process
+    # would then be gone by the time the scan ran, and the test would read as
+    # "the in-use check missed it".
     child = subprocess.Popen(
-        [str(probe), "-n", "6", "127.0.0.1"],
+        [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = creationflags,
     )
     try:
@@ -107,7 +192,7 @@ $ErrorActionPreference = "Stop"
 """
         env = os.environ.copy()
         env["TEST_VENV"] = str(scripts.parent)
-        deadline = time.monotonic() + 4
+        deadline = time.monotonic() + 60
         observed = []
         while time.monotonic() < deadline:
             observed = _run_powershell(shell, script, env).splitlines()
@@ -255,14 +340,22 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "Get-CimInstance" not in detector
     assert ".CommandLine" not in detector
     assert "$process.Path" not in detector
-    assert "[UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id)" in detector
+    assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
+
+    # The same contract has to hold on every rung of that helper's fallback: a
+    # confirmed image, never a command line. Its Win32_Process rung exists because a
+    # host that cannot compile the native helper would otherwise find no running
+    # processes and overwrite a venv Studio has open (issue #9140).
+    image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
+    assert ".CommandLine" not in image
+    assert "ExecutablePath" in image
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_versioned_native_helper_loads_after_older_installer_type(shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    final_path_helper = _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
+    final_path_helper = _mutex_helpers(source)
     script = f"""
 $ErrorActionPreference = "Stop"
 Add-Type -TypeDefinition @'
@@ -470,7 +563,7 @@ def test_tauri_override_accepts_junction_alias_of_managed_root(tmp_path: Path, s
     validation_start = source.index("    # Custom Unsloth roots are not supported with --tauri")
     validation_end = source.index("    # LOCALAPPDATA may be unset", validation_start)
     validation = source[validation_start:validation_end]
-    final_path_helper = _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
+    final_path_helper = _final_path_helpers(source)
     script = f"""
 $ErrorActionPreference = "Stop"
 {final_path_helper}
@@ -538,7 +631,7 @@ def test_path_identity_failure_is_reported_as_unknown(shell: str):
     script = f"""
 $ErrorActionPreference = "Stop"
 {_mutex_helpers(source)}
-function Get-StudioFinalPath {{ throw "identity unavailable" }}
+function Resolve-StudioFinalPathInfo {{ throw "identity unavailable" }}
 $match = Test-StudioPathEqual -Left "C:\\one" -Right "C:\\two"
 Write-Output ($null -eq $match)
 """
@@ -571,11 +664,21 @@ Write-Output "READY"
 Exit-StudioInstallMutex -Mutex $mutex
 """
     holder = subprocess.Popen(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", holder_script],
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            _ps_file(tmp_path, "holder.ps1", holder_script),
+        ],
         stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         env = env,
     )
     try:
@@ -707,11 +810,21 @@ Write-Output "ACQUIRED"
 Exit-StudioInstallMutex -Mutex $mutex
 """
     holder = subprocess.Popen(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", holder_script],
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            _ps_file(tmp_path, "holder.ps1", holder_script),
+        ],
         stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         env = env,
     )
     try:
