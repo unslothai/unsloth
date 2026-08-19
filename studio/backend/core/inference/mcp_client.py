@@ -242,7 +242,22 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
-def _stdio_env(headers: Optional[dict]) -> Optional[dict]:
+_NODE_COMMANDS = frozenset({"node", "npm", "npx"})
+_WINDOWS_LAUNCHER_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
+
+
+def _is_node_command(command: str) -> bool:
+    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a
+    Python or other stdio server keeps the toolchain its own env pinned."""
+    name = os.path.basename(command).lower()
+    for suffix in _WINDOWS_LAUNCHER_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name in _NODE_COMMANDS
+
+
+def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
     """Process env for a stdio server: its own vars, plus the managed Node bin dir
     on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
     env = dict(headers or {})
@@ -250,6 +265,8 @@ def _stdio_env(headers: Optional[dict]) -> Optional[dict]:
     if isinstance(base, str) and not base:
         # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
         return env
+    if command is not None and not _is_node_command(command):
+        return env or None
     if not isinstance(base, str):
         base = os.environ.get("PATH", "")
     try:
@@ -294,7 +311,7 @@ def _client(
             raise ValueError(f"Empty stdio command: {url!r}")
         # env vars ride the headers field (merged over the SDK default env).
         # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
-        env = _stdio_env(headers)
+        env = _stdio_env(headers, parts[0])
         argv = _stdio_argv(parts, env)
         return Client(
             StdioTransport(

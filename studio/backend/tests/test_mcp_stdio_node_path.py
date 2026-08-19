@@ -294,3 +294,34 @@ def test_managed_dir_already_first_is_unchanged(managed_node_install, monkeypatc
     )
     configured = f"{managed_node_install}{os.pathsep}{stale}"
     assert node_runtime.path_with_managed_node(configured) == configured
+
+
+def test_non_node_command_keeps_its_configured_path(managed_node):
+    """A Python server pinning its own toolchain must not get the managed Node."""
+    env = mcp_client._stdio_env({"PATH": "/proj/node18/bin"}, "python")
+    assert env["PATH"] == "/proj/node18/bin"
+
+
+def test_non_node_command_leaves_inherited_path_alone(managed_node, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert mcp_client._stdio_env(None, "uvx") is None
+
+
+def test_node_family_commands_still_augmented(managed_node, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    for command in ("npx", "node", "npm", "/usr/local/bin/npx", "NPX.CMD", "node.exe"):
+        env = mcp_client._stdio_env(None, command)
+        assert env["PATH"] == f"{managed_node}{os.pathsep}/usr/bin", command
+
+
+def test_is_node_command_rejects_lookalikes():
+    assert not mcp_client._is_node_command("nodemon")
+    assert not mcp_client._is_node_command("python")
+    assert not mcp_client._is_node_command("/opt/bin/deno")
+
+
+def test_client_does_not_touch_env_for_a_python_server(managed_node, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    client = mcp_client._client("python -m my_server", {"API_KEY": "sk-1"})
+    assert client.transport.env == {"API_KEY": "sk-1"}
