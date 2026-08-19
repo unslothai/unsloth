@@ -20526,6 +20526,7 @@ async def anthropic_messages(
                 model_name,
                 disable_parallel_tool_use = _disable_parallel,
                 openai_tools = openai_tools,
+                cancel_event = cancel_event,
             )
         )
 
@@ -20566,6 +20567,7 @@ async def anthropic_messages(
             _run_plain_gen,
             message_id,
             model_name,
+            cancel_event = cancel_event,
         )
     )
 
@@ -20842,14 +20844,18 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
     return HTTPException(status_code = 500, detail = _friendly_error(e))
 
 
-async def _collect_anthropic_events(run_gen) -> list:
+async def _collect_anthropic_events(run_gen, cancel_event = None) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500."""
     def _drain():
         return list(run_gen())
 
+    drain_task = asyncio.create_task(asyncio.to_thread(_drain))
     try:
-        return await asyncio.to_thread(_drain)
+        return await asyncio.shield(drain_task)
+    except asyncio.CancelledError:
+        await _drain_pending_next_task(drain_task, cancel_event)
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -20881,6 +20887,7 @@ async def _anthropic_tool_non_streaming(
     model_name,
     disable_parallel_tool_use = False,
     openai_tools = None,
+    cancel_event = None,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -20906,7 +20913,7 @@ async def _anthropic_tool_non_streaming(
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
 
-    events = await _collect_anthropic_events(run_gen)
+    events = await _collect_anthropic_events(run_gen, cancel_event)
 
     for event in events:
         etype = event.get("type", "")
@@ -20978,14 +20985,16 @@ async def _anthropic_tool_non_streaming(
     )
 
 
-async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
+async def _anthropic_plain_non_streaming(
+    run_gen, message_id, model_name, cancel_event = None
+):
     """Non-streaming response for the no-tool path."""
     text_parts = []
     usage = {}
     prev_text = ""
     captured_finish_reason = None
 
-    events = await _collect_anthropic_events(run_gen)
+    events = await _collect_anthropic_events(run_gen, cancel_event)
 
     for cumulative in events:
         if isinstance(cumulative, dict):

@@ -962,6 +962,41 @@ class TestAnthropicToolNonStreaming:
         assert len(generator_threads) == 1
         assert generator_threads[0] is not loop_thread
 
+    @pytest.mark.parametrize(
+        ("helper", "event"),
+        [
+            pytest.param(
+                _anthropic_tool_non_streaming,
+                {"type": "content", "text": "ok"},
+                id = "tools",
+            ),
+            pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
+        ],
+    )
+    def test_cancellation_waits_for_generator_worker(self, helper, event):
+        generator_started = threading.Event()
+        generator_stopped = threading.Event()
+        cancel_event = threading.Event()
+
+        def _run_gen():
+            generator_started.set()
+            assert cancel_event.wait(1.0)
+            generator_stopped.set()
+            yield event
+
+        async def _cancel_generation():
+            task = asyncio.create_task(
+                helper(_run_gen, "msg_1", "m", cancel_event = cancel_event)
+            )
+            assert await asyncio.to_thread(generator_started.wait, 1.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert cancel_event.is_set()
+            assert generator_stopped.is_set()
+
+        asyncio.run(_cancel_generation())
+
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
             yield {
