@@ -3412,6 +3412,40 @@ def _thread_has_conversation_archive(thread_id) -> bool:
         return False
 
 
+def _thread_has_checkpoint(thread_id) -> bool:
+    """Whether an epoch was ever committed on this thread, read from what it persisted.
+
+    Having an archive is not the same as having a checkpoint. A thread compacted under the
+    rolling window archives too, and re-admitting the search tool there overrides the
+    caller's `enable_tools = false` for a repair that cannot happen: nothing was reset, so
+    there is no epoch to search back past. It also costs that request the tool-path guards,
+    which reject `n > 1` and non-streaming ask/auto once the loop is open.
+
+    Read from the assistant turn's own `contextTruncation`, the same metadata the sticky
+    boundary reads, so no new state is stored and it survives a restart. A thread that has
+    checkpointed once keeps saying so, which is the intent: the epoch is what the model may
+    need to look behind, and it does not stop existing because this turn happens to fit.
+    """
+    if not thread_id:
+        return False
+    try:
+        from storage import studio_db
+        for message in reversed(studio_db.list_chat_messages(str(thread_id)) or []):
+            if message.get("role") != "assistant":
+                continue
+            metadata = message.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                continue
+            truncation = metadata.get("contextTruncation") or (
+                metadata.get("custom") or {}
+            ).get("contextTruncation")
+            if isinstance(truncation, dict) and truncation.get("checkpoint"):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
 ) -> list[dict]:
@@ -13949,6 +13983,12 @@ async def openai_chat_completions(
             and _rolling_context_policy(payload) is not None
             and _checkpoint_needs_search()
             and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+            # And an epoch has actually happened here. An archive alone is not one: a
+            # thread compacted under the rolling window archives identically, and there
+            # the loop would open for a repair that cannot happen, overriding the caller's
+            # enable_tools = false and costing the request the n > 1 and non-streaming
+            # ask/auto guards below.
+            and _thread_has_checkpoint(getattr(payload, "thread_id", None))
         ):
             use_tools = True
 

@@ -963,3 +963,46 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
         "boundary_messages": 6,
     }
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
+
+
+def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch):
+    """An archive is not a checkpoint, and only one of them justifies the override.
+
+    A thread compacted under the rolling window archives identically to one that
+    checkpointed, so keying the tools-off repair on "has an archive" opened the loop where
+    no epoch exists and nothing was reset. That overrides the caller's enable_tools = false
+    for a repair that cannot happen, and it costs the request the tool-path guards, which
+    reject n > 1 and non-streaming ask/auto once the loop is open.
+
+    Read from the assistant turn's own contextTruncation, which is what the sticky boundary
+    already reads, so nothing new is persisted.
+    """
+    import sys
+    import types
+
+    from routes import inference as inference_routes
+
+    def _thread(truncation):
+        module = types.SimpleNamespace(
+            list_chat_messages = lambda thread_id: [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "a",
+                 "metadata": {"custom": {"contextTruncation": truncation}}},
+            ]
+        )
+        package = types.ModuleType("storage")
+        package.studio_db = module
+        monkeypatch.setitem(sys.modules, "storage", package)
+        monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+    _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
+    assert inference_routes._thread_has_checkpoint("t1") is True
+
+    # The same thread shape after a ROLLING compaction: archived, never reset.
+    _thread({"fits": True, "dropped_messages": 12})
+    assert inference_routes._thread_has_checkpoint("t1") is False
+
+    # And a thread that never compacted at all.
+    _thread(None)
+    assert inference_routes._thread_has_checkpoint("t1") is False
+    assert inference_routes._thread_has_checkpoint(None) is False
