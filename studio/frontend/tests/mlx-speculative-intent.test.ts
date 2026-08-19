@@ -15,11 +15,18 @@ registerStoreStubResolver();
 installLocalStorageFake();
 
 const {
+  MLX_DRAFT_BLOCK_SIZE_RANGE,
+  MLX_DRAFT_TOKENS_RANGE,
+  isSelectableMlxDraftCandidate,
+  isUnavailableMlxSpeculativeMode,
   mlxSpeculativeLoadFields,
+  selectMlxSpeculativeCandidate,
   normalizeMlxDraftBlockSize,
   normalizeMlxDraftModel,
   normalizeMlxSpeculativeMode,
 } = await import("../src/lib/speculative-modes.ts");
+type MlxSpeculativeCandidate = import("../src/lib/speculative-modes.ts").MlxSpeculativeCandidate;
+
 const { mlxRuntimeStateFrom, reconcileMlxSpeculativeStatus } = await import(
   "../src/features/chat/lib/mlx-runtime-state.ts"
 );
@@ -44,11 +51,18 @@ test("a pinned drafter survives only under the method that pinned it", () => {
   assert.equal(normalizeMlxDraftModel("org/d", "off"), null);
 });
 
-test("a draft block size is clamped to what the backend accepts, and dropped when off", () => {
-  assert.equal(normalizeMlxDraftBlockSize(1, "auto"), 2);
-  assert.equal(normalizeMlxDraftBlockSize(99, "auto"), 16);
+test("a draft block size is clamped to what the backend accepts, and dropped unless a method owns it", () => {
+  assert.equal(normalizeMlxDraftBlockSize(1, "mtp"), 2);
+  assert.equal(normalizeMlxDraftBlockSize(99, "mtp"), 16);
   assert.equal(normalizeMlxDraftBlockSize(4.4, "mtp"), 4);
   assert.equal(normalizeMlxDraftBlockSize(8, "off"), null);
+  // Auto hides the depth control but any depth sent alongside it wins, overriding Auto unseen.
+  assert.equal(normalizeMlxDraftBlockSize(8, "auto"), null);
+  // The backend's block counts the verified token, so the control states one less at both ends.
+  assert.deepEqual(
+    MLX_DRAFT_TOKENS_RANGE,
+    MLX_DRAFT_BLOCK_SIZE_RANGE.map((size) => size - 1),
+  );
 });
 
 test("a server override travels only for a pin the server can act on", () => {
@@ -118,15 +132,14 @@ test("a verdict is read only from an MLX response, and never over the request", 
   assert.equal(on.loadedMlxDraftModel, null);
 });
 
-// Auto drops the pinned drafter but keeps the block size: the size is a drafting depth,
-// not a choice of drafter, so Auto still runs at it.
+// Auto drops both the pinned drafter and the depth, whose control it hides.
 const RESIDENT = {
   mlxSpeculativeMode: "auto" as const,
   mlxDraftModel: null,
-  mlxDraftBlockSize: 4,
+  mlxDraftBlockSize: null,
   loadedMlxSpeculativeMode: "auto" as const,
   loadedMlxDraftModel: null,
-  loadedMlxDraftBlockSize: 4,
+  loadedMlxDraftBlockSize: null,
   mlxSpeculativeReason: null,
 };
 
@@ -148,3 +161,136 @@ test("a status refresh does not overwrite an edit that has not been sent yet", (
   const hydrated = reconcileMlxSpeculativeStatus(staged, MLX_STATUS, true);
   assert.equal(hydrated.mlxSpeculativeMode, "auto");
 });
+
+function candidate(over: Record<string, unknown> = {}) {
+  return {
+    method: "mtp",
+    repo_id: "org/d",
+    label: "d",
+    source: "cached",
+    approximate_size_bytes: 1,
+    estimated_memory_bytes: 1,
+    materialization_bytes: 0,
+    downloaded: true,
+    compatible: true,
+    runtime_supported: true,
+    integration_ready: true,
+    loadable: true,
+    reason: null,
+    ...over,
+  } as MlxSpeculativeCandidate;
+}
+
+test("Auto ranks a target's own head first, then by how much each method drafts", () => {
+  // The order the backend resolves in. Predicting it wrong would name one method in the
+  // control and load another.
+  const picked = (cs: MlxSpeculativeCandidate[]) =>
+    selectMlxSpeculativeCandidate(cs, "auto", null)?.repo_id;
+  const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
+  const dflash = candidate({ method: "dflash", repo_id: "org/f" });
+  const eagle = candidate({ method: "eagle3", repo_id: "org/e" });
+  // Against an external drafter of the same method whose id sorts first, so the head wins
+  // on being the head rather than on either tiebreak.
+  const external = candidate({ repo_id: "a/also-mtp" });
+  assert.equal(picked([eagle, dflash, external, own]), "builtin://mtp");
+  assert.equal(picked([eagle, dflash]), "org/f");
+  assert.equal(picked([eagle]), "org/e");
+  // Only what could actually load: an undownloaded checkpoint is not something Auto runs.
+  assert.equal(picked([candidate({ loadable: false })]), undefined);
+  // Ties break on repository id, so the same inputs always name the same drafter.
+  assert.equal(
+    picked([candidate({ repo_id: "org/b" }), candidate({ repo_id: "org/a" })]),
+    "org/a",
+  );
+  assert.equal(selectMlxSpeculativeCandidate([own], "off", null), null);
+});
+
+test("Off selects nothing, even from a row that claims to be an Off drafter", () => {
+  // The types deny this row, but the body is cast rather than validated.
+  assert.equal(
+    selectMlxSpeculativeCandidate([candidate({ method: "off" })], "off", null),
+    null,
+  );
+});
+
+test("a method is offered only when picking it would load rather than refuse", () => {
+  // The select disables a method with no candidate. Anything it does offer gets pinned
+  // and loaded, so admitting a candidate the backend would refuse turns the control into
+  // a way to produce a 400.
+  const undownloaded = candidate({
+    loadable: false,
+    downloaded: false,
+    reason: "checkpoint_not_downloaded",
+  });
+  assert.equal(isSelectableMlxDraftCandidate(undownloaded), false);
+  assert.equal(selectMlxSpeculativeCandidate([undownloaded], "mtp", null), null);
+  assert.equal(isSelectableMlxDraftCandidate(candidate()), true);
+  // An explicit pin names one repository and takes no substitute.
+  const cs = [candidate(), candidate({ repo_id: "org/other" })];
+  assert.equal(selectMlxSpeculativeCandidate(cs, "mtp", "ORG/Other")?.repo_id, "org/other");
+  assert.equal(selectMlxSpeculativeCandidate(cs, "mtp", "org/absent"), null);
+});
+
+test("the drafter list offers companions only, ready ones first", () => {
+  const ready = candidate({ repo_id: "org/ready" });
+  const download = candidate({
+    repo_id: "a/needs-download",
+    loadable: false,
+    downloaded: false,
+    reason: "checkpoint_not_downloaded",
+  });
+  const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
+  const listed = selectableExternalMlxDraftCandidates([download, own, ready]);
+  // The head is the target: nothing to choose, and what can run now leads.
+  assert.deepEqual(
+    listed.map((c) => c.repo_id),
+    ["org/ready", "a/needs-download"],
+  );
+  // Not offered at all when it could not run even after downloading.
+  assert.equal(
+    selectableExternalMlxDraftCandidates([
+      { ...download, compatible: false },
+    ]).length,
+    0,
+  );
+  // Picking the method takes the same one the list leads with. The backend lists its
+  // recommendations first, so choosing the first merely selectable row would pin a download
+  // over a checkpoint already on disk.
+  assert.equal(
+    selectMlxSpeculativeCandidate(
+      [{ ...download, recommended: true }, ready],
+      "mtp",
+      null,
+    )?.repo_id,
+    "org/ready",
+  );
+});
+
+test("a pin names a companion, never the target's own head", () => {
+  const own = candidate({ source: "builtin", repo_id: "builtin://mtp" });
+  const external = candidate({ repo_id: "org/d" });
+  assert.equal(
+    selectExternalMlxDraftCandidate([own, external], " ORG/D ")?.repo_id,
+    "org/d",
+  );
+  // Naming the head selects nothing here: it is not a companion the picker can offer.
+  assert.equal(selectExternalMlxDraftCandidate([own], "builtin://mtp"), null);
+  assert.equal(selectExternalMlxDraftCandidate([external], null), null);
+  // Choosing a checkpoint chooses the method it implements; they are one setting.
+  assert.deepEqual(mlxDraftSelection(candidate({ method: "dflash" })), {
+    mlxSpeculativeMode: "dflash",
+    mlxDraftModel: "org/d",
+  });
+});
+
+test("only a named method with no drafter is ruled out", () => {
+  const cs = [candidate()];
+  assert.equal(isUnavailableMlxSpeculativeMode(cs, "mtp"), false);
+  assert.equal(isUnavailableMlxSpeculativeMode(cs, "dflash"), true);
+  // Never Auto or Off: Off runs nothing, and Auto is the request the backend resolves itself.
+  for (const listing of [cs, []]) {
+    assert.equal(isUnavailableMlxSpeculativeMode(listing, "auto"), false);
+    assert.equal(isUnavailableMlxSpeculativeMode(listing, "off"), false);
+  }
+});
+

@@ -78,6 +78,12 @@ const VALID_MODES = new Set<string>(MLX_SPECULATIVE_MODES);
 /** Draft block sizes the backend accepts, as `[min, max]`. */
 export const MLX_DRAFT_BLOCK_SIZE_RANGE = [2, 16] as const;
 
+/** The same range as the user states it: the block counts the verified token too. */
+export const MLX_DRAFT_TOKENS_RANGE = [
+  MLX_DRAFT_BLOCK_SIZE_RANGE[0] - 1,
+  MLX_DRAFT_BLOCK_SIZE_RANGE[1] - 1,
+] as const;
+
 /** `missing` covers an absent value, which carries no intent; a string naming no mode is refused. */
 export function normalizeMlxSpeculativeMode(
   value: unknown,
@@ -116,7 +122,12 @@ export function normalizeMlxDraftBlockSize(
   mode: MlxSpeculativeMode,
 ): number | null {
   const [min, max] = MLX_DRAFT_BLOCK_SIZE_RANGE;
-  return mode !== "off" && typeof value === "number" && Number.isFinite(value)
+  // Auto chooses the depth its method pays off at, and the control is hidden while it is
+  // selected. Carrying across a depth set for an explicit method would keep overriding that
+  // choice from a field the user can no longer see or clear.
+  return normalizeMlxSpeculativeMethod(mode) !== null &&
+    typeof value === "number" &&
+    Number.isFinite(value)
     ? Math.max(min, Math.min(max, Math.round(value)))
     : null;
 }
@@ -151,5 +162,108 @@ export function mlxSpeculativeLoadFields(
       mode,
     ),
   };
+}
+
+export interface MlxSpeculativeCandidate {
+  method: MlxSpeculativeMethod;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  repo_id: string;
+  label: string;
+  source: "builtin" | "cached" | "recommended";
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  approximate_size_bytes: number;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  estimated_memory_bytes: number;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  materialization_bytes: number;
+  downloaded: boolean;
+  compatible: boolean;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  runtime_supported: boolean;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  integration_ready: boolean;
+  loadable: boolean;
+  reason: string | null;
+}
+
+export interface MlxSpeculativeOptions {
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  target_model: string;
+  experimental: boolean;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  runtime_supported: boolean;
+  // biome-ignore lint/style/useNamingConvention: backend API schema
+  runtime_reason: string | null;
+  candidates: MlxSpeculativeCandidate[];
+}
+
+/** Auto's order: how much drafting each method does per verified token. */
+const AUTO_METHOD_PRIORITY: Record<MlxSpeculativeMethod, number> = {
+  mtp: 1,
+  dflash: 2,
+  eagle3: 3,
+};
+
+function compareAutoCandidates(
+  a: MlxSpeculativeCandidate,
+  b: MlxSpeculativeCandidate,
+): number {
+  // A target's own head outranks everything: it needs no companion checkpoint.
+  const rank = (c: MlxSpeculativeCandidate) =>
+    c.source === "builtin" ? 0 : AUTO_METHOD_PRIORITY[c.method];
+  if (rank(a) !== rank(b)) {
+    return rank(a) - rank(b);
+  }
+  const [left, right] = [a.repo_id.toLowerCase(), b.repo_id.toLowerCase()];
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Predicts the backend's resolution, so the panel can name Auto's pick before a load. */
+export function selectMlxSpeculativeCandidate(
+  candidates: readonly MlxSpeculativeCandidate[],
+  mode: MlxSpeculativeMode,
+  preferredRepo: string | null | undefined,
+): MlxSpeculativeCandidate | null {
+  if (mode === "off") {
+    return null;
+  }
+  if (mode === "auto") {
+    return (
+      [...candidates]
+        .filter((c) => c.loadable)
+        .sort(compareAutoCandidates)[0] ?? null
+    );
+  }
+  const matching = candidates.filter((c) => c.method === mode);
+  const preferred = preferredRepo?.trim().toLowerCase();
+  return preferred
+    ? (matching.find((c) => c.repo_id.toLowerCase() === preferred) ?? null)
+    : // One that can run now before one a download away, which is the order the list is
+      // offered in. Taking the first selectable instead pins the recommended download over
+      // a checkpoint already on disk, since recommendations are listed first.
+      (matching.find((c) => c.loadable) ??
+        matching.find(isSelectableMlxDraftCandidate) ??
+        null);
+}
+
+/**
+ * Auto and Off are never ruled out: Off runs nothing, and Auto is what still works when
+ * the listing of drafters does not.
+ */
+export function isUnavailableMlxSpeculativeMode(
+  candidates: readonly MlxSpeculativeCandidate[],
+  option: MlxSpeculativeMode,
+): boolean {
+  return (
+    normalizeMlxSpeculativeMethod(option) !== null &&
+    selectMlxSpeculativeCandidate(candidates, option, null) === null
+  );
+}
+
+/** Whether picking this candidate would produce a load rather than a refusal. */
+export function isSelectableMlxDraftCandidate(
+  candidate: MlxSpeculativeCandidate,
+): boolean {
+  return candidate.loadable;
 }
 

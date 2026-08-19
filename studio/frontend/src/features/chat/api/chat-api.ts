@@ -20,6 +20,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import type { MlxSpeculativeOptions } from "@/lib/speculative-modes";
 import type {
   MessageRecord,
   ModelType,
@@ -217,6 +218,18 @@ export async function getInferenceStatus(
 ): Promise<InferenceStatusResponse> {
   const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
+}
+
+export async function getMlxSpeculativeOptions(
+  targetModel: string,
+  signal?: AbortSignal,
+): Promise<MlxSpeculativeOptions> {
+  const query = new URLSearchParams({ target_model: targetModel });
+  const response = await authFetch(
+    `/api/inference/mlx-speculative/options?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<MlxSpeculativeOptions>(response);
 }
 
 export async function getApiMonitor(): Promise<ApiMonitorResponse> {
