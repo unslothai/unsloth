@@ -80,6 +80,21 @@ test("a Speak load asks the same question and forces from the answer", () => {
   );
 });
 
+test("a Speak load stops local queues only once /load is going out", () => {
+  // loadModel prepares the stored HF token first and returns without sending when the
+  // token is invalid and the user picks replace or dismisses the warning. Cancelling
+  // before that call discarded accepted sends and queued prompts for a swap that never
+  // happened, leaving the old model resident and the work gone.
+  assert.match(
+    source,
+    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\},/,
+  );
+  assert.doesNotMatch(
+    source,
+    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*const res = await loadModel\(/,
+  );
+});
+
 test("a model swap holds Chat's lifecycle gate across the question", () => {
   // Without the gate a queue can materialize while the dialog is open, so it is missing
   // from the snapshot the answer was given for: the eject's blanket queue stop then hits

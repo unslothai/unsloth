@@ -755,9 +755,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setBusy("loading");
       const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
       try {
-        // Queued prompts would otherwise start on the model this load replaces.
-        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -773,6 +770,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             signal: controller.signal,
             onRequestStart: () => {
               pending.requestStarted = true;
+              // Queued prompts would otherwise start on the model this load replaces.
+              // Only once /load is actually going out: loadModel returns without sending
+              // when a stored token is invalid and the user picks replace or dismisses
+              // the warning, and cancelling earlier threw away accepted sends and queued
+              // prompts for a swap that never happened.
+              cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+              requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             },
           },
         );
