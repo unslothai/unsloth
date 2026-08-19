@@ -32,6 +32,14 @@ interface ElementSpec {
   attributes?: Record<string, string>;
   display?: string;
   visibility?: string;
+  overflowX?: string;
+  overflowY?: string;
+  scrollTop?: number;
+  scrollLeft?: number;
+  scrollHeight?: number;
+  scrollWidth?: number;
+  clientHeight?: number;
+  clientWidth?: number;
   /** [top, right, bottom, left]. Ignored for a `display: contents` box. */
   rect?: [number, number, number, number];
   text?: string;
@@ -51,12 +59,20 @@ interface StubElement {
   checked: boolean;
   type: string;
   autocomplete: string;
+  scrollTop: number;
+  scrollLeft: number;
+  scrollHeight: number;
+  scrollWidth: number;
+  clientHeight: number;
+  clientWidth: number;
   textContent: string;
   attributeOverrides: Record<string, string>;
   hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   children: StubElement[];
   parent: StubElement | null;
+  readonly parentElement: StubElement | null;
   attributes: Array<{ name: string }>;
   closest(selector: string): StubElement | null;
   getBoundingClientRect(): {
@@ -82,6 +98,12 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     checked: spec.checked ?? false,
     type: spec.type ?? "text",
     autocomplete: spec.autocomplete ?? "",
+    scrollTop: spec.scrollTop ?? 0,
+    scrollLeft: spec.scrollLeft ?? 0,
+    scrollHeight: spec.scrollHeight ?? spec.clientHeight ?? 900,
+    scrollWidth: spec.scrollWidth ?? spec.clientWidth ?? 1440,
+    clientHeight: spec.clientHeight ?? 900,
+    clientWidth: spec.clientWidth ?? 1440,
     textContent: "",
     children: [] as StubElement[],
     parent,
@@ -94,6 +116,9 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     },
     hasAttribute(name: string) {
       return Object.hasOwn(element.attributeOverrides, name);
+    },
+    getAttribute(name: string) {
+      return element.attributeOverrides[name] ?? null;
     },
     closest(selector: string) {
       let node: StubElement | null = element;
@@ -124,6 +149,9 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     },
     removeAttribute(name: string) {
       delete element.attributeOverrides[name];
+    },
+    get parentElement() {
+      return element.parent;
     },
     querySelectorAll(selector: string) {
       const wanted = selector.split(",").map((name) => name.trim());
@@ -205,6 +233,7 @@ function createEnvironment(options: {
   storage?: Map<string, string>;
   rootHtml?: string;
   rootTree?: ElementSpec;
+  bodyPortals?: ElementSpec[];
   viewport?: { width: number; height: number };
   htmlVariables?: Record<string, string>;
   htmlAttributes?: Record<string, string>;
@@ -214,13 +243,27 @@ function createEnvironment(options: {
   const listeners = new Map<string, Listener[]>();
   const animationFrames: Array<() => void> = [];
   const appended: Array<{ innerHTML: string; removed: boolean }> = [];
-  const tree = options.rootTree ? createElement(options.rootTree) : null;
+  const bodyTree = options.rootTree
+    ? createElement({
+        tag: "body",
+        children: [
+          {
+            ...options.rootTree,
+            attributes: { ...options.rootTree.attributes, id: "root" },
+          },
+          ...(options.bodyPortals ?? []),
+        ],
+      })
+    : null;
   const clone = {
-    innerHTML: options.rootHtml ?? "<main>Chat is ready</main>",
+    innerHTML: `<div id="root">${options.rootHtml ?? "<main>Chat is ready</main>"}</div>`,
     querySelectorAll: () => [],
   };
-  const root = tree ?? {
+  const root = bodyTree?.children[0] ?? {
     firstElementChild: {},
+    querySelectorAll: () => [],
+  };
+  const body = bodyTree ?? {
     cloneNode: () => clone,
     querySelectorAll: () => [],
   };
@@ -244,11 +287,7 @@ function createEnvironment(options: {
     },
   };
   const document = {
-    body: {
-      appendChild(element: { innerHTML: string; removed: boolean }) {
-        appended.push(element);
-      },
-    },
+    body,
     documentElement,
     getElementById: () => root,
     querySelectorAll: (selector: string) =>
@@ -288,6 +327,12 @@ function createEnvironment(options: {
         setAttribute(name: string, value: string) {
           element.attributes[name] = value;
         },
+        getAttribute(name: string) {
+          return element.attributes[name] ?? null;
+        },
+        querySelectorAll() {
+          return [];
+        },
         appendChild(child: Record<string, unknown>) {
           element.children.push(child);
           return child;
@@ -317,6 +362,8 @@ function createEnvironment(options: {
         : {
             display: element.spec?.display ?? "block",
             visibility: element.spec?.visibility ?? "visible",
+            overflowX: element.spec?.overflowX ?? "visible",
+            overflowY: element.spec?.overflowY ?? "visible",
           },
     innerHeight: options.viewport?.height ?? 900,
     innerWidth: options.viewport?.width ?? 1440,
@@ -414,7 +461,10 @@ test("carries the rendered shell through a reload until the new shell is ready",
     storage: outgoing.storage,
   });
   assert.equal(incoming.appended.length, 1);
-  assert.equal(incoming.shell?.html, "<main>Existing chat</main>");
+  assert.equal(
+    incoming.shell?.html,
+    '<div id="root"><main>Existing chat</main></div>',
+  );
   assert.equal(incoming.storage.size, 0);
 
   incoming.dispatch("unsloth:app-shell-ready");
@@ -552,7 +602,10 @@ test("builds the retained shell inside a closed shadow tree", () => {
     storage: outgoing.storage,
   });
   assert.equal(incoming.shell?.mode, "closed");
-  assert.equal(incoming.shell?.html, "<main>Existing chat</main>");
+  assert.equal(
+    incoming.shell?.html,
+    '<div id="root"><main>Existing chat</main></div>',
+  );
   // Selectors do not cross the boundary, so the copy needs its own styles.
   assert.deepEqual(incoming.shell?.stylesheets, [
     "/assets/index-abc123.css",
@@ -712,6 +765,72 @@ test("preserves IDs that the isolated copy references internally", () => {
   const { html } = storedSnapshot(environment.storage);
   assert.match(html, /id="history-fill"/);
   assert.match(html, /fill="url\(#history-fill\)"/);
+});
+
+test("carries visible body portals along with the app root", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [{ tag: "main", text: "Settings page" }],
+    },
+    bodyPortals: [
+      {
+        tag: "div",
+        rect: [100, 1100, 700, 300],
+        attributes: { role: "dialog" },
+        text: "Confirm deletion",
+      },
+    ],
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /Settings page/);
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /Confirm deletion/);
+});
+
+test("keeps scroll-container geometry and serializes its live offset", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "section",
+          overflowY: "auto",
+          clientHeight: 300,
+          scrollHeight: 1200,
+          scrollTop: 600,
+          children: [
+            {
+              tag: "p",
+              rect: [-500, 900, -450, 100],
+              text: "Earlier message keeps the scroll geometry",
+            },
+            {
+              tag: "p",
+              rect: [300, 900, 350, 100],
+              text: "Visible message",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /data-reload-scroll-top="600"/);
+  assert.match(html, /Earlier message keeps the scroll geometry/);
+  assert.match(html, /Visible message/);
 });
 
 test("skips the shell when the snapshot carries no stylesheets", () => {

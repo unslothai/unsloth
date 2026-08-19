@@ -116,6 +116,19 @@
     applyAppearanceAttributes(root, appearance);
   }
 
+  function restoreScrollState(root) {
+    root
+      .querySelectorAll(
+        "[data-reload-scroll-top], [data-reload-scroll-left]",
+      )
+      .forEach(function (element) {
+        var top = Number(element.getAttribute("data-reload-scroll-top"));
+        var left = Number(element.getAttribute("data-reload-scroll-left"));
+        if (isFinite(top)) element.scrollTop = top;
+        if (isFinite(left)) element.scrollLeft = left;
+      });
+  }
+
   function restoreSnapshot() {
     var snapshot = readStoredSnapshot();
     if (
@@ -173,6 +186,12 @@
     shellRoot.appendChild(shellBody);
     shell.appendChild(shellRoot);
     document.documentElement.appendChild(overlay);
+    // Apply once against the current layout, then once more in the last
+    // pre-paint frame after the retained stylesheets have resolved.
+    restoreScrollState(shellBody);
+    requestAnimationFrame(function () {
+      if (overlay) restoreScrollState(shellBody);
+    });
     removalTimer = setTimeout(removeOverlay, 5000);
   }
 
@@ -214,12 +233,54 @@
     }
   }
 
+  function hasClippingOverflow(value) {
+    return (
+      value === "auto" ||
+      value === "scroll" ||
+      value === "overlay" ||
+      value === "hidden"
+    );
+  }
+
+  function isScrollContainer(element, style) {
+    return (
+      (hasClippingOverflow(style.overflowY) &&
+        element.scrollHeight > element.clientHeight) ||
+      (hasClippingOverflow(style.overflowX) &&
+        element.scrollWidth > element.clientWidth)
+    );
+  }
+
+  function hasScrollContainerAncestor(element) {
+    var ancestor = element.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      if (isScrollContainer(ancestor, getComputedStyle(ancestor))) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  }
+
+  function mirrorScrollState(original, cloned) {
+    if (original.scrollTop) {
+      cloned.setAttribute("data-reload-scroll-top", String(original.scrollTop));
+    }
+    if (original.scrollLeft) {
+      cloned.setAttribute(
+        "data-reload-scroll-left",
+        String(original.scrollLeft),
+      );
+    }
+  }
+
   function saveSnapshot() {
     var root = document.getElementById("root");
     if (!root || !root.firstElementChild) return;
     try {
-      var clone = root.cloneNode(true);
-      var originalElements = Array.from(root.querySelectorAll("*"));
+      // Clone the body's rendered surface, not just #root: dialogs, menus and
+      // other primitives portal beside the app root and are part of the frame
+      // the user sees. Active content is stripped before serialization below.
+      var clone = document.body.cloneNode(true);
+      var originalElements = Array.from(document.body.querySelectorAll("*"));
       var clonedElements = Array.from(clone.querySelectorAll("*"));
       for (var index = originalElements.length - 1; index >= 0; index -= 1) {
         var original = originalElements[index];
@@ -231,10 +292,15 @@
         // that rectangle takes the whole visible subtree with it.
         var laidOut = style.display !== "contents";
         var bounds = laidOut ? original.getBoundingClientRect() : null;
+        // Removing children from a scroll container changes its scroll geometry
+        // and can shift the visible slice. Keep that subtree intact and restore
+        // the container's offsets in the retained shell instead.
+        var insideScrollContainer = hasScrollContainerAncestor(original);
         if (
           style.display === "none" ||
           style.visibility === "hidden" ||
-          (laidOut &&
+          (!insideScrollContainer &&
+            laidOut &&
             (bounds.bottom <= 0 ||
               bounds.right <= 0 ||
               bounds.top >= innerHeight ||
@@ -243,6 +309,7 @@
           cloned.remove();
         } else {
           mirrorFieldState(original, cloned);
+          mirrorScrollState(original, cloned);
         }
       }
       clone
