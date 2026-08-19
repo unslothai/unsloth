@@ -582,9 +582,7 @@ def test_windows_npm_sibling_runtime_is_validated(managed_node_install, monkeypa
 
     _patch_floors(monkeypatch, lambda executable: _record(executable))
     configured = f"{good}{os.pathsep}{old}"
-    result = node_runtime.path_with_managed_node(
-        configured, require_npm = True, require_npx = False
-    )
+    result = node_runtime.path_with_managed_node(configured, require_npm = True, require_npx = False)
     assert any(c.endswith("node.exe") for c in checked), checked
     assert result == f"{managed_node_install}{os.pathsep}{configured}"
 
@@ -611,9 +609,7 @@ def test_pathed_npx_keeps_a_configured_node(managed_node_install, monkeypatch, t
     assert mcp_client._stdio_env(None, "/opt/toolchain/npx")["PATH"] == str(configured)
 
 
-def test_pathed_npm_still_gets_node_when_path_has_none(
-    managed_node_install, monkeypatch, tmp_path
-):
+def test_pathed_npm_still_gets_node_when_path_has_none(managed_node_install, monkeypatch, tmp_path):
     """With no node at all the shebang would fail, so the managed runtime still helps."""
     empty = tmp_path / "empty"
     empty.mkdir()
