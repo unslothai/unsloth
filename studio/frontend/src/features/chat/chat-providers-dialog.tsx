@@ -329,8 +329,10 @@ export function ChatProvidersSettings({
   const loadModelsTitle =
     isManualModelList && isCustomProvider
       ? "This connection uses manual model IDs"
-      : isCuratedModelList
-        ? "Full catalog is not fetched for this connection"
+      : providerType === "openai_codex"
+        ? "Load the models this ChatGPT plan can reach"
+        : isCuratedModelList
+          ? "Full catalog is not fetched for this connection"
         : missingModelCatalogBaseUrl
           ? "Enter a Base URL before loading models"
           : missingModelCatalogApiKey
@@ -590,6 +592,29 @@ export function ChatProvidersSettings({
     }
     if (isCustomProvider && !supportsRemoteModelCatalog(providerType)) {
       toast.info("This connection uses manual model IDs.");
+      return;
+    }
+    if (providerType === "openai_codex") {
+      // Registry-curated, but the real catalog comes from the plan, so this control has
+      // to refetch it. Falling into the branch below would leave the only way to retry a
+      // failed catalog fetch closing and reopening the form.
+      if (!editingProviderId) {
+        toast.info("Connect this ChatGPT subscription to load the models it can reach.");
+        return;
+      }
+      const provider = providersRef.current.find(
+        (candidate) => candidate.id === editingProviderId,
+      );
+      setModelsLoading(true);
+      try {
+        await applyCodexSubscriptionModels(
+          editingProviderId,
+          provider?.models ?? selectedModelIds,
+          provider?.authStatus,
+        );
+      } finally {
+        setModelsLoading(false);
+      }
       return;
     }
     if (isCuratedModelList) {
