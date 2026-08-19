@@ -585,7 +585,7 @@ pub fn reveal_path_token(
         }
     }
     let target = reveal_target(&entry.canonical_path);
-    open::that_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
+    crate::process::open_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }
 
 #[tauri::command]
@@ -596,7 +596,7 @@ pub fn open_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
-    open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
+    crate::process::open_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
 // Covers the largest client-side limit (audio, 25 MB).
@@ -604,6 +604,11 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+// The largest client-side video limit: a reference clip, whose 96 MiB cap
+// bounds the data URL, not the file. Mirrors rawLimitFor in reference-budget.ts
+// so we don't read and encode 96 MiB the caller is about to reject. Each caller
+// still enforces its own tighter limit.
+const MAX_NATIVE_VIDEO_BYTES: u64 = 75_497_280;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -625,6 +630,11 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "m4a" => Some("audio/mp4"),
         "ogg" | "oga" => Some("audio/ogg"),
         "flac" => Some("audio/flac"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
         _ => None,
     }
 }
@@ -673,10 +683,12 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image and audio attachments can be read inline.".to_string()
+        "Only chat image, audio and video attachments can be read inline.".to_string()
     })?;
     let max_bytes = if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
+    } else if mime_type.starts_with("video/") {
+        MAX_NATIVE_VIDEO_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
     };
@@ -805,7 +817,7 @@ mod tests {
         let Err(err) = read_attachment_payload(&entry) else {
             panic!("expected the read to be refused");
         };
-        assert!(err.contains("Only chat image and audio attachments"));
+        assert!(err.contains("Only chat image, audio and video attachments"));
         let _ = fs::remove_file(path);
     }
 

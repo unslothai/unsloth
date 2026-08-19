@@ -705,6 +705,16 @@ mod tests {
     struct ManagedCapabilityCacheHome {
         path: PathBuf,
         previous: Option<std::ffi::OsString>,
+        /// Held for as long as the override is installed.
+        ///
+        /// The tokio mutex above only keeps these two tests off each other. `set_var` is
+        /// process-wide, and other test modules read the environment through `dirs` under
+        /// `PROCESS_ENV_LOCK` -- `main.rs`'s `with_xdg_data_home` above all. Writing the
+        /// environment outside that lock lets glibc free the old entry under a concurrent
+        /// reader, so `webview_profile_root` resolves the real `~/.local/share` instead of
+        /// the tempdir the caller set, and the three webview-profile tests then collide on
+        /// one lock file. Declared last so it outlives the restore in `Drop` below.
+        _env: std::sync::MutexGuard<'static, ()>,
     }
 
     #[cfg(unix)]
@@ -712,6 +722,9 @@ mod tests {
         fn new(test_name: &str) -> Self {
             use std::time::{SystemTime, UNIX_EPOCH};
 
+            let _env = crate::native_path_policy::PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -723,7 +736,11 @@ mod tests {
             std::fs::create_dir_all(&path).unwrap();
             let previous = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME");
             std::env::set_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME", &path);
-            Self { path, previous }
+            Self {
+                path,
+                previous,
+                _env,
+            }
         }
     }
 

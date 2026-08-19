@@ -24,7 +24,11 @@ import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap"
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import {
+  SettingsDialog,
+  useSettingsDialogStore,
+  useShortcut,
+} from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -324,31 +328,32 @@ function RootLayout() {
     if (isAuthFlowRoute) {
       useSettingsDialogStore.getState().closeDialog();
     }
-    const handler = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-        if (isAuthFlowRoute) return;
-        e.preventDefault();
-        useSettingsDialogStore.getState().openDialog();
-        return;
-      }
-      // Cmd/Ctrl+Shift+O opens a new chat.
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
-        e.preventDefault();
-        clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
-        const chatRuntime = useChatRuntimeStore.getState();
-        chatRuntime.setActiveThreadId(null);
-        chatRuntime.setActiveProjectId(null);
-        chatRuntime.setIncognito(false);
-        void navigate({
-          to: "/chat",
-          search: { new: crypto.randomUUID() },
-        });
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [isAuthFlowRoute, navigate]);
+  }, [isAuthFlowRoute]);
+
+  // Chords come from the shortcuts store (Settings -> Shortcuts), so a rebind
+  // applies without a reload. The auth flow has no shell to act on.
+  useShortcut(
+    "openSettings",
+    () => useSettingsDialogStore.getState().openDialog(),
+    { enabled: !isAuthFlowRoute },
+  );
+  useShortcut(
+    "openKeyboardShortcuts",
+    () =>
+      useSettingsDialogStore.getState().openDialog("keyboard-shortcuts"),
+    { enabled: !isAuthFlowRoute },
+  );
+  useShortcut("newChat", () => {
+    clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
+    const chatRuntime = useChatRuntimeStore.getState();
+    chatRuntime.setActiveThreadId(null);
+    chatRuntime.setActiveProjectId(null);
+    chatRuntime.setIncognito(false);
+    void navigate({
+      to: "/chat",
+      search: { new: crypto.randomUUID() },
+    });
+  });
 
   useEffect(() => {
     if (isChatRoute) return;

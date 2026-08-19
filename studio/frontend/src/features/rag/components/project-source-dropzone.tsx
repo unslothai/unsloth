@@ -309,7 +309,14 @@ export function ProjectSourceDropzone({
   // handler, which would attach it to the chat behind the dialog.
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => {
-      if (disabled) return;
+      // Claimed but refusing, so say so: returning quietly made the file
+      // vanish with no border and no message (#9036).
+      if (disabled) {
+        toast.error("Sources are still uploading", {
+          description: "Wait for them to finish, then drop again.",
+        });
+        return;
+      }
       void addNativePaths(paths);
     },
     onDragOver: (over) => setDragging(over && !disabled),

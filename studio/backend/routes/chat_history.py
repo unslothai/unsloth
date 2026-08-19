@@ -80,7 +80,9 @@ class ChatRagKnowledgeBaseSource(BaseModel):
 class ChatThreadSettings(BaseModel):
     """The chat settings captured per thread; a thread storing none uses the global ones."""
 
-    model_config = ConfigDict(extra = "forbid")
+    # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take
+    # a bare NaN, which is then stored as a token no strict reader can parse back.
+    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     reasoningEnabled: Optional[bool] = None
     reasoningEffort: Optional[
@@ -107,6 +109,18 @@ class ChatThreadSettings(BaseModel):
     ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
     ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
     ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # The sampling params a chat runs with. Ranges match the sliders that set them.
+    temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
+    topP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
+    topK: Optional[int] = Field(default = None, ge = -1, le = 100)
+    minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
+    presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    # Not length-capped, like the installation-wide copy: truncating here would
+    # silently change what the chat runs with.
+    systemPrompt: Optional[str] = None
+    systemVariables: Optional[str] = None
 
 
 class ChatThread(BaseModel):
@@ -429,6 +443,9 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
+    # like the run route so a value it would reject cannot be persisted and replayed.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
@@ -454,6 +471,24 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
+
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+    @field_validator("researchModelTimeoutSeconds")
+    @classmethod
+    def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:
+        # The run route takes 0 (unlimited) or at least 10, so a persisted 1..9 would hydrate
+        # and then 400 every later run with nothing pointing at this setting.
+        if value is not None and 0 < value < 10:
+            raise ValueError("researchModelTimeoutSeconds must be 0 (unlimited) or at least 10")
+        return value
 
 
 class ChatSettingsResponse(BaseModel):
