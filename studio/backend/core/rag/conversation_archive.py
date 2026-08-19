@@ -1676,17 +1676,25 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
 
 def _scan_probes(
     entries: list[tuple[str, bool]], messages: list[str], start: int, last: int
-) -> Optional[tuple[int, int, int, bool]]:
-    """Where the probes finish: message index, end offset, opening offset, tail-is-partial.
+) -> Optional[tuple[int, int, int, bool, int]]:
+    """Where the probes finish: message index, end offset, opening offset, tail-is-partial,
+    and the message index the run OPENED on.
 
     An index rather than a bool so one document's chunks scan as a single pass, each
     continuing where the last stopped, which stops two chunks of a turn matching two
     places. The cursor within that message is NOT carried over: chunks overlap by
     ``CHUNK_OVERLAP``, so the next one legitimately repeats the previous tail.
+
+    The opening index is reported because that repeated tail can begin in an EARLIER
+    message than the one the previous chunk finished in -- a short line such as an
+    assistant tool call just before a long tool result is carried into the next chunk
+    whole. Resuming at the finishing message could then never match it, and an unedited
+    document was retired as off-branch, which makes that turn unsearchable.
     """
     index = start
     cursor = 0
     opened_at = None
+    opened_index = None
     partial = False
     fresh = False
     for probe, partial_ok in entries:
@@ -1722,6 +1730,7 @@ def _scan_probes(
                 if opened_at is None:
                     # Same exemption at the front of the run as inside it.
                     opened_at = 0 if partial_ok else found
+                    opened_index = index
                 cursor = found + len(probe)
                 # The exemption belongs to the CALL, not to the rest of the message. It
                 # exists because a stored tool call cannot line up character for character
@@ -1743,7 +1752,13 @@ def _scan_probes(
             fresh = True
         else:
             return None
-    return index, cursor, (opened_at or 0), partial
+    return (
+        index,
+        cursor,
+        (opened_at or 0),
+        partial,
+        (opened_index if opened_index is not None else start),
+    )
 
 
 def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
@@ -1843,11 +1858,25 @@ def _document_matches_one_run(
         cursor = 0
         opened_at = None
         partial_tail = False
+        # How far back the NEXT chunk may restart. A chunk's leading overlap is the
+        # previous chunk's tail, and `CHUNK_OVERLAP` can carry a whole short message with
+        # it -- an assistant tool call sitting just before a long tool result. Resuming
+        # strictly at the message the previous chunk FINISHED in then cannot match that
+        # overlap, and an unedited document was retired as off-branch, which makes the
+        # turn unsearchable: reproduced on a 4-message turn for 7 of 89 question lengths.
+        # Never earlier than where the previous chunk itself opened, since the overlap
+        # cannot predate it, and the forward position is always tried FIRST, so this only
+        # ever rescues a scan that used to fail outright.
+        floor = start
         for probes in probe_lists:
-            found = _scan_probes(probes, transcript, position, last)
+            found = None
+            for candidate in range(position, floor - 1, -1):
+                found = _scan_probes(probes, transcript, candidate, last)
+                if found is not None:
+                    break
             if found is None:
                 return False
-            position, cursor, chunk_opened_at, partial_tail = found
+            position, cursor, chunk_opened_at, partial_tail, floor = found
             # Where the whole run opened, which is the first chunk's answer: an edit that
             # prepends to the turn's FIRST message shows up here and nowhere else.
             if opened_at is None:
