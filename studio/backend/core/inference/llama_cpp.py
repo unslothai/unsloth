@@ -17256,7 +17256,6 @@ class LlamaCppBackend:
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     from utils.hardware import get_parent_visible_gpu_ids
-
                     _parent_gpu_ids = get_parent_visible_gpu_ids()
                     if _parent_gpu_ids:
                         _child_gpu_physical_ids = tuple(int(i) for i in _parent_gpu_ids)
