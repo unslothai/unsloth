@@ -799,12 +799,14 @@
       saveSnapshot();
     }
   });
-  // pageswap is Chromium-only. WKWebView/WebKitGTK still deliver pagehide on
-  // reload; non-reload captures are harmless because restoration additionally
-  // requires a reload navigation entry and an exact path match.
-  window.addEventListener("pagehide", function (event) {
-    if (!event.persisted) saveSnapshot();
-  });
+  // WKWebView/WebKitGTK do not expose pageswap, but still deliver pagehide on
+  // reload. Do not register both: Chromium fires pagehide after pageswap and a
+  // second full-DOM capture during unload is both expensive and lower fidelity.
+  if (!("onpageswap" in window)) {
+    window.addEventListener("pagehide", function (event) {
+      if (!event.persisted) saveSnapshot();
+    });
+  }
   window.addEventListener("unsloth:app-shell-ready", function () {
     if (!overlay) return;
     requestAnimationFrame(function () {

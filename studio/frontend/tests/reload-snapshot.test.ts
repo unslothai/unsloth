@@ -341,6 +341,7 @@ function createEnvironment(options: {
   inlineStyleSheets?: string[];
   trackScrollRestores?: boolean;
   localStorage?: Map<string, string>;
+  supportsPageSwap?: boolean;
 }) {
   const storage = options.storage ?? new Map<string, string>();
   const listeners = new Map<string, Listener[]>();
@@ -380,6 +381,9 @@ function createEnvironment(options: {
       listeners.set(name, current);
     },
   };
+  if (options.supportsPageSwap) {
+    Object.assign(window, { onpageswap: null });
+  }
   const htmlAttributes = new Map(Object.entries(options.htmlAttributes ?? {}));
   const documentElement = {
     style: createStyle(options.htmlVariables),
@@ -639,6 +643,7 @@ test("carries the rendered shell through a reload until the new shell is ready",
     navigationType: "navigate",
     rootHtml: "<main>Existing chat</main>",
     styleSheets: ["/assets/index-abc123.css"],
+    supportsPageSwap: true,
   });
   outgoing.dispatch("pageswap", {
     activation: { navigationType: "reload" },
@@ -678,11 +683,23 @@ test("captures reloads through WebKit's pagehide fallback", () => {
   assert.match(incoming.shell?.html ?? "", /WebKit chat/);
 });
 
+test("does not run the pagehide fallback when pageswap is available", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Chromium chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    supportsPageSwap: true,
+  });
+  environment.dispatch("pagehide", { persisted: false });
+  assert.equal(environment.storage.size, 0);
+});
+
 test("carries the retained shell through consecutive reloads", () => {
   const outgoing = createEnvironment({
     navigationType: "navigate",
     rootHtml: "<main>Stable chat</main>",
     styleSheets: ["/assets/index-abc123.css"],
+    supportsPageSwap: true,
   });
   outgoing.dispatch("pageswap", {
     activation: { navigationType: "reload" },
@@ -692,6 +709,10 @@ test("carries the retained shell through consecutive reloads", () => {
     navigationType: "reload",
     storage: outgoing.storage,
     rootHtml: "<main>Still loading</main>",
+    supportsPageSwap: true,
+  });
+  firstReload.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
   });
   firstReload.dispatch("pagehide", { persisted: false });
 
