@@ -22,7 +22,23 @@ of six observations were clean.
 
 Both files pass alone, and pass under xdist alone, so they are self-contained; what
 breaks them is another file running first in the same worker, an ordering serial
-never produces because serial is alphabetical.
+never produces because serial is alphabetical. Both causes are now known, and they
+are different:
+
+  test_moe_bnb4bit_per_expert_conversions.py -- test_vllm_to_hf_conversion.py put a
+  bitsandbytes.functional carrying only dequantize_4bit into sys.modules and never
+  removed it, so the later `from bitsandbytes.functional import QuantState` that
+  temporary_patches/moe_utils_bnb4bit.py does at import time failed with "(unknown
+  location)". m sorts before v, so serial never saw it. Fixed upstream in
+  unsloth_zoo#1076, with a teardown hook that fails the next one.
+
+  test_mlx_generate.py -- it installs the MLX-on-torch shim at its own import time,
+  and that shim's own docstring requires it to be in place "BEFORE any unsloth_zoo
+  MLX module is imported". Whoever imports unsloth_zoo.mlx first wins, and under
+  xdist that need not be this file. The clean fix is to install the shim from
+  conftest before any test module imports, but it spoofs platform.system() to
+  Darwin/arm64, which flips _IS_MLX gates suite-wide -- not a change to make
+  casually. The pin gives it the fresh process its contract assumes.
 
 So the pair is ignored from the parallel pass and run again in a process of their
 own. That pairing is the thing this file guards, because half of it is silent:
