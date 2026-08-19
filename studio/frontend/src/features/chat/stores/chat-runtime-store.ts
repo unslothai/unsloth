@@ -3444,9 +3444,15 @@ function getHydratedSettingsState(
       nextState.paramsByModel = { ...byModel, [left]: inherited };
     }
   }
-  // Recorded whether or not the fence below lets it through: either way the
-  // installation has expressed a preference, so no later load may seed over it.
-  if (settings.preserveThinking !== undefined) {
+  // Under the same fence as the scalar loop below, and for the same reason: a click
+  // made while this response was out is the newer answer. Recording the stored value
+  // over it would leave the switch visibly on -- the fence keeps the store field --
+  // while the next model load quietly resolved to the value the user just replaced.
+  if (
+    settings.preserveThinking !== undefined &&
+    scalarSettingMutationVersions.preserveThinking ===
+      versions.scalarSettings.preserveThinking
+  ) {
     notePreserveThinkingPreference(settings.preserveThinking);
   }
   for (const key of SCALAR_SETTING_KEYS) {
