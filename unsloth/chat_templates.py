@@ -2334,10 +2334,14 @@ def to_sharegpt(
                 "Unsloth: Input and output columns must have matching batch lengths. "
                 f"Got {len(users)} {merged_column_name} rows and {len(assistants)} {output_column_name} rows."
             )
+        # A null cell is an absent value, not the word "None". _create_formatter
+        # already coalesces it on the merged path, and skipping the merge must
+        # not reintroduce it; the output column never went through that path at
+        # all, so it leaked here either way.
         texts = [
             [
-                {"from" : "human", "value" : str(user)     },
-                {"from" : "gpt",   "value" : str(assistant)},
+                {"from" : "human", "value" : "" if user      is None else str(user)     },
+                {"from" : "gpt",   "value" : "" if assistant is None else str(assistant)},
             ] \
             for user, assistant in zip(users, assistants)
         ]

@@ -178,3 +178,27 @@ def test_conversation_extension_keeps_the_real_prompts():
     values = [turn["value"] for turn in converted[0]["conversations"]]
     assert "" not in values
     assert len(converted[0]["conversations"]) == 4
+
+
+def test_null_cells_do_not_render_as_the_word_none():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    dataset = Dataset.from_dict({"instruction": ["ok", None], "output": [None, "fine"]})
+    converted = to_sharegpt(dataset)
+    values = [turn["value"] for row in converted for turn in row["conversations"]]
+
+    assert "None" not in values
+    assert values == ["ok", "", "", "fine"]
+
+
+def test_null_cells_match_the_merged_prompt_path():
+    from datasets import Dataset
+
+    to_sharegpt = _load_to_sharegpt()
+    rows = {"instruction": ["ok", None], "output": ["a", "b"]}
+
+    merged = to_sharegpt(Dataset.from_dict(rows), merged_prompt = "{instruction}")
+    plain = to_sharegpt(Dataset.from_dict(rows))
+
+    assert [r["conversations"] for r in merged] == [r["conversations"] for r in plain]
