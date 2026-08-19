@@ -1287,7 +1287,9 @@ def _content_block_json(block: Any) -> dict:
     dump = getattr(block, "model_dump", None)
     if callable(dump):
         try:
-            return dump(mode = "json", exclude_none = True)
+            # by_alias, or the SDK's `meta` field reaches the widget under that
+            # name instead of the protocol's `_meta`.
+            return dump(mode = "json", exclude_none = True, by_alias = True)
         except Exception:  # noqa: BLE001
             pass
     out = {"type": getattr(block, "type", "text")}

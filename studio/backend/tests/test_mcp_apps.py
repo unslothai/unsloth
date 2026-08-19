@@ -23,6 +23,7 @@ from core.inference.mcp_client import (
     MAX_UI_STRUCTURED_CHARS,
     MCP_IMAGES_SENTINEL,
     MCP_UI_SENTINEL,
+    _content_block_json,
     _flatten_result,
     _resource_contents,
     _structured_result,
@@ -92,6 +93,22 @@ def test_the_envelope_keeps_the_tool_s_own_text_blocks_separate_from_errors():
     flat = _flatten_result(_result(_text("boom"), is_error = True), UI)
     assert flat.startswith("Error: boom")
     assert MCP_UI_SENTINEL not in flat
+
+
+def test_a_content_block_reaches_the_widget_under_its_protocol_keys():
+    """The SDK names the field `meta` and aliases it to `_meta`, so a plain
+    model_dump hands the widget a key the protocol does not define."""
+    pytest.importorskip("mcp.types")
+    import mcp.types as mcp_types
+
+    block = mcp_types.ImageContent(
+        type = "image", data = "AAAA", mimeType = "image/png", _meta = {"k": "v"},
+    )
+    dumped = _content_block_json(block)
+    assert dumped["_meta"] == {"k": "v"}
+    assert "meta" not in dumped
+    # mimeType is the field's own name in this SDK, so it must survive unchanged.
+    assert dumped["mimeType"] == "image/png"
 
 
 def test_result_meta_rides_along_for_the_tool_result_notification():
