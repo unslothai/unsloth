@@ -14012,6 +14012,20 @@ async def openai_chat_completions(
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
     _client_disabled_tool_calls = payload.tool_choice == "none" and not _studio_tool_loop_requested
+    # Wider than `tool_choice: "none"`, and used only where the question is "can this
+    # request ever reach search_conversation", never to narrow the catalogue.
+    #
+    # `max_tool_calls_per_message: 0` is documented as "0 = disabled" and becomes
+    # `max_tool_iterations = 0`, so the loop runs no iterations and its final pass
+    # withholds tools outright. `n > 1` is rejected by the tool-path guard below the
+    # moment the loop opens. Either way the epoch would sit behind a tool the model can
+    # never call, while the carried-forward header tells it to search for what was
+    # dropped, so these requests keep the rolling window.
+    _tool_loop_unusable = (
+        _client_disabled_tool_calls
+        or payload.max_tool_calls_per_message == 0
+        or _wants_multiple_choices(payload)
+    )
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
@@ -14208,7 +14222,7 @@ async def openai_chat_completions(
         # below. Same condition the compaction nudge on this path already reads.
         if (
             not use_tools
-            and not _client_disabled_tool_calls
+            and not _tool_loop_unusable
             and _cli_policy is not False
             and llama_backend.supports_tools
             and _rolling_context_policy(payload) is not None
@@ -15059,7 +15073,7 @@ async def openai_chat_completions(
                 # excluded from the checkpoint repair above, so search_conversation is not
                 # offered now and will not be on the next identically configured turn. The
                 # epoch gate cannot see that from the process policy alone, so tell it.
-                tools_withheld = _client_disabled_tool_calls,
+                tools_withheld = _tool_loop_unusable,
             )
 
         _gguf_sentinel = object()

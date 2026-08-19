@@ -702,7 +702,10 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
     assert body.count("tools_withheld = tools_withheld") == 2
 
     route = inspect.getsource(routes_mod.openai_chat_completions)
-    assert "tools_withheld = _client_disabled_tool_calls" in route
+    # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes a
+    # request can take that make the loop unusable once opened.
+    assert "tools_withheld = _tool_loop_unusable" in route
+    assert "_client_disabled_tool_calls" in route.split("_tool_loop_unusable = (", 1)[1]
 
 
 def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(monkeypatch):
@@ -1045,6 +1048,35 @@ def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
     assert "_checkpoint_needs_search()" in gate
     assert "_thread_has_conversation_archive" in gate
     assert "_rolling_context_policy(payload) is not None" in gate
+    # And the request must be able to USE the loop once it opens, not merely be allowed
+    # to open it. `tool_choice: "none"` was the only shape considered.
+    assert "_tool_loop_unusable" in gate
+
+
+def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
+    """Two more ways a request can be handed a loop it can get nothing out of.
+
+    `max_tool_calls_per_message: 0` is documented as "0 = disabled" and becomes
+    `max_tool_iterations = 0`, so the loop runs no iterations and its final pass withholds
+    tools outright. `n > 1` is rejected by the tool-path guard the moment the loop opens,
+    so a multi-choice conversation that was served before its first compaction started
+    returning 400 after it. Either way the epoch would sit behind a tool the model can
+    never call while the carried-forward header tells it to search, so both keep rolling.
+    """
+    import inspect
+
+    import routes.inference as routes_mod
+
+    route = inspect.getsource(routes_mod.openai_chat_completions)
+    predicate = route.split("_tool_loop_unusable = (", 1)[1].split("\n    )", 1)[0]
+
+    assert "_client_disabled_tool_calls" in predicate
+    assert "payload.max_tool_calls_per_message == 0" in predicate
+    assert "_wants_multiple_choices(payload)" in predicate
+    # And it is what the epoch gate is told, so the reset is refused rather than the
+    # catalogue narrowed: this predicate must never reach `_select_request_tools`.
+    assert "tools_withheld = _tool_loop_unusable," in route
+    assert "tools_on = _tool_loop_unusable" not in route
 
 
 @pytest.mark.parametrize(
