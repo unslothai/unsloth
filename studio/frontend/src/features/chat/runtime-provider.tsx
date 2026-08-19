@@ -68,6 +68,7 @@ import {
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import { VideoAttachmentAdapter } from "./video-attachment-adapter";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
@@ -1862,6 +1863,9 @@ function useStudioRuntimeAdapters(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
+          // Before the document adapters: a composite takes the first match,
+          // and .mkv/.mov must not fall through to them.
+          new VideoAttachmentAdapter(),
           new TextAttachmentAdapter(),
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),

@@ -41,6 +41,7 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/workflows/studio-inference-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -138,10 +139,22 @@ jobs:
 
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
@@ -468,7 +481,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -543,7 +568,19 @@ jobs:
                                   if delta.get("content"):
                                       parts.append(delta["content"])
                       return "".join(parts), events
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # A stall after the tool already produced its result is
@@ -1029,7 +1066,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:

@@ -146,7 +146,7 @@ import type {
   OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { mmprojFallbackMessage } from "../utils/mmproj-fallback";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
@@ -1518,6 +1518,43 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+function extractVideoPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "file") return undefined;
+  const filePart = part as unknown as { data?: string; mimeType?: string };
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  return filePart.data.startsWith("data:")
+    ? filePart.data.split(",")[1]
+    : filePart.data;
+}
+
+/** Base64 of the clip on the newest user turn. Only the newest counts, like
+ * audio: replaying an older one would re-sample it into frames and spend the
+ * context of every text follow-up. */
+export function findLatestUserVideoBase64(
+  messages: RunMessages,
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "user") continue;
+    for (const part of message.content ?? []) {
+      const base64 = extractVideoPartBase64(part);
+      if (base64) return base64;
+    }
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractVideoPartBase64(part);
+          if (base64) return base64;
+        }
+      }
+    }
+    break;
+  }
+  return undefined;
+}
+
 // The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
 // text the request carries.
 export const CANVAS_TOOL_INSTRUCTION =
@@ -2111,6 +2148,7 @@ function queuedResolvedModelFromStore(
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
+          hasVideoInput: activeModel.hasVideoInput,
         }
       : null,
   };
@@ -2636,24 +2674,21 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
   ): void => {
+    // Both reasons, composed. Nesting them as `mmproj ? ... : cpu ? ...` dropped the
+    // CPU message whenever both were set, which is reachable and is the case this
+    // feature exists for -- see loadFallbackNotice.
+    const notice = loadFallbackNotice(
+      message,
+      cpuFallbackReason,
+      mmprojFallbackReason,
+    );
     const options = {
-      description: mmprojFallbackReason
-        ? mmprojFallbackMessage(mmprojFallbackReason)
-        : cpuFallbackReason
-          ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-          : undefined,
+      description: notice.description,
       duration: 5000,
       icon: undefined,
     };
-    const showToast =
-      mmprojFallbackReason || cpuFallbackReason ? toast.warning : toast.success;
-    const title = mmprojFallbackReason
-      ? mmprojFallbackReason === "cpu_offload"
-        ? `${message} with vision on CPU`
-        : `${message} without vision`
-      : cpuFallbackReason
-        ? `${message} on CPU`
-        : message;
+    const showToast = notice.degraded ? toast.warning : toast.success;
+    const title = notice.title;
     if (autoLoadToastDismissed) {
       showToast(title, options);
       return;
@@ -3570,6 +3605,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
+              hasVideoInput: status.has_video_input ?? false,
             },
           },
         };
@@ -3952,6 +3988,9 @@ export function createOpenAIStreamAdapter(
               ? { instructions: researchInstructions }
               : {}),
             ...(ragScope ? { ragScope } : {}),
+            budgets: {
+              modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
+            },
             websitePolicy: {
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
@@ -4525,6 +4564,7 @@ export function createOpenAIStreamAdapter(
         survivingMessages,
         !queuedRunSettings && !continuation,
       );
+      const videoBase64 = findLatestUserVideoBase64(survivingMessages);
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
@@ -5532,6 +5572,7 @@ export function createOpenAIStreamAdapter(
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
