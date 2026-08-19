@@ -3171,31 +3171,32 @@ async def _stop_local_disconnect_cancel_watcher(
         pass
 
 
-async def _drain_pending_next_task(task, cancel_event) -> None:
+async def _drain_pending_worker(worker, cancel_event) -> None:
     """Wait for a pending blocking worker before its resources are released.
 
-    On disconnect a worker may still be inside ``next(gen)`` or draining a whole
-    non-streaming generation. Cancelling the awaiting task does NOT stop that
-    worker. Re-set the cancel flag (the generator polls it) and shield the task
-    until the worker returns, so admission and generation tracking still cover
-    its real lifetime. No-op when there is no pending task.
+    ``worker`` is the task or future the request awaits: a streaming
+    ``next(gen)`` step, or a whole non-streaming generation. Cancelling it does
+    NOT stop the thread behind it. Re-set the cancel flag (the generator polls
+    it) and shield the worker until it returns, so admission and generation
+    tracking still cover its real lifetime. No-op when there is no pending
+    worker.
     """
-    if task is None:
+    if worker is None:
         return
     if cancel_event is not None:
         cancel_event.set()
-    while not task.done():
+    while not worker.done():
         try:
-            await asyncio.shield(task)
+            await asyncio.shield(worker)
         except asyncio.CancelledError:
             if cancel_event is not None:
                 cancel_event.set()
             continue
         except Exception:
             break
-    if task.done():
+    if worker.done():
         try:
-            task.exception()
+            worker.exception()
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -3254,6 +3255,10 @@ async def _run_blocking_generation(
     Shield the worker so task cancellation cannot shorten the tracker or
     admission-lease lifetime. Use a daemon only for server-tool loops that may
     ignore cancellation; ordinary generation stays on the bounded default pool.
+
+    Unlike the streaming paths, which release their default-executor thread
+    between tokens, a non-daemon unit holds one for the whole generation. Keep
+    unrelated blocking work off that pool (see _STATUS_PROBE_EXECUTOR).
     """
     worker = (
         _start_daemon_worker(fn, name = name)
@@ -3263,7 +3268,7 @@ async def _run_blocking_generation(
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
-        await _drain_pending_next_task(worker, cancel_event)
+        await _drain_pending_worker(worker, cancel_event)
         raise
 
 
@@ -15919,7 +15924,7 @@ async def openai_chat_completions(
                 # Drain a still-running next(gen) worker before closing: closing
                 # mid-next(gen) raises ValueError('generator already executing') and
                 # skips the generator's cleanup finally. Matches the GGUF tool stream.
-                await _drain_pending_next_task(_sf_next_task, cancel_event)
+                await _drain_pending_worker(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
                         # Offload the close so the generator's cleanup runs off the event
@@ -16397,7 +16402,7 @@ async def openai_chat_completions(
                 # Drain a still-running next(gen) worker before closing: closing
                 # mid-next(gen) raises ValueError('generator already executing') and
                 # skips the generator's cleanup finally. Matches the safetensors stream.
-                await _drain_pending_next_task(_next_task, cancel_event)
+                await _drain_pending_worker(_next_task, cancel_event)
                 if gen is not None:
                     try:
                         # Offload the close so the generator's cleanup runs off the event
@@ -20814,7 +20819,7 @@ async def _anthropic_tool_stream(
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
                 # its resources; closing first races into 'already executing'.
-                await _drain_pending_next_task(_next_task, cancel_event)
+                await _drain_pending_worker(_next_task, cancel_event)
                 if gen is not None:
                     try:
                         await asyncio.to_thread(gen.close)
@@ -20912,7 +20917,7 @@ async def _anthropic_plain_stream(
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
                 # its resources; closing first races into 'already executing'.
-                await _drain_pending_next_task(_next_task, cancel_event)
+                await _drain_pending_worker(_next_task, cancel_event)
                 if gen is not None:
                     try:
                         await asyncio.to_thread(gen.close)
