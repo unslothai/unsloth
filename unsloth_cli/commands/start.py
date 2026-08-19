@@ -434,7 +434,10 @@ def _opencode_subcommand(args: list[str]) -> Optional[str]:
 
 
 def _opencode_native_auto_args(
-    args: list[str], yolo: bool, *, v2: bool = False
+    args: list[str],
+    yolo: bool,
+    *,
+    v2: bool = False,
 ) -> tuple[list[str], bool]:
     """Add OpenCode's native --auto when the selected command supports it."""
     routed = list(args)
@@ -460,8 +463,10 @@ def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
     routed = list(args)
     separator = routed.index("--") if "--" in routed else len(routed)
     head = routed[:separator]
-    if "--standalone" in head or "--server" in head or any(
-        arg.startswith("--server=") for arg in head
+    if (
+        "--standalone" in head
+        or "--server" in head
+        or any(arg.startswith("--server=") for arg in head)
     ):
         return routed
     subcommand = _opencode_subcommand(routed)
@@ -3204,9 +3209,7 @@ def _augment_path_with_install_dirs() -> None:
         home = Path.home()
     except (RuntimeError, OSError):
         home = None
-    candidates = (
-        [home / ".local" / "bin", home / ".opencode" / "bin"] if home is not None else []
-    )
+    candidates = [home / ".local" / "bin", home / ".opencode" / "bin"] if home is not None else []
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:
@@ -4694,9 +4697,7 @@ def opencode(
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
         # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
-            yolo
-            and _opencode_supports_native_auto(command_name)
-            and (launch or bool(ctx.args))
+            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
         )
         opencode_args = list(ctx.args)
         if opencode_v2:
