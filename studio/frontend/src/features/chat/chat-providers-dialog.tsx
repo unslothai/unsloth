@@ -1615,19 +1615,32 @@ export function ChatProvidersSettings({
                 // user has already left.
                 const request = codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
-                const synced = await syncExternalProvidersFromBackend(providersRef.current);
-                providersRef.current = synced;
-                onProvidersChange(synced);
-                if (request !== codexCatalogRequestRef.current) return;
-                const connected = synced.find(
-                  (provider) => provider.id === changedProviderId,
-                );
-                if (connected) {
-                  await applyCodexSubscriptionModels(
-                    connected.id,
-                    connected.models,
-                    connected.authStatus,
+                // Save is gated on this flag. Leaving it clear here lets the connection
+                // be saved with the pre-authorization seed selection before the plan's
+                // own catalog arrives, and those slugs then fail on every send.
+                setModelsLoading(true);
+                let owned = true;
+                try {
+                  const synced = await syncExternalProvidersFromBackend(providersRef.current);
+                  providersRef.current = synced;
+                  onProvidersChange(synced);
+                  if (request !== codexCatalogRequestRef.current) {
+                    owned = false;
+                    return;
+                  }
+                  const connected = synced.find(
+                    (provider) => provider.id === changedProviderId,
                   );
+                  if (connected) {
+                    owned = await applyCodexSubscriptionModels(
+                      connected.id,
+                      connected.models,
+                      connected.authStatus,
+                    );
+                  }
+                } finally {
+                  // Only the request that still owns the form clears the shared flag.
+                  if (owned) setModelsLoading(false);
                 }
               }}
             />
