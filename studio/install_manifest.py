@@ -25,7 +25,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
 MANIFEST_SCHEMA = 1
@@ -93,16 +93,111 @@ def _canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _metadata_scan_paths() -> List[str]:
+    """This interpreter's site-packages roots, excluding inherited sys.path entries.
+
+    Deduplicated by real path, not by string. purelib hardcodes `lib` while
+    platlib follows sys.platlibdir, so on a lib64 build (Fedora, SuSE) the two
+    are different strings for one directory -- venv creates lib64 as a symlink
+    to lib. Scanning both would report every installed package twice and turn a
+    healthy environment into a metadata conflict.
+    """
+    import sysconfig
+
+    paths: List[str] = []
+    seen: set = set()
+    try:
+        configured = sysconfig.get_paths()
+    except Exception:
+        return paths
+    for key in ("purelib", "platlib"):
+        path = configured.get(key)
+        if not path or not os.path.isdir(path):
+            continue
+        try:
+            key_path = os.path.realpath(path)
+        except OSError:
+            key_path = path
+        if key_path in seen:
+            continue
+        seen.add(key_path)
+        paths.append(path)
+    return paths
+
+
+def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
+    """Every matching metadata version and its directory, when available."""
+    from importlib.metadata import distributions
+
+    wanted = _canonical(dist_name)
+    paths = _metadata_scan_paths()
+    kwargs = {"path": paths} if paths else {}
+    found: List[Tuple[str, Optional[Path]]] = []
+    for dist in distributions(**kwargs):
+        path = getattr(dist, "_path", None)
+        try:
+            record_path = Path(os.fspath(path)) if path is not None else None
+        except (TypeError, ValueError):
+            record_path = None
+        try:
+            name = dist.metadata.get("Name")
+            if name:
+                if _canonical(name) == wanted:
+                    found.append((dist.version or "", record_path))
+                continue
+        except Exception:
+            pass
+        # A nameless or unreadable matching record is itself a conflict. Wheel
+        # metadata directory names escape name separators as underscores, so
+        # splitting off the final version is unambiguous.
+        stem = record_path.name if record_path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
+            found.append(("", record_path))
+    return sorted(found, key = lambda record: (record[0], os.fspath(record[1] or "")))
+
+
+def installed_versions(dist_name: str) -> List[str]:
+    """Every metadata version for one canonical distribution name.
+
+    More than one answer is an inconsistent environment, not a choice between
+    equivalent records. importlib.metadata.version() returns whichever record
+    the filesystem finder happens to yield first, which can be a superseded
+    dist-info left behind by an interrupted uninstall.
+    """
+    return [version for version, _path in _installed_metadata_records(dist_name)]
+
+
+def invalid_metadata_paths(dist_name: str) -> List[Path]:
+    """Matching metadata directories that pip cannot safely identify."""
+    return [
+        path
+        for version, path in _installed_metadata_records(dist_name)
+        if not version and path is not None
+    ]
+
+
+def metadata_conflict(versions: Sequence[str]) -> bool:
+    """Whether matching metadata records are duplicated or unreadable."""
+    return len(versions) > 1 or any(not version for version in versions)
+
+
+def installed_version_probe(
+    dist_name: str, companion_names: Sequence[str] = ()
+) -> Tuple[str, bool]:
+    """One unambiguous version and whether any requested metadata conflicts."""
+    versions = installed_versions(dist_name)
+    conflict = metadata_conflict(versions) or any(
+        metadata_conflict(installed_versions(name)) for name in companion_names
+    )
+    version = versions[0] if len(versions) == 1 and versions[0] else ""
+    return version, conflict
+
+
 def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = None) -> Optional[str]:
     if installed is not None:
         return installed.get(_canonical(dist_name))
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        return version(dist_name)
-    except PackageNotFoundError:
-        return None
-    except Exception:
-        return None
+    return installed_version_probe(dist_name)[0] or None
 
 
 def remove_manifest(root: Optional[Path] = None) -> bool:
@@ -328,15 +423,17 @@ def verify_install(
     req_root: Optional[Path] = None,
     package_name: str = "unsloth",
     installed: Optional[Dict[str, str]] = None,
+    installed_conflicts: Optional[Sequence[str]] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
     Reason strings are surfaced verbatim by the desktop preflight as its
     staleness reason, so keep them stable.
 
-    Pass `installed` (and the matching `root` / `req_root`) to describe a venv
-    other than this interpreter's; without it the version and dependency checks
-    would answer for the venv the caller happens to be running in.
+    Pass `installed`, `installed_conflicts`, and the matching `root` / `req_root`
+    to describe a venv other than this interpreter's; without them the version
+    and dependency checks would answer for the venv the caller happens to be
+    running in.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -353,9 +450,21 @@ def verify_install(
     else:
         # `update --package X` records X, so comparing against unsloth would
         # report a permanent version change.
-        current = _installed_version(manifest.get("package") or package_name, installed)
+        manifest_package = manifest.get("package") or package_name
+        if installed is None:
+            companions = () if _canonical(manifest_package) == "unsloth-zoo" else ("unsloth-zoo",)
+            current, local_conflict = installed_version_probe(manifest_package, companions)
+        else:
+            current = _installed_version(manifest_package, installed)
+            local_conflict = False
+        foreign_conflicts = {_canonical(name) for name in (installed_conflicts or ())}
+        core_conflict = _canonical(manifest_package) in foreign_conflicts or (
+            _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
+        )
         recorded = manifest.get("package_version")
-        if current and recorded and current != recorded:
+        if core_conflict or local_conflict:
+            reason = "studio_install_metadata_conflict"
+        elif current and recorded and current != recorded:
             reason = "studio_install_version_changed"
         elif manifest.get("requirement_files") != requirement_digests(reqs):
             reason = "studio_install_requirements_changed"

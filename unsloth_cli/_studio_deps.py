@@ -16,9 +16,11 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import inspect
+import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -107,11 +109,94 @@ def _resolved(path: Path) -> Path:
         return path
 
 
+def _venv_executables(root: Path) -> tuple[Path, ...]:
+    return (
+        (root / "Scripts" / "python.exe",)
+        if os.name == "nt"
+        else (root / "bin" / "python", root / "bin" / "python3")
+    )
+
+
 def _venv_site_packages(root: Path) -> List[Path]:
-    out: List[Path] = []
-    for pattern in ("lib/python*/site-packages", "Lib/site-packages"):
-        out.extend(sorted(root.glob(pattern)))
-    return out
+    """The site-packages roots used by this venv's active interpreter.
+
+    A venv upgraded in place can retain lib/pythonX.Y directories from older
+    interpreters. Globbing all of them makes ordinary packages look duplicated,
+    even though only the active interpreter's directory is importable.
+
+    Deduplicated by real path: purelib hardcodes `lib` while platlib follows
+    sys.platlibdir, so a lib64 build (Fedora, SuSE) names one directory twice
+    through venv's lib64 -> lib symlink.
+    """
+
+    def existing_inside_root(values) -> List[Path]:
+        resolved_root = _resolved(root)
+        out: List[Path] = []
+        seen: set = set()
+        for value in values:
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_dir():
+                continue
+            resolved = _resolved(path)
+            if not resolved.is_relative_to(resolved_root) or resolved in seen:
+                continue
+            seen.add(resolved)
+            out.append(path)
+        return out
+
+    if _resolved(root) == _resolved(Path(sys.prefix)):
+        import sysconfig
+
+        try:
+            configured = sysconfig.get_paths()
+        except Exception:
+            configured = {}
+        current = existing_inside_root(configured.get(key) for key in ("purelib", "platlib"))
+        if current:
+            return current
+
+    probe = (
+        "import json, sysconfig; "
+        "p = sysconfig.get_paths(); "
+        "print(json.dumps([p.get('purelib'), p.get('platlib')]))"
+    )
+    for executable in _venv_executables(root):
+        if not executable.is_file():
+            continue
+        try:
+            output = subprocess.check_output(
+                [str(executable), "-I", "-c", probe],
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            values = json.loads(output)
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        active = existing_inside_root(values if isinstance(values, list) else [])
+        if active:
+            return active
+
+    windows_site = root / "Lib" / "site-packages"
+    if windows_site.is_dir():
+        return [windows_site]
+
+    try:
+        config = (root / "pyvenv.cfg").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        config = ""
+    match = re.search(r"(?im)^\s*version\s*=\s*(\d+\.\d+)", config)
+    if match:
+        versioned = root / "lib" / f"python{match.group(1)}" / "site-packages"
+        if versioned.is_dir():
+            return [versioned]
+
+    # Test fixtures and incomplete venvs may not have a runnable interpreter or
+    # version entry yet. One directory is unambiguous; several are not.
+    candidates = sorted(root.glob("lib/python*/site-packages"))
+    return candidates if len(candidates) == 1 else []
 
 
 def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
@@ -128,11 +213,13 @@ def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
     return None
 
 
-def _distributions_in(root: Path) -> Optional[Dict[str, str]]:
-    """Canonical distribution name -> version inside another venv.
+def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
+    """Installed versions and metadata conflicts inside another venv.
 
     importlib.metadata reports the running interpreter only, so a foreign
-    site-packages has to be handed to the finder explicitly.
+    site-packages has to be handed to the finder explicitly. Keep multiplicity
+    beside the single-version map: collapsing it here would let a foreign venv
+    with ambiguous core metadata pass manifest verification.
     """
     paths = [str(path) for path in _venv_site_packages(root)]
     if not paths:
@@ -140,14 +227,27 @@ def _distributions_in(root: Path) -> Optional[Dict[str, str]]:
     from importlib.metadata import Distribution, DistributionFinder
 
     found: Dict[str, str] = {}
-    try:
-        for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
-            name = getattr(dist, "name", None) or dist.metadata["Name"]
+    conflicts: set[str] = set()
+    for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
+        try:
+            name = dist.metadata.get("Name")
             if name:
-                found.setdefault(_canonical(name), dist.version or "")
-    except Exception:
-        return None
-    return found
+                canonical = _canonical(name)
+                version = dist.version or ""
+                if not version or canonical in found:
+                    conflicts.add(canonical)
+                if canonical not in found:
+                    found[canonical] = version
+                continue
+        except Exception:
+            pass
+        # A nameless or unreadable record must not hide a foreign conflict.
+        path = getattr(dist, "_path", None)
+        stem = os.path.basename(os.fspath(path)) if path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator:
+            conflicts.add(_canonical(path_name))
+    return found, conflicts
 
 
 def _requirements_root_in(root: Path) -> Optional[Path]:
@@ -155,13 +255,38 @@ def _requirements_root_in(root: Path) -> Optional[Path]:
         reqs = path / "studio" / "backend" / "requirements"
         if reqs.is_dir():
             return reqs
+    # An editable install can keep studio/ only in its source checkout. Ask the
+    # foreign interpreter to follow its .pth/finder instead of treating the
+    # absent site-packages copy as an incomplete environment.
+    probe = (
+        "import json, pathlib, studio; "
+        "print(json.dumps(str(pathlib.Path(studio.__file__).resolve().parent / "
+        "'backend' / 'requirements')))"
+    )
+    for executable in _venv_executables(root):
+        if not executable.is_file():
+            continue
+        try:
+            reqs = Path(
+                json.loads(
+                    subprocess.check_output(
+                        [str(executable), "-I", "-c", probe],
+                        stderr = subprocess.DEVNULL,
+                        text = True,
+                        timeout = 5,
+                    )
+                )
+            )
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if reqs.is_dir():
+            return reqs
     return None
 
 
-def _supports_foreign_root(module) -> bool:
-    """A manifest helper predating the installed= parameter cannot describe another venv."""
+def _verify_install_supports(module, parameter: str) -> bool:
     try:
-        return "installed" in inspect.signature(module.verify_install).parameters
+        return parameter in inspect.signature(module.verify_install).parameters
     except (TypeError, ValueError):
         return False
 
@@ -188,12 +313,32 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
     # came from this CLI's own tree.
     root = _managed_root(extra_roots) or _venv_root_for_module(module)
     foreign = root is not None and _resolved(root) != _resolved(Path(sys.prefix))
-    installed = _distributions_in(root) if foreign else None
+    foreign_distributions = _distributions_in(root) if foreign else None
+    installed = foreign_distributions[0] if foreign_distributions is not None else None
+    installed_conflicts = foreign_distributions[1] if foreign_distributions is not None else set()
     req_root = _requirements_root_in(root) if foreign else None
+    if foreign and (foreign_distributions is None or req_root is None):
+        # Never answer for the caller when the requested environment cannot be
+        # inspected. That can turn a torn or ambiguous managed venv into a
+        # healthy result merely because the external CLI has matching packages.
+        return {
+            "ok": False,
+            "manifest_ok": False,
+            "deps_ok": False,
+            "missing": [],
+            "reason": "studio_install_incomplete",
+        }
     try:
-        if installed is not None and req_root is not None and _supports_foreign_root(module):
+        if (
+            installed is not None
+            and req_root is not None
+            and _verify_install_supports(module, "installed")
+        ):
             # That venv's own metadata: unreadable through this interpreter.
-            return module.verify_install(root = root, req_root = req_root, installed = installed)
+            kwargs = {"root": root, "req_root": req_root, "installed": installed}
+            if _verify_install_supports(module, "installed_conflicts"):
+                kwargs["installed_conflicts"] = installed_conflicts
+            return module.verify_install(**kwargs)
         state = module.verify_install(root = root)
         if foreign and not state["deps_ok"]:
             # The manifest came from another venv but the dependency walk ran
@@ -218,17 +363,31 @@ def _scan_paths() -> Dict[str, list]:
     Empty when the interpreter's site-packages cannot be resolved, which leaves
     the scan at its default of the whole sys.path: over-scanning is the safe
     direction here, since the alternative is looking at nothing.
+
+    Deduplicated by real path, because purelib hardcodes `lib` while platlib
+    follows sys.platlibdir. On a lib64 build (Fedora, SuSE) those are two names
+    for one directory, and scanning both would report every installed package
+    as having duplicate metadata.
     """
     import sysconfig
 
     paths = []
+    seen: set = set()
     for key in ("purelib", "platlib"):
         try:
             entry = sysconfig.get_paths().get(key)
         except Exception:
             continue
-        if entry and entry not in paths and os.path.isdir(entry):
-            paths.append(entry)
+        if not entry or not os.path.isdir(entry):
+            continue
+        try:
+            resolved = os.path.realpath(entry)
+        except OSError:
+            resolved = entry
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        paths.append(entry)
     return {"path": paths} if paths else {}
 
 
@@ -287,6 +446,88 @@ def _installer_rewritten(rel: str) -> bool:
     return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
 
 
+def _installed_distribution_groups():
+    """Canonical name -> installed metadata records in this interpreter's tree.
+
+    Each record is (distribution, display name, readable). A nameless or
+    unreadable METADATA still belongs to the distribution its directory is
+    named after, and still makes that distribution ambiguous -- which is what
+    install_manifest.installed_versions() reports for the same directory. It
+    is never file-checkable, so it is marked unreadable rather than trusted.
+
+    Readable means a name AND a version: install_manifest.metadata_conflict()
+    counts an empty version as inconsistent, so trusting such a record here
+    would leave the two checks disagreeing about the same directory.
+    """
+    from importlib.metadata import distributions
+
+    groups: Dict[str, list] = {}
+    for dist in distributions(**_scan_paths()):
+        try:
+            name = dist.metadata.get("Name")
+        except Exception:
+            name = None
+        if name:
+            try:
+                version = dist.version
+            except Exception:
+                version = None
+            groups.setdefault(_canonical(name), []).append((dist, name, bool(version)))
+            continue
+        # Wheel metadata directory names escape name separators as underscores,
+        # so splitting off the final version is unambiguous.
+        path = getattr(dist, "_path", None)
+        stem = os.path.basename(os.fspath(path)) if path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator and path_name:
+            groups.setdefault(_canonical(path_name), []).append((dist, path_name, False))
+    return groups
+
+
+def installed_metadata_conflicts(
+    limit: int = 8,
+    *,
+    names: Optional[Sequence[str]] = None,
+    exclude_names: Sequence[str] = (),
+) -> List[str]:
+    """Distributions with multiple metadata records for one canonical name.
+
+    A duplicate is an ambiguous install, even when both records name the same
+    version. importlib.metadata.version() chooses the first finder result rather
+    than identifying which RECORD owns the package tree, so none of the records
+    can safely drive the file-damage check until the package is reinstalled.
+
+    A single unreadable record counts too, matching
+    install_manifest.metadata_conflict(): pip cannot parse it either, so it must
+    be reported rather than silently skipped.
+    """
+    included = None if names is None else {_canonical(name) for name in names}
+    excluded = {_canonical(name) for name in exclude_names}
+    found: List[str] = []
+    groups = _installed_distribution_groups()
+    for canonical in sorted(groups):
+        if (included is not None and canonical not in included) or canonical in excluded:
+            continue
+        records = groups[canonical]
+        if len(records) < 2 and all(readable for _dist, _name, readable in records):
+            continue
+        details: List[str] = []
+        for dist, _name, _readable in records:
+            try:
+                version = dist.version or "unknown version"
+            except Exception:
+                version = "unknown version"
+            metadata_path = getattr(dist, "_path", None)
+            location = Path(str(metadata_path)).name if metadata_path else "unknown metadata path"
+            details.append(f"{version} at {location}")
+        detail = ", ".join(sorted(details))
+        problem = "multiple metadata records" if len(records) > 1 else "unreadable metadata"
+        found.append(f"{canonical}: {problem} ({detail})")
+        if len(found) >= limit:
+            break
+    return found
+
+
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
@@ -311,6 +552,12 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     to a finding is "reinstall over the top", so a file no reinstall would
     change must not produce one. See _shared_non_runtime, _installer_rewritten.
 
+    Multiple metadata records for one canonical distribution name are excluded
+    entirely. None is authoritative: an older RECORD can legitimately name files
+    a newer wheel removed, while choosing the first or highest version also fails
+    after an interrupted upgrade or a deliberate downgrade. Callers surface that
+    separate condition through installed_metadata_conflicts().
+
     Scanned over the interpreter's own site-packages rather than all of
     sys.path. distributions() searches every sys.path entry, so a damaged
     distribution reachable only through an inherited PYTHONPATH would otherwise
@@ -325,48 +572,51 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     """
     import csv
     import io
-    from importlib.metadata import distributions
 
     entries: List[tuple] = []
     owners: Dict[str, int] = {}
-    for dist in distributions(**_scan_paths()):
-        try:
-            name = dist.metadata["Name"] or "?"
-            record = dist.read_text("RECORD")
-        except Exception:
-            # An unreadable or absent RECORD says nothing about damage: editable
-            # installs and system packages legitimately have none.
-            continue
-        if not record:
-            continue
-        for row in csv.reader(io.StringIO(record)):
-            rel = row[0] if row else ""
-            # A trailing slash is a directory entry, which has nothing to check.
-            if not rel or rel.endswith("/"):
-                continue
-            # Installer-owned metadata is rewritten in place and drifts from the
-            # size recorded inside itself; .pyc is regenerated from source.
-            if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
-                continue
+    for records in _installed_distribution_groups().values():
+        # An unreadable record cannot be trusted to describe the package tree
+        # any more than a duplicated one can.
+        ambiguous = len(records) > 1 or not all(readable for _dist, _name, readable in records)
+        for dist, name, _readable in records:
             try:
-                target = dist.locate_file(rel)
+                record = dist.read_text("RECORD")
             except Exception:
+                # An unreadable or absent RECORD says nothing about damage: editable
+                # installs and system packages legitimately have none.
                 continue
-            key = os.path.normcase(str(target))
-            # Before the filter: a dropped row still owns the path it claims.
-            owners[key] = owners.get(key, 0) + 1
-            if _shared_non_runtime(rel):
+            if not record:
                 continue
-            # The size field is optional and real wheels do leave it blank. Keep
-            # the row anyway with an unknown size: existence is still checkable,
-            # and dropping the row meant a deletion went unreported.
-            recorded: Optional[int] = None
-            if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
+            for row in csv.reader(io.StringIO(record)):
+                rel = row[0] if row else ""
+                # A trailing slash is a directory entry, which has nothing to check.
+                if not rel or rel.endswith("/"):
+                    continue
+                # Installer-owned metadata is rewritten in place and drifts from the
+                # size recorded inside itself; .pyc is regenerated from source.
+                if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                    continue
                 try:
-                    recorded = int(row[2])
-                except ValueError:
-                    recorded = None
-            entries.append((name, rel, recorded, target, key))
+                    target = dist.locate_file(rel)
+                except Exception:
+                    continue
+                key = os.path.normcase(str(target))
+                # Before either filter: a row we cannot verify still owns the path
+                # it claims, so another distribution's size is ambiguous too.
+                owners[key] = owners.get(key, 0) + 1
+                if ambiguous or _shared_non_runtime(rel):
+                    continue
+                # The size field is optional and real wheels do leave it blank. Keep
+                # the row anyway with an unknown size: existence is still checkable,
+                # and dropping the row meant a deletion went unreported.
+                recorded: Optional[int] = None
+                if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
+                    try:
+                        recorded = int(row[2])
+                    except ValueError:
+                        recorded = None
+                entries.append((name, rel, recorded, target, key))
 
     found: List[str] = []
     for name, rel, recorded, target, key in entries:

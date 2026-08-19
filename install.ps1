@@ -5132,8 +5132,27 @@ exit 0
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+    $installedPackageVersion = (& $VenvPython -c "
+import sys
+try:
+    from studio.install_manifest import installed_version_probe
+except Exception:
+    # --package installs something that does not ship studio/. Report what the
+    # old probe would have, rather than claiming the version is unknown.
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        print(version(sys.argv[1]))
+    except PackageNotFoundError:
+        sys.exit(1)
+    sys.exit(0)
+installed, conflict = installed_version_probe(sys.argv[1])
+print(installed)
+sys.exit(2 if conflict else (0 if installed else 1))
+" $PackageName 2>$null | Out-String).Trim()
+    $_installedPackageVersionExit = $LASTEXITCODE
+    if ($_installedPackageVersionExit -eq 2) {
+        substep "duplicate metadata found for $PackageName; the dependency pass will repair it" "Cyan"
+    } elseif ($_installedPackageVersionExit -eq 0 -and $installedPackageVersion) {
         step $PackageName "$installedPackageVersion installed"
     } else {
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"

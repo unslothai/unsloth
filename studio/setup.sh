@@ -1795,16 +1795,28 @@ fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
-    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
-import sys; from importlib.metadata import version
-print(version(sys.argv[1]))
-" "$_PKG_NAME" 2>/dev/null || echo "")
+    _INSTALLED_VERSION_PROBE_EXIT=0
+    if INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[2])
+import install_manifest
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
+" "$_PKG_NAME" "$SCRIPT_DIR" 2>/dev/null); then
+        :
+    else
+        _INSTALLED_VERSION_PROBE_EXIT=$?
+        INSTALLED_VER=""
+    fi
 
     LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
-    if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
+    if [ "$_INSTALLED_VERSION_PROBE_EXIT" -eq 2 ]; then
+        substep "duplicate metadata found for a core package -- forcing package repair..."
+    elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
         # A pre-#6483-fix install can be stuck on anyio>=4.14 even though

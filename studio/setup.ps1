@@ -4730,14 +4730,28 @@ $SkipPythonDeps = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
-    $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
+    $_InstalledVersionProbeExit = 1
+    $InstalledVer = try {
+        $_installedVersionOutput = & python -c "
+import sys
+sys.path.insert(0, sys.argv[2])
+import install_manifest
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
+" $_PkgName $PSScriptRoot 2>$null
+        $_InstalledVersionProbeExit = $LASTEXITCODE
+        ($_installedVersionOutput | Out-String).Trim()
+    } catch { "" }
     $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
     } catch { }
 
-    if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
+    if ($_InstalledVersionProbeExit -eq 2) {
+        substep "duplicate metadata found for a core package -- forcing package repair..." "Cyan"
+    } elseif ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
         # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
@@ -5258,6 +5272,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and 'studio update'
 # goes through uv (--upgrade-package), whose pip fallback no-ops on the
 # already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# Duplicate metadata repair is the one pass that DOES reinstall unsloth under
+# SKIP_STUDIO_BASE, so the CLI wraps this script in its launcher transaction.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."

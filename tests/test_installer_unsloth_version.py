@@ -25,8 +25,10 @@ def _extract(pattern: str, source: str) -> str:
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "POSIX shell is unavailable")
 def test_posix_installer_reports_installed_distribution_version():
     source = INSTALL_SH.read_text(encoding = "utf-8")
+    # Two blocks now: the probe, whose exit code carries the conflict signal,
+    # and the report that acts on it.
     reporter = _extract(
-        r"_installed_package_version=\$\(.*?^fi",
+        r"^_installed_package_version_exit=0.*?^fi.*?^fi",
         source,
     )
     result = subprocess.run(
