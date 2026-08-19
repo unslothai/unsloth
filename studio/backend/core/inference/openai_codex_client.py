@@ -292,6 +292,27 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
 _stale_catalogs: set[str] = set()
 
 
+# One counter per connection, so a catalog read that was overtaken (by a rebind, a
+# disconnect, or a newer read) cannot commit its result over the one that replaced it.
+_catalog_requests: dict[str, int] = {}
+
+
+def _begin_catalog_request(provider_id: str) -> int:
+    ticket = _catalog_requests.get(provider_id, 0) + 1
+    _catalog_requests[provider_id] = ticket
+    return ticket
+
+
+def subscription_catalog_matches_account(provider_id: str, account_id: str | None) -> bool:
+    """Whether the catalog held for this connection belongs to the account named.
+
+    The OAuth bundle is shared through the installation DB but the catalog is per
+    process, so another worker can rebind a connection this one still has a catalog for.
+    """
+    known = _catalog_accounts.get(provider_id)
+    return known is None or account_id is None or known == account_id
+
+
 def mark_subscription_catalog_stale(provider_id: str) -> None:
     _stale_catalogs.add(provider_id)
 
@@ -316,6 +337,8 @@ def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any
 
 
 def forget_subscription_models(provider_id: str) -> None:
+    # Retire any read still in flight: its result describes what was just dropped.
+    _begin_catalog_request(provider_id)
     _models_cache.pop(provider_id, None)
     _offered_models.pop(provider_id, None)
     _catalog_accounts.pop(provider_id, None)
@@ -342,6 +365,7 @@ async def list_subscription_models(
         if cached is not None:
             return cached
 
+    ticket = _begin_catalog_request(provider_id)
     url = _validated_models_url()
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -384,6 +408,11 @@ async def list_subscription_models(
         for model in (_normalize_subscription_model(item) for item in raw or [])
         if model is not None
     ]
+    if _catalog_requests.get(provider_id) != ticket:
+        # Overtaken while this request was out. Committing now would reinstate a catalog
+        # for an account this connection may no longer be on, and clear the mark that
+        # says so, so hand the caller the models without storing them.
+        return models
     if len(_models_cache) >= _MODELS_CACHE_MAX_ENTRIES:
         # Only the TTL response cache is bounded here. The per-account authorization
         # evidence deliberately outlives it: dropping it would make every other

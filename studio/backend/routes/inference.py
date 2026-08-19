@@ -12401,6 +12401,7 @@ async def _proxy_to_external_provider(
         from core.inference.openai_codex_auth import (
             OPENAI_CODEX_API_BASE,
             CodexAuthError,
+            load_oauth_bundle,
             resolve_access,
         )
         from core.inference.openai_codex_client import (
@@ -12411,7 +12412,10 @@ async def _proxy_to_external_provider(
             ensure_subscription_models,
             offered_subscription_model,
             offered_subscription_model_ids,
+            forget_subscription_models,
+            mark_subscription_catalog_stale,
             subscription_catalog_known,
+            subscription_catalog_matches_account,
             subscription_catalog_stale,
         )
 
@@ -12443,6 +12447,17 @@ async def _proxy_to_external_provider(
         # The seed is only a seed: /codex/models is what the plan can reach, and the
         # provider routes already accept saving a listed slug that is newer than it.
         # Gating chat on the seed alone rejects the model the picker just offered.
+        # The OAuth bundle is shared through the installation DB, the catalog is not, so
+        # another worker can have rebound this connection since this process last read
+        # one. Drop a catalog that belongs to a different account before trusting it.
+        current_bundle = load_oauth_bundle(payload.provider_id)
+        current_account = current_bundle.get("account_id") if current_bundle else None
+        if current_account and not subscription_catalog_matches_account(
+            payload.provider_id, current_account
+        ):
+            forget_subscription_models(payload.provider_id)
+            mark_subscription_catalog_stale(payload.provider_id)
+
         def _allowed_codex_models() -> set[str]:
             """What this connection may call, in order of what is actually known.
 

@@ -1961,3 +1961,82 @@ def test_evicting_the_response_cache_keeps_authorization_evidence(monkeypatch):
         forget_subscription_models("provider-8")
         forget_subscription_models("other")
         codex_client._models_cache.clear()
+
+
+def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
+    """A read overtaken by a rebind must not reinstate the account it was reading for.
+
+    Committing late would also clear the mark that says the saved models are unproven,
+    turning a self-correcting state into a sticky one.
+    """
+    import httpx
+
+    forget_subscription_models("provider-9")
+
+    class Rebinding:
+        async def get(self, *_args, **_kwargs):
+            # The rebind lands while this read is out.
+            forget_subscription_models("provider-9")
+            mark = codex_client.mark_subscription_catalog_stale
+            mark("provider-9")
+            return httpx.Response(200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Rebinding())
+    try:
+        models = asyncio.run(list_subscription_models("provider-9", "token-a", "acct-a"))
+        assert [model["id"] for model in models] == ["gpt-5.4"]
+        # Returned to its caller, but never stored over what replaced it.
+        assert codex_client.subscription_catalog_known("provider-9") is False
+        assert codex_client.subscription_catalog_stale("provider-9") is True
+    finally:
+        forget_subscription_models("provider-9")
+
+
+def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
+    """The OAuth bundle is shared through the DB; the catalog is per process.
+
+    Studio serializes token refreshes across workers on purpose, so this process can hold
+    a catalog for an account the connection has since moved off.
+    """
+    stale_slug = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+    codex_client._offered_models["codex-1"] = {stale_slug: {"id": stale_slug, "listed": True}}
+    codex_client._catalog_accounts["codex-1"] = "acct-a"
+
+    # What the shared DB now says this connection is bound to.
+    monkeypatch.setattr(
+        codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"}
+    )
+    try:
+        refused = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
+        assert refused.status_code == 401, refused.detail
+        # The catalog for the previous account is gone and the row is unproven again.
+        assert codex_client.subscription_catalog_known("codex-1") is False
+        assert codex_client.subscription_catalog_stale("codex-1") is True
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_the_model_route_reports_a_dead_connection(monkeypatch):
+    """The editor route must say reconnect rather than answer with a healthy seed list."""
+    from fastapi import HTTPException
+    from routes import openai_codex_auth as codex_routes
+
+    monkeypatch.setattr(codex_routes, "_provider", lambda provider_id: {"id": provider_id})
+    monkeypatch.setattr(codex_routes.codex_auth, "auth_status", lambda _id: "connected")
+
+    async def _needs_reauth(_provider_id):
+        raise codex_auth.CodexAuthError("ChatGPT authorization is no longer valid.")
+
+    monkeypatch.setattr(codex_routes.codex_auth, "resolve_access", _needs_reauth)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            codex_routes.list_subscription_models(
+                "provider-10", _credential = ("user", "session"), via_api_key = False
+            )
+        )
+    assert excinfo.value.status_code == 401
+    assert "no longer valid" in str(excinfo.value.detail)

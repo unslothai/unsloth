@@ -172,6 +172,11 @@ async def list_subscription_models(
         models = await codex_client.list_subscription_models(
             provider_id, token, account_id, force = refresh
         )
+    except (codex_auth.CodexAuthError, codex_client.CodexReauthorizationError) as exc:
+        # resolve_access has already marked the connection as needing reauthorization.
+        # Answering with a successful curated list would leave the open editor showing a
+        # healthy connection and offering seeds it can save but never use.
+        raise HTTPException(status_code = 401, detail = str(exc)) from exc
     except Exception as exc:
         logger.warning(
             "openai_codex.model_list_failed",
