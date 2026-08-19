@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import threading
+import time
 
 import httpx
 import pytest
@@ -948,19 +949,63 @@ class TestAnthropicToolNonStreaming:
             pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
         ],
     )
-    def test_generator_is_drained_off_the_event_loop(self, helper, event):
+    def test_complete_response_build_keeps_event_loop_responsive(self, helper, event):
         loop_thread = threading.current_thread()
         generator_threads = []
 
         def _run_gen():
             generator_threads.append(threading.current_thread())
+            time.sleep(0.08)
             yield event
 
-        response = asyncio.run(helper(_run_gen, "msg_1", "m"))
+        async def _run():
+            task = asyncio.create_task(helper(_run_gen, "msg_1", "m"))
+            await asyncio.sleep(0)
+            heartbeat_ticks = 0
+            while not task.done():
+                heartbeat_ticks += 1
+                await asyncio.sleep(0.005)
+            return await task, heartbeat_ticks
+
+        response, heartbeat_ticks = asyncio.run(_run())
 
         assert response.status_code == 200
+        assert heartbeat_ticks > 0
         assert len(generator_threads) == 1
         assert generator_threads[0] is not loop_thread
+
+    def test_tool_event_reduction_keeps_event_loop_responsive(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reduction_threads = []
+        real_strip = inf_mod._strip_tool_xml_for_display
+
+        def _slow_strip(*args, **kwargs):
+            reduction_threads.append(threading.current_thread())
+            time.sleep(0.08)
+            return real_strip(*args, **kwargs)
+
+        monkeypatch.setattr(inf_mod, "_strip_tool_xml_for_display", _slow_strip)
+
+        def _run_gen():
+            yield {"type": "content", "text": "ok"}
+
+        async def _run():
+            task = asyncio.create_task(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+            await asyncio.sleep(0)
+            heartbeat_ticks = 0
+            while not task.done():
+                heartbeat_ticks += 1
+                await asyncio.sleep(0.005)
+            return await task, heartbeat_ticks
+
+        response, heartbeat_ticks = asyncio.run(_run())
+
+        assert response.status_code == 200
+        assert heartbeat_ticks > 0
+        assert len(reduction_threads) == 1
+        assert reduction_threads[0] is not threading.current_thread()
+        assert reduction_threads[0].daemon is True
 
     @pytest.mark.parametrize(
         ("helper", "event"),

@@ -22,6 +22,7 @@ import shutil
 import tempfile
 from importlib.util import find_spec
 from typing import Callable, Optional
+from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,10 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS):
                 keys.append(key)
-    return keys
+    # A sync from a Mac uploads Finder metadata too, under the shard's own extension, and
+    # _validate_single_extension_family cannot see it. Nothing to read here, so a key is
+    # dropped only when the object it would describe is in the same listing.
+    return drop_shadowed_appledouble_names(keys)
 
 
 def _extension_family(key: str) -> str:
