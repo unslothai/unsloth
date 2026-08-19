@@ -85,6 +85,7 @@ export interface TrainingConfigState {
   uploadedEvalFile: string | null;
   epochs: number;
   contextLength: number;
+  contextLengthManuallySet: boolean;
   learningRate: number;
   embeddingLearningRate: number | null;
   optimizerType: string;
@@ -139,6 +140,7 @@ export interface TrainingConfigState {
 export type AdvancedSettingsBaseline = Partial<
   Pick<
     TrainingConfigState,
+    | "contextLength"
     | "optimizerType"
     | "lrSchedulerType"
     | "weightDecay"
