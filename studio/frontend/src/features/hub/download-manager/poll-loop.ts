@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { carriesOverSeed } from "./adopt-rules";
+import { carriesOverSeed, seededMeasuredTransfer } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -613,6 +613,14 @@ export async function startJob(
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
+  // Whatever the counters mean, they keep meaning it. Seeding the bytes without
+  // this said "measured" for a figure the poll only held, which is the
+  // "0 B left" the guard exists to stop. Not carrying the seed zeroes the
+  // counters, so there is no held figure and undefined is the honest answer.
+  const seedMeasuredTransfer = seededMeasuredTransfer(
+    carryOverSeed,
+    existing?.measuredTransfer,
+  );
   // An adopted job never called apiStart, so it learns the run's generation from
   // the probe (or persisted value) to scope a later cancel to this exact run.
   const seedGeneration = opts.adopt
@@ -654,6 +662,9 @@ export async function startJob(
     // fallback happens long after a start.
     ...(adopted.cancelTransport
       ? { cancelTransport: adopted.cancelTransport }
+      : {}),
+    ...(seedMeasuredTransfer !== undefined
+      ? { measuredTransfer: seedMeasuredTransfer }
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
