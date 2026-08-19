@@ -10,7 +10,11 @@ import type { NativeIntent } from "./types";
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
-  | { status: "attach"; count: number; kind: "docs" | "images" | "audio" | "mixed" }
+  | {
+      status: "attach";
+      count: number;
+      kind: "docs" | "images" | "audio" | "video" | "mixed";
+    }
   // `reason` explains a refusal the file types alone do not. Absent means the
   // files themselves are the problem.
   | { status: "invalid"; reason?: string };
@@ -30,6 +34,7 @@ interface NativeModelDropOptions {
   onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachImages?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachAudio?: (intents: NativeIntent[]) => Promise<void> | void;
+  onAttachVideo?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
 function canAttachDocs(options: NativeModelDropOptions): boolean {
@@ -44,6 +49,10 @@ function canAttachAudio(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachAudio);
 }
 
+function canAttachVideo(options: NativeModelDropOptions): boolean {
+  return Boolean(options.onAttachVideo);
+}
+
 function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   return (
     options.nativePathLeasesSupported &&
@@ -56,12 +65,18 @@ function attachmentCount(dropped: ReturnType<typeof classifyDropPaths>): number 
   if (
     dropped.kind === "docs" ||
     dropped.kind === "images" ||
-    dropped.kind === "audio"
+    dropped.kind === "audio" ||
+    dropped.kind === "video"
   ) {
     return dropped.paths.length;
   }
   if (dropped.kind === "attach") {
-    return dropped.docs.length + dropped.images.length + dropped.audio.length;
+    return (
+      dropped.docs.length +
+      dropped.images.length +
+      dropped.audio.length +
+      dropped.video.length
+    );
   }
   return 0;
 }
@@ -98,12 +113,18 @@ function dropStateForPaths(
       ? { status: "attach", count: dropped.paths.length, kind: "audio" }
       : { status: "invalid" };
   }
+  if (dropped.kind === "video") {
+    return canAttachVideo(options)
+      ? { status: "attach", count: dropped.paths.length, kind: "video" }
+      : { status: "invalid" };
+  }
   if (dropped.kind === "attach") {
     const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
     const imagesSupported =
       dropped.images.length === 0 || canAttachImages(options);
     const audioSupported = dropped.audio.length === 0 || canAttachAudio(options);
-    return docsSupported && imagesSupported && audioSupported
+    const videoSupported = dropped.video.length === 0 || canAttachVideo(options);
+    return docsSupported && imagesSupported && audioSupported && videoSupported
       ? { status: "attach", count: attachmentCount(dropped), kind: "mixed" }
       : { status: "invalid" };
   }
@@ -121,9 +142,11 @@ interface RegisteredDrop {
   docs: NativeIntent[];
   images: NativeIntent[];
   audio: NativeIntent[];
+  video: NativeIntent[];
   docsFailed: number;
   imagesFailed: number;
   audioFailed: number;
+  videoFailed: number;
   error?: Error;
 }
 
@@ -152,7 +175,7 @@ async function registerEach(paths: string[]) {
 async function registerDroppedAttachments(
   dropped: Extract<
     ReturnType<typeof classifyDropPaths>,
-    { kind: "docs" | "images" | "audio" | "attach" }
+    { kind: "docs" | "images" | "audio" | "video" | "attach" }
   >,
 ): Promise<RegisteredDrop> {
   const docPaths =
@@ -173,19 +196,28 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.audio
         : [];
-  const [docs, images, audio] = await Promise.all([
+  const videoPaths =
+    dropped.kind === "video"
+      ? dropped.paths
+      : dropped.kind === "attach"
+        ? dropped.video
+        : [];
+  const [docs, images, audio, video] = await Promise.all([
     registerEach(docPaths),
     registerEach(imagePaths),
     registerEach(audioPaths),
+    registerEach(videoPaths),
   ]);
   return {
     docs: docs.intents,
     images: images.intents,
     audio: audio.intents,
+    video: video.intents,
     docsFailed: docs.failed,
     imagesFailed: images.failed,
     audioFailed: audio.failed,
-    error: docs.error ?? images.error ?? audio.error,
+    videoFailed: video.failed,
+    error: docs.error ?? images.error ?? audio.error ?? video.error,
   };
 }
 
@@ -262,6 +294,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           dropped.kind === "docs" ||
           dropped.kind === "images" ||
           dropped.kind === "audio" ||
+          dropped.kind === "video" ||
           dropped.kind === "attach"
         ) {
           const needsDocs =
@@ -273,6 +306,9 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           const needsAudio =
             dropped.kind === "audio" ||
             (dropped.kind === "attach" && dropped.audio.length > 0);
+          const needsVideo =
+            dropped.kind === "video" ||
+            (dropped.kind === "attach" && dropped.video.length > 0);
           if (needsDocs && !canAttachDocs(currentOptions)) {
             toast.error("Attaching files needs the desktop backend", {
               description: "Retry once Studio has finished starting up.",
@@ -291,12 +327,19 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             });
             return;
           }
+          if (needsVideo && !canAttachVideo(currentOptions)) {
+            toast.error("Attaching video is unavailable right now", {
+              description: "Retry once this chat is ready for attachments.",
+            });
+            return;
+          }
           // Hold the send gate across registration too. Between the drop and the
           // intents reaching the queue there is nothing for the composer to see,
           // so an Enter in that window would send the text without the image.
           const store = useNativeIntentStore.getState();
           if (needsImages) store.beginImageDropRegistration();
           if (needsAudio) store.beginAudioDropRegistration();
+          if (needsVideo) store.beginVideoDropRegistration();
           try {
             const registered = await registerDroppedAttachments(dropped);
             const latestOptions = optionsRef.current;
@@ -320,19 +363,27 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.audioFailed > 0 && failureKey) {
               store.failAudioDropRegistration(failureKey);
             }
-            // A failed document cancels a send parked behind the image or audio
-            // gate too, or the draft goes out with only what survived.
+            if (registered.videoFailed > 0 && failureKey) {
+              store.failVideoDropRegistration(failureKey);
+            }
+            // A failed document cancels a send parked behind the image, audio or
+            // video gate too, or the draft goes out with only what survived.
             if (registered.docsFailed > 0 && failureKey) {
               if (needsImages) store.failImageDropRegistration(failureKey);
               if (needsAudio) store.failAudioDropRegistration(failureKey);
+              if (needsVideo) store.failVideoDropRegistration(failureKey);
             }
             if (registered.audio.length > 0) {
               await attachOptions.onAttachAudio?.(registered.audio);
             }
+            if (registered.video.length > 0) {
+              await attachOptions.onAttachVideo?.(registered.video);
+            }
             if (
               registered.docsFailed +
                 registered.imagesFailed +
-                registered.audioFailed >
+                registered.audioFailed +
+                registered.videoFailed >
               0
             ) {
               toast.error("Could not attach dropped files", {
@@ -347,12 +398,16 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (needsAudio && failureKey) {
               store.failAudioDropRegistration(failureKey);
             }
+            if (needsVideo && failureKey) {
+              store.failVideoDropRegistration(failureKey);
+            }
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),
             });
           } finally {
             if (needsImages) store.endImageDropRegistration();
             if (needsAudio) store.endAudioDropRegistration();
+            if (needsVideo) store.endVideoDropRegistration();
           }
           return;
         }

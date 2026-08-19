@@ -13,6 +13,7 @@ import { classifyDropPaths, CHAT_AUDIO_DROP_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
+import { VIDEO_ACCEPT } from "../src/lib/video-utils.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -28,6 +29,7 @@ const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)
 const RUST_AUDIO_ATTACHMENT_EXTS_RE = /AUDIO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_AUDIO_MIME_RE = /Some\("(audio\/[^"]+)"\)/g;
 const RUST_VIDEO_ATTACHMENT_EXTS_RE = /VIDEO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_VIDEO_MIME_RE = /Some\("(video\/[^"]+)"\)/g;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
 const RUST_MIME_ARM_RE = /Some\("(image\/[^"]+)"\)/g;
@@ -403,9 +405,39 @@ test("documents, images and audio can be dropped together", () => {
   }
 });
 
-// The reference pickers register video paths natively, so the two lists have to
-// stay in step or a droppable clip starts being turned away.
-test("frontend and Rust accept the same video extensions", () => {
+test("a video routes to chat video attachments", () => {
+  const dropped = classifyDropPaths(["/clips/demo.mp4"]);
+  assert.equal(dropped.kind, "video");
+  if (dropped.kind === "video") {
+    assert.deepEqual(dropped.paths, ["/clips/demo.mp4"]);
+  }
+});
+
+// llama-server expands one clip into a run of frames, so a batch would spend
+// the whole context before the model saw any of it.
+test("more than one video is not a drop target", () => {
+  assert.equal(
+    classifyDropPaths(["/clips/a.mp4", "/clips/b.mov"]).kind,
+    "unsupported",
+  );
+});
+
+test("video rides along in a mixed attachment drop", () => {
+  const dropped = classifyDropPaths([
+    "/docs/a.pdf",
+    "/photos/cat.png",
+    "/clips/demo.webm",
+  ]);
+  assert.equal(dropped.kind, "attach");
+  if (dropped.kind === "attach") {
+    assert.deepEqual(dropped.docs, ["/docs/a.pdf"]);
+    assert.deepEqual(dropped.images, ["/photos/cat.png"]);
+    assert.deepEqual(dropped.video, ["/clips/demo.webm"]);
+    assert.deepEqual(dropped.audio, []);
+  }
+});
+
+test("frontend and Rust accept the same chat video extensions", () => {
   const frontend = CHAT_VIDEO_DROP_ACCEPT.split(",")
     .map((ext) => ext.trim().toLowerCase())
     .sort();
@@ -422,6 +454,32 @@ test("frontend and Rust accept the same video extensions", () => {
     .sort();
 
   assert.deepEqual(rust, frontend);
+});
+
+// Same seam as the vision and audio checks: a video MIME the adapter does not
+// claim would be read off disk and then refused by the composer.
+test("every video MIME Rust stamps is one the video adapter claims", () => {
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
+    "utf8",
+  );
+  const claimed = new Set(
+    VIDEO_ACCEPT.split(",").map((token) => token.trim().toLowerCase()),
+  );
+  const stamped = [
+    ...(rustSource.match(MIME_MATCH_BODY_RE)?.[1] ?? "").matchAll(
+      RUST_VIDEO_MIME_RE,
+    ),
+  ].map((match) => match[1]);
+
+  assert.ok(stamped.length > 0, "Rust stamps no video MIME types");
+  for (const mime of stamped) {
+    assert.ok(claimed.has(mime), `the video adapter does not claim ${mime}`);
+  }
+});
+
+test("the rejection hint names video too", () => {
+  assert.ok(SUPPORTED_DROP_HINT.includes(CHAT_VIDEO_DROP_ACCEPT));
 });
 
 test("frontend and Rust accept the same chat audio extensions", () => {
