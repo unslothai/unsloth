@@ -3450,6 +3450,13 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         # loop and can newly fail the n > 1 and non-streaming guards. Same filter the
         # sticky boundary applies, and for the same reason.
         branch = conversation_archive.branch_message_texts(branch_messages, ("assistant",))
+        if branch_messages and not branch:
+            # A branch with no reply of its own never recorded an epoch. Without this the
+            # filter below is skipped for an empty branch rather than applied to it, and
+            # the scan goes thread-wide again: editing or regenerating the FIRST user turn
+            # re-sends [system, user], which is exactly that shape. `_sticky_compaction_
+            # boundary` returns 0 there, so the two would disagree about the same branch.
+            return False
         live = set(branch or ())
         rows = [
             message

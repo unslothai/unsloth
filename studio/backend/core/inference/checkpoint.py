@@ -168,6 +168,48 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     return f"{_OPEN}\n{_HEADER}{tail}\n\n{lines}\n{_CLOSE}"
 
 
+_BLOCK = re.compile(
+    re.escape(_OPEN) + r".*?" + re.escape(_CLOSE) + r"\s*", re.IGNORECASE | re.DOTALL
+)
+
+
+def _block_items(text: str) -> list[str]:
+    """The bullets a system message's existing block holds, oldest first.
+
+    Parsed rather than discarded: by the time a second reset happens the turns that
+    produced the first block are already gone, so the block text is the only copy of those
+    standing instructions left. `_neutralise` defangs delimiters in quoted user text, so
+    a real `</carried_forward>` can only be one we wrote.
+    """
+    items: list[str] = []
+    for body in _BLOCK.findall(text):
+        for line in body.splitlines():
+            if line.startswith("- ") and line[2:].strip():
+                items.append(line[2:].strip())
+    return items
+
+
+def _recap(items: list[str], *, max_tokens: int, max_items: int) -> list[str]:
+    """Re-apply the caps to a merged list. Newest-first selection, oldest-first render."""
+    chosen: list[str] = []
+    seen: set[str] = set()
+    spent = 0
+    for item in reversed(items):
+        if len(chosen) >= max_items:
+            break
+        if item in seen:
+            # The same instruction can be carried, evicted again on a later reset, and
+            # re-selected. Newest wins, which is the order this loop already walks.
+            continue
+        cost = estimate_message_tokens({"role": "user", "content": item})
+        if spent + cost > max_tokens:
+            continue
+        chosen.append(item)
+        seen.add(item)
+        spent += cost
+    return list(reversed(chosen))
+
+
 def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     """Rewrite the leading system/developer message with the block appended.
 
@@ -180,7 +222,7 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     out = list(messages)
     for index, message in enumerate(out):
         if message.get("role") in ("system", "developer"):
-            text = _text_of(message).rstrip()
+            text = _BLOCK.sub("", _text_of(message)).rstrip()
             joined = f"{text}\n\n{block}" if text else block
             out[index] = {**message, "content": joined}
             return out
@@ -240,9 +282,22 @@ def fit_checkpoint_context(
         """`kept` plus the carried-forward block built from everything it dropped."""
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
-        text = render_checkpoint(
-            carried_forward_items(evicted, max_tokens = budget), searchable = searchable
-        )
+        items = carried_forward_items(evicted, max_tokens = budget)
+        # A second reset inside one request refits messages this function already rewrote,
+        # so the system turn can arrive carrying a block of its own. Merged and re-capped
+        # into ONE block rather than appended after it: appending gave each reset its own
+        # independently capped block, so MAX_TOKENS and MAX_ITEMS bounded a block instead
+        # of the system turn, and the accumulated blocks are unevictable. Merged, not
+        # dropped: by now the turns that produced the first block are gone, and that text
+        # is the only copy of those instructions left.
+        prior = _block_items("".join(
+            _text_of(message)
+            for message in kept
+            if message.get("role") in ("system", "developer")
+        ))
+        if prior:
+            items = _recap(prior + items, max_tokens = budget, max_items = MAX_ITEMS)
+        text = render_checkpoint(items, searchable = searchable)
         return _append_to_system(kept, text), text
 
     # Phase one: replay the epoch already in force. WITHOUT this the reset would repeat on

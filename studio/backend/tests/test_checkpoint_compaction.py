@@ -234,6 +234,57 @@ def test_the_block_is_appended_to_an_existing_system_turn_not_prepended_as_a_new
     assert fitted[0]["content"].startswith("you are helpful")
 
 
+def test_a_second_reset_merges_into_one_block_instead_of_stacking_another():
+    """One request can reset twice, and the second fit is handed the first fit's output.
+
+    Appended, each reset added its own independently capped block to the system turn, so
+    MAX_TOKENS and MAX_ITEMS bounded a block rather than the system turn, and the blocks
+    are unevictable: enough of them and an ordinary turn stops fitting at all. Merged and
+    re-capped instead, and the earlier instructions have to survive that merge, because
+    the turns that produced them are already gone by then.
+    """
+    from core.inference import checkpoint
+
+    already = {
+        "role": "system",
+        "content": "you are helpful\n\n"
+        + checkpoint.render_checkpoint(["the earliest instruction, marker ZQXVARA123"]),
+    }
+    merged = checkpoint._append_to_system(
+        [already, {"role": "user", "content": "continue"}],
+        checkpoint.render_checkpoint(
+            ["the earliest instruction, marker ZQXVARA123", "a later one, marker ALPHA9"]
+        ),
+    )
+    system = merged[0]["content"]
+
+    assert system.count("<carried_forward>") == 1
+    assert system.startswith("you are helpful")
+    assert "ZQXVARA123" in system
+    assert "ALPHA9" in system
+    assert len(checkpoint._block_items(system)) == 2
+
+
+def test_the_merged_block_is_re_capped_not_just_concatenated():
+    """The caps apply to the block that ends up in the prompt, not to each contribution."""
+    from core.inference import checkpoint
+
+    items = [f"standing instruction number {n}" for n in range(checkpoint.MAX_ITEMS + 6)]
+
+    recapped = checkpoint._recap(
+        items, max_tokens = checkpoint.MAX_TOKENS, max_items = checkpoint.MAX_ITEMS
+    )
+
+    assert len(recapped) == checkpoint.MAX_ITEMS
+    # Newest kept, oldest dropped, and still rendered oldest first so the supersession
+    # rule in the header stays true.
+    assert recapped == items[-checkpoint.MAX_ITEMS:]
+    # A repeat carried once and evicted again is one item, not two.
+    assert checkpoint._recap(["same thing", "same thing"], max_tokens = 1024, max_items = 8) == [
+        "same thing"
+    ]
+
+
 def test_the_original_messages_are_never_mutated():
     """The list handed in is the request's own branch, and `_branch_boundary` counts it by
     identity."""
@@ -1015,6 +1066,17 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     ]
     assert inference_routes._thread_has_checkpoint("t1", on_branch) is True
     assert inference_routes._thread_has_checkpoint("t1", off_branch) is False
+
+    # A branch with no reply of its own is not an unscoped branch. Editing or regenerating
+    # the FIRST user turn re-sends [system, user], and the assistant-only projection of
+    # that is empty, which read as "no branch given" and put the scan back thread-wide.
+    # `_sticky_compaction_boundary` returns 0 on this shape, so the two disagreed about
+    # the same branch: no boundary replayed, yet the tool loop reopened.
+    user_only = [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": "a brand new question on a fresh branch"},
+    ]
+    assert inference_routes._thread_has_checkpoint("t1", user_only) is False
 
     # And the branch check is textual, so a SHORT abandoned reply rides in on a longer
     # live one. The sticky boundary prefers exact matches for this exact collision;
