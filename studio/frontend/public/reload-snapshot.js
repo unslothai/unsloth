@@ -6,6 +6,12 @@
   var maxSnapshotLength = 3 * 1024 * 1024;
   var maxSnapshotAgeMs = 10 * 1000;
   var maxMaterializedMediaPixels = 1500 * 1000;
+  var appearanceStorageKey = "unsloth_appearance_customization";
+  var maxImportedFonts = 3;
+  var maxImportedFontLength = 2200000;
+  var maxImportedFontsLength = 4400000;
+  var fontDataUrlPattern =
+    /^data:(?:font\/(?:woff2?|ttf|otf|sfnt)|application\/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$/;
   var overlay = null;
   var removalTimer = null;
   // Appearance reaches the page as inline custom properties on <html> plus
@@ -137,6 +143,60 @@
     applyAppearanceAttributes(root, appearance);
   }
 
+  function registerImportedFonts() {
+    if (
+      typeof FontFace !== "function" ||
+      !document.fonts ||
+      typeof document.fonts.add !== "function"
+    ) {
+      return;
+    }
+    try {
+      var raw = localStorage.getItem(appearanceStorageKey);
+      if (!raw || raw.length > maxImportedFontsLength + 100000) return;
+      var persisted = JSON.parse(raw);
+      var customization =
+        persisted && persisted.state && persisted.state.customization;
+      if (!customization || !Array.isArray(customization.importedFonts)) return;
+      var selected = {};
+      ["uiFont", "headingFont", "chatFont", "codeFont"].forEach(
+        function (key) {
+          var name = customization[key];
+          if (typeof name === "string") selected[name] = true;
+        },
+      );
+      var total = 0;
+      var seen = {};
+      customization.importedFonts
+        .slice(0, maxImportedFonts)
+        .forEach(function (font) {
+          var name = font && font.name;
+          var dataUrl = font && font.dataUrl;
+          if (
+            typeof name !== "string" ||
+            !selected[name] ||
+            seen[name] ||
+            !name ||
+            name.length > 100 ||
+            /[;{}()<>"'\\/,\x60\x00-\x1f\x7f]/.test(name) ||
+            typeof dataUrl !== "string" ||
+            dataUrl.length > maxImportedFontLength ||
+            total + dataUrl.length > maxImportedFontsLength ||
+            !fontDataUrlPattern.test(dataUrl)
+          ) {
+            return;
+          }
+          total += dataUrl.length;
+          seen[name] = true;
+          try {
+            var face = new FontFace(name, "url(" + dataUrl + ")");
+            document.fonts.add(face);
+            face.load().catch(function () {});
+          } catch (error) {}
+        });
+    } catch (error) {}
+  }
+
   function restoreScrollState(root) {
     root
       .querySelectorAll(
@@ -166,6 +226,7 @@
       return;
     }
 
+    registerImportedFonts();
     applyAppearance(snapshot.appearance);
     overlay = document.createElement("div");
     overlay.className = "reload-snapshot";

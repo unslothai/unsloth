@@ -259,10 +259,12 @@ function createEnvironment(options: {
   htmlVariables?: Record<string, string>;
   htmlAttributes?: Record<string, string>;
   styleSheets?: string[];
+  localStorage?: Map<string, string>;
 }) {
   const storage = options.storage ?? new Map<string, string>();
   const listeners = new Map<string, Listener[]>();
   const animationFrames: Array<() => void> = [];
+  const fontFaces: Array<{ family: string; source: string }> = [];
   const appended: Array<{ innerHTML: string; removed: boolean }> = [];
   const bodyTree = options.rootTree
     ? createElement({
@@ -310,6 +312,11 @@ function createEnvironment(options: {
   const document = {
     body,
     documentElement,
+    fonts: {
+      add(face: { family: string; source: string }) {
+        fontFaces.push(face);
+      },
+    },
     getElementById: () => root,
     querySelectorAll: (selector: string) =>
       selector === 'link[rel="stylesheet"]'
@@ -397,6 +404,20 @@ function createEnvironment(options: {
     innerHeight: options.viewport?.height ?? 900,
     innerWidth: options.viewport?.width ?? 1440,
     location: { pathname: "/chat", search: "" },
+    localStorage: {
+      getItem: (key: string) => options.localStorage?.get(key) ?? null,
+    },
+    FontFace: class {
+      family: string;
+      source: string;
+      constructor(family: string, source: string) {
+        this.family = family;
+        this.source = source;
+      }
+      load() {
+        return Promise.resolve(this);
+      }
+    },
     performance: {
       getEntriesByType: () => [{ type: options.navigationType }],
     },
@@ -414,6 +435,7 @@ function createEnvironment(options: {
 
   return {
     storage,
+    fontFaces,
     appended,
     htmlVariables: documentElement.style,
     htmlAttributes,
@@ -608,6 +630,62 @@ test("adapts root-scoped palette state to the snapshot shell", () => {
   assert.match(
     indexCss,
     /\.reload-snapshot-shell\[data-palette="minimal"\][\s\S]*?\.palette-card\[data-palette-value="minimal"\]/,
+  );
+});
+
+test("registers selected imported fonts before restoring the shell", () => {
+  const persistedAppearance = new Map([
+    [
+      "unsloth_appearance_customization",
+      JSON.stringify({
+        state: {
+          customization: {
+            uiFont: "Studio Sans",
+            headingFont: "Bundled Heading",
+            chatFont: null,
+            codeFont: null,
+            importedFonts: [
+              {
+                name: "Studio Sans",
+                dataUrl: "data:font/woff2;base64,QUJD",
+              },
+              {
+                name: "Unused Font",
+                dataUrl: "data:font/woff2;base64,REVG",
+              },
+            ],
+          },
+        },
+        version: 7,
+      }),
+    ],
+  ]);
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    localStorage: persistedAppearance,
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    localStorage: persistedAppearance,
+  });
+  assert.deepEqual(
+    incoming.fontFaces.map((face) => ({
+      family: face.family,
+      source: face.source,
+    })),
+    [
+      {
+        family: "Studio Sans",
+        source: "url(data:font/woff2;base64,QUJD)",
+      },
+    ],
   );
 });
 
