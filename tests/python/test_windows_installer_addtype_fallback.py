@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -78,13 +79,30 @@ LOCK_CHAIN = (
 
 
 def _run_powershell(script: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = env if env is not None else os.environ.copy(),
-    )
+    # Through a FILE, not -Command: these scripts carry the whole extracted helper
+    # chain, and Windows caps a command line at 32767 characters. Passed inline,
+    # the moment the chain grows past that every test here dies as WinError 206
+    # rather than testing anything. utf-8-sig because Windows PowerShell 5.1 reads
+    # a BOM-less .ps1 as ANSI; utf-8 with replacement on the way back because the
+    # default console codepage there cannot decode what PowerShell writes.
+    handle, name = tempfile.mkstemp(suffix = ".ps1")
+    os.close(handle)
+    try:
+        Path(name).write_text(script, encoding = "utf-8-sig")
+        return subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 120,
+            env = env if env is not None else os.environ.copy(),
+        )
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
 
 
 def _script(

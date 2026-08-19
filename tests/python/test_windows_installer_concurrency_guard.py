@@ -48,6 +48,11 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
             check = True,
             capture_output = True,
             text = True,
+            # Decoded as utf-8 with replacement, not the console codepage: cp1252
+            # cannot decode what PowerShell writes and the whole test then dies as
+            # a UnicodeDecodeError on a byte in an error message.
+            encoding = "utf-8",
+            errors = "replace",
             env = env,
             timeout = 60,
         )
@@ -58,6 +63,13 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
             pass
     return result.stdout.strip()
 
+
+
+def _ps_file(directory: Path, name: str, script: str) -> str:
+    """Same reason as _run_powershell: a 32 KB command line is not available here."""
+    path = directory / name
+    path.write_text(script, encoding = "utf-8-sig")
+    return str(path)
 
 # The chain Get-StudioFinalPath dispatches to. It used to compile the native helper
 # inline, so a test could extract it alone; extracting the dispatcher by itself now
@@ -652,11 +664,16 @@ Write-Output "READY"
 Exit-StudioInstallMutex -Mutex $mutex
 """
     holder = subprocess.Popen(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", holder_script],
+        [
+            shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", _ps_file(tmp_path, "holder.ps1", holder_script),
+        ],
         stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         env = env,
     )
     try:
@@ -788,11 +805,16 @@ Write-Output "ACQUIRED"
 Exit-StudioInstallMutex -Mutex $mutex
 """
     holder = subprocess.Popen(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", holder_script],
+        [
+            shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", _ps_file(tmp_path, "holder.ps1", holder_script),
+        ],
         stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         env = env,
     )
     try:
