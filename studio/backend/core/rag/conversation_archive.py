@@ -1871,7 +1871,19 @@ def recall(
                 pass
 
 
-def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
+def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
+    """The scope's document ids, optionally cut at ``created_before``. See `delete_for_thread`."""
+    if not created_before:
+        return ("SELECT id FROM documents WHERE scope=?", (scope,))
+    return (
+        "SELECT id FROM documents WHERE scope=? AND created_at<?",
+        (scope, created_before),
+    )
+
+
+def _delete_scope_without_vec(
+    scope: str, thread_id: str, *, created_before: Optional[str] = None
+) -> int:
     """Delete a scope's text-bearing rows over a connection with no sqlite-vec.
 
     Deletion must not depend on the optional native extension. Archives are only WRITTEN
@@ -1889,7 +1901,7 @@ def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
         conn = rag_db.get_metadata_connection()
         documents = [
             row["id"]
-            for row in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
+            for row in conn.execute(*_scope_select(scope, created_before)).fetchall()
         ]
         for document_id in documents:
             conn.execute(
@@ -1914,8 +1926,17 @@ def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
     return removed
 
 
-def delete_for_thread(thread_id: str) -> int:
-    """Drop a thread's archive. Called when the thread itself is deleted."""
+def delete_for_thread(thread_id: str, *, created_before: Optional[str] = None) -> int:
+    """Drop a thread's archive. Called when the thread itself is deleted.
+
+    ``created_before`` bounds the delete to documents archived before an ISO-8601 UTC
+    instant, which is how a thread id that came BACK is handled. Skipping the scope
+    wholesale spared the recreated chat's memory but also kept the deleted
+    conversation's, under a live id with nothing left to sweep it: the endpoint reported
+    success while the turns the user asked to delete stayed recallable in the new chat.
+    Cutting at the moment the delete was accepted takes exactly the old conversation and
+    leaves whatever the recreated thread has archived since.
+    """
     if not thread_id:
         return 0
     scope = store.conversation_archive_scope(thread_id)
@@ -1926,8 +1947,8 @@ def delete_for_thread(thread_id: str) -> int:
             conn = rag_db.get_connection()
         except Exception:
             # No vec0 here. Delete what can be deleted rather than nothing at all.
-            return _delete_scope_without_vec(scope, thread_id)
-        for row in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall():
+            return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
+        for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
             store.delete_document(conn, row["id"])
             removed += 1
     except Exception:

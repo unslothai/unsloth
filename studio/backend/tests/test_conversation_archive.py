@@ -3102,3 +3102,40 @@ def test_turns_differing_only_in_case_do_not_share_a_seat(conn):
     positions = conversation_archive._transcript_positions(THREAD)
     assert conversation_archive._occurrences(positions, lower) == [0]
     assert conversation_archive._occurrences(positions, upper) == [1]
+
+def test_the_deleted_conversation_goes_even_when_its_id_comes_back(conn):
+    """Sparing a recreated id spared the DELETED conversation along with it.
+
+    The scope is keyed by thread id alone, so the pre-delete turns stayed under a live id
+    with nothing left to sweep them: the endpoint reported success while the conversation
+    the user asked to delete remained recallable in the new chat. Cutting at the instant
+    the delete was accepted takes the old turns and leaves the new ones.
+    """
+    from datetime import datetime, timezone
+
+    from routes import chat_history
+
+    thread_id = "recreated-with-cutoff"
+    old_turns = _turn("what is the code", "the code is 5150")
+    _save_thread(thread_id, old_turns, append = True)
+    assert conversation_archive.archive_turns(thread_id, old_turns) == 1
+
+    cutoff = datetime.now(timezone.utc).isoformat()
+
+    # The stale tab recreates the id and its generation archives a turn of its own.
+    fresh = _turn("what is the new code", "the new code is 8080")
+    _save_thread(thread_id, old_turns + fresh, append = True)
+    assert conversation_archive.archive_turns(thread_id, fresh) == 1
+
+    chat_history._remove_conversation_archives([thread_id], cutoff = cutoff)
+
+    scope = store.conversation_archive_scope(thread_id)
+    remaining = " ".join(
+        row["text"]
+        for row in conn.execute(
+            "SELECT c.text FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.scope=?",
+            (scope,),
+        ).fetchall()
+    )
+    assert "5150" not in remaining
+    assert "8080" in remaining
