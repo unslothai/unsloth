@@ -19,6 +19,25 @@ MANAGED_LLAMA_CPP_PATH_MARKER = "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"
 _settings_lock = threading.RLock()
 
 
+def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
+    """Mark Studio's inherited install path without hiding a real env override."""
+    configured = os.environ.get("UNSLOTH_LLAMA_CPP_PATH", "").strip()
+    if not configured:
+        os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
+        return False
+    try:
+        managed = Path(directory).expanduser().resolve(strict=False)
+        inherited = Path(configured).expanduser().resolve(strict=False)
+        is_managed = inherited == managed
+    except (OSError, RuntimeError, ValueError):
+        is_managed = False
+    if is_managed:
+        os.environ[MANAGED_LLAMA_CPP_PATH_MARKER] = "1"
+    else:
+        os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
+    return is_managed
+
+
 @contextmanager
 def llama_cpp_path_selection_guard() -> Iterator[None]:
     """Serialize a runtime path snapshot with a settings write.

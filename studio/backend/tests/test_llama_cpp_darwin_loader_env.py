@@ -203,6 +203,20 @@ class TestExecPathForLaunch:
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
         assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(target)
 
+    def test_a_selected_installer_entrypoint_still_resolves_by_shape(
+        self, monkeypatch, tmp_path
+    ):
+        from utils import llama_cpp_path_settings as path_settings
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(path_settings, "custom_llama_cpp_path_source", lambda: "studio")
+        wrapper, target = self._wrapper(tmp_path)
+        # Simulate the LF-only installer template even on a Windows test host.
+        wrapper.write_bytes(b'#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
+
+        assert LlamaCppBackend._is_unsloth_managed_binary(str(wrapper)) is False
+        assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(target)
+
     def test_a_pinned_custom_wrapper_is_launched_as_given(self, monkeypatch, tmp_path):
         wrapper, _ = self._wrapper(tmp_path)
         monkeypatch.setattr(sys, "platform", "darwin")

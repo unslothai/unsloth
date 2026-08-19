@@ -4861,9 +4861,9 @@ class LlamaCppBackend:
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         def _file_status(p: Path) -> str:
-            # "file", "absent", or "denied" (not executable, or exists but
-            # stays access-denied across a short retry: Windows AV/ACL or an
-            # install replace in flight). is_file() raises PermissionError
+            # "file", "absent", "non_executable", or "denied". A denied
+            # file stays access-denied across a short retry (Windows AV/ACL or
+            # an install replace in flight). is_file() raises PermissionError
             # (WinError 5) instead of returning False for the locked case, so
             # never treat it as missing.
             for _ in range(5):
@@ -4871,7 +4871,7 @@ class LlamaCppBackend:
                     if not p.is_file():
                         return "absent"
                     if sys.platform != "win32" and not os.access(p, os.X_OK):
-                        return "denied"
+                        return "non_executable"
                     return "file"
                 except PermissionError:
                     time.sleep(0.2)
@@ -4899,16 +4899,28 @@ class LlamaCppBackend:
             return None
 
         def _scan_pinned(paths: list):
-            # first existing candidate wins -> (path, None); a present-but-denied
-            # one -> (None, denied_path) so the caller reports it rather than
-            # skipping to a lower-priority location. include_denied returns the
-            # locked path instead: diffusion asset lookup only needs its dir.
+            # First executable candidate wins. A genuinely access-denied one
+            # stops immediately; a known non-executable candidate is remembered
+            # while sibling build layouts are checked. include_denied returns an
+            # unavailable path instead: diffusion asset lookup only needs its dir.
+            non_executable = None
             for p in paths:
                 st = _file_status(p)
                 if st == "file":
                     return str(p), None
                 if st == "denied":
                     return (str(p), None) if include_denied else (None, p)
+                if st == "non_executable" and non_executable is None:
+                    # A source checkout may leave a stale root entrypoint beside a
+                    # valid CMake build. Keep looking within this pinned layout,
+                    # but do not fall through to a different runtime if none works.
+                    non_executable = p
+            if non_executable is not None:
+                return (
+                    (str(non_executable), None)
+                    if include_denied
+                    else (None, non_executable)
+                )
             return None, None
 
         # 1. Env var: direct path to binary
@@ -11333,11 +11345,16 @@ class LlamaCppBackend:
         if not binary:
             return True
         try:
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
             from utils.llama_cpp_update import (
                 _active_install_is_local_link,
                 _llama_install_root,
             )
 
+            # A Settings-selected checkout is user-owned even when its ordinary
+            # `llama.cpp` directory name or prebuilt marker resembles our tree.
+            if custom_llama_cpp_path_source() == "studio":
+                return False
             # A --with-llama-cpp-dir tree is the user's own checkout reached
             # through a symlinked llama.cpp dir. The updater refuses to write
             # through that link, so it cannot repair the binary either, and its
@@ -11471,7 +11488,13 @@ class LlamaCppBackend:
         if not binary or sys.platform != "darwin":
             return binary
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
-            return binary
+            try:
+                from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
+
+                if custom_llama_cpp_path_source() != "studio":
+                    return binary
+            except Exception:
+                return binary
         if not _is_installer_entrypoint(binary):
             return binary
         # template_only: the outer entrypoint being ours says nothing about

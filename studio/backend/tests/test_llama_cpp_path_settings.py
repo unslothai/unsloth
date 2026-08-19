@@ -159,6 +159,44 @@ def test_studio_managed_environment_path_does_not_lock_out_the_ui(
     assert LlamaCppBackend._find_llama_server_binary() == str(selected_binary)
 
 
+def test_inherited_managed_path_is_marked_even_when_launcher_exported_it(
+    settings_store, monkeypatch, tmp_path
+):
+    managed = tmp_path / "not-installed-yet" / "llama.cpp"
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
+
+    assert path_settings.mark_managed_llama_cpp_path(managed) is True
+    assert os.environ[path_settings.MANAGED_LLAMA_CPP_PATH_MARKER] == "1"
+    assert path_settings.custom_llama_cpp_path_status()["editable"] is True
+
+    explicit = tmp_path / "user-owned-llama.cpp"
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(explicit))
+    assert path_settings.mark_managed_llama_cpp_path(managed) is False
+    assert path_settings.MANAGED_LLAMA_CPP_PATH_MARKER not in os.environ
+    assert path_settings.custom_llama_cpp_path_status()["editable"] is False
+
+
+def test_runtime_skips_non_executable_root_entrypoint_for_valid_build_layout(
+    settings_store, monkeypatch, tmp_path
+):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    root = tmp_path / "custom"
+    root_binary = _binary(root, platform="linux", layout="root")
+    build_binary = _binary(root, platform="linux", layout="build")
+    monkeypatch.setattr(path_settings.sys, "platform", "linux")
+    monkeypatch.setattr(
+        path_settings.os,
+        "access",
+        lambda path, mode: Path(path) != root_binary,
+    )
+
+    path_settings.set_custom_llama_cpp_path(str(root))
+
+    assert path_settings.resolve_llama_server_binary(root) == build_binary
+    assert LlamaCppBackend._find_llama_server_binary() == str(build_binary)
+
+
 def test_runtime_resolver_uses_studio_path_and_does_not_silently_fallback(
     settings_store, monkeypatch, tmp_path
 ):
@@ -215,6 +253,21 @@ def test_backend_updater_never_replaces_a_studio_selected_tree(monkeypatch):
     assert status["reason"] == "custom_path"
     assert plan["skip_reason"] == "custom_path"
     assert plan["refusal"]["reason"] == "custom_path"
+
+
+def test_selected_checkout_is_not_given_managed_runtime_repair_advice(
+    settings_store, tmp_path
+):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    root = tmp_path / "llama.cpp"
+    binary = _binary(root)
+    path_settings.set_custom_llama_cpp_path(str(root))
+
+    assert LlamaCppBackend._is_unsloth_managed_binary(str(binary)) is False
+    message = LlamaCppBackend._missing_library_message("libllama.so", str(binary))
+    assert "unsloth studio update" not in message
+    assert "custom install" in message
 
 
 def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypatch, tmp_path):
