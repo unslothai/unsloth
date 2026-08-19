@@ -818,11 +818,45 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     # dir the same way, or the tree it places there survives an uninstall on exactly
     # the hosts that needed the fallback.
     assert '[Environment]::GetFolderPath("LocalApplicationData")' in roots
-    assert "$defaultDataRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'" in uninstall
-    assert (
-        '$defaultDataDir = if ($defaultDataRoot) { Join-Path $defaultDataRoot "Unsloth Studio" }'
-        in uninstall
+    # And it has to consider BOTH spellings rather than the first that answers:
+    # install.ps1 falls through from a set-but-unusable LOCALAPPDATA to the known
+    # folder, so the variable being non-blank does not say where the tree landed.
+    assert "foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {" in uninstall
+    assert "foreach ($d in $defaultDataDirs) { _RemoveDataDirKeepingWslIcon $d }" in uninstall
+    assert "_RemoveDataDirKeepingWslIcon $defaultDataDir " not in uninstall
+
+
+@requires_pwsh
+def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
+    """A set-but-unusable LOCALAPPDATA is the case that produced two roots.
+
+    install.ps1 skips such a path and places its private temp under the known
+    folder instead. An uninstaller that stops at the first non-blank candidate
+    then deletes a directory that was never used and leaves the real one behind.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    # BOTH LocalAppData spellings.*?\n    \}\n", uninstall)
+
+    dead = str(tmp_path / "gone" / "localappdata")
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = dead
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                block,
+                '$defaultDataDirs | ForEach-Object { Write-Output "DIR:$_" }',
+            ]
+        ),
+        env = env,
     )
+    assert result.returncode == 0, result.stderr
+    dirs = [line[len("DIR:"):] for line in _lines(result, "DIR:")]
+    assert len(dirs) == 2, dirs
+    assert any(d.startswith(dead) for d in dirs), dirs
+    assert all(d.rstrip("\\/").endswith("Unsloth Studio") for d in dirs), dirs
+    # Deduplicated, so the ordinary host where both spellings agree is untouched.
+    assert len(set(dirs)) == len(dirs)
 
 
 def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
