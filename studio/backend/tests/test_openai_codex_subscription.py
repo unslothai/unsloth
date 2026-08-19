@@ -2424,3 +2424,83 @@ def test_storing_a_catalog_records_the_account_with_the_credentials(monkeypatch)
         assert stored["provider-19"]["catalog_account_id"] == "acct-1"
     finally:
         forget_subscription_models("provider-19")
+
+
+def test_a_token_refresh_keeps_the_catalog_proof(monkeypatch):
+    """Rotating credentials is not rebinding, so the proof has to survive it.
+
+    _validate_token_payload rebuilds the bundle from the token response alone, which
+    knows nothing about which account the saved models were proven for.
+    """
+    stored = {}
+
+    bundle = {
+        "access_token": "old",
+        "refresh_token": "refresh-1",
+        "expires_at": 1,
+        "account_id": "acct-1",
+        "catalog_account_id": "acct-1",
+    }
+
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: dict(bundle))
+    monkeypatch.setattr(
+        codex_auth,
+        "save_oauth_bundle",
+        lambda provider_id, value: stored.__setitem__(provider_id, value),
+    )
+    monkeypatch.setattr(
+        codex_auth,
+        "_validate_token_payload",
+        lambda _body, _previous: {
+            "access_token": "new",
+            "refresh_token": "refresh-1",
+            "expires_at": 2,
+            "account_id": "acct-1",
+        },
+    )
+
+    async def _token_request(_data):
+        return {}
+
+    monkeypatch.setattr(codex_auth, "_token_request", _token_request)
+
+    @asynccontextmanager
+    async def _guard(_provider_id):
+        yield
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", _guard)
+
+    token, account = asyncio.run(
+        codex_auth.resolve_access("provider-20", force_refresh = True)
+    )
+    assert (token, account) == ("new", "acct-1")
+    assert stored["provider-20"]["catalog_account_id"] == "acct-1"
+
+
+def test_recording_the_proof_never_overwrites_newer_credentials(monkeypatch):
+    """The write is guarded and re-reads inside it, so a rotation cannot be undone."""
+    stored = {
+        "access_token": "rotated",
+        "refresh_token": "refresh-2",
+        "expires_at": 9,
+        "account_id": "acct-1",
+    }
+    saved = []
+
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: dict(stored))
+    monkeypatch.setattr(
+        codex_auth, "save_oauth_bundle", lambda _pid, value: saved.append(value)
+    )
+
+    @asynccontextmanager
+    async def _guard(_provider_id):
+        yield
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", _guard)
+
+    asyncio.run(codex_auth.remember_catalog_account("provider-21", "acct-1"))
+    assert len(saved) == 1
+    # The tokens written back are the ones read inside the guard, not any older copy.
+    assert saved[0]["access_token"] == "rotated"
+    assert saved[0]["refresh_token"] == "refresh-2"
+    assert saved[0]["catalog_account_id"] == "acct-1"

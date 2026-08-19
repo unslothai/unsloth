@@ -251,20 +251,27 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         mark_subscription_catalog_stale(provider_id)
 
 
-def remember_catalog_account(provider_id: str, account_id: str) -> None:
+async def remember_catalog_account(provider_id: str, account_id: str) -> None:
     """Record, next to the credentials, which account the saved models were proven for.
 
     The in-memory mark does not survive a restart or reach a cold worker, and a rebind
     replaces the bundle wholesale, so keeping the proof here is what makes "these saved
     models belong to some other account" outlive this process.
+
+    Written under the same guard the refresh path uses, and re-read inside it: an
+    unguarded read-modify-write here could put stale tokens back over a rotation that
+    landed in between, which would cost the connection its credentials.
     """
-    bundle = load_oauth_bundle(provider_id)
-    if not bundle or bundle.get("account_id") != account_id:
+    if load_oauth_bundle(provider_id) is None:
         return
-    if bundle.get("catalog_account_id") == account_id:
-        return
-    bundle["catalog_account_id"] = account_id
-    save_oauth_bundle(provider_id, bundle)
+    async with provider_oauth_write_guard(provider_id):
+        bundle = load_oauth_bundle(provider_id)
+        if not bundle or bundle.get("account_id") != account_id:
+            return
+        if bundle.get("catalog_account_id") == account_id:
+            return
+        bundle["catalog_account_id"] = account_id
+        save_oauth_bundle(provider_id, bundle)
 
 
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:
@@ -892,5 +899,11 @@ async def resolve_access(
                 raise CodexAuthError("ChatGPT connection was disconnected during refresh.")
             if current.get("refresh_token") != previous_refresh_token:
                 return current["access_token"], current["account_id"]
+            # A refresh rotates credentials, it does not rebind the connection, so the
+            # record of which account the saved models were proven for carries over.
+            # _validate_token_payload only knows about the token fields.
+            proof = current.get("catalog_account_id")
+            if proof is not None and refreshed.get("account_id") == current.get("account_id"):
+                refreshed["catalog_account_id"] = proof
             save_oauth_bundle(provider_id, refreshed)
             return refreshed["access_token"], refreshed["account_id"]

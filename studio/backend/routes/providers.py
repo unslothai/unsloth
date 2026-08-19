@@ -93,6 +93,11 @@ def _provider_response(row: dict) -> ProviderResponse:
     )
 
 
+def _codex_bundle_account(provider_id: str) -> str | None:
+    bundle = openai_codex_auth.load_oauth_bundle(provider_id)
+    return bundle.get("account_id") if bundle else None
+
+
 def _validate_provider_auth_contract(
     info: dict,
     *,
@@ -123,8 +128,15 @@ def _validate_provider_auth_contract(
         }
     else:
         allowed = set(info["default_models"])
-        if persisted_models and not (
-            provider_id and openai_codex_client.subscription_catalog_stale(provider_id)
+        proven = not provider_id or openai_codex_client.saved_models_proven_for(
+            provider_id, _codex_bundle_account(provider_id)
+        )
+        if (
+            persisted_models
+            and proven
+            and not (
+                provider_id and openai_codex_client.subscription_catalog_stale(provider_id)
+            )
         ):
             # Already accepted on this row once, so an upstream outage must not make an
             # unrelated edit such as a rename unsavable.

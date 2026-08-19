@@ -472,7 +472,7 @@ async def list_subscription_models(
     _offered_models[provider_id] = {model["id"]: model for model in models}
     _catalog_accounts[provider_id] = account_id
     _stale_catalogs.discard(provider_id)
-    codex_auth.remember_catalog_account(provider_id, account_id)
+    await codex_auth.remember_catalog_account(provider_id, account_id)
     return models
 
 

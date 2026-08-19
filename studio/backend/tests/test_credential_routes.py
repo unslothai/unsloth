@@ -846,3 +846,81 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
         assert kept.models == ["gpt-5.5"]
     finally:
         codex_client.forget_subscription_models(created.id)
+
+
+def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
+    """A cold worker must not save account A's slugs under account B.
+
+    The form submits the whole selection with any edit, so an ordinary rename carries the
+    saved slugs with it. The inference route already refuses them, so accepting here
+    would persist exactly what every send then rejects.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    listed = "gpt-5.7-nova"
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+
+    async def _refresh(provider_id):
+        codex_client._offered_models[provider_id] = {listed: {"id": listed, "listed": True}}
+        return {listed}
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _refresh)
+    asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(models = [listed]),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    codex_client.forget_subscription_models(created.id)
+
+    async def _no_refresh(_provider_id):
+        return set()
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh)
+    # Cold worker, and the credentials carry no proof for this account.
+    monkeypatch.setattr(
+        providers_route.openai_codex_auth,
+        "load_oauth_bundle",
+        lambda _pid: {"account_id": "acct-b"},
+    )
+    try:
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(
+                providers_route.update_provider_config(
+                    created.id,
+                    ProviderUpdate(display_name = "Renamed", models = [listed]),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        assert refused.value.status_code == 400
+
+        monkeypatch.setattr(
+            providers_route.openai_codex_auth,
+            "load_oauth_bundle",
+            lambda _pid: {"account_id": "acct-b", "catalog_account_id": "acct-b"},
+        )
+        renamed = asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(display_name = "Renamed", models = [listed]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert renamed.display_name == "Renamed"
+        assert renamed.models == [listed]
+    finally:
+        codex_client.forget_subscription_models(created.id)
