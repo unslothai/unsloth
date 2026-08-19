@@ -6123,6 +6123,7 @@ def _estimate_gguf_kv_gb(
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    model_identifier: Optional[str] = None,
 ) -> float:
     """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -6135,6 +6136,7 @@ def _estimate_gguf_kv_gb(
         from core.inference.llama_server_args import parse_ctx_override
 
         probe = LlamaCppBackend()
+        probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
         if not probe._can_estimate_kv():
             return 0.0
@@ -6592,6 +6594,7 @@ def _estimate_gguf_required_gb(
                 n_ubatch,
                 n_devices,
                 is_diffusion,
+                model_identifier = getattr(config, "identifier", None),
             )
 
         repo = getattr(config, "gguf_hf_repo", None)

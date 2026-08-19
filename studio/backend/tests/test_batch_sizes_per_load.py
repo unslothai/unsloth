@@ -598,6 +598,37 @@ def test_embedding_guard_prices_the_slots_that_will_launch():
     assert clamped == pytest.approx(launched, abs = 0.01)
 
 
+def test_embedding_guard_uses_identifier_when_pooling_is_missing():
+    """An embedding name must clamp the admission estimate even when the cached
+    filename and GGUF architecture are generic."""
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    def _generic_embedding_header(self, path):
+        _header_reader(**_QWEN3_8B)(self)
+        self._gguf_path = path
+
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _generic_embedding_header):
+        clamped = route._estimate_gguf_kv_gb(
+            "/x.gguf",
+            32768,
+            n_parallel = 4,
+            n_batch = 4,
+            n_ubatch = 2,
+            model_identifier = "unsloth/Qwen3-Embedding-4B",
+        )
+        launched = route._estimate_gguf_kv_gb(
+            "/x.gguf",
+            32768,
+            n_parallel = 2,
+            n_batch = 4,
+            n_ubatch = 2,
+            model_identifier = "unsloth/Qwen3-Embedding-4B",
+        )
+    assert clamped == pytest.approx(launched, abs = 0.01)
+
+
 def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     """self._n_ubatch is recorded next to _commit_effective_parallel_slots and the two are
     read together later (the slot save re-estimates the KV from both). The fit-time reduction
