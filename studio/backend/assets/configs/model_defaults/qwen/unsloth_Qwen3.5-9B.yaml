@@ -4,7 +4,6 @@
 # Also applies to: Qwen/Qwen3.5-9B
 
 training:
-  trust_remote_code: false
   max_seq_length: 2048
   num_epochs: 0
   learning_rate: 2e-4
@@ -42,7 +41,6 @@ logging:
   log_frequency: 10
 
 inference:
-  trust_remote_code: false
   temperature: 0.7
   top_p: 0.8
   top_k: 20
