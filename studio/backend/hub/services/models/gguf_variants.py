@@ -464,6 +464,19 @@ def _partial_transport_for_variant(
     )
 
 
+def _partial_resumable_for_variant(
+    repo_id: str,
+    variant: str,
+    repo_cache_dir: Optional[Path] = None,
+) -> bool:
+    return hf_cache_scan.partial_resume_available(
+        "model",
+        repo_id,
+        variant,
+        repo_cache_dir,
+    )
+
+
 def _local_main_gguf_blobs_by_quant(
     repo_id: str, repo_cache_dir: Optional[Path] = None
 ) -> dict[str, dict[str, set[str]]]:
@@ -1112,6 +1125,11 @@ async def get_gguf_variants_answer(
                             v.quant,
                             repo_cache_dir,
                         ),
+                        partial_resumable = _partial_resumable_for_variant(
+                            response_repo_id,
+                            v.quant,
+                            repo_cache_dir,
+                        ),
                         dependency_key = _variant_dependency_key(response_repo_id, v.filename),
                     )
                     for v in variants
@@ -1144,6 +1162,9 @@ async def get_gguf_variants_answer(
                     downloaded = False,
                     partial = True,
                     partial_transport = _partial_transport_for_variant(
+                        repo_id, v.quant, repo_cache_dir
+                    ),
+                    partial_resumable = _partial_resumable_for_variant(
                         repo_id, v.quant, repo_cache_dir
                     ),
                     dependency_key = _variant_dependency_key(repo_id, v.filename),
@@ -1561,6 +1582,9 @@ async def get_gguf_variants_answer(
                 ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
+                partial_resumable = (
+                    is_partial and _partial_resumable_for_variant(repo_id, v.quant, repo_cache_dir)
+                ),
                 dependency_key = _variant_dependency_key(repo_id, v.filename),
             )
 

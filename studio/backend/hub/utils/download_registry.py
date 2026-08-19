@@ -73,6 +73,7 @@ from hub.utils.hf_cache_state import (
     VALID_TRANSPORTS,
     VALID_TRANSPORT_MODES,
     has_active_incomplete_blobs,
+    hf_partials_are_resumable,
     iter_repo_cache_dirs,
     iter_active_repo_cache_dirs,
     repo_cache_dir_name,
@@ -102,12 +103,16 @@ class DownloadTransportCapabilities:
     # "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
     auto_resolves_to: str = TRANSPORT_XET
     auto_reason: Optional[str] = None
+    # Whether an interrupted HTTP transfer leaves bytes the next attempt can append to. False on
+    # huggingface_hub >= 1.18, so the UI stops offering a byte-resume no writer can honour.
+    partials_resumable: bool = True
 
 
 def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTransportCapabilities:
     xet_available = importlib.util.find_spec("hf_xet") is not None
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
     auto_reason: Optional[str] = None
+    auto_forced = False
     if xet_available:
         try:
             from utils.hf_xet_fallback import cached_xet_health, xet_health
@@ -120,9 +125,32 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
+                # UNSLOTH_FORCE_XET=1: an operator override, not a measurement, so the free-RAM
+                # gate below stands down exactly as `resolve_auto_use_xet` does. Same helper, so
+                # the probe and the API "auto" path cannot disagree about what "forced" means.
+                # Imported separately and guarded: an older or stubbed shim that lacks it must not
+                # cost us the health verdict just recorded above.
+                try:
+                    from utils.hf_xet_fallback import xet_health_is_forced
+                    auto_forced = bool(xet_health_is_forced(health))
+                except Exception:
+                    auto_forced = False
         except Exception:
             # No opinion: keep the optimistic default; the download-time ladder still recovers.
             pass
+    if xet_available and probe and auto_transport == TRANSPORT_XET and not auto_forced:
+        # Free RAM belongs in the same verdict: this IS the Auto decision, since the UI submits the
+        # answer as an explicit xet/http. Read outside the health try, because a health module that
+        # is missing or raising says nothing about RAM. Probe-only, so an ordinary poll stays
+        # read-only and still does not load Zoo.
+        try:
+            from utils.hf_xet_fallback import free_ram_pressure_reason
+            pressure = free_ram_pressure_reason()
+        except Exception:
+            pressure = None
+        if pressure is not None:
+            auto_transport = TRANSPORT_HTTP
+            auto_reason = pressure
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = True),
         xet = DownloadTransportCapability(
@@ -133,6 +161,7 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
         ),
         auto_resolves_to = auto_transport,
         auto_reason = auto_reason,
+        partials_resumable = hf_partials_are_resumable(),
     )
 
 
@@ -982,6 +1011,8 @@ def is_resumable_partial(
     repo_type: str,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    root: Optional[Path] = None,
 ) -> bool:
     """True only when a partial exists AND something can still resume from it.
 
@@ -989,10 +1020,78 @@ def is_resumable_partial(
     from scratch, so the marker has to say HTTP. And an HTTP partial is only resumable while a
     writer that reopens it is installed; the UI turns this flag into "Resume with HTTP to keep
     the progress you already have", which must not be promised for bytes about to be swept.
+
+    Decided per cache entry, the way :func:`prepare_cache_for_transport` decides what to purge,
+    because one repo can own several active directories at once (a case-sensitive filesystem
+    holds ``models--Org--Model`` beside ``models--org--model``). A marker only vouches for
+    partials sitting beside it.
+
+    Within an entry the split matters too: main blobs answer to the variant marker, while a
+    shared companion (mmproj, MTP drafter) answers to ``.transport.companion``. With a
+    ``variant`` the manifest says which hashes are which; a blob in neither set, and a variant
+    with no manifest, back nothing rather than an unscoped yes.
+
+    ``root`` is the hub cache the row being judged was found in. A row can come from a
+    remembered, legacy or custom cache, and that root holds both its own partials and its own
+    manifest scope (state is keyed by a per-cache digest), so leaving it out asked the ACTIVE
+    root about a directory it does not contain. ``None`` keeps the active root, for callers
+    that have no particular row in hand.
     """
-    if read_active_transport_marker(repo_type, repo_id, variant) != TRANSPORT_HTTP:
-        return False
-    return bool(incomplete_blob_hashes(repo_type, repo_id, active_only = True, resumable_only = True))
+    main, companion = (
+        _manifest_hash_split(repo_type, repo_id, variant, root = root) if variant else (set(), set())
+    )
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+        resumable = _resumable_blob_hashes(entry)
+        if not resumable:
+            continue
+        if _read_marker(entry, variant) == TRANSPORT_HTTP and (variant is None or resumable & main):
+            return True
+        if (
+            variant is not None
+            and resumable & companion
+            and _read_companion_marker(entry) == TRANSPORT_HTTP
+        ):
+            return True
+    return False
+
+
+def _resumable_blob_hashes(entry: Path) -> set[str]:
+    """Blob hashes whose partial sits in THIS entry and can still be appended to."""
+    out: set[str] = set()
+    try:
+        for blob in (entry / "blobs").iterdir():
+            if not blob.is_file():
+                continue
+            blob_hash = incomplete_blob_hash(blob.name)
+            if blob_hash is not None and partial_is_resumable(blob.name):
+                out.add(blob_hash)
+    except OSError:
+        return out
+    return out
+
+
+def _manifest_hash_split(
+    repo_type: str,
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    root: Optional[Path] = None,
+) -> tuple[set[str], set[str]]:
+    """``(main, companion)`` blob hashes from the variant's manifest, split the way the worker
+    splits them when it asks for a purge. Empty pair when either step cannot answer, which
+    reads as "no resume to promise"."""
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.read_manifest(repo_type, repo_id, variant, hub_cache = root)
+    if manifest is None or not manifest.expected_files or not variant:
+        return set(), set()
+    try:
+        from hub.utils.gguf_plan import plan_from_expected_files
+        plan = plan_from_expected_files(variant, manifest.expected_files)
+    except Exception as exc:  # noqa: BLE001 - an unsplittable manifest promises nothing
+        logger.debug("Could not split manifest hashes for %s [%s]: %s", repo_id, variant, exc)
+        return set(), set()
+    return set(plan.main_hashes), set(plan.companion_hashes)
 
 
 def incomplete_blob_hashes(
