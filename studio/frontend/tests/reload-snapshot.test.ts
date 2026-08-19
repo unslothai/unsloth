@@ -804,6 +804,14 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
+    /if \(!threadsSettled\) return;\s*if \(!baseThreadId\) markInitialHistoryReady\("base"\);\s*if \(!loraThreadId\) markInitialHistoryReady\("lora"\);/,
+  );
+  assert.match(
+    chatPageSource,
+    /if \(!threadsSettled\) return;\s*if \(!model1ThreadId\) markInitialHistoryReady\("model1"\);\s*if \(!model2ThreadId\) markInitialHistoryReady\("model2"\);/,
+  );
+  assert.match(
+    chatPageSource,
     /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
   );
   assert.match(

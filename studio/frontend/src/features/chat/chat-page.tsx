@@ -766,6 +766,17 @@ const LoraCompareContent = memo(function LoraCompareContent({
     };
   }, [pairId, compareRunning]);
 
+  useEffect(() => {
+    if (!threadsSettled) return;
+    if (!baseThreadId) markInitialHistoryReady("base");
+    if (!loraThreadId) markInitialHistoryReady("lora");
+  }, [
+    baseThreadId,
+    loraThreadId,
+    markInitialHistoryReady,
+    threadsSettled,
+  ]);
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -986,6 +997,17 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
       isActive = false;
     };
   }, [pairId, compareRunning]);
+
+  useEffect(() => {
+    if (!threadsSettled) return;
+    if (!model1ThreadId) markInitialHistoryReady("model1");
+    if (!model2ThreadId) markInitialHistoryReady("model2");
+  }, [
+    markInitialHistoryReady,
+    model1ThreadId,
+    model2ThreadId,
+    threadsSettled,
+  ]);
 
   return (
     <CompareShell
