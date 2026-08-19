@@ -3561,3 +3561,212 @@ def test_a_persisted_tool_call_followed_by_its_answer_stays_on_its_branch(conn):
         )
         is True
     )
+
+
+def test_a_provider_side_builtin_is_replayed_the_way_the_frontend_replays_it():
+    """The frontend drops a builtin card from the history it sends.
+
+    A `web_search` card with the server marker and no native part is omitted entirely,
+    call and result, and one WITH a native part replays as a call carrying no `tool`
+    message, since its result travels in the provider's own part. Reconstructing either as
+    an ordinary local call inserted an exchange the request never carried, so the turn
+    matched nothing and took a fallback ordinal.
+    """
+    marked = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "s1",
+                    "toolName": "web_search",
+                    "args": {"query": "ZQX rate", "_server_tool": True},
+                    "result": "search hits",
+                },
+                {"type": "text", "text": "The ZQX rate is 5150."},
+            ],
+        }
+    ]
+    native = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "s2",
+                    "toolName": "code_execution",
+                    "args": {"google": {"native_part": {"code": "print(1)"}}},
+                    "result": "1",
+                },
+                {"type": "text", "text": "Done."},
+            ],
+        }
+    ]
+    # A USER function that merely shares the name is untouched: the name alone never
+    # decides, which is the same guarantee the frontend makes.
+    homonym = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "u1",
+                    "toolName": "web_search",
+                    "args": {"query": "ZQX rate"},
+                    "result": "hits",
+                }
+            ],
+        }
+    ]
+
+    assert [m["role"] for m in conversation_archive._as_wire(marked)] == ["assistant"]
+    assert [m["role"] for m in conversation_archive._as_wire(native)] == [
+        "assistant",
+        "assistant",
+    ]
+    assert [m["role"] for m in conversation_archive._as_wire(homonym)] == ["assistant", "tool"]
+
+
+def test_a_sandbox_result_is_replayed_as_the_text_the_model_saw():
+    """`python` and `terminal` results are wrapped on every call.
+
+    The replay adapter sends `result.text` alone rather than feeding the model a session
+    id and file metadata, so serialising the whole wrapper reconstructed a tool message
+    that can never equal the archived one.
+    """
+
+    def _row(tool_name, result):
+        return [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool-call",
+                        "toolCallId": "c1",
+                        "toolName": tool_name,
+                        "args": {"command": "ls"},
+                        "result": result,
+                    }
+                ],
+            }
+        ]
+
+    def _tool_content(rows):
+        return [m["content"] for m in conversation_archive._as_wire(rows) if m["role"] == "tool"]
+
+    sandbox = {
+        "text": "token ZQX-5150",
+        "images": [],
+        "sessionId": "project-7",
+        "files": [{"name": "out.csv", "size": 12}],
+    }
+    mcp_image = {
+        "text": "chart rendered",
+        "images": [{"data": "AAAA", "mimeType": "image/png"}],
+    }
+
+    assert _tool_content(_row("terminal", sandbox)) == ["token ZQX-5150"]
+    assert _tool_content(_row("python", mcp_image)) == ["chart rendered"]
+    # An empty wrapper text still takes the sentinel, as the adapter does.
+    assert _tool_content(_row("terminal", {**sandbox, "text": ""})) == ['{"result":""}']
+    # Someone else's result that merely has text and a session is NOT unwrapped, or every
+    # other field it returned would be dropped. The name gates it, as on the frontend.
+    assert _tool_content(_row("lookup", sandbox)) == [
+        '{"text":"token ZQX-5150","images":[],"sessionId":"project-7",'
+        '"files":[{"name":"out.csv","size":12}]}'
+    ]
+
+
+def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
+    """Sets lose repetition and ordering, and leaves are tried newest-first.
+
+    A newer abandoned sibling holding the same distinct texts scored identically to the
+    request's own branch and won the tie, so a turn was handed the seat belonging to its
+    earlier twin and two distinct turns claimed one seat. A multiset would fix the repeat
+    case and not the reordered one.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    rows = [
+        ("m0", None, "user", "A", 2),
+        ("m1", "m0", "assistant", "a1", 3),
+        ("m2", "m1", "user", "B", 4),
+        ("m3", "m2", "assistant", "b1", 5),
+        ("m4", "m3", "user", "B", 6),
+        ("m5", "m4", "assistant", "b1", 7),
+        # The abandoned sibling is NEWER and holds the same distinct texts, once each.
+        ("n0", "m1", "user", "B", 8),
+        ("n1", "n0", "assistant", "b1", 9),
+    ]
+    for identifier, parent, role, text, created in rows:
+        studio_db.upsert_chat_message(
+            {
+                "id": identifier,
+                "threadId": THREAD,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": created,
+            }
+        )
+
+    branch = [
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "B"},
+        {"role": "assistant", "content": "b1"},
+        {"role": "user", "content": "B"},
+        {"role": "assistant", "content": "b1"},
+    ]
+    positions = conversation_archive._transcript_positions(THREAD, branch = branch)
+
+    assert len(positions) == 3, positions
+    # Both repeats keep their own seat instead of collapsing onto the first.
+    assert conversation_archive._occurrences(positions, branch[2:4]) == [1, 2]
+
+
+def test_a_batch_mixing_a_search_with_an_ordinary_tool_keeps_its_transcript_span(conn):
+    """`archive_messages` bounds the branch check, so it has to be the TRANSCRIPT span.
+
+    An assistant batch that called `search_conversation` alongside an ordinary tool has
+    its retrieval call and result stripped before the document is written, so the archived
+    copy is three messages where the live turn is four. Bounded by the shorter figure, the
+    perfectly valid ordinary-tool exchange and the answer that followed were rejected as
+    off-branch and could never be recalled.
+    """
+    group = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    archivable = conversation_archive._archivable(group)
+    assert len(archivable) == 3 and len(group) == 4
+
+    rendered = conversation_archive.render_turn(archivable)
+    text = rendered[1] if isinstance(rendered, tuple) else rendered
+    live = conversation_archive.branch_message_texts(group)
+
+    assert (
+        conversation_archive._document_matches_one_run([{"text": text}], live, len(group)) is True
+    )
+
+    _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    spans = [
+        row["archive_messages"]
+        for row in conn.execute(
+            "SELECT archive_messages FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    ]
+    assert spans == [4], spans

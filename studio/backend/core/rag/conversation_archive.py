@@ -338,9 +338,15 @@ def archive_turns(
     # Imported lazily because the inference layer imports this module.
     from core.inference.context_window import group_turns
 
+    # Each entry is the archivable messages AND the span of the turn they came from. The
+    # two differ whenever `_archivable` drops something: an assistant batch that called
+    # `search_conversation` alongside an ordinary tool archives three messages while the
+    # live transcript still holds four, and `archive_messages` bounds the branch check's
+    # run. Bounded by the shorter figure, a perfectly valid ordinary-tool exchange and its
+    # answer were rejected as off-branch and could never be recalled.
     groups = [
-        archivable
-        for archivable in (_archivable(group) for group in group_turns(evicted))
+        (archivable, len(group))
+        for group, archivable in ((group, _archivable(group)) for group in group_turns(evicted))
         if archivable
     ]
     if not groups:
@@ -365,7 +371,7 @@ def archive_turns(
         # compaction of a long chat ran dozens of one-item embedding jobs back to back
         # before the reply could start, and both backends serialise them.
         pending = []
-        for group in groups:
+        for group, span in groups:
             text = render_turn(group)
             if not text:
                 continue
@@ -386,19 +392,19 @@ def archive_turns(
                 count = count,
             )
             if chunks:
-                pending.append((group, digest, chunks, seats, budget))
+                pending.append((group, span, digest, chunks, seats, budget))
         if not pending:
             return 0
 
         # Identity from the encode that produced these vectors: a concurrent embedder
         # swap would otherwise label them with a space they were never in.
         vectors, identity = embeddings.encode_with_identity(
-            [chunk.text for group_chunks in pending for chunk in group_chunks[2]],
+            [chunk.text for entry in pending for chunk in entry[3]],
             model_name = model,
             normalize = True,
         )
         offset = 0
-        for group, digest, chunks, seats, budget in pending:
+        for group, span, digest, chunks, seats, budget in pending:
             group_vectors = vectors[offset : offset + len(chunks)]
             offset += len(chunks)
             roles = " + ".join(
@@ -471,10 +477,12 @@ def archive_turns(
                 sha256 = digest,
                 status = "completed",
                 embedding_model = identity,
-                # The turn's real size, so the branch check can bound its run exactly.
-                # Counting role labels only approximates it, since a pasted transcript
-                # writes lines that look exactly like the renderer's own.
-                archive_messages = len(group),
+                # The turn's real size in the TRANSCRIPT, so the branch check can bound
+                # its run exactly. Counting role labels only approximates it, since a
+                # pasted transcript writes lines that look exactly like the renderer's
+                # own, and counting the archived messages undercounts whenever
+                # `_archivable` dropped one.
+                archive_messages = span,
                 # Where this turn sits in the conversation. Allocated inside the write
                 # lock, in `group_turns` order, so it is conversation order within an
                 # epoch and across epochs -- which `created_at` cannot be, since one
@@ -700,11 +708,17 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     """
     if not branch:
         return None
-    wanted = {
+    # A LIST, in order, not a set. Sets lose repetition and ordering, so an abandoned
+    # sibling holding the same distinct texts scored identically to the request's own
+    # branch, and leaves are tried newest-first: a newer sibling with one extra repeat of
+    # a turn won the tie, that turn was handed the seat belonging to its earlier twin, and
+    # two distinct turns claimed one seat. A multiset fixes the repeat case and not the
+    # reordered one, which is why this scores an in-order run.
+    wanted = [
         text
         for text in (_normalise_cased(_probe_text(message)) for message in _as_wire(branch))
         if text
-    }
+    ]
     if not wanted:
         return None
     parents = {parent for parent in parent_of.values() if parent is not None}
@@ -717,17 +731,16 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     best = None
     best_score = 0
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
-        texts = {
-            text
-            for text in (
-                _normalise_cased(_probe_text(message))
-                for message in _as_wire(_walk_from(by_id, parent_of, leaf))
-            )
-            if text
-        }
-        score = sum(1 for text in wanted if text in texts)
-        if score > best_score:
-            best, best_score = leaf, score
+        # Greedy in-order scan, gaps allowed on both sides: the newest branch message is
+        # usually not persisted yet, and the evicted turns are no longer in the fitted
+        # conversation, so neither side is a subsequence of the other.
+        cursor = 0
+        for message in _as_wire(_walk_from(by_id, parent_of, leaf)):
+            text = _normalise_cased(_probe_text(message))
+            if text and cursor < len(wanted) and text == wanted[cursor]:
+                cursor += 1
+        if cursor > best_score:
+            best, best_score = leaf, cursor
     return best
 
 
@@ -779,7 +792,69 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
 _EMPTY_TOOL_RESULT = '{"result":""}'
 
 
-def _tool_result_content(result) -> str:
+# `SERVER_SIDE_BUILTIN_TOOL_NAMES` in `chat-adapter.ts`, itself a mirror of the backend's
+# `_SERVER_SIDE_BUILTIN_TOOL_NAMES`. The NAME alone never decides: a user function may
+# legitimately be called `web_search`, so the marker or a Gemini native part has to be
+# there too, which is the same guarantee the frontend makes.
+_SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
+# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
+_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
+
+
+def _server_builtin(part: dict) -> tuple[bool, bool]:
+    """Whether a persisted call is a provider-side builtin, and whether it has a native part.
+
+    The frontend drops a builtin from the replayed history entirely when there is no
+    native part, and replays one WITH a native part as a call carrying no `tool` result.
+    Reconstructing either as an ordinary local call inserted a phantom exchange, so the
+    request-shaped turn no longer matched the persisted run and the turn took a fallback
+    ordinal. Both signals ride on the persisted `args`, so this is decidable here.
+    """
+    args = part.get("args")
+    args = args if isinstance(args, dict) else {}
+    if str(part.get("toolName") or "").lower() not in _SERVER_BUILTIN_NAMES:
+        return False, False
+    google = args.get("google")
+    native = isinstance(google, dict) and isinstance(google.get("native_part"), dict)
+    return bool(args.get("_server_tool") is True or native), native
+
+
+def _unwrapped(result, tool_name: str):
+    """A sandbox or MCP-image wrapper reduced to the text the model actually saw.
+
+    `python` and `terminal` results are wrapped in `{text, images, sessionId, files}` on
+    EVERY call, and the replay adapter sends `result.text` alone rather than feeding the
+    model a session id and file metadata. Serialising the whole wrapper reconstructed a
+    tool message that can never equal the archived one.
+
+    Both gates are the frontend's: the name, because a third-party tool answering with
+    `{text, sessionId, images}` is someone else's and unwrapping it would drop every other
+    field, and the shape.
+    """
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return None
+    images = result.get("images")
+    if not isinstance(images, list):
+        return None
+    if tool_name in _SANDBOX_TOOL_NAMES and isinstance(result.get("sessionId"), str):
+        files = result.get("files")
+        if files is None or (
+            isinstance(files, list)
+            and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
+        ):
+            return result["text"]
+    # The MCP image shape carries no session and always has at least one image.
+    if result.get("sessionId") is None and images and all(
+        isinstance(image, dict)
+        and isinstance(image.get("data"), str)
+        and isinstance(image.get("mimeType"), str)
+        for image in images
+    ):
+        return result["text"]
+    return None
+
+
+def _tool_result_content(result, tool_name: str = "") -> str:
     """A persisted tool result in the string the replay serializer would have sent.
 
     An empty string becomes the sentinel above, because the backend's ChatMessage
@@ -790,6 +865,9 @@ def _tool_result_content(result) -> str:
     """
     if isinstance(result, str):
         return result if result else _EMPTY_TOOL_RESULT
+    unwrapped = _unwrapped(result, tool_name)
+    if unwrapped is not None:
+        return unwrapped if unwrapped else _EMPTY_TOOL_RESULT
     return json.dumps(result, separators = (",", ":"))
 
 
@@ -818,10 +896,15 @@ def _as_wire(messages: list[dict]) -> list[dict]:
     for message in messages:
         content = message.get("content")
         parts = content if isinstance(content, list) else None
+        # A provider-side builtin with no native part is not replayed at all, so it is
+        # not a call here either: counting it made this take the tool-call path and
+        # invent an exchange the request never carried.
         calls = [
             part
             for part in (parts or [])
-            if isinstance(part, dict) and part.get("type") == "tool-call"
+            if isinstance(part, dict)
+            and part.get("type") == "tool-call"
+            and not (_server_builtin(part) == (True, False))
         ]
         if not calls:
             wire.append(
@@ -858,6 +941,10 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 ]
             wire.append(entry)
             for call in pending_calls:
+                if _server_builtin(call)[0]:
+                    # A builtin WITH a native part replays as a call and no `tool`
+                    # message: its result travels in the provider's own native part.
+                    continue
                 if "result" not in call or call.get("result") is None:
                     # Only an ABSENT result is absent. The serializer skips exactly
                     # `undefined` and `null` and emits a `tool` message for everything
@@ -870,7 +957,9 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                     {
                         "role": "tool",
                         "tool_call_id": call.get("toolCallId"),
-                        "content": _tool_result_content(call.get("result")),
+                        "content": _tool_result_content(
+                            call.get("result"), str(call.get("toolName") or "")
+                        ),
                     }
                 )
             pending_calls.clear()
@@ -878,6 +967,9 @@ def _as_wire(messages: list[dict]) -> list[dict]:
 
         for part in parts:
             if isinstance(part, dict) and part.get("type") == "tool-call":
+                if _server_builtin(part) == (True, False):
+                    # Dropped whole, call and result, exactly as the serializer does.
+                    continue
                 pending_calls.append(part)
                 continue
             if pending_calls:
