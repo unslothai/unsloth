@@ -2053,20 +2053,27 @@ def test_a_catalog_401_spends_one_forced_refresh(monkeypatch):
     calls = []
 
     class Rejecting:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             calls.append(headers["Authorization"])
             if len(calls) == 1:
                 return httpx.Response(401, json = {"detail": "expired"})
-            return httpx.Response(
-                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
-            )
+            return httpx.Response(200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
 
         async def aclose(self):
             return None
 
     refreshed = []
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         refreshed.append(force_refresh)
         return "fresh-token", "acct-1"
 
@@ -2088,13 +2095,22 @@ def test_a_second_catalog_401_asks_for_reconnection(monkeypatch):
     forget_subscription_models("provider-12")
 
     class AlwaysRejecting:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             return httpx.Response(401, json = {"detail": "expired"})
 
         async def aclose(self):
             return None
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "fresh-token", "acct-1"
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: AlwaysRejecting())
