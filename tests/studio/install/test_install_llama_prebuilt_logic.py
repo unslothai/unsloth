@@ -776,7 +776,7 @@ def test_activate_install_tree_preserves_symlink_to_resolved_target(
     assert not (linked_root / "old.txt").exists()
 
 
-def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
+def test_activate_install_tree_keeps_rollback_when_restore_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     install_dir = tmp_path / "llama.cpp"
@@ -819,22 +819,24 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
 
-    with pytest.raises(
-        PrebuiltFallback,
-        match = "activation and rollback failed; cleaned install state for fresh source build",
-    ):
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at") as excinfo:
         activate_install_tree(staging_dir, install_dir, host)
 
+    assert "cleaned install state for fresh source build" in str(excinfo.value)
     assert not install_dir.exists()
     assert not staging_dir.exists()
-    assert not (tmp_path / ".staging").exists()
+
+    rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "old install\n"
 
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "rollback after failed activation also failed: restore failed" in output
-    assert "cleaning staging, install, and rollback paths before source build fallback" in output
+    assert "previous install kept at rollback path" in output
+    assert "cleaning staging, install, and failed paths before source build fallback" in output
     assert "removing failed install path" in output
-    assert "removing rollback path" in output
+    assert "removing rollback path" not in output
 
 
 def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
@@ -899,6 +901,128 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
     assert (install_dir / "old.txt").read_text() == "old install\n"
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
+
+
+def test_activate_install_tree_restores_previous_install_when_failed_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "failed-" in Path(dst).name:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    with pytest.raises(
+        PrebuiltFallback,
+        match = "activation failed; restored previous install",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not (install_dir / "new.txt").exists()
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "failed active install could not be moved aside" in output
+    assert "removing failed active install path" in output
+    assert "restored previous install from rollback path" in output
+
+
+def test_activate_install_tree_keeps_rollback_when_failed_install_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "failed-" in Path(dst).name:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    original_rmtree = INSTALL_LLAMA_PREBUILT.shutil.rmtree
+
+    def flaky_rmtree(path, *args, **kwargs):
+        if Path(path) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "rmtree", flaky_rmtree)
+
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "old install\n"
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "recovering from the failed activation also failed" in output
+    assert "rollback after failed activation also failed" not in output
+    assert "previous install kept at rollback path" in output
+    assert "removing rollback path" not in output
+
+
+def test_activate_install_tree_cleans_install_when_no_previous_install_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    with pytest.raises(
+        PrebuiltFallback,
+        match = "activation and rollback failed; cleaned install state for fresh source build",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert not install_dir.exists()
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "leaving it in place" not in output
+    assert "previous install kept at" not in output
 
 
 def test_activate_staged_dir_copies_when_replace_hits_busy_lock(

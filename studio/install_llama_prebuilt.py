@@ -4307,11 +4307,23 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 "moved aside; previous install left in place "
                 f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
             ) from exc
+        restore_attempted = False
+        restored = False
         try:
             if install_dir.exists():
                 failed_dir = unique_install_side_path(install_dir, "failed")
                 log(f"moving failed active install to {failed_dir}")
-                os.replace(install_dir, failed_dir)
+                try:
+                    os.replace(install_dir, failed_dir)
+                except Exception as failed_move_exc:
+                    failed_dir = None
+                    log(f"failed active install could not be moved aside: {failed_move_exc}")
+                    if rollback_dir is None:
+                        raise
+                    # install_dir holds the unvalidated staged tree while the only
+                    # copy of the previous install waits in rollback_dir, so drop
+                    # it rather than give up on the restore.
+                    remove_tree_logged(install_dir, "failed active install path")
             elif staging_dir.exists():
                 failed_dir = staging_dir
                 staging_dir = None
@@ -4319,7 +4331,9 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
 
             if rollback_dir and rollback_dir.exists():
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
+                restore_attempted = True
                 os.replace(rollback_dir, install_dir)
+                restored = True
                 log(f"restored previous install from rollback path {rollback_dir.name}")
                 if is_busy_lock_error(exc):
                     raise BusyInstallConflict(
@@ -4334,17 +4348,30 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         except (BusyInstallConflict, PrebuiltFallback):
             raise
         except Exception as rollback_exc:
-            log(f"rollback after failed activation also failed: {rollback_exc}")
+            if restore_attempted:
+                log(f"rollback after failed activation also failed: {rollback_exc}")
+            else:
+                log(f"recovering from the failed activation also failed: {rollback_exc}")
 
-        log(
-            "rollback restoration failed; cleaning staging, install, and rollback paths before source build fallback"
-        )
+        # An unrestored rollback path is the only copy of the previous install
+        # left, so it is preserved: cleaning it up would leave no llama.cpp at
+        # all on the in-app update path, which has no source build behind it.
+        keep_rollback = not restored and rollback_dir is not None and rollback_dir.exists()
+        if keep_rollback:
+            log(f"previous install kept at rollback path {rollback_dir}")
+            log(
+                "rollback restoration failed; cleaning staging, install, and failed paths before source build fallback"
+            )
+        else:
+            log(
+                "rollback restoration failed; cleaning staging, install, and rollback paths before source build fallback"
+            )
         cleanup_error: Exception | None = None
         try:
             cleanup_install_side_paths(
                 install_dir,
                 staging_dir = staging_dir,
-                rollback_dir = rollback_dir,
+                rollback_dir = None if keep_rollback else rollback_dir,
                 failed_dir = failed_dir,
                 active_dir = install_dir,
             )
@@ -4352,14 +4379,15 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             cleanup_error = cleanup_exc
             log(f"cleanup after rollback failure also failed: {cleanup_exc}")
         details = textwrap.shorten(str(exc), width = 200, placeholder = "...")
+        kept = f"; previous install kept at {rollback_dir}" if keep_rollback else ""
         if cleanup_error is not None:
             raise PrebuiltFallback(
                 "staged prebuilt validation passed but activation and rollback failed; "
-                f"cleanup also reported errors ({details}; cleanup={cleanup_error})"
+                f"cleanup also reported errors ({details}; cleanup={cleanup_error}){kept}"
             ) from exc
         raise PrebuiltFallback(
             "staged prebuilt validation passed but activation and rollback failed; "
-            f"cleaned install state for fresh source build ({details})"
+            f"cleaned install state for fresh source build ({details}){kept}"
         ) from exc
     else:
         if rollback_dir:
