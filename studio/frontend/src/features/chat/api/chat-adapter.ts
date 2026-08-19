@@ -3914,6 +3914,9 @@ export function createOpenAIStreamAdapter(
             inferenceRequest,
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
+            budgets: {
+              modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
+            },
             websitePolicy: {
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
