@@ -452,6 +452,52 @@ def degraded() -> bool:
 _ARCHIVED = "archived"
 
 
+def _active_chain(messages: list[dict]) -> list[dict]:
+    """The rows on ONE branch, oldest first, rather than the whole stored DAG.
+
+    `list_chat_messages` is an unfiltered SELECT ordered by time, but a thread is a tree:
+    `parent_id` is a real column and Retry leaves the replaced reply in place as a sibling.
+    Read as a flat list, an abandoned sibling lands between two live turns and the grouper
+    glues it onto whichever turn precedes it, so the regenerated turn matches no position
+    at all and falls back to MAX + 1. Measured on five turns with one Retry: the
+    regenerated turn 2 came back numbered 5 out of 4 live turns, colliding with live turn
+    3, under the header that says the higher number supersedes. The cumulative archive is
+    what makes MAX + 1 land past everything -- the abandoned branch has already taken the
+    high numbers -- so this does not depend on the eviction order.
+
+    Walked newest leaf back to root, the same shape the frontend's `orderBySelectedBranch`
+    uses to decide what the model is actually shown. `parent_id` is missing on rows written
+    before that column, so the previous row stands in for it, which is exactly a flat list
+    when nothing branches.
+    """
+    if not messages:
+        return []
+    by_id: dict = {}
+    parent_of: dict = {}
+    previous = None
+    for message in messages:
+        identifier = message.get("id")
+        if identifier is None:
+            continue
+        by_id[identifier] = message
+        parent_of[identifier] = message.get("parentId") or message.get("parent_id") or previous
+        previous = identifier
+    if not by_id:
+        return list(messages)
+    chain: list[dict] = []
+    seen: set = set()
+    current = messages[-1].get("id")
+    while current is not None and current not in seen:
+        seen.add(current)
+        record = by_id.get(current)
+        if record is None:
+            break
+        chain.append(record)
+        current = parent_of.get(current)
+    chain.reverse()
+    return chain or list(messages)
+
+
 def _as_wire(messages: list[dict]) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
@@ -549,7 +595,7 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # Grouped with the evictor's own grouper, so a position is a TURN's index and not a
     # message's: the ordinal is compared against other turns, and `archive_messages`
     # already records how many messages a turn holds.
-    wire = _as_wire(messages)
+    wire = _as_wire(_active_chain(messages))
     return [
         [_normalise(_probe_text(message)) for message in group]
         for group in group_turns(wire)
@@ -598,7 +644,16 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         index
         for index, position in enumerate(positions)
         if position
-        and len(position) >= 1
+        # A position SHORTER than the turn may only match the trailing one. `zip` stops at
+        # the shorter side, so a persisted turn missing its reply prefix-matched anywhere,
+        # and a thread carrying an orphan user row -- a deleted assistant reply, or a
+        # reload before the reply was appended -- gave the later, answered turn two seats.
+        # Measured: seats [0, 1] where only [1] is real, a second copy of the same turn
+        # written at the next compaction, and the recall quoting one turn twice.
+        # `>=` rather than `==`: a position legitimately runs LONGER, because `_archivable`
+        # strips our injections from the group while the transcript keeps them, and
+        # `_as_wire` expands one persisted tool row into two or three messages.
+        and (len(position) >= len(texts) or index == len(positions) - 1)
         and all(
             _same(stored, live, is_call) for stored, live, is_call in zip(position, texts, calls)
         )
@@ -638,6 +693,16 @@ def _restamp(
             if copy.get("archive_ordinal") != seat:
                 store.set_archive_ordinal(conn, copy["id"], seat)
                 moved = True
+        # More copies than the conversation now has occurrences means a rewind removed one.
+        # The survivors are byte-identical, so the branch filter validates every copy
+        # against the single remaining occurrence and `recall` dedups on chunk id, which
+        # differs: measured, a recall slot went on quoting one turn twice, and the surplus
+        # kept an ordinal that a genuinely later turn had since taken. Guarded by the
+        # `not seats` return above, so a turn that simply failed to match its occurrences
+        # never deletes anything.
+        for surplus in rows[len(seats):]:
+            store.delete_document(conn, surplus["id"], commit = False)
+            moved = True
         if moved and commit:
             conn.commit()
     except Exception:  # noqa: BLE001 -- ordering an old archive is not worth a chat
@@ -1286,7 +1351,17 @@ def recall(
             # of it would spend the refilled slots on the oldest turns. That is the exact
             # failure `_ends_first_within_ties` exists to prevent, reintroduced one level
             # up. The block is re-ordered chronologically below either way.
-            fresh.sort(key = lambda source: -(source.get("score") or 0.0))
+            # By retrieval rank first, score second. The score in a source is rounded for
+            # display and is identical across a tied run, so sorting on it alone preserved
+            # whatever order the list arrived in -- which is chronological, so the refill
+            # spent its slots on the oldest turns and the anchor made the recall worse than
+            # not having it.
+            fresh.sort(
+                key = lambda source: (
+                    source.get("rank") if source.get("rank") is not None else 1 << 30,
+                    -(source.get("score") or 0.0),
+                )
+            )
             for source in fresh[:room]:
                 seen_ids.add(source["chunkId"])
                 merged.append(source)
@@ -1359,11 +1434,21 @@ def recall(
         if not hits:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
+            # Retrieval rank, kept before the chronological sort throws it away. The
+            # two-query merge refills its slots out of these sources, and score alone
+            # cannot order them: `format_conversation_recall` rounds it to four places, and
+            # on a tied archive every candidate carries the SAME score, so the refill's
+            # stable sort left them in the chronological order imposed here and took the
+            # oldest. Measured: eight tied revisions all scoring 1.6297, where the single
+            # query returned the newest and the same query plus an anchor did not.
+            rank_of = {hit.chunk_id: rank for rank, hit in enumerate(hits)}
             # AFTER the top-k slice, never before. Sorting first would make the slice take
             # the OLDEST turns rather than the most relevant ones, which is a different
             # feature and a worse one.
             hits.sort(key = lambda hit: _conversation_order(rows.get(hit.chunk_id)))
             text, sources = tool.format_conversation_recall(rows, hits)
+            for source in sources:
+                source["rank"] = rank_of.get(source.get("chunkId"))
         else:
             text, sources = tool._format(rows, hits)
         return (text, sources) if sources else None

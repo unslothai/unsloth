@@ -104,6 +104,7 @@ was we were what when where which who why will with would you your
 # the number asked about. For any ordinary-case query this is the same answer the
 # capitals rule already gave, so nothing else moves.
 _HAS_DIGIT = re.compile(r"\d", re.UNICODE)
+_HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
@@ -122,7 +123,15 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     if "_" in token:
         return True
     if _HAS_DIGIT.search(token):
-        return True
+        # A bare number needs LENGTH to be a name, the same bar the capitals rule always
+        # carried. Dropping it made "answer in 2 sentences" filter the archive on "2" and
+        # "3.11 or 3.12" filter on "3" OR "11" OR "12": measured on a realistic archive at
+        # top_k 1, the focused pass then returned a turn about how many staging
+        # environments we keep instead of the billing turn the question asked for, which
+        # both the previous build and the rollback knob got right. A token mixing letters
+        # and digits is a name at any length, and a long number still qualifies exactly as
+        # it did before.
+        return bool(_HAS_LETTER.search(token)) or len(token) >= 3
     return len(token) >= 3 and token.upper() in raw_tokens
 
 

@@ -2428,3 +2428,172 @@ def test_a_tool_exchange_is_numbered_where_the_conversation_put_it(conn):
     text, _sources = conversation_archive.recall(THREAD, "repo files peru ls", top_k = 4)
     assert text.index("capital of peru") < text.index("list the files")
     assert text.index("list the files") < text.index("called terminal")
+
+
+def test_an_anchor_query_cannot_cost_the_newest_revision_its_slot(conn):
+    """The refill has to keep RETRIEVAL rank, which the chronological sort throws away.
+
+    Every candidate in a tied archive carries the same score, and the score a source
+    carries is rounded for display on top of that, so sorting the refill by score alone
+    left the list in the order it arrived: chronological. The refill then spent its slots
+    on the oldest turns, and adding the anchor that exists to rescue a thin message made
+    the recall worse than not adding it. Measured on eight revisions at top_k 4: the single
+    query returned the newest, the same query plus an anchor did not.
+    """
+    values = _revisions(8, distractors = 0)
+
+    alone = conversation_archive.recall(THREAD, f"{VARIABLE}", top_k = 4)
+    merged = conversation_archive.recall(
+        THREAD, f"{VARIABLE}", top_k = 4, extra_queries = ["timeout"]
+    )
+
+    assert alone is not None and merged is not None
+    assert values[-1] in alone[0]
+    assert values[-1] in merged[0], "the anchor cost the newest revision its slot"
+
+
+def test_an_orphan_user_row_does_not_lend_its_seat_to_a_later_turn(conn):
+    """A position SHORTER than the turn may only match the trailing one.
+
+    `zip` stops at the shorter side, so a persisted turn missing its reply prefix-matched
+    anywhere in the transcript. A thread carrying an orphan user row -- an assistant reply
+    deleted from the thread, or a reload before the reply was appended -- therefore handed
+    the later, answered turn two seats, and the next compaction wrote a second copy of it.
+    Measured: seats [0, 1] where only [1] is real, two documents with one sha, and the
+    recall quoting the same turn twice.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread({"id": THREAD, "title": "t", "modelType": "base",
+                                  "modelId": "local-model", "createdAt": 1})
+    rows = [
+        ("user", "set ZQXVARA123 to 1"),          # orphan: its reply is gone
+        ("user", "set ZQXVARA123 to 1"),
+        ("assistant", "done, ZQXVARA123 is 1"),
+    ]
+    for index, (role, text) in enumerate(rows):
+        studio_db.upsert_chat_message({"id": f"{THREAD}-{index}", "threadId": THREAD,
+                                       "role": role,
+                                       "content": [{"type": "text", "text": text}],
+                                       "createdAt": index + 2})
+    answered = [
+        {"role": "user", "content": "set ZQXVARA123 to 1"},
+        {"role": "assistant", "content": "done, ZQXVARA123 is 1"},
+    ]
+
+    positions = conversation_archive._transcript_positions(THREAD)
+    assert conversation_archive._occurrences(positions, answered) == [1]
+
+    written = [
+        conversation_archive.archive_turns(THREAD, answered),
+        conversation_archive.archive_turns(THREAD, answered),
+    ]
+    scope = store.conversation_archive_scope(THREAD)
+
+    assert written == [1, 0]
+    assert len(store.list_documents(conn, scope)) == 1
+
+
+def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
+    """The stored rows are a tree, and reading them as a list numbers an abandoned sibling.
+
+    Retry leaves the replaced reply in place, so a flat read drops it between two live
+    turns and the grouper glues it onto whichever turn precedes it. The regenerated turn
+    then matches no position and takes MAX + 1, which the cumulative archive has already
+    pushed past every live turn: measured, a regenerated turn 2 came back numbered 5 out of
+    4 live turns, colliding with live turn 3 under the header that says the higher number
+    supersedes.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread({"id": THREAD, "title": "t", "modelType": "base",
+                                  "modelId": "local-model", "createdAt": 1})
+    rows = [
+        ("m0", None, "user", "turn 1 about ZQXVARA123"),
+        ("m1", "m0", "assistant", "answer 1"),
+        ("m2", "m1", "user", "turn 2 about ZQXVARA123"),
+        ("m3", "m2", "assistant", "answer 2 attempt one"),   # abandoned sibling
+        ("m4", "m2", "assistant", "answer 2 attempt two"),   # the live reply
+        ("m5", "m4", "user", "turn 3 about ZQXVARA123"),
+        ("m6", "m5", "assistant", "answer 3"),
+    ]
+    for index, (identifier, parent, role, text) in enumerate(rows):
+        studio_db.upsert_chat_message({"id": identifier, "threadId": THREAD,
+                                       "parentId": parent, "role": role,
+                                       "content": [{"type": "text", "text": text}],
+                                       "createdAt": index + 2})
+
+    live = [
+        {"role": "user", "content": "turn 1 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 1"},
+        {"role": "user", "content": "turn 2 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 2 attempt two"},
+        {"role": "user", "content": "turn 3 about ZQXVARA123"},
+        {"role": "assistant", "content": "answer 3"},
+    ]
+    positions = conversation_archive._transcript_positions(THREAD)
+
+    assert len(positions) == 3, positions
+    assert conversation_archive._occurrences(positions, live[2:4]) == [1]
+
+    conversation_archive.archive_turns(THREAD, live)
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    assert ordinals == [0, 1, 2]
+
+
+def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(conn):
+    """A repeat that is rewound away leaves more copies than occurrences.
+
+    Both copies are byte-identical, so the branch filter validates each against the single
+    surviving occurrence and `recall` dedups on chunk id, which differs. Measured: a recall
+    slot went on quoting one turn twice, and the surplus kept an ordinal that a genuinely
+    later turn had since taken.
+    """
+    first = _turn("set ZQXVARA123 to 1", "ok")
+    second = _turn("set ZQXVARA123 to 2", "ok")
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    for group in (first, second, repeat):
+        _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    assert len(store.list_documents(conn, scope)) == 3
+
+    # Rewind past the repeat, through the same sync the PUT route uses.
+    _save_thread(THREAD, first + second)
+    conversation_archive.archive_turns(THREAD, first)
+
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    assert ordinals == [0, 1]
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    assert len(found[1]) == len({source["text"] for source in found[1]})
+
+
+def test_an_incidental_number_does_not_take_over_the_filter(conn):
+    """A bare number needs length to be a name, which is the bar the capitals rule had.
+
+    Treating any digit-bearing token as an identifier made "answer in 2 sentences" filter
+    the archive on "2". Measured on an archive whose filler mentions small numbers in
+    ordinary prose, at top_k 1, the focused pass returned the staging-environments turn
+    where both the previous build and the rollback knob returned the billing turn.
+    """
+    assert store.conversation_match_queries("answer in 2 sentences") == [
+        '"answer" OR "2" OR "sentences"'
+    ]
+    assert store.conversation_match_queries("which python, 3.11 or 3.12") == [
+        '"python" OR "3" OR "11" OR "12"'
+    ]
+    # A name is still a name, at any length, and a long number still qualifies.
+    assert store.conversation_match_queries("what about v2 of the plan")[0] == '"v2"'
+    assert store.conversation_match_queries("we talked about 2024 revenue")[0] == '"2024"'
+    assert store.conversation_match_queries("What is the current value of 9134?")[0] == '"9134"'
