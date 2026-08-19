@@ -172,9 +172,6 @@ def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
     assert calls[0]["request"] is not None
 
 
-# ── verbose_json ────────────────────────────────────────────────────────
-
-
 def test_verbose_json_carries_language_and_duration(monkeypatch):
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"response_format": "verbose_json"})
@@ -201,9 +198,6 @@ def test_subtitle_formats_are_still_400(monkeypatch):
     cli, calls = _make_client(monkeypatch)
     for fmt in ("srt", "vtt"):
         assert _post(cli, data = {"response_format": fmt}).status_code == 400
-
-
-# ── API monitor ─────────────────────────────────────────────────────────
 
 
 def test_transcription_opens_a_monitor_row(monkeypatch):

@@ -462,9 +462,6 @@ def test_activation_shortfall_is_an_actionable_400(monkeypatch):
     # exception text rides out on the back of this.
 
 
-# ── API monitor ─────────────────────────────────────────────────────────
-
-
 def test_generation_opens_a_monitor_row(client):
     api_monitor.clear()
     assert _post(client, {"prompt": "a sloth in space"}).status_code == 200
@@ -493,9 +490,8 @@ def test_no_loaded_model_records_an_error_row(monkeypatch):
 
 
 def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
-    # A local On-Device pick puts the host directory in repo_id, and /api/inference/monitor
-    # serves the row over the tunnel, so the label gets the same path-free treatment as
-    # active_model and the lifecycle rows.
+    # A local pick puts the host directory in repo_id and the row goes out over the tunnel,
+    # so the label gets the same path-free treatment as active_model.
     backend = _FakeBackend(repo_id = "/home/ana/models/my-flux")
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)

@@ -4203,9 +4203,8 @@ async def _monitored_media_request(
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except HTTPException as exc:
-        # A client abort reaches these routes as a 499 from the disconnect watchers, not as a
-        # CancelledError, so without this an ordinary stop is a red error row. Same pairing the
-        # text routes use: finish("cancelled") alongside every 499 they raise.
+        # Client aborts reach these routes as a 499 from the disconnect watchers, not as a
+        # CancelledError, so without this an ordinary stop would be a red error row.
         if getattr(exc, "status_code", None) == 499:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -11152,8 +11151,8 @@ async def openai_audio_transcriptions(
         return JSONResponse(
             content = {
                 "task": "transcribe",
-                # Whisper's own detection is not surfaced by the sidecar, so this
-                # echoes the requested language and is null when none was given.
+                # The sidecar does not surface Whisper's detection, so this echoes
+                # the requested language and is null when none was given.
                 "language": result.get("language"),
                 "duration": result.get("duration"),
                 "text": text,
@@ -24377,7 +24376,7 @@ async def openai_image_generations(
         return await _generate_openai_images(body, request, current_subject, hf_token, monitor_id)
 
 
-# Split from the route so the monitor row can wrap the whole handler without reindenting it.
+# Split out so the monitor row can wrap the whole handler without reindenting it.
 async def _generate_openai_images(
     body: ImageGenerationRequest,
     request: Request,
@@ -24464,9 +24463,8 @@ async def _generate_openai_images(
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    # A local-directory load carries the host path in repo_id, and the monitor payload goes
-    # out over the tunnel, so the label takes the path-free treatment active_model and the
-    # lifecycle rows already get.
+    # A local-directory load puts the host path in repo_id and the monitor row goes out over
+    # the tunnel, so the label gets the same path-free treatment as active_model.
     _served_repo = str(result.get("repo_id") or "")
     api_monitor.relabel(monitor_id, public_model_id(_served_repo) or _served_repo)
     created = int(time.time())

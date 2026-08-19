@@ -313,9 +313,6 @@ def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
     assert estimate("你好世界" * 50) >= 200
 
 
-# ── API monitor ─────────────────────────────────────────────────────────
-
-
 def test_speech_opens_a_monitor_row(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     api_monitor.clear()
@@ -352,8 +349,7 @@ def test_rejected_response_format_records_nothing(monkeypatch):
 
 
 def test_client_abort_records_a_cancelled_row(monkeypatch):
-    # The disconnect watcher turns a client abort into a 499, not a CancelledError,
-    # so the monitor must read it as cancelled rather than a failure.
+    # The disconnect watcher turns a client abort into a 499, not a CancelledError.
     async def _cancelled(text):
         raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
 
