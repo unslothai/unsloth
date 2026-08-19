@@ -24,11 +24,7 @@ def _monitor_start_keywords(function) -> list[set[str]]:
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         owner = node.func.value
-        if (
-            isinstance(owner, ast.Name)
-            and owner.id == "api_monitor"
-            and node.func.attr == "start"
-        ):
+        if isinstance(owner, ast.Name) and owner.id == "api_monitor" and node.func.attr == "start":
             calls.append({keyword.arg for keyword in node.keywords if keyword.arg is not None})
     return calls
 

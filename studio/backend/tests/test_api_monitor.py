@@ -183,9 +183,7 @@ def test_non_external_and_non_request_rows_never_emit_usage_receipts():
         event = "load", model = "m", running = True, subject = "alice", via_api_key = True
     )
     monitor.finish(lifecycle)
-    monitor.record_lifecycle(
-        event = "unload", model = "m", subject = "alice", via_api_key = True
-    )
+    monitor.record_lifecycle(event = "unload", model = "m", subject = "alice", via_api_key = True)
 
     discarded = monitor.start(
         endpoint = "/v1/responses",

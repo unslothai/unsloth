@@ -255,9 +255,7 @@ class ApiMonitor:
             while self._terminal_callbacks_inflight.get(lease, 0):
                 self._callback_condition.wait()
 
-    def _terminal_callback_locked(
-        self,
-    ) -> tuple[Optional[str], Optional[TerminalCallback]]:
+    def _terminal_callback_locked(self) -> tuple[Optional[str], Optional[TerminalCallback]]:
         if self._terminal_callback_leases:
             lease = next(reversed(self._terminal_callback_leases))
             return lease, self._terminal_callback_leases[lease]
@@ -655,8 +653,7 @@ class ApiMonitor:
         )
 
     def _notify_terminal(
-        self,
-        notification: Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]],
+        self, notification: Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]
     ) -> None:
         if notification is None:
             return

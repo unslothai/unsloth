@@ -165,13 +165,7 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
     finally:
         conn.close()
 
-    assert record_api_usage(
-        _api_receipt(
-            "api-mixed",
-            today,
-            model = "unsloth/gpt-oss-20b",
-        )
-    )
+    assert record_api_usage(_api_receipt("api-mixed", today, model = "unsloth/gpt-oss-20b"))
     stats = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     totals = stats["totals"]
 
@@ -237,9 +231,7 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
 
     assert record_api_usage(receipt) is True
     assert record_api_usage(receipt) is False
-    after_insert = compute_profile_stats(
-        days = 7, tz_name = "UTC", subject = "external-client"
-    )
+    after_insert = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     assert after_insert is not initial
     assert after_insert["totals"]["messages"] == 0
     assert after_insert["totals"]["apiTokens"] == 50
@@ -250,9 +242,7 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     # A fresh process/schema initialization still reads the same receipt.
     studio_db._schema_ready = False
     invalidate_profile_stats_cache()
-    after_restart = compute_profile_stats(
-        days = 7, tz_name = "UTC", subject = "external-client"
-    )
+    after_restart = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     assert after_restart["totals"]["apiTokens"] == 50
     assert after_restart["daily"][-1]["tokens"] == 50
 
@@ -280,9 +270,12 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
         assert elapsed < 0.2
-        assert lock_conn.execute(
-            "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)
-        ).fetchone()[0] == 0
+        assert (
+            lock_conn.execute(
+                "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)
+            ).fetchone()[0]
+            == 0
+        )
 
         lock_conn.rollback()
         deadline = time.monotonic() + 5
@@ -472,10 +465,7 @@ def test_full_uuid_request_ids_do_not_collapse_same_prefix(stats_db, monkeypatch
         ).fetchall()
     finally:
         conn.close()
-    assert [(row["id"], row["total_tokens"]) for row in rows] == [
-        (ids[0], 3),
-        (ids[1], 7),
-    ]
+    assert [(row["id"], row["total_tokens"]) for row in rows] == [(ids[0], 3), (ids[1], 7)]
 
 
 def test_api_usage_bounds_every_durable_text_field(stats_db):
@@ -493,16 +483,10 @@ def test_api_usage_bounds_every_durable_text_field(stats_db):
         created_at = _ms(now),
     )
     assert record_api_usage(receipt)
-    assert not record_api_usage(
-        _api_receipt("i" * (MAX_RECEIPT_ID_CHARS + 1), now)
-    )
+    assert not record_api_usage(_api_receipt("i" * (MAX_RECEIPT_ID_CHARS + 1), now))
     long_subject = "s" * (MAX_SUBJECT_CHARS + 100)
-    assert record_api_usage(
-        _api_receipt("oversized-subject", now, subject = long_subject)
-    )
-    assert record_api_usage(
-        _api_receipt("second-long-model", now, model = long_model_prefix + "b")
-    )
+    assert record_api_usage(_api_receipt("oversized-subject", now, subject = long_subject))
+    assert record_api_usage(_api_receipt("second-long-model", now, model = long_model_prefix + "b"))
 
     conn = studio_db.get_connection()
     try:
@@ -525,9 +509,10 @@ def test_api_usage_bounds_every_durable_text_field(stats_db):
     assert len(row["status"]) == MAX_STATUS_CHARS
     assert len(stored_long_subject) == MAX_SUBJECT_CHARS
     assert row["model"] != other_model
-    assert compute_profile_stats(
-        days = 1, tz_name = "UTC", subject = long_subject
-    )["totals"]["apiTokens"] == 50
+    assert (
+        compute_profile_stats(days = 1, tz_name = "UTC", subject = long_subject)["totals"]["apiTokens"]
+        == 50
+    )
 
 
 def test_api_fingerprint_invalidates_cache_for_independent_database_writers(stats_db):
@@ -556,22 +541,24 @@ def test_api_fingerprint_invalidates_cache_for_independent_database_writers(stat
 
 def test_api_usage_filters_internal_and_zero_receipts_but_keeps_partial_failures(stats_db):
     now = datetime.now(timezone.utc)
-    assert record_api_usage(
-        _api_receipt("internal", now, via_api_key = False)
-    ) is False
-    assert record_api_usage(
-        _api_receipt("zero", now, prompt = 0, completion = 0, total = 0, status = "error")
-    ) is False
-    assert record_api_usage(
-        _api_receipt(
-            "partial",
-            now,
-            prompt = 3,
-            completion = 4,
-            total = 9,
-            status = "cancelled",
+    assert record_api_usage(_api_receipt("internal", now, via_api_key = False)) is False
+    assert (
+        record_api_usage(_api_receipt("zero", now, prompt = 0, completion = 0, total = 0, status = "error"))
+        is False
+    )
+    assert (
+        record_api_usage(
+            _api_receipt(
+                "partial",
+                now,
+                prompt = 3,
+                completion = 4,
+                total = 9,
+                status = "cancelled",
+            )
         )
-    ) is True
+        is True
+    )
 
     stats = compute_profile_stats(days = 1, tz_name = "UTC", subject = "external-client")
     assert stats["totals"]["apiPromptTokens"] == 3

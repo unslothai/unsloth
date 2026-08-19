@@ -54,11 +54,7 @@ class ApiUsageReceipt:
 
 
 def _valid_token_count(value: object) -> bool:
-    return (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and 0 <= value <= MAX_TOKEN_COUNT
-    )
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_TOKEN_COUNT
 
 
 def _bounded_text(value: object, limit: int, *, truncate: bool) -> Optional[str]:
@@ -168,7 +164,6 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
     if inserted:
         # Lazy import avoids making profile aggregation part of schema startup.
         from storage.profile_stats_db import invalidate_profile_stats_cache
-
         invalidate_profile_stats_cache()
     return inserted
 
