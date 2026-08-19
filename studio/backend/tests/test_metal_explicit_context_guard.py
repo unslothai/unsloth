@@ -599,6 +599,35 @@ class TestAContextAboveTheModelsNativeLength:
         cmd = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)["cmd"]
         assert _ctx_values(cmd)[-1] == str(self._ASKED)
 
+    def test_the_load_does_not_arrive_carrying_a_warning_against_itself(
+        self, tmp_path, monkeypatch
+    ):
+        """max_available_ctx is published as max_context_length, and both amber warnings
+        fire when the loaded context exceeds it. Left at the native length, a load this
+        branch measured and allowed reaches the user as "context length exceeds what
+        fits in unified memory", naming a number smaller than the one running.
+        """
+        out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
+        loaded = int(_ctx_values(out["cmd"])[-1])
+        published = out["backend"].max_context_length
+        assert published == loaded
+
+    def test_the_published_bound_never_runs_ahead_of_the_request(
+        self, tmp_path, monkeypatch
+    ):
+        """The fit is bounded by the request, so the bound may rise to the context that
+        loaded and no further. A bound past it would invite a context nothing priced."""
+        out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
+        assert out["backend"].max_context_length <= self._ASKED
+
+    def test_a_refused_request_does_not_raise_the_published_bound(
+        self, tmp_path, monkeypatch
+    ):
+        """Only an accepted ceiling is published. A refusal measured nothing it can
+        stand behind at the request, so the bound stays where the cap left it."""
+        with pytest.raises(RuntimeError, match = "unified"):
+            self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = _FAT_KV)
+
     def test_the_pass_through_spelling_launches_too(self, tmp_path, monkeypatch):
         """The spelling a RoPE-scaled request actually arrives in."""
         cmd = self._above(

@@ -15778,6 +15778,18 @@ class LlamaCppBackend:
                                     <= _apple_fit_budget_mib
                                 ):
                                     _apple_measured_ceiling = _extended_ceiling
+                                    # Publish it as well. max_available_ctx becomes
+                                    # max_context_length, which the UI reads as the
+                                    # largest context that fits and both amber warnings
+                                    # compare the loaded context against. Left at the
+                                    # native length, a load this branch just measured
+                                    # and allowed arrives with a warning saying it does
+                                    # not fit in unified memory. The fit is bounded by
+                                    # the request, so this raises the bound to the
+                                    # context that actually loaded and no further.
+                                    max_available_ctx = max(
+                                        max_available_ctx, _apple_measured_ceiling
+                                    )
                             _metal_ctx_refusal = self._metal_context_overcommit_message(
                                 effective_ctx,
                                 _apple_measured_ceiling or 0,
