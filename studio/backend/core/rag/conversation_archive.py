@@ -765,11 +765,15 @@ def _unwrapped(result, tool_name: str):
         ):
             return result["text"]
     # The MCP image shape carries no session and always has at least one image.
-    if result.get("sessionId") is None and images and all(
-        isinstance(image, dict)
-        and isinstance(image.get("data"), str)
-        and isinstance(image.get("mimeType"), str)
-        for image in images
+    if (
+        result.get("sessionId") is None
+        and images
+        and all(
+            isinstance(image, dict)
+            and isinstance(image.get("data"), str)
+            and isinstance(image.get("mimeType"), str)
+            for image in images
+        )
     ):
         return result["text"]
     return None
