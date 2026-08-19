@@ -415,6 +415,10 @@ function Install-UnslothStudio {
         param([Parameter(Mandatory = $true)][int]$OwnerProcessId)
         # Only meaningful if this run redirected the temp; otherwise it is the host's.
         if ($null -eq $script:StudioTempOverride) { return }
+        # Only a directory this run created. The other override shape just pins the
+        # absolute spelling of the host's own temp, and dropping a file in there
+        # would be litter in somebody else's directory.
+        if (-not $script:StudioTempOverride.Owned) { return }
         $owned = $script:StudioTempOverride.Path
         if ([string]::IsNullOrWhiteSpace($owned)) { return }
         try {
@@ -464,7 +468,34 @@ function Install-UnslothStudio {
         # will use, and treating it as unset would probe a healthy TEMP and change
         # nothing.
         $inherited = if (-not [string]::IsNullOrEmpty($env:TMP)) { $env:TMP } else { $env:TEMP }
-        if (Test-StudioDirectoryUsable -Path $inherited) { return }
+        # Resolve BEFORE probing, not after. Test-Path is relative to PowerShell's
+        # location while the .NET file APIs are relative to the process working
+        # directory, and Set-Location moves only the first, so probing a relative
+        # value can check one directory and write to another.
+        $absolute = $inherited
+        if (-not [string]::IsNullOrEmpty($inherited)) {
+            try { $absolute = [System.IO.Path]::GetFullPath($inherited) } catch { $absolute = $inherited }
+        }
+        if (Test-StudioDirectoryUsable -Path $absolute) {
+            # Pin what was probed. A relative value (temp, or the drive-relative
+            # C:temp) is resolved by whoever reads it, and the install relocates
+            # out of a Windows system directory further down, so the same value
+            # could later name somewhere else, or nowhere. An already-absolute
+            # value normalizes to itself and is left alone.
+            if (-not [string]::Equals($absolute, $inherited, [System.StringComparison]::Ordinal)) {
+                $script:StudioTempOverride = [pscustomobject]@{
+                    TmpSet = ($null -ne $env:TMP)
+                    TmpValue = $env:TMP
+                    TempSet = ($null -ne $env:TEMP)
+                    TempValue = $env:TEMP
+                    Path = $absolute
+                    Owned = $false
+                }
+                $env:TMP = $absolute
+                $env:TEMP = $absolute
+            }
+            return
+        }
         $private = New-StudioPrivateTempDirectory
         if (-not $private) {
             Write-StudioLine "[WARN] No writable temporary directory was found; downloads may fail." -ForegroundColor Yellow
@@ -478,6 +509,7 @@ function Install-UnslothStudio {
             TempSet = ($null -ne $env:TEMP)
             TempValue = $env:TEMP
             Path = $private
+            Owned = $true
         }
         $env:TMP = $private
         $env:TEMP = $private
