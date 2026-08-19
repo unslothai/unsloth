@@ -727,7 +727,13 @@ html[data-chat-font] .aui-root {
 }
 :root:not([data-palette]) .palette-card[data-palette-value="standard"],
 :root[data-palette="classic"] .palette-card[data-palette-value="classic"],
-:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"],
+.reload-snapshot-shell:not([data-palette])
+	.palette-card[data-palette-value="standard"],
+.reload-snapshot-shell[data-palette="classic"]
+	.palette-card[data-palette-value="classic"],
+.reload-snapshot-shell[data-palette="minimal"]
+	.palette-card[data-palette-value="minimal"] {
 	/* Selection keeps the card's own border weight, only darker. */
 	border-color: var(--ring-select);
 }

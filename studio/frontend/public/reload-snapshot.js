@@ -23,6 +23,28 @@
     "data-ui-font",
     "data-ui-font-size",
   ];
+  // Keep this in sync with applyCustomizationToDocument. Other inline root
+  // variables are transient runtime state (for example an in-progress panel
+  // resize) and must not be replayed into the replacement document.
+  var appearanceVariables = [
+    "--background",
+    "--chart-1",
+    "--contrast-mix",
+    "--contrast-target",
+    "--control-accent",
+    "--control-accent-foreground",
+    "--custom-chat-font",
+    "--custom-code-font",
+    "--custom-code-font-size",
+    "--custom-heading-font",
+    "--font-heading",
+    "--font-mono",
+    "--font-sans",
+    "--foreground",
+    "--primary",
+    "--primary-foreground",
+    "--ui-font-scale",
+  ];
 
   function clearStoredSnapshot() {
     try {
@@ -79,12 +101,10 @@
   function readAppearance() {
     var root = document.documentElement;
     var variables = {};
-    for (var index = 0; index < root.style.length; index += 1) {
-      var name = root.style[index];
-      if (name.slice(0, 2) === "--") {
-        variables[name] = root.style.getPropertyValue(name);
-      }
-    }
+    appearanceVariables.forEach(function (name) {
+      var value = root.style.getPropertyValue(name);
+      if (value) variables[name] = value;
+    });
     var attributes = {};
     appearanceAttributes.forEach(function (name) {
       var value = root.getAttribute(name);
@@ -109,8 +129,8 @@
     if (!appearance) return;
     var root = document.documentElement;
     var variables = appearance.variables || {};
-    Object.keys(variables).forEach(function (name) {
-      if (name.slice(0, 2) === "--" && typeof variables[name] === "string") {
+    appearanceVariables.forEach(function (name) {
+      if (typeof variables[name] === "string") {
         root.style.setProperty(name, variables[name]);
       }
     });

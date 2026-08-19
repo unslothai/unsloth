@@ -558,7 +558,11 @@ test("carries the appearance customization so the shell paints in its own colors
     navigationType: "navigate",
     rootHtml: "<main>Existing chat</main>",
     styleSheets: ["/assets/index-abc123.css"],
-    htmlVariables: { "--background": "#241b2f", "--font-sans": '"Inter"' },
+    htmlVariables: {
+      "--background": "#241b2f",
+      "--font-sans": '"Inter"',
+      "--studio-sidebar-live-width": "317px",
+    },
     htmlAttributes: {
       "data-contrast-adjust": "",
       "data-panel-resizing": "true",
@@ -586,6 +590,25 @@ test("carries the appearance customization so the shell paints in its own colors
   assert.equal(incoming.htmlAttributes.get("data-contrast-adjust"), "");
   // Transient state (a panel mid-drag) is not appearance and must not be replayed.
   assert.equal(incoming.htmlAttributes.has("data-panel-resizing"), false);
+  assert.equal(
+    incoming.htmlVariables.getPropertyValue("--studio-sidebar-live-width"),
+    "",
+  );
+});
+
+test("adapts root-scoped palette state to the snapshot shell", () => {
+  assert.match(
+    indexCss,
+    /\.reload-snapshot-shell:not\(\[data-palette\]\)[\s\S]*?\.palette-card\[data-palette-value="standard"\]/,
+  );
+  assert.match(
+    indexCss,
+    /\.reload-snapshot-shell\[data-palette="classic"\][\s\S]*?\.palette-card\[data-palette-value="classic"\]/,
+  );
+  assert.match(
+    indexCss,
+    /\.reload-snapshot-shell\[data-palette="minimal"\][\s\S]*?\.palette-card\[data-palette-value="minimal"\]/,
+  );
 });
 
 test("drops the retained shell's animations instead of pausing them", () => {
