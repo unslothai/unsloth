@@ -663,6 +663,46 @@ test("carries the rendered shell through a reload until the new shell is ready",
   assert.equal(incoming.appended[0].removed, true);
 });
 
+test("captures reloads through WebKit's pagehide fallback", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>WebKit chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+  });
+  outgoing.dispatch("pagehide", { persisted: false });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.match(incoming.shell?.html ?? "", /WebKit chat/);
+});
+
+test("carries the retained shell through consecutive reloads", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Stable chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const firstReload = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    rootHtml: "<main>Still loading</main>",
+  });
+  firstReload.dispatch("pagehide", { persisted: false });
+
+  const secondReload = createEnvironment({
+    navigationType: "reload",
+    storage: firstReload.storage,
+  });
+  assert.match(secondReload.shell?.html ?? "", /Stable chat/);
+  assert.doesNotMatch(secondReload.shell?.html ?? "", /Still loading/);
+});
+
 test("restores from a parser-blocking head script before the first body paint", () => {
   const scriptPosition = indexHtml.indexOf(
     '<script src="/reload-snapshot.js">',
@@ -715,7 +755,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /if \(pairId && onInitialHistoryReady\) \{\s*onInitialHistoryReady\(\)/,
+    /if \(onInitialHistoryReady\) \{\s*onInitialHistoryReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -724,6 +764,14 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   assert.match(
     chatPageSource,
     /\.finally\(\(\) => \{\s*if \(isActive\) setThreadsSettled\(true\)/,
+  );
+  assert.match(
+    chatPageSource,
+    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(
+    chatPageSource,
+    /dataLoaded=\{currentProjectItemsLoaded && !projectsLoading\}/,
   );
 });
 

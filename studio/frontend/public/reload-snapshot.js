@@ -16,6 +16,7 @@
   var fontDataUrlPattern =
     /^data:(?:font\/(?:woff2?|ttf|otf|sfnt)|application\/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$/;
   var overlay = null;
+  var retainedSnapshot = null;
   var removalTimer = null;
   // Appearance reaches the page as inline custom properties on <html> plus
   // these gate attributes (theme-boot.js for the palette,
@@ -261,6 +262,7 @@
 
     var fontLoads = registerImportedFonts();
     applyAppearance(snapshot.appearance);
+    retainedSnapshot = snapshot;
     overlay = document.createElement("div");
     overlay.className = "reload-snapshot";
     // Vite injects index.css only after main.tsx runs, and styles inside the
@@ -623,6 +625,19 @@
       clearStoredSnapshot();
       return;
     }
+    // A second reload can happen before the replacement app is ready. The
+    // visible frame is still the closed-shadow copy, not the loading body
+    // underneath it, so carry that retained snapshot forward verbatim.
+    if (overlay && retainedSnapshot) {
+      try {
+        retainedSnapshot.createdAt = Date.now();
+        retainedSnapshot.path = location.pathname + location.search;
+        sessionStorage.setItem(storageKey, JSON.stringify(retainedSnapshot));
+      } catch (error) {
+        clearStoredSnapshot();
+      }
+      return;
+    }
     var root = document.getElementById("root");
     if (!root || !root.firstElementChild) return;
     try {
@@ -760,6 +775,7 @@
       clearTimeout(removalTimer);
       removalTimer = null;
     }
+    retainedSnapshot = null;
     if (!overlay) return;
     overlay.remove();
     overlay = null;
@@ -769,6 +785,12 @@
     if (event.activation && event.activation.navigationType === "reload") {
       saveSnapshot();
     }
+  });
+  // pageswap is Chromium-only. WKWebView/WebKitGTK still deliver pagehide on
+  // reload; non-reload captures are harmless because restoration additionally
+  // requires a reload navigation entry and an exact path match.
+  window.addEventListener("pagehide", function (event) {
+    if (!event.persisted) saveSnapshot();
   });
   window.addEventListener("unsloth:app-shell-ready", function () {
     if (!overlay) return;

@@ -1304,7 +1304,7 @@ function useStudioRuntimeAdapters(
     () => ({
       async load() {
         const completeLoad = <T,>(result: T, loadedThreadId?: string): T => {
-          if (pairId && onInitialHistoryReady) {
+          if (onInitialHistoryReady) {
             onInitialHistoryReady();
           } else if (
             modelType === "base" &&

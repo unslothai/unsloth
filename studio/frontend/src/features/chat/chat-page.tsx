@@ -1179,10 +1179,12 @@ function ProjectLanding({
   projectId,
   projectName,
   items,
+  dataLoaded,
 }: {
   projectId: string;
   projectName: string;
   items: SidebarItem[];
+  dataLoaded: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they can't linger or act while the landing
@@ -1207,6 +1209,9 @@ function ProjectLanding({
   const [previews, setPreviews] = useState<
     Record<string, { snippet: string; date: string }>
   >({});
+  const [runtimeReady, setRuntimeReady] = useState(false);
+  const reloadReadySent = useRef(false);
+  const markRuntimeReady = useCallback(() => setRuntimeReady(true), []);
   // Inline rename, mirroring the sidebar recent-row UX: edit the title in place,
   // commit on Enter/blur, cancel on Escape. Reuses the projectId-agnostic
   // renameChatItem so behavior matches the sidebar.
@@ -1514,12 +1519,27 @@ function ProjectLanding({
     };
   }, [items]);
 
+  useEffect(() => {
+    const previewsReady = items.every((item) => previews[item.id] !== undefined);
+    if (
+      !dataLoaded ||
+      !runtimeReady ||
+      !previewsReady ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [dataLoaded, items, previews, runtimeReady]);
+
   return (
     <ChatRuntimeProvider
       key={projectId}
       projectId={projectId}
       newThreadNonce={newThreadNonce}
       listThreads={false}
+      onInitialHistoryReady={markRuntimeReady}
     >
       {pendingNewThreadId ? (
         <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
@@ -2138,9 +2158,10 @@ export function ChatPage({
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
-  const { items: currentProjectItems } = useChatSidebarItems({
+  const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
+    useChatSidebarItems({
     projectId: currentProjectId ?? "__no_project_selected__",
-  });
+    });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
     : undefined;
@@ -3744,6 +3765,7 @@ export function ChatPage({
             projectId={view.projectId}
             projectName={currentProject?.name ?? "Project"}
             items={currentProjectItems}
+            dataLoaded={currentProjectItemsLoaded && !projectsLoading}
           />
         ) : view.mode === "single" ? (
           // Keyed by project only (not thread / new-chat nonce) so switching threads or
