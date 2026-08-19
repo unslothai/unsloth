@@ -24,6 +24,8 @@ import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
+  railBottomOffset,
+  railMaxHeight,
   useAppearanceCustomStore,
   useStackGeometry,
   useTheme,
@@ -403,19 +405,20 @@ function TauriUpdateLayer({
     <div
       ref={stack.ref}
       // Scrolls when the cap is smaller than the cards, rather than spilling
-      // them over the page. The gutter, cancelled by the margin, keeps the card
-      // shadows out of the clip; horizontal only, since useStackGeometry reads
-      // this node's scrollHeight and vertical padding would inflate it.
+      // them over the page. The gutter keeps the card shadows out of the clip:
+      // cancelled by the negative margin across, and by railBottomOffset and
+      // railMaxHeight underneath. useStackGeometry discounts it, so the
+      // placement still reads the cards alone.
       // Click-through until it actually scrolls: pointer-events-none also
       // costs it its scrollbar, and only the cards opt back in, so nothing
       // would drag the ones below the fold into view.
       className={cn(
-        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
+        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4",
         stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
       )}
       style={{
-        bottom: stack.bottom,
-        maxHeight: stack.maxHeight,
+        bottom: railBottomOffset(stack.bottom),
+        maxHeight: railMaxHeight(stack.maxHeight),
         zIndex: Z_LAYER.OVERLAY_STACK,
       }}
     >
@@ -699,20 +702,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         <div
           ref={stack.ref}
           // Scrolls when the cap is smaller than the cards, rather than
-          // spilling them over the page. The gutter, cancelled by the margin,
-          // keeps the card shadows out of the clip; horizontal only, since
-          // useStackGeometry reads this node's scrollHeight and vertical
-          // padding would inflate it.
+          // spilling them over the page. The gutter keeps the card shadows out
+          // of the clip: cancelled by the negative margin across, and by
+          // railBottomOffset and railMaxHeight underneath. useStackGeometry
+          // discounts it, so the placement still reads the cards alone.
           // Click-through until it actually scrolls: pointer-events-none also
           // costs it its scrollbar, and only the cards opt back in, so nothing
           // would drag the ones below the fold into view.
           className={cn(
-            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
+            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4",
             stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
           )}
           style={{
-            bottom: stack.bottom,
-            maxHeight: stack.maxHeight,
+            bottom: railBottomOffset(stack.bottom),
+            maxHeight: railMaxHeight(stack.maxHeight),
             zIndex: Z_LAYER.OVERLAY_STACK,
           }}
         >

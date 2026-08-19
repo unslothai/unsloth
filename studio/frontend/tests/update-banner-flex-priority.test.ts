@@ -245,15 +245,46 @@ test("the rail scrolls rather than spilling its cards", () => {
     // was.
     assert.match(rules, /\bpx-3\b/);
     assert.match(rules, /-mx-3/);
-    // Sideways only. This node is the one useStackGeometry measures, so
-    // vertical padding is counted into scrollHeight and the stack asks for room
-    // it does not occupy: a card that fits under the composer then measures as
-    // one that does not, and the rail lifts over it. The cap has to stay on
-    // this same node too, since measure() lifts it here to read the natural
-    // height; on a parent, the read would be the placement's own output.
-    assert.ok(
-      !/\bp-3\b/.test(rules) && !/\bpy-3\b/.test(rules),
-      "vertical padding on the measured node inflates the measured height",
+    // And under the bottom card. Every surface here offsets its shadow
+    // downwards, so flush against the clip edge the card loses all of it and
+    // reads as cut off, which is how the llama.cpp toast was reported.
+    assert.match(rules, /\bpb-4\b/, "the rail clips the bottom card's shadow");
+    // scrollHeight spans that padding, so the gutter has to be discounted or the
+    // stack asks for room it does not occupy and lifts over the composer for
+    // nothing. The cap stays on this node, since measure() lifts it here.
+    assert.match(
+      STORE,
+      /const natural = railCardsHeight\(node\.scrollHeight, gutter\)/,
+      "the natural height counts the rail's own padding as cards",
+    );
+    // Both totals, since the squeezed one is what `overflowing` compares
+    // against the cards' own cap. The per-card readings beside it are border
+    // boxes and carry no padding of the rail's.
+    assert.match(
+      STORE,
+      /const collapsed = railCardsHeight\(node\.scrollHeight, gutter\)/,
+      "the squeezed height counts the rail's own padding as cards",
+    );
+  }
+});
+
+// Reserved, not taken: the cards keep the band they had without the gutter, and
+// the padding hangs below it. A negative margin cannot do this, since `bottom`
+// anchors the margin edge and the padding would move the cards instead.
+test("the rail's block gutter costs the cards no room", () => {
+  const rails = PROVIDER.split('"fixed right-4 ');
+  assert.equal(rails.length - 1, 2, "the rail count changed");
+  for (const rail of rails.slice(1)) {
+    const style = rail.slice(rail.indexOf("style={{"), rail.indexOf("}}"));
+    assert.match(
+      style,
+      /bottom: railBottomOffset\(stack\.bottom\)/,
+      "the rail's own edge is anchored where its cards belong",
+    );
+    assert.match(
+      style,
+      /maxHeight: railMaxHeight\(stack\.maxHeight\)/,
+      "the gutter is spent on the cards' cap",
     );
   }
 });

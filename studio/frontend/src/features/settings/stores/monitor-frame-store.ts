@@ -85,6 +85,12 @@ export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
 // The corner stack's own inset, and the gap left between it and the monitor.
 const STACK_INSET = 16;
 const STACK_GAP = 8;
+// Room the rail keeps under its bottom card, so its overflow clip does not cut
+// that card's shadow off. 16 clears the deepest one it carries, the dark theme's
+// 0 8px 28px -6px. Nothing above: neither theme's shadow reaches past the top
+// edge. railCardsHeight discounts this from the measurement.
+export const STACK_SHADOW_GUTTER = 16;
+
 // Widest overlay the stack holds: the update banners, at max-w-[448px].
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
@@ -105,6 +111,36 @@ const MONITOR_HEADER = 64;
 // reaches 15px in from the bottom-right corner and Firefox's 12px, so one
 // STACK_INSET of clearance takes the stack off all of it.
 const MONITOR_GRIP = 16;
+
+/**
+ * The rail's own `bottom`, given where its cards belong: its edge drops by the
+ * gutter and its padding carries the cards back up.
+ *
+ * The horizontal gutter's negative margin cannot do this. `bottom` anchors the
+ * margin edge, and with `top` and `height` auto the engine solves for `top`, so
+ * in Chromium the padding moved the card instead of the box.
+ */
+export function railBottomOffset(cardsInset: number): number {
+  return cardsInset - STACK_SHADOW_GUTTER;
+}
+
+/**
+ * The rail's `max-height`, given the band its cards may fill. The gutter is
+ * added back so it is never spent on them, which also leaves that much slack:
+ * the clip is at the padding box, so a cap landing a few px short of a card now
+ * shows it whole rather than taking its corners off.
+ */
+export function railMaxHeight(cardsRoom: number): number {
+  return cardsRoom + STACK_SHADOW_GUTTER;
+}
+
+/** The cards' own height, with the gutter the rail carries discounted. */
+export function railCardsHeight(
+  scrollHeight: number,
+  paddingY: number,
+): number {
+  return Math.max(0, scrollHeight - paddingY);
+}
 
 /**
  * How far above the bottom edge the overlay stack must sit to clear the Live
@@ -514,6 +550,14 @@ export function useStackGeometry(): StackPlacement {
       // inline style says otherwise: a rail with three whole cards laid out
       // below a zero-height box, which is what the loaded models indicator
       // turned up. Suppressed for the probe and restored with it.
+      // scrollHeight spans the padding box, so both probes below include the
+      // rail's gutter. Read off the node, not assumed, so a class change cannot
+      // leave them counting padding as cards.
+      const railStyle = getComputedStyle(node);
+      const paddingY =
+        Number.parseFloat(railStyle.paddingTop) +
+        Number.parseFloat(railStyle.paddingBottom);
+      const gutter = Number.isFinite(paddingY) ? paddingY : 0;
       const eased = node.style.transition;
       node.style.transition = "none";
       const capped = node.style.maxHeight;
@@ -532,10 +576,12 @@ export function useStackGeometry(): StackPlacement {
       }
       const scrolled = node.scrollTop;
       node.style.maxHeight = "none";
-      const natural = node.scrollHeight;
+      const natural = railCardsHeight(node.scrollHeight, gutter);
       // Card by card as well as in total, since a card is floored against its
       // own height rather than the rail's. Same probe, so no extra layout, and
       // one list for both readings so the two can never fall out of step.
+      // Card heights are their own border boxes, so only the totals above and
+      // below discount the gutter.
       const cards = [...node.children].filter(inRailFlow);
       const grown = cards.map(cardHeight);
       // Taken here, uncapped, and not after the cap goes back on. The tail
@@ -559,7 +605,7 @@ export function useStackGeometry(): StackPlacement {
       // hold `natural` when it only has to hold `floor` is what made a 3px
       // shortfall at 1280x830 give up on dodging the composer entirely.
       node.style.maxHeight = "0px";
-      const collapsed = node.scrollHeight;
+      const collapsed = railCardsHeight(node.scrollHeight, gutter);
       const floor = usableFloorRoom(
         cards.map((child, index) => ({
           squeezed: cardHeight(child),
