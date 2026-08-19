@@ -268,6 +268,10 @@ const toast: any = Object.assign(
   },
 );
 
+function mmprojFallbackMessage(reason: string) {
+  return `mmproj fallback: ${reason}`;
+}
+
 async function tryAdoptServerActiveModel() { return false; }
 function resolveSpeculativeSettingsForLoad() {
   return { speculativeType: null, specDraftNMax: 0 };
