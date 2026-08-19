@@ -42,9 +42,7 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
 def llama_cpp_path_selection_guard() -> Iterator[None]:
     """Serialize a runtime path snapshot with a settings write.
 
-    A model load uses this while it resolves and stamps its llama-server. A UI
-    save uses the same lock for persistence, so the save response can always
-    tell whether an in-flight load captured the old or new selection.
+    Model loads and UI saves share this lock so reload status sees one snapshot.
     """
     with _settings_lock:
         yield

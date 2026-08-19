@@ -976,8 +976,7 @@ def update_llama_cpp_path(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> LlamaCppPathResponse:
-    # This setting authorizes a local executable. API keys may read the active
-    # configuration, but only the interactive Studio UI may change it.
+    # Only the interactive Studio UI may change this executable setting.
     require_ui_session(via_api_key)
     try:
         set_custom_llama_cpp_path(payload.path)
@@ -987,9 +986,7 @@ def update_llama_cpp_path(
         raise log_and_http_error(
             exc,
             400,
-            # These messages come only from our fixed path validator and never
-            # echo the submitted path, so they are safe and much more useful
-            # than collapsing every failure to a generic response.
+            # Validator messages are safe to expose to the UI.
             str(exc),
             event = "settings.update_llama_cpp_path_failed",
             log = logger,
