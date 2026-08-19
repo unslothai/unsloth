@@ -2770,8 +2770,21 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeVideoDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
-    enabled: active && view.mode === "single",
+    // Compare used to disable this outright, so a drop there vanished with no
+    // overlay and no message (#9036). Keep listening and refuse out loud. The
+    // refusal covers models too: nothing may load behind a compare view.
+    enabled: active,
+    dropsUnsupportedReason:
+      view.mode === "single"
+        ? undefined
+        : "Dropped files need a single chat. Open one, then drop it there.",
     attachmentScope,
     attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
@@ -2781,6 +2794,7 @@ export function ChatPage({
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
     onAttachAudio: handleNativeAudioDrop,
+    onAttachVideo: handleNativeVideoDrop,
   });
 
   const handleCheckpointChange = useCallback(
