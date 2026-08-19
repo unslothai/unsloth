@@ -499,9 +499,9 @@ def test_the_hf_backoff_suppression_is_narrow():
             f"{entry['evidence_hash'][:12]} is not pinned to reviewed code, so any "
             f"while-True loop in this file would inherit its suppression"
         )
-        assert entry.get("evidence_hash"), (
-            "no evidence_hash: _load_baseline would recompute it as a legacy entry"
-        )
+        assert entry.get(
+            "evidence_hash"
+        ), "no evidence_hash: _load_baseline would recompute it as a legacy entry"
     hashes = [e["evidence_hash"] for e in entries]
     assert len(set(hashes)) == len(hashes), "duplicate entries for the same reviewed span"
 
@@ -541,6 +541,7 @@ def test_the_hf_backoff_suppression_is_narrow():
         "a beaconing loop appended to _http.py keeps the reviewed key, so the "
         "http_backoff allowlist would suppress it too"
     )
+
 
 def test_network_check_sees_httpx2():
     """httpx2 is a separate import name, not a submodule of httpx.
