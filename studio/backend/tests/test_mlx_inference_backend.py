@@ -700,6 +700,24 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     state["generic"] = "<image> healthy generic"
     assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == ["ok"]
     assert calls["generic"][-1]["enable_thinking"] is False
+
+    # A drafter loaded but never reaching mlx-vlm passes every other check here.
+    reset = []
+    drafter = SimpleNamespace(reset = lambda target: reset.append(target))
+    backend._draft_model, backend._draft_kind, backend._draft_block_size = drafter, "mtp", 4
+    cut = backend._generate_vlm(*args)
+    assert next(cut) == "ok"
+    # Not during the stream: mlx-vlm resets the drafter once as it enters its speculative
+    # loop, so a reset seen here would prove nothing about the cancellation path.
+    assert reset == []
+    cut.close()
+    sent = calls["stream"][-1][1]
+    assert (sent["draft_model"], sent["draft_kind"], sent["draft_block_size"]) == (
+        drafter,
+        "mtp",
+        4,
+    )
+    assert reset == [backend._model]
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
     state["generic"] = "generic prompt"
     text_messages = [{"role": "user", "content": "hello"}]
@@ -2392,9 +2410,8 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
         mlx_inference.MLX_TEMPLATE_NAMED_SET
     )
 
-    # ...but only on the object that RENDERS. Real models (aya-vision) keep a named set
-    # on a nested tokenizer nothing reads. Without apply_chat_template the processor
-    # cannot render, so the nested tokenizer's set does veto.
+    # ...but only on the object that RENDERS. Real models (aya-vision) keep a named set on a
+    # nested tokenizer nothing reads, which vetoes only when the processor cannot render.
     nested_set = SimpleNamespace(chat_template = {"default": "a"})
     renders_string = SimpleNamespace(
         chat_template = "native", apply_chat_template = lambda *a, **k: "", tokenizer = nested_set
@@ -4099,6 +4116,788 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
 # fmt: off
 
 
+def test_a_drafters_width_orders_it_without_ruling_any_out(monkeypatch, tmp_path_factory):
+    # Every width runs, so this only orders them, and each has to take its own place: a width
+    # with no rule of its own once sorted behind 4-bit, which is worse than all of them.
+    import json
+
+    from core.inference import mlx_speculative as spec
+    from pathlib import Path as _Path
+
+    assert sorted([4, None, 3, 8, 6, 5], key = spec._precision_rank) == [8, None, 6, 5, 4, 3]
+
+    top = {"bits": 8, "group_size": 64}
+    # A top-level block settles the width; absent one, either "quantization_config" spelling is
+    # read and a derived method wins. A declaration missed reads as full precision, which is how
+    # a quantized drafter outranks the one it should lose to.
+    for config, expected in [
+        ({}, None),
+        ({"quantization": top}, 8),
+        ({"quantization": "malformed"}, None),
+        ({"quantization": top, "quantization_config": {"bits": 4}}, 8),
+        ({"quantization": top, "quantization_config": {"quant_method": "mxfp4"}}, 8),
+        ({"quantization": {"quant_method": "mxfp4", **top}}, 8),
+        ({"quantization_config": {"bits": 4, "mode": "mxfp4"}}, 4),
+        ({"quantization_config": {"quant_method": "mxfp4"}}, 4),
+        ({"quantization_config": {"quant_method": "mxfp4", "bits": 8}}, 4),
+        ({"text_config": {"quantization": {"bits": 4, "group_size": 64}}}, None),
+        ({"text_config": {"quantization_config": {"bits": 4}}}, 4),
+        ({"text_config": {"quantization_config": {"quant_method": "compressed-tensors"}}}, 4),
+        # A method of any other type is not a method, and used as a lookup key it raises.
+        *(({"quantization_config": {"quant_method": odd}}, None) for odd in ([], {}, 4, None)),
+    ]:
+        assert spec._config_precision_rank(config) == spec._precision_rank(expected), config
+
+    # A checkpoint the loader declines is excluded, not ranked, or it competes with ones that
+    # load. A top-level block is subscripted for both fields, so one missing either fails.
+    for config, refused in [
+        ({"quantization_config": {"quant_method": "gptq"}}, True),
+        ({"quantization_config": {"quant_method": "awq", "bits": 4}}, True),
+        ({"quantization_config": {"quant_method": "bitnet"}}, True),
+        ({"text_config": {"quantization_config": {"quant_method": "awq"}}}, True),
+        ({"quantization": {}}, True),
+        ({"quantization": {"bits": 4}}, True),
+        ({"quantization": {"group_size": 64}}, True),
+        ({"quantization": {"mode": "mxfp4"}}, True),
+        ({"quantization": "malformed"}, True),
+        ({"quantization": {}, "quantization_config": {"bits": 4}}, True),
+        ({"quantization": {"bits": 4, "group_size": 64}}, False),
+        ({"quantization": {"bits": 4, "group_size": 64},
+          "quantization_config": {"quant_method": "gptq"}}, False),
+        ({"quantization": {"quant_method": "gptq", "bits": 4, "group_size": 64}}, False),
+        ({"quantization_config": {"quant_method": "mxfp4"}}, False),
+        *(({"quantization_config": {"quant_method": odd}}, False) for odd in ([], {}, 4, None)),
+    ]:
+        assert spec._refuses_quantization(config) is refused, config
+
+    # Where the loader looks when the configuration declares nothing, including a declaration
+    # yielding no width. Well-formed JSON that is not an object leaves the target loadable.
+    sidecar = tmp_path_factory.mktemp("snap")
+    (sidecar / "hf_quant_config.json").write_text(
+        json.dumps({"quantization": {"quant_algo": "NVFP4"}})
+    )
+    for config, expected in [
+        ({}, 4),
+        ({"quantization": top}, 8),
+        ({"quantization": {}}, None),
+        ({"quantization": "malformed"}, None),
+        ({"quantization_config": {"quant_method": "gptq"}}, None),
+    ]:
+        assert spec._config_precision_rank(config, sidecar) == spec._precision_rank(expected), config
+    for malformed in ("[]", "null", '"value"', "{"):
+        broken = tmp_path_factory.mktemp("broken")
+        (broken / "hf_quant_config.json").write_text(malformed)
+        assert spec._config_precision_rank({}, broken) == spec._precision_rank(None)
+    assert spec._config_precision_rank({}, tmp_path_factory.mktemp("bare")) == spec._precision_rank(None)
+
+    # A repository with no revision that fits is not in the cache for this target at all.
+    cached = [("org/other", {"quantization": top}, _Path("/nowhere"), 0)]
+    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    assert spec._fitting_cached_revision("org/A", "org/t", {"model_type": "x"}, "mtp") == (
+        None, None
+    )
+
+
+@pytest.mark.parametrize(
+    "config,companion,expected,reason",
+    [
+        # A companion outranks nothing here: the head needs no download and answers first.
+        ({}, True, ("mtp", "builtin://mtp"), None),
+        ({}, False, ("mtp", "builtin://mtp"), None),
+        ({"quantization": {"bits": 4, "group_size": 64}}, False, ("mtp", "builtin://mtp"), None),
+        # No identity means no comparison was made, which is not the answer that comparing
+        # against every drafter and matching none gives.
+        (None, False, ("off", None), "target_config_unavailable"),
+    ],
+)
+def test_auto_says_which_way_a_target_failed_to_get_its_own_head(
+    monkeypatch, config, companion, expected, reason
+):
+    from core.inference import mlx_speculative as spec
+
+    rows = [_spec_candidate("builtin://mtp", source = "builtin")]
+    if companion:
+        rows.append(
+            _spec_candidate("org/A", loadable = companion is True,
+                            reason = None if companion is True else companion)
+        )
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": rows})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: config)
+    _stub_fitting_revisions(monkeypatch)
+    resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
+    assert (resolved.method, resolved.draft_model, resolved.reason) == (*expected, reason)
+
+
+_SMALL_TARGET = {"hidden_size": 2048, "num_hidden_layers": 24, "vocab_size": 100_000,
+                 "intermediate_size": 8192}                                        # ~2.0B
+# Either side of the threshold, so moving it fails rather than only removing it.
+_JUST_UNDER_TARGET = {"hidden_size": 3072, "num_hidden_layers": 26, "vocab_size": 150_000,
+                      "intermediate_size": 8192}                                   # ~3.87B
+# Exactly at the threshold, which "under 4B" admits: 4,000,000,000 to the parameter.
+_AT_TARGET = {"hidden_size": 2500, "num_hidden_layers": 32, "vocab_size": 100_000,
+              "intermediate_size": 11_250}
+_JUST_OVER_TARGET = {"hidden_size": 3072, "num_hidden_layers": 30, "vocab_size": 150_000,
+                     "intermediate_size": 8960}                                    # ~4.53B
+_LARGE_TARGET = {"hidden_size": 4096, "num_hidden_layers": 48, "vocab_size": 150_000,
+                 "intermediate_size": 16384}                                       # ~12.9B
+
+
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        ({"hidden_size": 8, "num_hidden_layers": 2, "vocab_size": 10,
+          "intermediate_size": 16}, 1440),
+        # Counting one expert's worth reads a large mixture as small enough to refuse.
+        ({"hidden_size": 8, "num_hidden_layers": 2, "vocab_size": 10, "num_experts": 4,
+          "moe_intermediate_size": 16}, 3744),
+        # A per-layer list of widths where others state one number; uneven layers count at
+        # the widest, since over-counting leaves a target the drafter it has.
+        ({"hidden_size": 8, "num_hidden_layers": 2, "vocab_size": 10, "num_experts": 4,
+          "moe_intermediate_size": [8, 16]}, 3744),
+        ({"hidden_size": 8, "num_hidden_layers": 2}, None),
+        # Counted from declared dimensions, so a checkpoint and its twin answer alike.
+        ({"hidden_size": 8, "num_hidden_layers": 2, "vocab_size": 10,
+          "intermediate_size": 16, "quantization": {"bits": 4, "group_size": 64}}, 1440),
+    ],
+)
+def test_a_targets_size_is_counted_from_its_shape_not_its_weights(config, expected):
+    # Read off the weights, a 4-bit checkpoint counts a quarter of its twin.
+    from core.inference.mlx_speculative import _target_parameter_estimate
+    assert _target_parameter_estimate(config) == expected
+
+
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        (_SMALL_TARGET, ("off", None, "target_too_small_to_draft")),
+        (_JUST_UNDER_TARGET, ("off", None, "target_too_small_to_draft")),
+        # Exactly at the threshold is not under it, so the target keeps its drafter.
+        (_AT_TARGET, ("mtp", "org/A", None)),
+        (_JUST_OVER_TARGET, ("mtp", "org/A", None)),
+        # A built-in head is still verified by the target, so smallness rules it out too.
+        ({**_SMALL_TARGET, "builtin": True}, ("off", None, "target_too_small_to_draft")),
+        (_LARGE_TARGET, ("mtp", "org/A", None)),
+        # A shape that does not say is not a refusal; the drafter is kept.
+        ({"model_type": "unknown"}, ("mtp", "org/A", None)),
+    ],
+)
+def test_a_target_too_small_to_gain_from_drafting_is_left_undrafted(monkeypatch, config, expected):
+    # Verification runs the target per drafted token, so small targets save nothing.
+    from core.inference import mlx_speculative as spec
+
+    rows = [_spec_candidate("org/A")]
+    if config.pop("builtin", None):
+        rows.insert(0, _spec_candidate("builtin://mtp", source = "builtin"))
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": rows})
+    _stub_fitting_revisions(monkeypatch)
+    monkeypatch.setattr(spec, "_read_config", lambda _t: config)
+    resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
+    assert (resolved.method, resolved.draft_model, resolved.reason) == expected
+
+
+@pytest.mark.parametrize(
+    "requested,resolved,pinned_block,expected_block",
+    # Auto states a depth, a depth the user set outranks it, and an explicit method takes
+    # only what it was given. Each method's depth differs, so one taken from another is wrong.
+    [("auto", "mtp", None, 4), ("auto", "dflash", None, 4), ("auto", "eagle3", None, 2),
+     ("auto", "mtp", 8, 8), ("mtp", "mtp", None, None), ("mtp", "mtp", 8, 8)],
+)
+def test_auto_hands_the_loader_the_depth_its_method_pays_off_at(
+    monkeypatch, requested, resolved, pinned_block, expected_block
+):
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen = {}
+    monkeypatch.setattr(spec, "mlx_speculative_load_resolution",
+                        lambda *a, **k: spec.MlxSpeculativeResolution(resolved, "org/A"))
+    backend = MLXInferenceBackend()
+    monkeypatch.setattr(backend, "_load_speculative_drafter",
+                        lambda *a, **k: seen.update(args = a, kwargs = k))
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(
+        config, mlx_speculative_mode = requested, mlx_draft_block_size = pinned_block
+    ) is True
+    # Read the depth the drafter is built at: one forced onto every mode looks right anywhere.
+    assert seen["args"][2] is expected_block, seen
+
+
+@pytest.mark.parametrize(
+    "revisions,expected",
+    [
+        # Ranked nowhere else: under one method the id decides unless precision does.
+        ([("org/A", 4, True), ("org/B", 8, True)], "org/B"),
+        # A load takes the revision that fits, not the repository's best cached width.
+        ([("org/A", 4, True), ("org/A", 8, True), ("org/B", None, True)], "org/B"),
+        ([("org/A", 8, True), ("org/A", 4, True), ("org/B", None, True)], "org/A"),
+        # The first revision cached is not always the one that will run.
+        ([("org/A", 8, False), ("org/A", 4, True), ("org/B", None, True)], "org/B"),
+        # Declared the other way round, which a one-field rank reads as full precision.
+        ([("org/A", "cfg4", True), ("org/B", "cfg8", True)], "org/B"),
+    ],
+)
+def test_auto_ranks_the_revision_a_load_would_take(monkeypatch, revisions, expected):
+    from core.inference import mlx_speculative as spec
+    from pathlib import Path as _Path
+
+    def _declare(bits, fits):
+        if bits is None:
+            return {"fits": fits}
+        if isinstance(bits, str):
+            return {"quantization_config": {"bits": int(bits[3:])}, "fits": fits}
+        return {"quantization": {"bits": bits}, "fits": fits}
+
+    cached = [(repo, _declare(bits, fits), _Path("/nowhere"), 0)
+              for repo, bits, fits in revisions]
+    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
+                        lambda _m, _t, _tc, config, *a: config.get("fits", True))
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        _spec_candidate("org/A"), _spec_candidate("org/B")]})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
+    assert (resolved.method, resolved.draft_model) == ("mtp", expected)
+
+
+@pytest.mark.parametrize(
+    "mode,config,pinned,expected",
+    [
+        # A drafter named by hand is still a drafter a small target cannot profit from.
+        ("auto", _SMALL_TARGET, "org/A", ("off", None, "target_too_small_to_draft")),
+        ("auto", _SMALL_TARGET, "builtin://mtp", ("off", None, "target_too_small_to_draft")),
+        # What the pin does decide: which usable drafter runs, the target's own head included.
+        ("auto", _LARGE_TARGET, "builtin://mtp", ("mtp", "builtin://mtp", None)),
+        ("auto", _LARGE_TARGET, "org/A", ("mtp", "org/A", None)),
+        ("mtp", _LARGE_TARGET, "builtin://mtp", ("mtp", "builtin://mtp", None)),
+        ("mtp", _LARGE_TARGET, "org/A", ("mtp", "org/A", None)),
+    ],
+)
+def test_a_pinned_drafter_does_not_outrank_the_rules_that_rule_out_drafting(
+    monkeypatch, mode, config, pinned, expected
+):
+    # Auto's preference chooses among usable drafters, not past whether any is usable.
+    from core.inference import mlx_speculative as spec
+
+    rows = [_spec_candidate("builtin://mtp", source = "builtin"), _spec_candidate("org/A")]
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": rows})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: dict(config))
+    resolved = spec.resolve_mlx_speculative_request("org/target", mode, pinned)
+    assert (resolved.method, resolved.draft_model, resolved.reason) == expected
+    # Explicit requests are refused, not downgraded, and /validate refuses before unloading.
+    if mode != "auto":
+        assert (spec.mlx_speculative_refusal(mode, resolved) is None) is (expected[2] is None)
+        assert spec.mlx_speculative_request_reason("org/target", mode, pinned) == expected[2]
+
+
+# MXFP4 exposes embed.biases holding None, which mlx-vlm reads, so a validated pair raised on
+# its first drafted step. Only EAGLE-3, only a null bias, only an embedding quantized so.
+@pytest.mark.parametrize("mode,embed,detached", [
+    ("eagle3", {"scales": object(), "biases": None}, True),
+    ("eagle3", {"scales": object(), "biases": ["real"]}, False),
+    ("eagle3", {"biases": None}, False),
+    ("dflash", {"scales": object(), "biases": None}, False),
+])
+def test_the_load_detaches_only_the_null_bias_the_hot_head_would_index(
+    monkeypatch, mode, embed, detached
+):
+    import mlx_vlm.speculative.drafters as drafters
+
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    kept = embed["biases"]
+    embed = SimpleNamespace(**embed)
+    monkeypatch.setattr(drafters, "load_drafter", lambda _p, kind: (SimpleNamespace(), kind))
+    monkeypatch.setattr(drafters, "validate_drafter_compatibility", lambda *_a: None)
+    monkeypatch.setattr(spec, "mlx_speculative_snapshot_path", lambda *_a, **_k: "/snap")
+    monkeypatch.setattr(
+        "core.inference.mlx_inference.validate_speculative_target_contract", lambda *_a: None
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(
+        language_model = SimpleNamespace(model = SimpleNamespace(embed_tokens = embed))
+    )
+    backend._load_speculative_drafter(mode, "org/E", 4, "org/target")
+    # An embedding this does not correct keeps its bias by value, not merely its key.
+    assert hasattr(embed, "biases") is not detached
+    assert detached or embed.biases == kept
+
+
+def test_every_drafting_depth_shares_the_one_head_split_for_the_target(monkeypatch, tmp_path):
+    # The split writes the depth into the configuration only; the weights are identical. Keyed on
+    # depth, every value tried would leave another full copy nothing removes.
+    from types import SimpleNamespace
+
+    from core.inference import mlx_speculative as spec
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    root = tmp_path / "cache"
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: root)
+    monkeypatch.setattr(spec, "_handler", lambda _c: SimpleNamespace(
+        name = "n", module = "m", function = "f"))
+    monkeypatch.setattr(spec, "native_mtp_evidence", lambda *_a: SimpleNamespace(weight_bytes = 1))
+    splits = []
+
+    def _split(_src, dest, **kwargs):
+        splits.append(kwargs)
+        Path(dest, "config.json").write_text("{}")
+        Path(dest, "model.safetensors").write_bytes(b"x" * 16)
+
+    monkeypatch.setattr(spec, "_splitter", lambda *_a: _split)
+
+    first = spec.materialize_native_mtp(snapshot)
+    assert first.is_dir() and spec.materialize_native_mtp(snapshot) == first
+    assert [p for p in (root / "mlx-speculative" / "mtp").iterdir()] == [first]
+    # Split at the head's own depth, so the request's depth is not baked into the copy.
+    assert splits == [{}]
+    # A second revision of the same target is a different head and keeps its own copy.
+    other = tmp_path / "snap2"
+    other.mkdir()
+    (other / "config.json").write_text('{"revision": 2}')
+    second = spec.materialize_native_mtp(other)
+    assert second != first and second.is_dir() and first.is_dir()
+    # The identity reads each weight file's name, size and mtime, so a replaced snapshot differs.
+    (snapshot / "config.json").write_text('{"reissued": true}')
+    reissued = spec.materialize_native_mtp(snapshot)
+    assert reissued != first
+
+
+def test_the_built_in_head_is_split_for_the_target_the_load_names(monkeypatch, tmp_path):
+    # The loader's own call, which no other test makes: drift here passes every split test.
+    import mlx_vlm.speculative.drafters as drafters
+
+    from core.inference import mlx_speculative as spec
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    asked = []
+    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda t: Path(f"/snap/{t}"))
+    monkeypatch.setattr(spec, "materialize_native_mtp",
+                        lambda snapshot: asked.append(snapshot) or Path("/head"))
+    monkeypatch.setattr(drafters, "load_drafter", lambda p, kind: (SimpleNamespace(), kind))
+    monkeypatch.setattr(drafters, "validate_drafter_compatibility", lambda *_a: None)
+    monkeypatch.setattr(
+        "core.inference.mlx_inference.validate_speculative_target_contract", lambda *_a: None
+    )
+    monkeypatch.setattr(
+        "core.inference.mlx_inference.materialize_mtp_masked_embedding", lambda _d: 0
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace()
+    backend._load_speculative_drafter("mtp", spec.BUILTIN_MTP_ID, 4, "org/target")
+    assert asked == [Path("/snap/org/target")]
+    # The head belongs to one target, so a request that names none cannot ask for it.
+    with pytest.raises(ValueError, match = "mlx_builtin_mtp_target_required"):
+        backend._load_speculative_drafter("mtp", spec.BUILTIN_MTP_ID, 4, None)
+
+
+def test_the_adapter_probe_reads_the_snapshot_the_load_would_open(monkeypatch, tmp_path):
+    # No model configuration exists yet, so the adapter is read from the files, under the
+    # name the scan matches on.
+    from core.inference import mlx_speculative as spec
+
+    (tmp_path / "config.json").write_text("{}")
+    asked = []
+    monkeypatch.setattr(spec, "_canonical_target_id", lambda t: f"org/{t}")
+    monkeypatch.setattr(spec, "_cached_config_path",
+                        lambda t: asked.append(t) or (tmp_path / "config.json"))
+    assert spec.mlx_speculative_target_is_adapter("target") is False
+    # Adapter weights alone, which an export without the configuration still carries.
+    (tmp_path / "adapter_model.safetensors").write_text("")
+    assert spec.mlx_speculative_target_is_adapter("target") is True
+    (tmp_path / "adapter_model.safetensors").unlink()
+    (tmp_path / "adapter_config.json").write_text("{}")
+    assert spec.mlx_speculative_target_is_adapter("target") is True
+    assert asked == ["org/target"] * 3
+
+
+def test_auto_reuse_reloads_when_the_cache_changed_under_the_same_request(monkeypatch):
+    # Auto means "whatever runs best now": compared as resolved, a new drafter reaches the model.
+    from core.inference import mlx_speculative as spec
+    from models.inference import LoadRequest
+    import routes.inference as inf_mod
+
+    entry = {"mlx_kv_bits_requested": None, "mlx_speculative_mode_requested": "auto",
+             "mlx_speculative_pinned_mode": "off", "load_in_4bit": False,
+             "is_vision": True, "is_lora": False}
+    backend = SimpleNamespace(active_model_name = "org/target", models = {"org/target": entry})
+    request = LoadRequest(model_path = "org/target", mlx_speculative_mode = "auto")
+
+    resolved = spec.MlxSpeculativeResolution("off", None, "no_cached_drafter")
+    asked = []
+    monkeypatch.setattr(spec, "resolve_mlx_speculative_request",
+                        lambda *a, **k: asked.append(k) or resolved)
+    assert inf_mod._mlx_runtime_settings_match(backend, request) is True
+    # About the target the load will refuse or accept, or it disagrees with itself forever.
+    assert asked == [{"is_vision": True, "is_lora": False}]
+    assert request.load_in_4bit is True
+    # Read off the resident record, not restated as the resolver's own defaults: a target the
+    # load refuses must compare equal to the Off it pinned instead of reloading for ever.
+    entry.update(is_vision = False, is_lora = True)
+    asked.clear()
+    inf_mod._mlx_runtime_settings_match(backend, request)
+    assert asked == [{"is_vision": False, "is_lora": True}]
+    entry.update(is_vision = True, is_lora = False)
+    resolved = spec.MlxSpeculativeResolution("mtp", "org/A")
+    assert inf_mod._mlx_runtime_settings_match(backend, request) is False
+    # Either field alone: a repository swapped for another, then one reclassified by method.
+    for pinned in (("mtp", "org/B"), ("dflash", "org/A")):
+        entry.update(mlx_speculative_pinned_mode = pinned[0],
+                     mlx_speculative_pinned_draft_model = pinned[1])
+        assert inf_mod._mlx_runtime_settings_match(backend, request) is False
+    # A failed drafter pinned again is the same answer, not a reload to fail the same way.
+    entry.update(mlx_speculative_pinned_mode = "mtp", mlx_speculative_pinned_draft_model = "org/A",
+                 mlx_speculative_effective_mode = "off",
+                 mlx_speculative_reason = "auto_drafter_load_failed")
+    assert inf_mod._mlx_runtime_settings_match(backend, request) is True
+
+
+def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
+    # An unfitting revision listed first is not the one handed to the worker.
+    from core.inference import mlx_speculative as spec
+    from pathlib import Path as _Path
+
+    cached = [
+        ("org/A", {"quantization": {"bits": 8}, "fits": False}, _Path("/wrong"), 0),
+        ("org/A", {"quantization": {"bits": 4}, "fits": True}, _Path("/right"), 0),
+    ]
+    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches",
+                        lambda _m, _t, _tc, config, *a: config.get("fits", True))
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+
+    assert spec.mlx_speculative_snapshot_path("org/A", "org/target", "mtp") == _Path("/right")
+    config, snapshot = spec._fitting_cached_revision(
+        "org/A", "org/target", {"model_type": "qwen3_5"}, "mtp"
+    )
+    assert snapshot == _Path("/right")
+    assert spec._config_precision_rank(config) == spec._precision_rank(4)
+
+
+def test_auto_names_the_target_the_way_the_drafters_were_matched(monkeypatch):
+    # Both name the target canonically, or every drafter ties and the repository name decides.
+    from core.inference import mlx_speculative as spec
+    from pathlib import Path as _Path
+
+    asked = []
+    monkeypatch.setattr(spec, "_canonical_target_id",
+                        lambda t: t if "/" in t else f"unsloth/{t}")
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        _spec_candidate("org/A"), _spec_candidate("org/B")]})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    monkeypatch.setattr(
+        spec, "_fitting_cached_revision",
+        lambda repo_id, target_id, *_a: (
+            asked.append(target_id) or (
+                {"quantization": {"bits": 8, "group_size": 64}} if repo_id == "org/B" else
+                {"quantization": {"bits": 4, "group_size": 64}}
+            ),
+            _Path("/nowhere"),
+        ),
+    )
+    resolved = spec.resolve_mlx_speculative_request("Target", "auto", None)
+    assert set(asked) == {"unsloth/Target"}, asked
+    # Ranked by width rather than by name, which the bare spelling would have decided.
+    assert resolved.draft_model == "org/B"
+
+
+def test_a_drafter_with_no_revision_that_fits_is_not_pinned(monkeypatch):
+    # A caller's earlier list can name a repository since gone, which the load would drop.
+    from core.inference import mlx_speculative as spec
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        _spec_candidate("org/A"), _spec_candidate("org/B")]})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    monkeypatch.setattr(
+        spec, "_fitting_cached_revision",
+        lambda repo_id, *_a: (None, None) if repo_id == "org/A" else ({}, _Path("/nowhere")),
+    )
+    resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
+    assert (resolved.method, resolved.draft_model) == ("mtp", "org/B")
+
+    monkeypatch.setattr(spec, "_fitting_cached_revision", lambda *_a: (None, None))
+    gone = spec.resolve_mlx_speculative_request("org/target", "auto", None)
+    assert (gone.method, gone.reason) == ("off", "no_cached_drafter")
+
+
+def test_auto_ranks_a_drafter_that_declares_its_width_beside_its_config(monkeypatch, tmp_path):
+    # From the configuration alone it looks full precision and beats the one it is wider than.
+    import json
+
+    from core.inference import mlx_speculative as spec
+
+    beside = tmp_path / "A"
+    beside.mkdir()
+    (beside / "hf_quant_config.json").write_text(
+        json.dumps({"quantization": {"quant_algo": "NVFP4"}})
+    )
+    revisions = {"org/A": ({}, beside), "org/B": ({}, tmp_path / "B")}
+    monkeypatch.setattr(spec, "_fitting_cached_revision",
+                        lambda repo_id, *_a: revisions[repo_id])
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        _spec_candidate("org/A"), _spec_candidate("org/B")]})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    resolved = spec.resolve_mlx_speculative_request("org/target", "auto", None)
+    assert resolved.draft_model == "org/B"
+
+
+def _stub_fitting_revisions(monkeypatch, widths = None):
+    """Treat every drafter a test lists as cached and fitting this target.
+
+    These tests fix the candidate list directly, so nothing backs those rows in the cache the
+    revision lookup reads; without this they all resolve to "no revision fits".
+    """
+    from core.inference import mlx_speculative as spec
+
+    named = widths or {}
+    monkeypatch.setattr(
+        spec, "_fitting_cached_revision",
+        lambda repo_id, *_a: (
+            {"quantization": {"bits": named[repo_id]}} if named.get(repo_id) else {},
+            Path("/nowhere"),
+        ),
+    )
+
+
+def _spec_candidate(repo_id, method = "mtp", source = "cached", loadable = True, reason = None,):
+    return {"repo_id": repo_id, "method": method, "source": source,
+            "loadable": loadable, "reason": reason}
+
+
+@pytest.mark.parametrize(
+    "candidates,preferred,expected",
+    [
+        # The target's own head needs no download, so it outranks every checkpoint.
+        ([_spec_candidate("aaa/D"), _spec_candidate("builtin://mtp", source = "builtin")],
+         None, ("mtp", "builtin://mtp", None)),
+        # Among downloads the cheapest method first, then the repository id.
+        ([_spec_candidate("org/B", "dflash"), _spec_candidate("org/A", "eagle3"),
+          _spec_candidate("org/C")], None, ("mtp", "org/C", None)),
+        ([_spec_candidate("org/B"), _spec_candidate("org/A")], None, ("mtp", "org/A", None)),
+        # A named preference outranks the ordering when it can run.
+        ([_spec_candidate("org/A"), _spec_candidate("org/B")], "org/B", ("mtp", "org/B", None)),
+        ([_spec_candidate("org/A"), _spec_candidate("org/B")], " ORG/b ", ("mtp", "org/B", None)),
+        # and hands back its own reason when it cannot, rather than silently picking another.
+        ([_spec_candidate("org/A"),
+          _spec_candidate("org/B", loadable = False, reason = "checkpoint_config_mismatch")],
+         "org/B", ("off", None, "checkpoint_config_mismatch")),
+        ([_spec_candidate("org/A")], "org/absent", ("off", None, "auto_preferred_candidate_unavailable")),
+        # Nothing loadable is not a failure: Auto falls back to ordinary generation.
+        ([_spec_candidate("org/A", loadable = False, reason = "insufficient_unified_memory")],
+         None, ("off", None, "auto_no_loadable_candidate")),
+        ([], None, ("off", None, "auto_no_loadable_candidate")),
+    ],
+)
+def test_auto_pins_one_drafter_or_falls_back_to_ordinary_generation(
+    monkeypatch, candidates, preferred, expected
+):
+    # Auto resolves a concrete method before the worker launches, and never fails a load.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": candidates})
+    resolved = spec.resolve_mlx_speculative_request("org/target", "auto", preferred)
+    assert (resolved.method, resolved.draft_model, resolved.reason) == expected
+
+
+@pytest.mark.parametrize(
+    "loaded,requested,matches",
+    [
+        (("off", None, None), ("off", None, None), True),
+        (("mtp", "org/A", 4), ("mtp", "org/A", 4), True),
+        # A leftover selection does not change an Off load, so it must not force a reload.
+        (("off", "org/A", 4), ("off", "org/B", 8), True),
+        # A repository id differing only in case or surrounding space names the same one.
+        (("mtp", "org/drafter", None), ("mtp", "Org/Drafter", None), True),
+        (("mtp", "org/drafter", None), ("mtp", "  org/drafter  ", None), True),
+        # Auto compares as requested, so asking twice does not reload on a changed cache.
+        (("auto", None, None), ("auto", None, None), True),
+        # A resident model loaded without a drafter cannot serve a request that wants one.
+        (("off", None, None), ("mtp", "org/A", None), False),
+        (("mtp", "org/A", None), ("off", None, None), False),
+        (("auto", None, None), ("mtp", None, None), False),
+        (("mtp", "org/A", None), ("mtp", "org/B", None), False),
+        (("mtp", "org/A", 4), ("mtp", "org/A", 8), False),
+    ],
+)
+def test_a_changed_speculative_setting_reloads_the_resident_model(loaded, requested, matches):
+    # Without this the reuse path answers 200 while nothing is accelerated.
+    import routes.inference as inf_mod
+    from core.inference.mlx_speculative import normalize_mlx_speculative_mode
+    from models.inference import LoadRequest
+
+    mode, draft, block = loaded
+    mode = normalize_mlx_speculative_mode(mode)
+    # Built the way the load path writes it, so no row describes an impossible model.
+    if mode == "off":
+        draft = block = None
+    entry = {"mlx_kv_bits_requested": None, "chat_template_override_requested": None,
+             "mlx_speculative_mode_requested": mode,
+             "mlx_draft_model_requested": draft, "mlx_draft_block_size_requested": block}
+    backend = SimpleNamespace(active_model_name = "org/A", models = {"org/A": entry})
+    request = LoadRequest(
+        model_path = "org/A", mlx_speculative_mode = requested[0],
+        mlx_draft_model = requested[1], mlx_draft_block_size = requested[2],
+    )
+    assert inf_mod._mlx_runtime_settings_match(backend, request) is matches
+
+
+@pytest.mark.parametrize(
+    "mode,reason,refused",
+    [
+        # Auto never fails a load, so refusing on its reason would deny generation entirely.
+        ("auto", "auto_no_loadable_candidate", False),
+        (" AUTO ", "auto_no_loadable_candidate", False),
+        ("auto", "auto_preferred_candidate_unavailable", False),
+        ("auto", "checkpoint_not_compatible", False),
+        ("off", "checkpoint_required", False),
+        ("mtp", None, False),
+        ("mtp", "checkpoint_not_compatible", True),
+        (" MTP ", "method_not_integrated", True),
+    ],
+)
+def test_only_an_explicit_method_refuses_a_load(mode, reason, refused):
+    from core.inference import mlx_speculative as spec
+
+    message = spec.mlx_speculative_refusal(
+        mode, spec.MlxSpeculativeResolution("off", None, reason)
+    )
+    assert (message is not None) == refused
+    # The refusal reaches the user, so it must be prose rather than the internal code.
+    if refused:
+        assert message == spec.MLX_SPECULATIVE_REFUSALS[reason] and " " in message
+
+
+@pytest.mark.parametrize(
+    "mode,pinned,vision,lora,distributed,expected",
+    [
+        # The pinned drafter, never the request's own spelling: the loader matches by exact
+        # name, so the raw name fails inside the load, after the resident model is gone.
+        ("mtp", ("mtp", "org/Pinned", None), True, False, False, ("mtp", "org/Pinned", None)),
+        ("  MTP ", ("mtp", "org/Pinned", None), True, False, False, ("mtp", "org/Pinned", None)),
+        # Auto with a choice already pinned must not scan again. A second scan is a second
+        # view of the cache, which is the disagreement this resolution exists to remove.
+        ("auto", ("mtp", "org/Pinned", None), True, False, False, ("mtp", "org/Pinned", None)),
+        (" AUTO ", ("mtp", "org/Pinned", None), True, False, False, ("mtp", "org/Pinned", None)),
+        # ... including when the caller's scan found nothing, whose diagnosis it carries.
+        ("auto", ("off", None, "auto_no_loadable_candidate"), True, False, False,
+         ("off", None, "auto_no_loadable_candidate")),
+        ("auto", (None, None, None), True, False, False, ("mtp", "org/Scanned", None)),
+        ("auto", ("mtp", "org/Pinned", None), False, False, False,
+         ("off", None, "mlx_vlm_target_required")),
+        ("auto", ("mtp", "org/Pinned", None), True, True, False,
+         ("off", None, "mlx_speculative_lora_unsupported")),
+        ("auto", ("mtp", "org/Pinned", None), True, False, True,
+         ("off", None, "mlx_speculative_distributed_unsupported")),
+        ("off", ("mtp", "org/Pinned", None), True, False, False, ("off", "org/Pinned", None)),
+    ],
+)
+def test_a_load_reuses_the_drafter_its_caller_pinned(
+    monkeypatch, mode, pinned, vision, lora, distributed, expected
+):
+    from core.inference import mlx_speculative as spec
+
+    scanned = []
+
+    def _scan(target_id, requested, draft_model = None,):
+        scanned.append(target_id)
+        return spec.MlxSpeculativeResolution("mtp", "org/Scanned", None)
+
+    monkeypatch.setattr(spec, "resolve_mlx_speculative_request", _scan)
+    resolution = spec.mlx_speculative_load_resolution(
+        "org/Target", mode, "org/Raw",
+        resolved_mode = pinned[0], resolved_draft_model = pinned[1], resolved_reason = pinned[2],
+        is_vision = vision, is_lora = lora, is_distributed = distributed,
+    )
+    assert (resolution.method, resolution.draft_model, resolution.reason) == expected
+    # Scanning at all means the caller pinned nothing.
+    assert scanned == (["org/Target"] if pinned[0] is None else [])
+
+
+@pytest.mark.parametrize(
+    "vision,lora,reason",
+    [
+        (False, False, "mlx_vlm_target_required"),
+        (True, True, "mlx_speculative_lora_unsupported"),
+        (True, False, None),
+    ],
+)
+def test_a_request_is_ruled_out_on_the_terms_its_own_load_will_apply(
+    monkeypatch, vision, lora, reason
+):
+    # Answered from the configuration here and from the built model inside the load. Disagreeing,
+    # Auto reloads forever for a drafter the load drops, and explicit requests fail after teardown.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        _spec_candidate("builtin://mtp", source = "builtin")]})
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+
+    auto = spec.resolve_mlx_speculative_request(
+        "org/target", "auto", None, is_vision = vision, is_lora = lora
+    )
+    assert (auto.method, auto.draft_model, auto.reason) == (
+        ("off", None, reason) if reason else ("mtp", "builtin://mtp", None)
+    )
+    # The preflight is the one asked ahead of the unload, so the refusal has to reach it too.
+    assert spec.mlx_speculative_request_reason(
+        "org/target", "mtp", "builtin://mtp", is_vision = vision, is_lora = lora
+    ) == reason
+
+
+@pytest.mark.parametrize(
+    "spelling", ["org/Drafter", "ORG/DRAFTER", "  org/Drafter  ", " ORG/drafter "],
+)
+def test_an_accepted_drafter_name_is_pinned_to_the_one_the_loader_resolves(
+    monkeypatch, spelling
+):
+    # The gate folds case and space; the load path matches exactly. Carrying the request's
+    # spelling forward turns a refusal ahead of the load into a crash after it starts.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        {"repo_id": "org/Drafter", "method": "mtp", "reason": None},
+        {"repo_id": spec.BUILTIN_MTP_ID, "method": "mtp", "reason": None},
+    ]})
+    resolved = spec.resolve_mlx_speculative_request("org/t", "mtp", spelling)
+    assert (resolved.draft_model, resolved.reason) == ("org/Drafter", None)
+
+    # The built-in head is named by a sentinel the load path compares exactly.
+    sentinel = spec.resolve_mlx_speculative_request(
+        "org/t", "mtp", f"  {spec.BUILTIN_MTP_ID.upper()}  "
+    )
+    assert sentinel.draft_model == spec.BUILTIN_MTP_ID
+
+    # A repository offered for another method is not this method's pin.
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        {"repo_id": "org/Drafter", "method": "dflash", "reason": None},
+    ]})
+    assert spec.resolve_mlx_speculative_request(
+        "org/t", "mtp", "org/Drafter"
+    ).reason == "checkpoint_not_compatible"
+
+
+@pytest.mark.parametrize(
+    "reason", [None, "insufficient_unified_memory", "checkpoint_config_mismatch"],
+)
+def test_an_explicit_method_carries_its_own_reason_into_the_resolution(monkeypatch, reason):
+    # The worker launches from the resolution, so an explicit request carries why it cannot run.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
+    monkeypatch.setattr(spec, "mlx_speculative_options", lambda _t: {"candidates": [
+        {"repo_id": "org/A", "method": "mtp", "reason": reason},
+    ]})
+    resolved = spec.resolve_mlx_speculative_request("org/target", "mtp", "org/A")
+    assert (resolved.method, resolved.draft_model, resolved.reason) == ("mtp", "org/A", reason)
+
+
 @pytest.mark.parametrize(
     "target,public",
     [
@@ -4142,6 +4941,7 @@ def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, 
 
     from fastapi import HTTPException
 
+    from core.inference import mlx_speculative as spec
     from core.inference.mlx_speculative import MLX_SPECULATIVE_REFUSALS
     from models.inference import LoadRequest, ValidateModelRequest
 
@@ -4159,12 +4959,26 @@ def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, 
     else:
         handler, request = inf_mod.validate_model, ValidateModelRequest
 
+    # A method no load path can run yet. As methods join their load paths this has to
+    # move to one that has not, or the door stops being tested.
+    unrunnable = sorted(spec.MLX_SPECULATIVE_METHODS - spec.ENABLED_MLX_SPECULATIVE_METHODS)
+    assert unrunnable, "every method is runnable; pin this door on a reachable refusal"
+
     with pytest.raises(HTTPException) as refused:
         asyncio.run(handler(
-            request(model_path = "org/A", mlx_speculative_mode = "mtp"), object(), "tester"
+            request(model_path = "org/A", mlx_speculative_mode = unrunnable[0]),
+            object(), "tester",
         ))
     assert refused.value.status_code == 400
     assert refused.value.detail == MLX_SPECULATIVE_REFUSALS["method_not_integrated"]
+
+    # A runnable method reaches the load rather than the refusal: it needs a drafter,
+    # and saying so is the candidate list's answer, not the not-integrated one.
+    with pytest.raises(HTTPException) as needs_checkpoint:
+        asyncio.run(handler(
+            request(model_path = "org/A", mlx_speculative_mode = "mtp"), object(), "tester"
+        ))
+    assert needs_checkpoint.value.detail == MLX_SPECULATIVE_REFUSALS["checkpoint_required"]
 
     if door == "load":
         # Off is the same request without the unrunnable method, and is served.
@@ -4173,37 +4987,8 @@ def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, 
         )) is not None
 
 
-def test_the_options_endpoint_is_registered_with_its_response_model():
-    # The endpoint is reachable only through this registration, so a changed path or a
-    # dropped response model would leave the contract unserved with nothing else failing.
-    from models.inference import MlxSpeculativeOptionsResponse
-
-    inf_mod, _ = _speculative_route_helpers()
-    options = [r for r in inf_mod.studio_router.routes if r.path == "/mlx-speculative/options"]
-    assert len(options) == 1
-    assert options[0].methods == {"GET"}
-    assert options[0].response_model is MlxSpeculativeOptionsResponse
-
-
-def test_every_refusal_reason_the_routes_can_raise_has_prose(monkeypatch):
-    # The routes subscript this table with whatever the reason function returns, so a
-    # reason added without an entry turns an intended 400 into a KeyError.
-    from core.inference import mlx_speculative as spec
-
-    # Pinned with nothing enabled so the refusals stay reachable as methods are joined
-    # to load paths; otherwise this empties, and fails, on exactly that change.
-    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset())
-    reasons = {
-        spec.mlx_speculative_request_reason(mode)
-        for mode in spec.MLX_SPECULATIVE_MODES | {"off", "nonsense"}
-    } - {None}
-    assert reasons and reasons <= set(spec.MLX_SPECULATIVE_REFUSALS)
-    assert all(text.strip() for text in spec.MLX_SPECULATIVE_REFUSALS.values())
-
-
 def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch):
-    # The sources and the merge are each covered directly; this is the wiring that turns
-    # them into the endpoint's answer, and without it every other test still passes.
+    # The wiring from sources and merge to the endpoint's answer; nothing else covers it.
     from core.inference import mlx_speculative as spec
 
     draft = {"model_type": "gemma4_assistant", "backbone_hidden_size": 64, "vocab_size": 100}
@@ -4220,298 +5005,103 @@ def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch
         lambda: {"common": True, "methods": {"mtp": True}, "reason": None},
     )
 
+    # The endpoint is reachable only through its registration, so a moved path or a dropped
+    # response model takes the whole panel to a 404 without failing anything else.
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_active_generations import _route_gate
+
+    _route_gate()
+    import routes.inference as inf_mod
+    from models.inference import MlxSpeculativeOptionsResponse
+
+    registered = [route for route in inf_mod.studio_router.routes
+                  if getattr(route, "path", "") == "/mlx-speculative/options"]
+    assert len(registered) == 1
+    assert registered[0].methods == {"GET"}
+    assert registered[0].response_model is MlxSpeculativeOptionsResponse
+
     options = spec.mlx_speculative_options("org/target")
-    assert options["runtime_supported"] is True
-    assert [c["repo_id"] for c in options["candidates"]] == ["org/Drafter"]
     candidate = options["candidates"][0]
-    assert candidate["method"] == "mtp" and candidate["source"] == "cached"
-    assert candidate["downloaded"] is True and candidate["compatible"] is True
+    assert (candidate["method"], candidate["source"]) == ("mtp", "cached")
     assert candidate["approximate_size_bytes"] == 2048
-    # The reason has to survive the merge onto the candidate, or the picker cannot say
-    # why a drafter the user can see is not selectable.
-    assert "reason" in candidate and candidate["reason"] == "method_not_integrated"
+    # A cached drafter carries no refusal once merged, or the picker offers to fetch what it has.
+    assert candidate["downloaded"] is True and candidate["compatible"] is True
+    assert candidate["loadable"] is True and candidate["reason"] is None
+
+    # A target that can attach no drafter withdraws the rows rather than listing them: the
+    # picker offers a download from this response, and no download makes such a row usable.
+    import asyncio
+
+    import utils.models.model_config as model_config_mod
+
+    # Reading the target's configuration fetches it for a model seen for the first time, so
+    # a cache with nothing in it yet is what the scan must not be run against: pairing needs
+    # the configuration this very probe brings down.
+    monkeypatch.setattr(spec, "_read_config", lambda _t: None)
+
+    def _probe(name, *a, **k):
+        monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
+        return name == "org/Target"
+
+    monkeypatch.setattr(model_config_mod, "is_vision_model", _probe)
+    monkeypatch.setattr(spec, "_canonical_target_id", lambda _t: "org/Target")
+    served = asyncio.run(inf_mod.get_mlx_speculative_options("target", "tester"))
+    # Asked about the name the scan and the load match on. The request's own spelling names a
+    # repository that does not exist, which answers no and withdraws every drafter it has.
+    assert served.runtime_supported is True
+    assert [(row.repo_id, row.loadable) for row in served.candidates] == [("org/Drafter", True)]
+    assert (served.auto_method, served.auto_reason) == ("off", "target_too_small_to_draft")
+
+    # A target that can attach no drafter still lists its rows, with every flag the picker
+    # reads turned off: it offers a download from this response, and no download would make
+    # such a row usable.
+    monkeypatch.setattr(model_config_mod, "is_vision_model", lambda *a, **k: False)
+    withdrawn = asyncio.run(inf_mod.get_mlx_speculative_options("org/target", "tester"))
+    assert (withdrawn.runtime_supported, withdrawn.runtime_reason) == (
+        False, "mlx_vlm_target_required"
+    )
+    assert [(row.loadable, row.runtime_supported, row.reason) for row in withdrawn.candidates] == [
+        (False, False, "mlx_vlm_target_required")
+    ]
+    assert (withdrawn.auto_method, withdrawn.auto_reason) == ("off", "mlx_vlm_target_required")
+
+    # An adapter reaches the same withdrawal by the other rule, with no configuration to read.
+    monkeypatch.setattr(model_config_mod, "is_vision_model", lambda *a, **k: True)
+    monkeypatch.setattr(inf_mod, "mlx_speculative_target_is_adapter", lambda _t: True)
+    adapter = asyncio.run(inf_mod.get_mlx_speculative_options("org/target", "tester"))
+    assert (adapter.runtime_supported, adapter.auto_reason) == (
+        False, "mlx_speculative_lora_unsupported"
+    )
+    assert [row.loadable for row in adapter.candidates] == [False]
+    monkeypatch.setattr(inf_mod, "mlx_speculative_target_is_adapter", lambda _t: False)
+
+    # The target's own head is withdrawn at the quantization the load will apply. Left
+    # selectable, it is a pin the picker offers and only the preflight then refuses.
+    monkeypatch.setattr(model_config_mod, "is_vision_model", lambda *a, **k: True)
+    # Answered per name, so a lookup handed the request's own spelling reads as a target with
+    # no configuration rather than quietly returning this one.
+    monkeypatch.setattr(spec, "_read_config",
+                        lambda t: _MTP_TARGET if t == "org/Target" else None)
+    # A row already refused keeps the reason the sources gave it.
+    monkeypatch.setattr(inf_mod, "mlx_speculative_options", lambda _t: {
+        "target_model": "org/Target", "experimental": True, "runtime_supported": True,
+        "runtime_reason": None,
+        "candidates": [_spec_candidate("builtin://mtp", source = "builtin", loadable = False,
+                                       reason = "method_not_integrated")]})
+    kept = asyncio.run(inf_mod.get_mlx_speculative_options("target", "tester"))
+    assert [(row.loadable, row.reason) for row in kept.candidates] == [
+        (False, "method_not_integrated")
+    ]
+
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset())
+    withheld = spec.mlx_speculative_options("org/target")["candidates"][0]
+    assert withheld["loadable"] is False and withheld["reason"] == "method_not_integrated"
 
     # A target whose configuration cannot be read has no structure to match against.
     monkeypatch.setattr(spec, "_read_config", lambda _t: None)
     assert spec.mlx_speculative_options("org/target")["candidates"] == []
-
-
-def test_a_nested_text_config_is_read_in_place_of_the_outer_block():
-    # Multimodal checkpoints carry the language model's shape one level down; reading the
-    # outer block would compare a vision tower's dimensions to the target's.
-    from core.inference import mlx_speculative as spec
-    assert spec._text_config({"hidden_size": 1, "text_config": {"hidden_size": 64}})[
-        "hidden_size"
-    ] == 64
-    assert spec._text_config({"hidden_size": 64, "text_config": None})["hidden_size"] == 64
-
-
-def test_a_drafter_that_materializes_embeddings_is_charged_for_them():
-    # Ordered-embedding drafters build a vocabulary-sized table at load, which is not in
-    # the download and would otherwise be missing from the memory estimate.
-    from core.inference import mlx_speculative as spec
-
-    ordered = {"model_type": "gemma4_assistant", "use_ordered_embeddings": True,
-               "text_config": {"vocab_size": 100, "hidden_size": 64}}
-    assert spec._dynamic_materialization_bytes(ordered) == 100 * 64 * 2
-    assert spec._dynamic_materialization_bytes({**ordered, "use_ordered_embeddings": False}) == 0
-    assert spec._dynamic_materialization_bytes({**ordered, "model_type": "other"}) == 0
-    assert spec._dynamic_materialization_bytes(
-        {**ordered, "text_config": {"vocab_size": None, "hidden_size": 64}}
-    ) == 0
-
-
-def test_a_drafter_must_leave_headroom_in_unified_memory(monkeypatch):
-    # Target and drafter share one pool with everything else running, so fitting exactly
-    # is not fitting.
-    from core.inference import mlx_speculative as spec
-
-    psutil = pytest.importorskip("psutil")
-    total = psutil.virtual_memory().total
-    assert spec._mlx_speculative_memory_ready(int(total * 0.80)) is True
-    assert spec._mlx_speculative_memory_ready(int(total * 0.90)) is False
-
-
-_QWEN_MTP_LAYER = (
-    "input_layernorm.weight", "post_attention_layernorm.weight",
-    "self_attn.q_proj.weight", "self_attn.k_proj.weight", "self_attn.v_proj.weight",
-    "self_attn.o_proj.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight",
-    "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight",
-)
-
-
-def _qwen_head_tensors(depth = 1):
-    names = {"mtp.fc.weight", "mtp.norm.weight",
-             "mtp.pre_fc_norm_embedding.weight", "mtp.pre_fc_norm_hidden.weight"}
-    for layer in range(depth):
-        names |= {f"mtp.layers.{layer}.{tensor}" for tensor in _QWEN_MTP_LAYER}
-    return dict.fromkeys(names, 16)
-
-
-def _qwen_config(model_type = "qwen3_5", text_type = "qwen3_5", depth = 1,):
-    return {"model_type": model_type,
-            "text_config": {"mtp_num_hidden_layers": depth, "model_type": text_type}}
-
-
-def _deepseek_config(depth = 1, experts = 2):
-    return {"model_type": "deepseek_v4",
-            "text_config": {"num_nextn_predict_layers": depth, "n_routed_experts": experts}}
-
-
-def _deepseek_head_tensors(experts = 2, extra = ()):
-    from core.inference import mlx_speculative as spec
-
-    names = {"mtp.0." + tensor for tensor in spec._DEEPSEEK_SHARED_TENSORS}
-    names |= {f"mtp.0.ffn.experts.{expert}.w{projection}.weight"
-              for expert in range(experts) for projection in (1, 2, 3)}
-    return dict.fromkeys(names | set(extra), 16)
-
-
-def _inkling_config(model_type = "inkling", depth = None, mtp_depth = None,):
-    config = {"model_type": model_type, "text_config": {"model_type": "inkling"}}
-    if depth is not None:
-        config["text_config"]["num_mtp_layers"] = depth
-    if mtp_depth is not None:
-        config["mtp_config"] = {"num_nextn_predict_layers": mtp_depth}
-    return config
-
-
-def _inkling_head_tensors(depth = 1, blocks = False, extra = (),):
-    from core.inference import mlx_speculative as spec
-
-    tensors = spec._INKLING_BLOCK_TENSORS if blocks else spec._INKLING_LAYER_TENSORS
-    prefix = "model.mtp.blocks." if blocks else "model.mtp.layers."
-    names = {"model.llm.norm.weight"}
-    for index in range(depth):
-        names |= {f"{prefix}{index}.{tensor}" for tensor in tensors}
-    return dict.fromkeys(names | set(extra), 16)
-
-
-def _glm_config(layers = 4, depth = 1, experts = 2,):
-    return {"model_type": "glm4_moe_lite",
-            "text_config": {"num_hidden_layers": layers, "n_routed_experts": experts,
-                            "num_nextn_predict_layers": depth}}
-
-
-def _glm_head_tensors(layers = 4, experts = 2, extra = (),):
-    from core.inference import mlx_speculative as spec
-
-    prefix = f"model.layers.{layers}."
-    names = {prefix + tensor for tensor in spec._GLM_HEAD_TENSORS}
-    names |= {f"{prefix}mlp.experts.{expert}.{tensor}"
-              for expert in range(experts) for tensor in spec._GLM_EXPERT_TENSORS}
-    return dict.fromkeys(names | set(extra), 16)
-
-
-_NATIVE_HEAD_STRAYS = {
-    "qwen3_5": (_qwen_config(), _qwen_head_tensors(), "mtp.stray"),
-    "deepseek_v4": (_deepseek_config(), _deepseek_head_tensors(), "mtp.0.unexpected.weight"),
-    "inkling": (_inkling_config(), _inkling_head_tensors(), "model.mtp.extra.norm.weight"),
-    # Layer count differs from the fixture default so a prefix pinned to a constant,
-    # rather than read from the target's own depth, fails here.
-    "glm4_moe_lite": (_glm_config(layers = 7, experts = 3),
-                      _glm_head_tensors(layers = 7, experts = 3),
-                      "model.layers.7.mlp.experts.9.w1"),
-}
-
-
-def test_every_head_this_runtime_can_split_has_a_family():
-    # Families are registered by hand while the runtime decides which heads it can split, so
-    # a gained splitter leaves a self-drafting target unoffered. Read from the installed packages.
-    import importlib
-    import pkgutil
-
-    from core.inference import mlx_speculative as spec
-
-    drafters = pytest.importorskip("mlx_vlm.speculative.drafters")
-    splittable = set()
-    for package in pkgutil.iter_modules(drafters.__path__):
-        module = f"{drafters.__name__}.{package.name}.split"
-        try:
-            split = importlib.import_module(module)
-        except ImportError:
-            continue
-        # Paired with the module: a family registered against the wrong package resolves to
-        # no splitter. Defined-here only, so a re-export is not a splitter this build claims.
-        splittable |= {
-            (module, name) for name in dir(split) if name.startswith("split_")
-            and str(getattr(getattr(split, name), "__module__", "")).startswith(
-                module.rsplit(".", 1)[0] + ".")
-        }
-    assert splittable, "expected the installed runtime to expose at least one splitter"
-    assert splittable == {
-        (handler.module, handler.function) for handler in spec._HANDLERS.values()
-    }
-
-
-def test_a_family_whose_head_moves_with_its_config_is_required_at_the_right_prefix(tmp_path):
-    # One family stores its head a layer index past the last real layer, so moving the declared
-    # depth has to move the required prefix with it. Driven ungated, or the installed
-    # runtime's family list would decide whether this resolution runs at all.
-    from core.inference import mlx_speculative as spec
-
-    family = "glm4_moe_lite"
-    config, sizes, _stray = _NATIVE_HEAD_STRAYS[family]
-    snapshot = tmp_path / family
-    snapshot.mkdir()
-    _fake_safetensors(snapshot / "model.safetensors",
-                      {name: {"data_offsets": [0, 8]} for name in sizes})
-    (snapshot / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": {name: "model.safetensors" for name in sizes}})
-    )
-    handler = spec._HANDLERS[family]
-    assert spec._native_mtp_evidence(snapshot, config, handler) is not None
-    # A config naming a different depth still reads every key, since nothing matches the moved
-    # prefix and the reader globs the shards. What rejects it is the required set having moved.
-    moved = json.loads(json.dumps(config))
-    moved["text_config"]["num_hidden_layers"] += 1
-    assert spec._native_mtp_evidence(snapshot, moved, handler) is None
-
-
-def test_a_head_is_offered_only_where_the_runtime_can_load_it(monkeypatch, tmp_path):
-    # Splitting a head and driving it are separate capabilities: a family whose drafter class
-    # this build lacks must not have its head offered, or the load fails with the target
-    # resident. Supplied and withdrawn here rather than read from the installed packages,
-    # or once every family ships a drafter class this would stop testing anything without
-    # ever failing.
-    import importlib
-
-    from core.inference import mlx_speculative as spec
-
-    pytest.importorskip("mlx_vlm.speculative.drafters")
-    for family, (config, sizes, _stray) in _NATIVE_HEAD_STRAYS.items():
-        snapshot = tmp_path / family
-        snapshot.mkdir()
-        _fake_safetensors(snapshot / "model.safetensors",
-                          {name: {"data_offsets": [0, 8]} for name in sizes})
-        (snapshot / "model.safetensors.index.json").write_text(
-            json.dumps({"weight_map": {name: "model.safetensors" for name in sizes}})
-        )
-        package = importlib.import_module(spec._HANDLERS[family].module.rsplit(".", 1)[0])
-        monkeypatch.setattr(package, "Model", type("Model", (), {}), raising = False)
-        assert spec.native_mtp_evidence(snapshot, config) is not None, family
-        # An attribute that is not a class is not a drafter either.
-        monkeypatch.setattr(package, "Model", "not a class", raising = False)
-        assert spec.native_mtp_evidence(snapshot, config) is None, family
-        monkeypatch.delattr(package, "Model", raising = False)
-        assert spec.native_mtp_evidence(snapshot, config) is None, family
-
-
-def test_every_family_rejects_a_stray_tensor_under_its_own_prefix():
-    # A complete head plus a tensor it does not define is a different checkpoint sharing the
-    # prefix. Asserted over every family, with strays differing in depth and suffix so a
-    # filter that skips anything shaped like a real tensor name cannot pass them.
-    from core.inference import mlx_speculative as spec
-    assert set(_NATIVE_HEAD_STRAYS) == {handler.name for handler in spec._HANDLERS.values()}
-    for family, (config, sizes, stray) in _NATIVE_HEAD_STRAYS.items():
-        complete = spec._HANDLERS[family].complete
-        assert complete(config, sizes) is True, family
-        assert complete(config, {**sizes, stray: 16}) is False, family
-
-
-def test_a_head_this_runtime_cannot_split_is_not_evidence(monkeypatch, tmp_path):
-    # A complete head of a handled family is still not evidence when this build has no
-    # splitter for it, so the runtime half of the gate cannot be dropped silently.
-    from core.inference import mlx_speculative as spec
-
-    config, sizes = _qwen_config(), _qwen_head_tensors()
-    monkeypatch.setattr(spec, "_tensor_sizes", lambda _s, _p: sizes)
-    assert spec._handler_definition(config).complete(config, sizes) is True
-
-    monkeypatch.setattr(spec, "_splitter", lambda *_a: None)
-    assert spec.native_mtp_evidence(tmp_path, config) is None
-
-
-@pytest.mark.parametrize(
-    "config,sizes,complete",
-    [
-        (_qwen_config(), _qwen_head_tensors(), True),
-        # A head is only usable whole, so one absent projection makes it unusable.
-        (_qwen_config(), {k: v for k, v in _qwen_head_tensors().items()
-                          if k != "mtp.fc.weight"}, False),
-        # Weights for fewer layers than the config declares are a partial download.
-        (_qwen_config(depth = 2), _qwen_head_tensors(1), False),
-        # More layers present than declared is a different head, not this one.
-        (_qwen_config(depth = 1), _qwen_head_tensors(2), False),
-        # A dense head cannot serve a mixture-of-experts target, or the reverse.
-        (_qwen_config(model_type = "qwen3_5_moe"), _qwen_head_tensors(), False),
-        (_qwen_config(), {}, False),
-        # The splitter defaults this count when a config omits one, so its absence is not
-        # evidence of a partial head; a declared count out of range still is.
-        ({"model_type": "glm4_moe_lite",
-          "text_config": {"num_hidden_layers": 4, "n_routed_experts": 2}},
-         _glm_head_tensors(), True),
-        (_glm_config(depth = 999), _glm_head_tensors(), False),
-        (_deepseek_config(), _deepseek_head_tensors(), True),
-        # Weights for fewer experts than the config routes to are a partial download.
-        (_deepseek_config(experts = 3), _deepseek_head_tensors(2), False),
-        # Scales for some experts but not all: a quantization pass that did not finish.
-        (_deepseek_config(),
-         _deepseek_head_tensors(extra = ("mtp.0.ffn.experts.0.w1.scales",)), False),
-        # A layer token with no digits at all is refused before any conversion.
-        (_deepseek_config(), _deepseek_head_tensors(extra = ("mtp.x.weight",)), False),
-        (_deepseek_config(experts = 0), _deepseek_head_tensors(0), False),
-        (_deepseek_config(depth = 17), _deepseek_head_tensors(), False),
-        (_qwen_config(depth = 17), _qwen_head_tensors(17), False),
-        # Scale sidecars for some tensors but not all, in the singular spelling.
-        (_deepseek_config(), _deepseek_head_tensors(extra = ("mtp.0.e_proj.scale",)), False),
-        (_inkling_config(), _inkling_head_tensors(), True),
-        # The multimodal variant carries the same head under the block layout.
-        (_inkling_config("inkling_mm_model"), _inkling_head_tensors(blocks = True), True),
-        # The head reads through the language model's final norm, so it is part of it.
-        (_inkling_config(), {k: v for k, v in _inkling_head_tensors().items()
-                             if k != "model.llm.norm.weight"}, False),
-        # Depth is declared in mtp_config when the text block does not carry it.
-        (_inkling_config(mtp_depth = 2), _inkling_head_tensors(depth = 2), True),
-        (_inkling_config(mtp_depth = 2), _inkling_head_tensors(depth = 1), False),
-        ({"model_type": "inkling"}, _inkling_head_tensors(), False),
-        # A head deeper than any real one is refused rather than enumerated.
-        (_inkling_config(depth = 17), _inkling_head_tensors(depth = 17), False),
-    ],
-)
-def test_a_native_mtp_head_is_recognized_only_when_complete(config, sizes, complete):
-    from core.inference import mlx_speculative as spec
-    assert spec._handler_definition(config).complete(config, sizes) is complete
 
 
 def _fake_safetensors(path, header, *, declared_length = None,):
@@ -4657,40 +5247,6 @@ def test_a_dflash_drafter_is_matched_on_every_dimension_it_binds(monkeypatch, ov
     assert _matches(spec, "dflash", {**_DFLASH_DRAFT, **override}, _DFLASH_TARGET) is expected
 
 
-def test_a_drafter_the_runtime_cannot_parse_is_refused_by_the_matcher(monkeypatch):
-    # The scanner drops these first, so this is the backstop for a config that becomes
-    # unparseable between the scan and the match.
-    pytest.importorskip("mlx_vlm.utils")
-    from core.inference import mlx_speculative as spec
-
-    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: None)
-    assert _matches(spec, "dflash", _DFLASH_DRAFT, _DFLASH_TARGET) is False
-
-
-@pytest.mark.parametrize(
-    "override,expected",
-    [
-        ({}, True),
-        ({"hidden_size": 32}, False),
-        ({"vocab_size": 99}, False),
-        ({"num_target_layers": 7}, False),
-        ({"target_layer_ids": [0, 3, 8]}, False),
-        ({"target_layer_ids": [0, 3, 3]}, False),
-        ({"target_layer_ids": []}, False),
-    ],
-)
-def test_a_laguna_drafter_is_matched_from_its_normalized_config(monkeypatch, override, expected):
-    # The installed runtime names laguna as its DFlash kind, so this is the branch a drafter
-    # the runtime identifies takes, reading the parsed config rather than the raw one.
-    pytest.importorskip("mlx_vlm.utils")
-    from core.inference import mlx_speculative as spec
-
-    normalized = SimpleNamespace(**{"target_layer_ids": [0, 3, 7], "hidden_size": 64,
-                                    "vocab_size": 100, "num_target_layers": 8, **override})
-    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: normalized)
-    assert _matches(spec, "dflash", {"model_type": "laguna"}, _DFLASH_TARGET) is expected
-
-
 def _eagle_normalized(**override):
     # Production feeds objects, not dicts, so the getattr branch is the one that runs.
     inner = SimpleNamespace(hidden_size = 32, vocab_size = 100)
@@ -4775,8 +5331,8 @@ def test_a_target_whose_runtime_cannot_roll_back_is_refused_for_dflash():
 def test_a_matched_drafter_reports_why_it_cannot_run(
     monkeypatch, runtime_ready, enabled, match, memory, caps_reason, reason
 ):
-    # Every candidate is offered with the reason it cannot run rather than omitted, so
-    # the picker can explain a drafter the user can see but not select.
+    # Every candidate is offered with the reason it cannot run rather than omitted, so a
+    # caller can tell "no drafter matched" from "one matched but cannot run here".
     from core.inference import mlx_speculative as spec
 
     caps = {"common": True, "methods": {"mtp": runtime_ready}, "reason": caps_reason}
@@ -4797,125 +5353,9 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
     assert rows[0].reason == reason
     assert rows[0].fields["loadable"] is (reason is None)
     # An unproven drafter holds its repository open for a later snapshot that verifies.
-    assert rows[0].status == (spec.MATCH if match is True else spec.INDETERMINATE)
+    assert rows[0].status == (spec._MATCH if match is True else spec._INDETERMINATE)
 # fmt: on
 # fmt: off
-def _write_snapshot(root, repo, revision, *, config, weights = True, tokenizer = True,):
-    snapshot = root / f"models--{repo.replace('/', '--')}" / "snapshots" / revision
-    snapshot.mkdir(parents = True)
-    (snapshot / "config.json").write_text(json.dumps(config))
-    if weights:
-        (snapshot / "model.safetensors").write_bytes(b"\x00" * 64)
-    if tokenizer:
-        (snapshot / "tokenizer.json").write_text(json.dumps({"model": {"vocab": {"a": 1}}}))
-    return snapshot
-
-
-def _scanner_env(monkeypatch, root):
-    from core.inference import mlx_speculative as spec
-
-    # The scanner's own filters are the subject; whether mlx-vlm can build a config for a
-    # given architecture is exercised by the matcher tests.
-    monkeypatch.setattr(spec, "_drafter_architecture_available", lambda _c: True)
-    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: object())
-    monkeypatch.setattr(spec, "_active_hf_cache_root", lambda: root)
-    return spec
-
-
-_DFLASH_CACHED = {"model_type": "dflash", "dflash_config": {"target_layer_ids": [0]}}
-
-
-def test_the_scanner_offers_only_snapshots_that_could_actually_load(monkeypatch, tmp_path):
-    # Every candidate the endpoint shows starts here, so a snapshot that cannot load must
-    # not reach the merge at all: a half-finished download is the common case.
-    spec = _scanner_env(monkeypatch, tmp_path)
-
-    _write_snapshot(tmp_path, "org/whole", "r1", config = _DFLASH_CACHED)
-    _write_snapshot(tmp_path, "org/no-weights", "r1", config = _DFLASH_CACHED, weights = False)
-    _write_snapshot(tmp_path, "org/not-a-drafter", "r1", config = {"model_type": "llama"})
-    # An MTP drafter is matched by token map, so one without a tokenizer is unusable even
-    # though its weights are all present.
-    _write_snapshot(tmp_path, "org/mtp-no-tokenizer", "r1",
-                    config = {"model_type": "gemma4_assistant"}, tokenizer = False)
-    # A directory that does not decode to an owner and a name is not a repository, even
-    # when it holds an otherwise loadable snapshot.
-    nonsense = (tmp_path / "models--nonsense") / "snapshots" / "r1"
-    nonsense.mkdir(parents = True)
-    (nonsense / "config.json").write_text(json.dumps(_DFLASH_CACHED))
-    (nonsense / "model.safetensors").write_bytes(b"\x00" * 64)
-    (nonsense / "tokenizer.json").write_text("{}")
-
-    found = {repo for repo, _config, _snapshot, _bytes in spec._scan_active_cached_drafter_configs(tmp_path)}
-    assert found == {"org/whole"}
-
-
-@pytest.mark.parametrize("unbuildable", ["architecture", "config"])
-def test_the_scanner_drops_a_drafter_the_runtime_cannot_build(monkeypatch, tmp_path, unbuildable):
-    # The scanner is the only place these two are checked: an MTP drafter is matched by token
-    # map and never reaches the matcher's own guard, so nothing downstream would catch it.
-    spec = _scanner_env(monkeypatch, tmp_path)
-    if unbuildable == "architecture":
-        monkeypatch.setattr(spec, "_drafter_architecture_available", lambda _c: False)
-    else:
-        monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: None)
-
-    _write_snapshot(tmp_path, "org/mtp", "r1", config = {"model_type": "gemma4_assistant"})
-    _write_snapshot(tmp_path, "org/dflash", "r1", config = _DFLASH_CACHED)
-    assert spec._scan_active_cached_drafter_configs(tmp_path) == ()
-
-
-def test_a_revision_missing_a_shard_does_not_hide_a_whole_one(monkeypatch, tmp_path):
-    # Filenames cannot tell a whole payload from one short a shard, so a half-downloaded newer
-    # revision would be offered in place of the complete older one it shadows.
-    spec = _scanner_env(monkeypatch, tmp_path)
-
-    whole = _write_snapshot(tmp_path, "org/sharded", "aaa", config = _DFLASH_CACHED)
-    torn = _write_snapshot(tmp_path, "org/sharded", "zzz", config = _DFLASH_CACHED,
-                           weights = False)
-    (torn / "model-00001-of-00002.safetensors").write_bytes(b"\x00" * 64)
-    (torn / "model.safetensors.index.json").write_text(json.dumps({
-        "weight_map": {"a": "model-00001-of-00002.safetensors",
-                       "b": "model-00002-of-00002.safetensors"},
-    }))
-
-    offered = [s.name for _r, _c, s, _b in spec._scan_active_cached_drafter_configs(tmp_path)]
-    assert offered == [whole.name]
-
-
-def test_the_scanner_offers_the_checked_out_revision_first(monkeypatch, tmp_path):
-    # Among snapshots that match equally the merge keeps the first, so which revision the
-    # user is offered is decided here: the one the cache has checked out.
-    spec = _scanner_env(monkeypatch, tmp_path)
-
-    for revision in ("aaa", "zzz", "mmm"):
-        _write_snapshot(tmp_path, "org/many", revision, config = _DFLASH_CACHED)
-    repo_dir = tmp_path / "models--org--many"
-    (repo_dir / "refs").mkdir()
-    (repo_dir / "refs" / "main").write_text("mmm")
-
-    order = [s.name for _repo, _config, s, _bytes in spec._scan_active_cached_drafter_configs(tmp_path)]
-    assert order[0] == "mmm"
-    # The rest are reverse-sorted, so the ordering is total rather than partly incidental.
-    assert order[1:] == ["zzz", "aaa"]
-# fmt: on
-
-
-# fmt: off
-def _seed_env(monkeypatch, *, native_head = False, cached = (),):
-    from core.inference import mlx_speculative as spec
-
-    monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
-    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
-    monkeypatch.setattr(spec, "native_mtp_tensors_present", lambda _s, _c: native_head)
-    monkeypatch.setattr(spec, "native_mtp_evidence", lambda _s, _c: None)
-    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
-    monkeypatch.setattr(
-        spec, "mlx_speculative_runtime_capabilities",
-        lambda: {"common": True, "methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, True),
-                 "reason": None},
-    )
-    return spec
 
 
 def test_a_target_with_its_own_head_is_not_told_to_download_another(monkeypatch):

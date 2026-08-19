@@ -11,7 +11,10 @@ from importlib.metadata import PackageNotFoundError, version
 import inspect
 import itertools
 import json
+import os
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -22,16 +25,30 @@ MLX_SPECULATIVE_MODES = MLX_SPECULATIVE_METHODS | {"auto"}
 
 # Each method joins this set with the load path that can run it, so a request for a
 # method the worker cannot execute is refused before the active model is torn down.
-ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset()
+ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset({"mtp"})
 
 # Refusals reach the client as prose, while the codes stay the vocabulary the response
 # schema will use to say why a resolved method differs from the one requested.
 MLX_SPECULATIVE_REFUSALS: dict[str, str] = {
     "method_not_integrated": "This build cannot run the requested MLX speculative decoding method.",
+    "checkpoint_required": "Choose a draft checkpoint to use this MLX speculative decoding method.",
+    "checkpoint_not_compatible": "The chosen draft checkpoint cannot pair with this model.",
+    "checkpoint_config_mismatch": "The chosen draft checkpoint was built for a different model.",
+    "checkpoint_not_downloaded": "The chosen draft checkpoint is not downloaded yet.",
+    "runtime_unavailable": "The installed MLX runtime does not support speculative decoding.",
+    "runtime_missing_speculative_api": "The installed mlx-vlm does not expose the speculative decoding API.",
+    "mlx_requires_apple_silicon": "MLX speculative decoding needs Apple silicon.",
+    "method_runtime_unavailable": "The installed MLX runtime cannot run this speculative decoding method.",
+    "insufficient_unified_memory": "There is not enough unified memory for this model and its draft checkpoint together.",
+    "target_config_unavailable": "This model's configuration could not be read.",
+    "verifier_contract_unavailable": "The chosen draft checkpoint does not say which model it verifies.",
+    "tokenizer_contract_unavailable": "The chosen draft checkpoint's tokenizer could not be compared with this model's.",
+    "auto_no_loadable_candidate": "No draft checkpoint for this model is downloaded and ready.",
+    "auto_preferred_candidate_unavailable": "The chosen draft checkpoint is not available, so this model runs without speculative decoding.",
 }
 
-# A code with no entry of its own still has to reach the client as a 400 rather than
-# as the KeyError a subscript would raise.
+# A code with no entry of its own still has to reach the client as a 400 rather than as the
+# KeyError a subscript would raise.
 MLX_SPECULATIVE_GENERIC_REFUSAL = "This model cannot use the requested speculative decoding method."
 
 
@@ -267,6 +284,29 @@ def normalize_mlx_speculative_mode(value: Any) -> str:
     return mode if mode in MLX_SPECULATIVE_MODES else "off"
 
 
+def normalize_mlx_speculative_method(value: Any) -> str:
+    """The concrete method ``value`` names, or "off". Auto is a request, not a method."""
+    mode = normalize_mlx_speculative_mode(value)
+    return mode if mode in MLX_SPECULATIVE_METHODS else "off"
+
+
+def mlx_speculative_request_identity(
+    mode: Any, draft_model: Optional[str], block_size: Optional[int]
+) -> tuple[str, Optional[str], Optional[int]]:
+    """The speculative settings a resident model must already have to be reused.
+
+    Off carries no drafter, and a repository id differing only in case or surrounding
+    space names the same checkpoint. Every place that decides whether two requests name
+    the same drafter folds through here, so they cannot normalize differently, which
+    reads as a settings change on every request and reloads the model forever.
+    """
+    normalized = normalize_mlx_speculative_mode(mode)
+    if normalized == "off":
+        return normalized, None, None
+    named = draft_model.strip().casefold() if isinstance(draft_model, str) else None
+    return normalized, named or None, block_size
+
+
 @lru_cache(maxsize = 1)
 def mlx_speculative_runtime_capabilities() -> dict[str, Any]:
     result: dict[str, Any] = {
@@ -307,10 +347,8 @@ def _runtime_capabilities_from_modules(drafters: Any, ar: Any, utils: Any) -> di
 
 
 def _local_path(model_id: str) -> Optional[Path]:
-    """``model_id`` as a local path, or None when it cannot name one.
-
-    A "~unknown-user" prefix has no home to expand into, and every caller here is
-    asking whether a checkpoint sits on disk rather than asserting that it does.
+    """A "~unknown-user" prefix has no home to expand into, and callers are asking
+    whether a checkpoint sits on disk rather than asserting that it does.
     """
     try:
         return Path(model_id).expanduser()
@@ -336,10 +374,8 @@ _UNVERIFIED = "unverified"  # source asserts no structural verdict (seeds)
 
 
 class _CandidateRow:
-    """One source's claim about one drafter repository.
-
-    ``inherit`` names fields the merge must take from the row being replaced rather
-    than from this one.
+    """One source's claim about one drafter repository. ``inherit`` names fields the
+    merge must take from the row being replaced rather than from this one.
     """
 
     __slots__ = ("key", "status", "fields", "reason", "inherit")
@@ -360,12 +396,9 @@ class _CandidateRow:
 
 
 def _merge_candidate_rows(rows):
-    """Resolve source rows into the candidate list, first verified match winning.
-
-    One repository can produce several rows, because a cache holds a snapshot per
-    revision. A verified match freezes the repository so no later snapshot can
-    displace it, and an unreadable one blocks a later refutation, giving
-    match > indeterminate > mismatch regardless of the order snapshots are read.
+    """One repository yields a row per cached revision. A verified match freezes it and an
+    unreadable one blocks a later refutation, giving match > indeterminate > mismatch
+    whatever order the snapshots are read in.
     """
     candidates: list[dict] = []
     index: dict[str, int] = {}
@@ -855,12 +888,9 @@ def _verifier_matches_target(
 
 
 def _identity_conflict(target_id: str, draft_id: str) -> bool:
-    """Whether the two names resolve to different models.
-
-    A same-shape successor — Qwen3.5-27B and Qwen3.6-27B share model type, width, depth,
-    vocabulary and tokenizer — is indistinguishable from its predecessor in every value a
-    config carries, so the published names are the only remaining evidence. An unresolved
-    name is silence rather than disagreement, and leaves the structural verdict alone.
+    """A same-shape successor — Qwen3.5-27B and Qwen3.6-27B agree on model type, width,
+    depth, vocabulary and tokenizer — leaves the published names as the only evidence. An
+    unresolved name is silence, not disagreement.
     """
     target_key = _target_identity_key(target_id)
     draft_key = _target_identity_key(draft_id)
@@ -1505,19 +1535,14 @@ def _cached_tensor_sizes(
     return _tensor_sizes(Path(snapshot), prefixes)
 
 
-def _snapshot_identity(
-    snapshot: Path,
-    handler: _NativeMtpHandler,
-    block_size: Optional[int] = None,
-) -> str:
-    block = "auto" if block_size is None else str(block_size)
+def _snapshot_identity(snapshot: Path, handler: _NativeMtpHandler) -> str:
     try:
         runtime = version("mlx-vlm")
     except PackageNotFoundError:
         runtime = "unavailable"
     digest = hashlib.sha256(
         f"{handler.name}\0{handler.module}\0{handler.function}\0mlx-vlm:{runtime}"
-        f"\0{snapshot.resolve()}\0block:{block}".encode()
+        f"\0{snapshot.resolve()}".encode()
     )
     for path in sorted(
         (
@@ -1532,6 +1557,82 @@ def _snapshot_identity(
             continue
         digest.update(f"\0{path.name}\0{stat.st_size}\0{stat.st_mtime_ns}".encode())
     return digest.hexdigest()
+
+
+@dataclass(frozen = True)
+class MlxSpeculativeResolution:
+    """Concrete drafter pinned for one requested load."""
+
+    method: str
+    draft_model: Optional[str]
+    reason: Optional[str] = None
+
+
+def _complete_sidecar(path: Path, identity: str) -> bool:
+    try:
+        return (
+            (path / "config.json").is_file()
+            and (path / "model.safetensors").stat().st_size > 8
+            and json.loads((path / "source.json").read_text(encoding = "utf-8")).get("identity")
+            == identity
+        )
+    except (OSError, AttributeError, json.JSONDecodeError):
+        return False
+
+
+def cleanup_native_mtp_staging() -> None:
+    from utils.paths.storage_roots import cache_root
+
+    root = cache_root() / "mlx-speculative" / "mtp"
+    try:
+        paths = tuple(root.iterdir())
+    except OSError:
+        return
+    for path in paths:
+        try:
+            fingerprint, owner, _suffix = path.name[1:].split("-", 2)
+            if len(fingerprint) != 12:
+                continue
+            int(fingerprint, 16)
+            os.kill(int(owner), 0)
+        except ProcessLookupError:
+            shutil.rmtree(path, ignore_errors = True)
+        except (OSError, ValueError):
+            continue
+
+
+def materialize_native_mtp(snapshot: Path) -> Path:
+    config = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
+    handler = _handler(config) if isinstance(config, dict) else None
+    if not handler or native_mtp_evidence(snapshot, config) is None:
+        raise ValueError("mlx_builtin_mtp_unavailable")
+    identity = _snapshot_identity(snapshot, handler)
+    from utils.paths.storage_roots import cache_root
+
+    root = cache_root() / "mlx-speculative" / "mtp"
+    final = root / identity
+    if _complete_sidecar(final, identity):
+        return final
+    cleanup_native_mtp_staging()
+    root.mkdir(parents = True, exist_ok = True)
+    staging = Path(tempfile.mkdtemp(prefix = f".{identity[:12]}-{os.getpid()}-", dir = root))
+    try:
+        splitter = _splitter(handler.module, handler.function)
+        if splitter is None:
+            raise RuntimeError("mlx_builtin_mtp_splitter_unavailable")
+        splitter(str(snapshot), str(staging))
+        if not (staging / "config.json").is_file() or not (staging / "model.safetensors").is_file():
+            raise RuntimeError("mlx_builtin_mtp_materialization_incomplete")
+        (staging / "source.json").write_text(json.dumps({"identity": identity}), encoding = "utf-8")
+        try:
+            staging.replace(final)
+        except OSError:
+            if _complete_sidecar(final, identity):
+                return final
+            raise
+        return final
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
 
 
 def mlx_target_snapshot_path(target_id: str) -> Path:
@@ -1554,9 +1655,17 @@ def mlx_speculative_snapshot_path(
     no matching revision raises, so a stale snapshot cannot be handed to the worker.
     """
     target_config = _read_config(target_id) if target_id else None
-    _config, snapshot = _fitting_cached_revision(repo_id, target_id, target_config, method)
-    if snapshot is not None:
-        return snapshot
+    for cached_repo_id, config, snapshot, _size in _active_cached_drafter_configs():
+        if cached_repo_id.casefold() != repo_id.casefold():
+            continue
+        if target_config is None or (
+            _drafter_method(config) == method
+            and _dynamic_candidate_config_matches(
+                method, target_id, target_config, config, snapshot, cached_repo_id
+            )
+            is True
+        ):
+            return snapshot
     if target_config is not None:
         raise FileNotFoundError(f"No compatible MLX speculative checkpoint: {repo_id}")
     config_path = _cached_config_path(repo_id)
@@ -1623,11 +1732,8 @@ def _builtin_candidate_rows(target_id, target_config, caps, enabled):
 
 
 def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_head):
-    """Rows for drafters worth downloading for this target, from a curated index.
-
-    A checkpoint is proposed only for the target family it was built for, and only
-    from an owner the target itself vouches for, so a recommendation cannot be
-    steered by an unrelated repository that merely shares a name.
+    """A checkpoint is proposed only for the family it was built for and only from an owner
+    the target vouches for, so an unrelated repository sharing a name cannot steer one.
     """
     target_key = _recommendation_target_key(target_id, target_config)
     for seed in _RECOMMENDATIONS:
@@ -1688,11 +1794,7 @@ def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_
 
 
 def _cached_candidate_rows(target_id, target_config, caps, enabled):
-    """Rows for drafters already materialized in the local cache.
-
-    One repository yields one row per snapshot directory, so the merge — not this
-    source — decides which revision wins.
-    """
+    """One row per snapshot directory, so the merge — not this source — picks the revision."""
     target_bytes = _snapshot_weight_bytes(target_id)
     for repo_id, draft_config, snapshot, weight_bytes in _active_cached_drafter_configs():
         method = _drafter_method(draft_config)
@@ -1755,6 +1857,22 @@ def _cached_candidate_rows(target_id, target_config, caps, enabled):
         )
 
 
+def _canonical_target_id(target_id: str) -> str:
+    """The load path strips the request, expands a bare name to the default owner and reuses
+    a cached spelling's case. Matching the raw request instead scans a cache entry that does
+    not exist, so the target is told it has no drafter while the load then finds one.
+    """
+    from utils.models.model_config import is_local_path
+    from utils.paths.path_utils import resolve_cached_repo_id_case
+
+    identifier = (target_id or "").strip()
+    if not identifier or is_local_path(identifier):
+        return identifier or target_id
+    if "/" not in identifier:
+        identifier = f"unsloth/{identifier}"
+    return resolve_cached_repo_id_case(identifier)
+
+
 def mlx_speculative_options(target_id: str) -> dict[str, Any]:
     """Speculative drafters usable with ``target_id``, with local paths redacted.
 
@@ -1762,16 +1880,14 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
     carrying the reason it cannot run rather than being omitted.
     """
     capabilities = mlx_speculative_runtime_capabilities()
+    target_id = _canonical_target_id(target_id)
     target_config = _read_config(target_id)
     rows = []
     if target_config is not None:
         args = (target_id, target_config, capabilities, ENABLED_MLX_SPECULATIVE_METHODS)
-        # A head the target already carries suppresses the companions that exist to
-        # supply one. It is read from the checkpoint itself, independently of whether
-        # this runtime could drive it, so a runtime without speculative support does not
-        # turn into a recommendation to download what the target already has.
-        # A target that is not on disk cannot be inspected for a head, which is not an
-        # error here: it simply means nothing is suppressed.
+        # Read from the checkpoint itself, not from whether this runtime could drive it, so
+        # a runtime without speculative support does not become advice to download a head
+        # the target already has. A target not on disk simply suppresses nothing.
         native_head = False
         try:
             snapshot = mlx_target_snapshot_path(target_id)
@@ -1793,16 +1909,179 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
     }
 
 
-def mlx_speculative_request_reason(method: Any) -> Optional[str]:
+def _pinned_drafter(
+    target_id: str, mode: str, draft_model: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """An accepted drafter carries the candidate's own repository id, not the spelling the
+    request used, because the loader matches names exactly: accepting one it cannot resolve
+    moves the failure from a refusal to a crash after the resident model is gone.
+    """
+    if mode not in ENABLED_MLX_SPECULATIVE_METHODS:
+        return draft_model, "method_not_integrated"
+    _, named, _ = mlx_speculative_request_identity(mode, draft_model, None)
+    if not named:
+        return draft_model, "checkpoint_required"
+    for candidate in mlx_speculative_options(target_id)["candidates"]:
+        if candidate["method"] == mode and candidate["repo_id"].casefold() == named:
+            return candidate["repo_id"], candidate["reason"]
+    return draft_model, "checkpoint_not_compatible"
+
+
+def mlx_speculative_request_reason(
+    target_id: str,
+    method: Any,
+    draft_model: Optional[str],
+    is_vision: bool = True,
+    is_lora: bool = False,
+) -> Optional[str]:
     """Why an MLX speculative request cannot be served, or None when it can.
 
     Off and Auto always resolve: Auto falls back to ordinary MLX generation when no
-    drafter can run. An explicit method is refused unless its execution path is
-    available, so an unsupported request never reaches model teardown.
+    drafter can run. An explicit method is refused unless the named drafter is one the
+    candidate list reports as loadable, so an unsupported request never reaches model
+    teardown, and the refusal carries the candidate's own reason rather than a generic one.
     """
     mode = normalize_mlx_speculative_mode(method)
     if mode in {"off", "auto"}:
         return None
-    if mode not in ENABLED_MLX_SPECULATIVE_METHODS:
-        return "method_not_integrated"
+    return resolve_mlx_speculative_request(
+        target_id, mode, draft_model, is_vision = is_vision, is_lora = is_lora
+    ).reason
+
+
+def mlx_speculative_refusal(mode: Any, resolution: "MlxSpeculativeResolution") -> Optional[str]:
+    """Why ``resolution`` cannot be loaded, or None to load it.
+
+    Auto never fails a load. Its reason is a diagnosis of why the request runs without
+    speculation, not a refusal, so a model that cannot be accelerated still generates.
+    """
+    if normalize_mlx_speculative_mode(mode) in {"off", "auto"} or resolution.reason is None:
+        return None
+    return mlx_speculative_refusal_text(resolution.reason)
+
+
+def mlx_speculative_target_is_adapter(target_id: str) -> bool:
+    """Whether the target is a LoRA adapter, read from the files its load would open.
+
+    The candidate list is built for callers holding no model configuration, so the adapter is
+    recognised from the snapshot rather than asked of one, on the same markers the rest of the
+    model layer recognises it by.
+    """
+    from utils.models.model_config import _looks_like_lora_adapter
+
+    path = _cached_config_path(_canonical_target_id(target_id))
+    return path is not None and _looks_like_lora_adapter(path.parent)
+
+
+def mlx_speculative_target_ineligible(
+    *,
+    is_vision: bool,
+    is_lora: bool,
+    is_distributed: bool = False,
+) -> Optional[str]:
+    """Why this launch can run no drafter, or None when it can.
+
+    Speculation rides the mlx-vlm path, which a text-only target never takes; an adapter or a
+    sharded placement does take it but has no drafter support. Asked wherever a drafter is
+    resolved, so the answer a request is given is the one its load reaches.
+    """
+    if not is_vision:
+        return "mlx_vlm_target_required"
+    if is_lora:
+        return "mlx_speculative_lora_unsupported"
+    if is_distributed:
+        return "mlx_speculative_distributed_unsupported"
     return None
+
+
+def mlx_speculative_load_resolution(
+    target_id: str,
+    mode: Any,
+    draft_model: Optional[str],
+    *,
+    resolved_mode: Any,
+    resolved_draft_model: Optional[str],
+    resolved_reason: Optional[str],
+    is_vision: bool,
+    is_lora: bool,
+    is_distributed: bool,
+) -> "MlxSpeculativeResolution":
+    """The drafter a load will use, reusing the caller's pinned choice when it has one.
+
+    A caller that already resolved passes its choice through unchanged, so the decision is
+    not made twice against two different views of the cache. Only Auto with nothing pinned
+    scans here, which is the path a caller that never resolved takes.
+    """
+    requested, _, _ = mlx_speculative_request_identity(mode, draft_model, None)
+    ineligible = mlx_speculative_target_ineligible(
+        is_vision = is_vision, is_lora = is_lora, is_distributed = is_distributed
+    )
+    if requested == "auto" and ineligible is not None:
+        return MlxSpeculativeResolution("off", None, ineligible)
+    if requested == "auto" and resolved_mode is None:
+        return resolve_mlx_speculative_request(target_id, "auto", draft_model)
+    method = resolved_mode if requested == "auto" else requested
+    return MlxSpeculativeResolution(
+        normalize_mlx_speculative_method(method), resolved_draft_model, resolved_reason
+    )
+
+
+def resolve_mlx_speculative_request(
+    target_id: str,
+    mode: Any,
+    draft_model: Optional[str] = None,
+    is_vision: bool = True,
+    is_lora: bool = False,
+) -> MlxSpeculativeResolution:
+    """Pin one concrete local drafter, or ordinary MLX when Auto finds none.
+
+    Auto never fails a load: with no loadable candidate it resolves to Off carrying the reason.
+
+    ``is_vision`` and ``is_lora`` describe the target the load will build. Omitted, the answer is
+    about the drafters alone; passed, a target no drafter can attach to is answered here rather
+    than after the resident model has been torn down for it.
+    """
+    requested = normalize_mlx_speculative_mode(mode)
+    if requested == "off":
+        return MlxSpeculativeResolution("off", None)
+    # Ahead of every cache read: no drafter changes an answer the target itself settles.
+    ineligible = mlx_speculative_target_ineligible(is_vision = is_vision, is_lora = is_lora)
+    if ineligible is not None:
+        return MlxSpeculativeResolution(
+            "off" if requested == "auto" else requested, None, ineligible
+        )
+    # Both the scan and the compatibility checks match on the canonical id.
+    target_id = _canonical_target_id(target_id)
+    target_config = _read_config(target_id)
+    if requested != "auto":
+        return MlxSpeculativeResolution(
+            requested, *_pinned_drafter(target_id, requested, draft_model)
+        )
+
+    available = mlx_speculative_options(target_id)["candidates"]
+    _, preferred, _ = mlx_speculative_request_identity(requested, draft_model, None)
+    if preferred:
+        selected = next(
+            (candidate for candidate in available if candidate["repo_id"].casefold() == preferred),
+            None,
+        )
+        if selected is None or not selected["loadable"]:
+            return MlxSpeculativeResolution(
+                "off",
+                None,
+                (selected or {}).get("reason") or "auto_preferred_candidate_unavailable",
+            )
+        return MlxSpeculativeResolution(selected["method"], selected["repo_id"])
+
+    candidates = [candidate for candidate in available if candidate["loadable"]]
+    if not candidates:
+        return MlxSpeculativeResolution("off", None, "auto_no_loadable_candidate")
+
+    method_priority = {"mtp": 1, "dflash": 2, "eagle3": 3}
+
+    def priority(candidate: dict[str, Any]) -> tuple[int, str]:
+        rank = 0 if candidate["source"] == "builtin" else method_priority[candidate["method"]]
+        return rank, candidate["repo_id"].casefold()
+
+    selected = min(candidates, key = priority)
+    return MlxSpeculativeResolution(selected["method"], selected["repo_id"])

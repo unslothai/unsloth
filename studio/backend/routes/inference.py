@@ -2982,6 +2982,10 @@ from core.inference.mlx_speculative import (
     mlx_speculative_refusal_text,
     mlx_speculative_options,
     mlx_speculative_request_reason,
+    mlx_speculative_refusal,
+    mlx_speculative_target_ineligible,
+    mlx_speculative_target_is_adapter,
+    resolve_mlx_speculative_request,
 )
 from models.inference import (
     MlxSpeculativeOptionsResponse,
@@ -13025,9 +13029,23 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         return True
     from core.inference.mlx_inference import _normalize_mlx_kv_bits
 
-    return entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits) and (
-        entry.get("chat_template_override_requested") or None
-    ) == (request.chat_template_override or None)
+    from core.inference.mlx_speculative import mlx_speculative_request_identity
+
+    # Without a reload the drafter is never attached and the request looks honoured. Auto
+    # compares as requested, not as resolved, so asking twice survives a changed cache.
+    speculative = mlx_speculative_request_identity(
+        entry.get("mlx_speculative_mode_requested"),
+        entry.get("mlx_draft_model_requested"),
+        entry.get("mlx_draft_block_size_requested"),
+    ) == mlx_speculative_request_identity(
+        request.mlx_speculative_mode, request.mlx_draft_model, request.mlx_draft_block_size
+    )
+    return (
+        entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits)
+        and (entry.get("chat_template_override_requested") or None)
+        == (request.chat_template_override or None)
+        and speculative
+    )
 
 
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
@@ -13062,7 +13080,31 @@ async def get_mlx_speculative_options(
 ):
     """Return the speculative drafters that can serve one MLX target."""
     del current_subject
+    from core.inference.mlx_speculative import _canonical_target_id
+    from utils.models.model_config import is_vision_model
+
+    # The name the scan and the load both match on; the request's own spelling may name nothing.
+    canonical_target = await asyncio.to_thread(_canonical_target_id, target_model)
+    # Whether this target can attach any drafter is its own question, so a checkpoint the load
+    # could never accept is not offered for the download that would precede it. Ahead of the
+    # scan: this fetches the configuration a first-seen target has not cached yet, which the
+    # scan would otherwise pair against and freeze an empty list.
+    target_is_vision = await asyncio.to_thread(is_vision_model, canonical_target)
+    target_is_adapter = await asyncio.to_thread(mlx_speculative_target_is_adapter, canonical_target)
     options = await asyncio.to_thread(mlx_speculative_options, target_model)
+    ineligible = mlx_speculative_target_ineligible(
+        is_vision = target_is_vision, is_lora = target_is_adapter
+    )
+    if ineligible is not None:
+        options = dict(
+            options,
+            runtime_supported = False,
+            runtime_reason = ineligible,
+            candidates = [
+                dict(row, loadable = False, runtime_supported = False, reason = ineligible)
+                for row in options["candidates"]
+            ],
+        )
     return MlxSpeculativeOptionsResponse.model_validate(options)
 
 
@@ -13492,13 +13534,19 @@ async def _load_model_impl(
                 inference_identifier = model_identifier,
             )
 
-        # Refuse an unrunnable speculative request before anything is torn down, so a
-        # rejected setting never costs the user the model they already had loaded.
-        _mlx_spec_reason = mlx_speculative_request_reason(request.mlx_speculative_mode)
-        if _mlx_spec_reason is not None:
-            raise HTTPException(
-                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
-            )
+        # Pinned here rather than in the worker so the decision is made once, against this
+        # process's view of the cache, before the target occupies memory.
+        _mlx_resolution = await asyncio.to_thread(
+            resolve_mlx_speculative_request,
+            model_identifier,
+            request.mlx_speculative_mode,
+            request.mlx_draft_model,
+        )
+        # Refused before anything is torn down, so a rejected setting never costs the user
+        # the model they already had loaded.
+        _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
+        if _mlx_refusal is not None:
+            raise HTTPException(status_code = 400, detail = _mlx_refusal)
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
@@ -14219,6 +14267,26 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             raise
+        success = await asyncio.to_thread(
+            backend.load_model,
+            config = config,
+            max_seq_length = request.max_seq_length,
+            load_in_4bit = load_in_4bit,
+            hf_token = request.hf_token,
+            trust_remote_code = request.trust_remote_code,
+            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
+            gpu_ids = placement.requested_gpu_ids,
+            subject = current_subject,
+            mlx_kv_bits = request.mlx_kv_bits,
+            chat_template_override = request.chat_template_override,
+            load_cancel_event = load_cancel_event,
+            mlx_speculative_mode = request.mlx_speculative_mode,
+            mlx_draft_model = request.mlx_draft_model,
+            mlx_draft_block_size = request.mlx_draft_block_size,
+            mlx_speculative_resolved_mode = _mlx_resolution.method,
+            mlx_speculative_resolved_draft_model = _mlx_resolution.draft_model,
+            mlx_speculative_resolution_reason = _mlx_resolution.reason,
+        )
 
         if not success:
             _restore_marker_if_prior_preview_still_resident()
@@ -14567,10 +14635,6 @@ async def validate_model(
         _hf_offline_if_unreachable_for,
     )
 
-    _mlx_spec_reason = mlx_speculative_request_reason(request.mlx_speculative_mode)
-    if _mlx_spec_reason is not None:
-        raise HTTPException(status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason))
-
     native_grant_backed = False
     model_log_label = request.model_path
 
@@ -14588,6 +14652,14 @@ async def validate_model(
                 resolved_ollama_path = resolved_ollama_path,
             )
         )
+
+        _mlx_spec_reason = mlx_speculative_request_reason(
+            model_identifier, request.mlx_speculative_mode, request.mlx_draft_model
+        )
+        if _mlx_spec_reason is not None:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
+            )
 
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.

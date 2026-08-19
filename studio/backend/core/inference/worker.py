@@ -381,6 +381,24 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _mlx_speculative_load_kwargs(backend: Any, config: dict) -> dict:
+    """The speculative load arguments this backend takes, empty for any but MLX.
+
+    Only the MLX backend accepts them, so projecting nothing elsewhere is what keeps the
+    llama.cpp load from being handed arguments it has no parameters for.
+    """
+    if getattr(backend, "device", None) != "mlx":
+        return {}
+    return {
+        "mlx_speculative_mode": config.get("mlx_speculative_mode", "off"),
+        "mlx_draft_model": config.get("mlx_draft_model"),
+        "mlx_draft_block_size": config.get("mlx_draft_block_size"),
+        "mlx_speculative_resolved_mode": config.get("mlx_speculative_resolved_mode"),
+        "mlx_speculative_resolved_draft_model": config.get("mlx_speculative_resolved_draft_model"),
+        "mlx_speculative_resolution_reason": config.get("mlx_speculative_resolution_reason"),
+    }
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -471,6 +489,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
+            load_kwargs.update(_mlx_speculative_load_kwargs(backend, config))
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
@@ -526,6 +545,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_kv_quant_note",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
+                        "mlx_speculative_mode_requested",
+                        "mlx_draft_model_requested",
+                        "mlx_draft_block_size_requested",
+                        "mlx_speculative_effective_mode",
+                        "mlx_speculative_effective_draft_model",
+                        "mlx_speculative_reason",
                     )
                     if k in _entry
                 }

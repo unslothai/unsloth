@@ -17,6 +17,11 @@
  *
  * The structural test at the bottom is the one that lasts: it fails when a field is added
  * to `PerModelConfig` without being classified here.
+ * `residentRuntimeMatchesConfig` across every accelerator, crossed with every setting a
+ * remembered config can pin. Both directions per field rather than sampling: a wrong FALSE
+ * costs one reload (#8893), a wrong TRUE strands the user on a differently invoked server
+ * with the panel rolled back. Accelerators differ in which GPU fields they report at all,
+ * and "the status does not carry this field" must never read as agreement.
  */
 
 import assert from "node:assert/strict";

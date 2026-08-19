@@ -5,12 +5,14 @@ Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
 instead of torch/transformers for model loading and generation.
 """
 
+import inspect
+import json
 import os
 import re
 import sys
 import threading
 from contextlib import contextmanager
-from typing import Optional, Generator
+from typing import Any, Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
@@ -440,6 +442,90 @@ def _mlx_finish_reason(response, stop_ids, generated_n, max_tokens):
         return "stop"
     token = getattr(response, "token", None)
     return "stop" if token is not None and token in tuple(stop_ids) else "length"
+
+
+# --- MLX speculative preflight -------------------------------------------------------
+# A shim, structurally gated so it only touches the layout it corrects, then a validator
+# that runs on every pair and fails the load rather than repairing it.
+
+
+def materialize_mtp_masked_embedding(draft_model: Any) -> int:
+    """Materialize the packed Gemma assistant head used by MaskedEmbedder.
+
+    mlx-vlm's ordered-embedding head indexes ``embed_tokens.weight`` as a dense
+    ``[vocab, hidden]`` table. MXFP4 stores it packed as uint32, so indexing it
+    directly produces the wrong last dimension. Return the dense bytes owned by
+    this adapter; unaffected assistants are a no-op.
+    """
+    config = getattr(draft_model, "config", None)
+    masked = getattr(draft_model, "masked_embedding", None)
+    if not bool(getattr(config, "use_ordered_embeddings", False)) or masked is None:
+        return 0
+    inner = getattr(draft_model, "model", None)
+    embed = getattr(inner, "embed_tokens", None)
+    weight = getattr(embed, "weight", None)
+    text_config = getattr(config, "text_config", None)
+    hidden_size = int(getattr(text_config, "hidden_size", 0) or 0)
+    vocab_size = int(getattr(text_config, "vocab_size", 0) or 0)
+    shape = tuple(getattr(weight, "shape", ()))
+    if hidden_size <= 0 or vocab_size <= 0 or len(shape) != 2:
+        raise RuntimeError("mtp_embedding_adapter_unsupported")
+    if shape == (vocab_size, hidden_size):
+        return 0
+    required = ("scales", "group_size", "bits", "mode")
+    if (
+        any(not hasattr(embed, name) for name in required)
+        or getattr(embed, "mode", None) != "mxfp4"
+    ):
+        raise RuntimeError("mtp_embedding_adapter_unsupported")
+
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    dense = mx.dequantize(
+        weight,
+        embed.scales,
+        getattr(embed, "biases", None),
+        group_size = embed.group_size,
+        bits = embed.bits,
+        mode = embed.mode,
+    )
+    if tuple(dense.shape) != (vocab_size, hidden_size):
+        raise RuntimeError("mtp_embedding_adapter_shape_mismatch")
+    mx.eval(dense)
+    dense_embed = nn.Embedding(vocab_size, hidden_size)
+    dense_embed.weight = dense
+    inner.embed_tokens = dense_embed
+    return int(dense.nbytes)
+
+
+def validate_speculative_target_contract(target_model, draft_model) -> None:
+    """Fail before publication when a loaded pair lacks required runtime hooks.
+
+    Resets the drafter against the target as its last step, so a pair that passes is
+    left ready to generate rather than merely checked.
+    """
+    lm = getattr(target_model, "language_model", target_model)
+    if not callable(getattr(lm, "rollback_speculative_cache", None)):
+        raise RuntimeError("mlx_speculative_target_rollback_missing")
+
+    try:
+        parameters = inspect.signature(lm.__call__).parameters
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("mlx_speculative_target_signature_unavailable") from exc
+    accepts = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    ) or all(name in parameters for name in ("return_hidden", "return_shared_kv"))
+    if not accepts:
+        raise RuntimeError("mlx_speculative_target_capture_missing")
+
+    reset = getattr(draft_model, "reset", None)
+    if not callable(reset):
+        raise RuntimeError("mlx_speculative_drafter_reset_missing")
+    reset(target_model)
+
+
+# --- end MLX speculative preflight ---------------------------------------------------
 
 
 def _build_generation_stats(
@@ -1470,6 +1556,11 @@ class MLXInferenceBackend:
         self._tokenizer = None
         self._processor = None
         self._is_vlm = False
+        self._draft_model = None
+        self._draft_kind = None
+        self._draft_repo_id = None
+        self._draft_block_size = None
+        self._draft_materialization_bytes = 0
         self._config = {}
         self._distributed_group = None
         self._distributed_rank = 0
@@ -1667,6 +1758,54 @@ class MLXInferenceBackend:
         logger.info("MLX KV cache limited to %d tokens", int(served))
         return quant, int(served), True
 
+    def _clear_speculative_state(self):
+        self._draft_model = None
+        self._draft_kind = None
+        self._draft_repo_id = None
+        self._draft_block_size = None
+        self._draft_materialization_bytes = 0
+
+    def _load_speculative_drafter(
+        self,
+        mode,
+        repo_id,
+        block_size,
+        target_id = None,
+    ):
+        from mlx_vlm.speculative.drafters import (
+            load_drafter,
+            validate_drafter_compatibility,
+        )
+
+        from core.inference.mlx_speculative import (
+            BUILTIN_MTP_ID,
+            materialize_native_mtp,
+            mlx_speculative_snapshot_path,
+            mlx_target_snapshot_path,
+        )
+
+        if repo_id == BUILTIN_MTP_ID:
+            if mode != "mtp" or not target_id:
+                raise ValueError("mlx_builtin_mtp_target_required")
+            path = materialize_native_mtp(mlx_target_snapshot_path(target_id))
+        else:
+            path = (
+                mlx_speculative_snapshot_path(repo_id, target_id, mode)
+                if target_id
+                else mlx_speculative_snapshot_path(repo_id)
+            )
+        draft_model, resolved_kind = load_drafter(str(path), kind = mode)
+        if resolved_kind != mode:
+            raise RuntimeError("mlx_speculative_kind_mismatch")
+        materialized = materialize_mtp_masked_embedding(draft_model) if mode == "mtp" else 0
+        validate_drafter_compatibility(self._model, draft_model, resolved_kind)
+        validate_speculative_target_contract(self._model, draft_model)
+        self._draft_model = draft_model
+        self._draft_kind = resolved_kind
+        self._draft_repo_id = repo_id
+        self._draft_block_size = block_size
+        self._draft_materialization_bytes = materialized
+
     def load_model(
         self,
         config,
@@ -1680,6 +1819,12 @@ class MLXInferenceBackend:
         distributed_group = None,
         kv_bits = None,
         chat_template_override = None,
+        mlx_speculative_mode = "off",
+        mlx_draft_model = None,
+        mlx_draft_block_size = None,
+        mlx_speculative_resolved_mode = None,
+        mlx_speculative_resolved_draft_model = None,
+        mlx_speculative_resolution_reason = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -1687,6 +1832,16 @@ class MLXInferenceBackend:
         # model's repo template during generation.
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
+        from core.inference.mlx_speculative import (
+            mlx_speculative_load_resolution,
+            mlx_speculative_request_identity,
+        )
+
+        # Recording what was asked rather than what Off implies keeps an earlier drafter
+        # through a load with speculation off; reuse compares through the same identity.
+        requested_speculative_mode, _, _ = mlx_speculative_request_identity(
+            mlx_speculative_mode, mlx_draft_model, mlx_draft_block_size
+        )
         is_vision = getattr(config, "is_vision", False)
         distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
         is_distributed = distributed_group is not None and distributed_size > 1
@@ -1714,6 +1869,26 @@ class MLXInferenceBackend:
         self._configure_memory_limits()
 
         is_lora = getattr(config, "is_lora", False)
+        resolution = mlx_speculative_load_resolution(
+            model_name,
+            mlx_speculative_mode,
+            mlx_draft_model,
+            resolved_mode = mlx_speculative_resolved_mode,
+            resolved_draft_model = mlx_speculative_resolved_draft_model,
+            resolved_reason = mlx_speculative_resolution_reason,
+            is_vision = is_vision,
+            is_lora = is_lora,
+            is_distributed = is_distributed,
+        )
+        if resolution.method != "off":
+            if not is_vision:
+                raise ValueError("mlx_vlm_target_required")
+            if is_lora:
+                raise ValueError("mlx_speculative_lora_unsupported")
+            if is_distributed:
+                raise ValueError("mlx_speculative_distributed_unsupported")
+            if not resolution.draft_model:
+                raise ValueError("checkpoint_required")
 
         logger.info(
             "Loading %s via %s (is_lora=%s, distributed=%s, rank=%s/%s, mode=%s)",
@@ -1763,6 +1938,7 @@ class MLXInferenceBackend:
             model_name,
             **load_kwargs,
         )
+        self._clear_speculative_state()
 
         if is_vision:
             processor = tokenizer_or_processor
@@ -1836,8 +2012,7 @@ class MLXInferenceBackend:
                 self._template_override["reason"],
             )
 
-        self.active_model_name = model_name
-        self.models[model_name] = {
+        model_record = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
             # Per-model trust_remote_code reused by the native-template reload (matches transformers).
@@ -1873,7 +2048,43 @@ class MLXInferenceBackend:
             "mlx_kv_quant_note": self._kv_quant["note"],
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
+            "mlx_speculative_mode_requested": requested_speculative_mode,
+            "mlx_draft_model_requested": mlx_draft_model,
+            "mlx_draft_block_size_requested": mlx_draft_block_size,
+            "mlx_speculative_effective_mode": "off",
+            "mlx_speculative_effective_draft_model": None,
+            "mlx_speculative_reason": resolution.reason,
+            "mlx_speculative_materialization_bytes": 0,
         }
+        if resolution.method != "off":
+            try:
+                self._load_speculative_drafter(
+                    resolution.method,
+                    resolution.draft_model,
+                    mlx_draft_block_size,
+                    model_name,
+                )
+            except Exception:
+                self._model = None
+                self._tokenizer = None
+                self._processor = None
+                self._is_vlm = False
+                self._clear_speculative_state()
+                del model, tokenizer_or_processor
+                import gc
+
+                gc.collect()
+                _drain_generation_streams(mx)
+                mx.clear_cache()
+                raise
+            model_record.update(
+                mlx_speculative_effective_mode = self._draft_kind,
+                mlx_speculative_effective_draft_model = self._draft_repo_id,
+                mlx_speculative_materialization_bytes = self._draft_materialization_bytes,
+            )
+
+        self.active_model_name = model_name
+        self.models[model_name] = model_record
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
@@ -1981,6 +2192,9 @@ class MLXInferenceBackend:
         self._model = None
         self._tokenizer = None
         self._processor = None
+        self._is_vlm = False
+        self._clear_speculative_state()
+        self.last_generation_stats = None
         self._distributed_group = None
         self._distributed_rank = 0
         self._distributed_world_size = 1
@@ -2643,6 +2857,12 @@ class MLXInferenceBackend:
             )
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
+        if self._draft_model is not None:
+            vlm_kwargs.update(
+                draft_model = self._draft_model,
+                draft_kind = self._draft_kind,
+                draft_block_size = self._draft_block_size,
+            )
 
         def _stream_vlm_snapshots():
             nonlocal stopped
@@ -2652,7 +2872,9 @@ class MLXInferenceBackend:
             # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
             # wrapper tree is restored on completion, cancellation, or close.
             with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+                self.last_generation_stats = None
                 final_response = None
+                completed = False
                 try:
                     # Emit any prefilled <think> block before the first token so the
                     # UI renders it during prefill, matching _generate_text. Done
@@ -2686,6 +2908,7 @@ class MLXInferenceBackend:
                     # As in _generate_text: what was withheld is ordinary text now.
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled
+                    completed = cancel_event is None or not cancel_event.is_set()
                 finally:
                     # mlx_vlm exposes the same stats fields as mlx_lm, minus a
                     # finish reason, so that one is derived.
@@ -2704,6 +2927,15 @@ class MLXInferenceBackend:
                                 max_new_tokens,
                             ),
                         )
+                    if self._draft_model is not None and not completed:
+                        try:
+                            self._draft_model.reset(self._model)
+                        except Exception as exc:
+                            logger.warning("MLX speculative request cleanup failed: %s", exc)
+                        import mlx.core as mx
+
+                        _drain_generation_streams(mx)
+                        mx.clear_cache()
 
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(),
