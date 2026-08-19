@@ -1,20 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { TrainingViewData } from "@/features/training";
-import { getTrainingRun, onTrainingRunUpdated } from "@/features/training";
-import type { TrainingRunDetailResponse } from "@/features/training";
-import { parseBackendTrainingMethod } from "@/features/training/lib/training-methods";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  type TrainingRunDetailResponse,
+  type TrainingViewData,
+  getTrainingRun,
+  onTrainingRunUpdated,
+  parseBackendTrainingMethod,
+  useTrainingActions,
+} from "@/features/training";
+import { translate, useT } from "@/i18n";
+import { PlayIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
-import { translate, useT } from "@/i18n";
+import { mapRunConfigToOverride } from "./sections/run-config-override";
 
 type StudioT = ReturnType<typeof useT>;
 
 interface HistoricalTrainingViewProps {
   runId: string;
+  onResumeStarted?: () => void;
 }
+
+type HistoricalRunResult = {
+  runId: string;
+  detail: TrainingRunDetailResponse | null;
+  error: string | null;
+};
 
 function mapToViewData(
   detail: TrainingRunDetailResponse,
@@ -74,10 +90,12 @@ function mapToViewData(
           ? t("studio.history.message.stopped")
           : run.status === "running"
             ? t("studio.history.message.running")
-            : run.error_message ?? t("studio.history.message.errored"),
+            : (run.error_message ?? t("studio.history.message.errored")),
     error: run.status === "error" ? run.error_message : null,
+    warnings: [],
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
+    projectName: run.project_name,
     trainingMethod: parseBackendTrainingMethod(
       detail.config?.training_type,
       detail.config?.load_in_4bit,
@@ -91,40 +109,69 @@ function mapToViewData(
 
 export function HistoricalTrainingView({
   runId,
+  onResumeStarted,
 }: HistoricalTrainingViewProps): ReactElement {
   const t = useT();
-  const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<HistoricalRunResult | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
+    useTrainingActions();
+  const currentResult = result?.runId === runId ? result : null;
+  const detail = currentResult?.detail ?? null;
+  const error = currentResult?.error ?? null;
 
-  // Derive loading from detail/error; no separate state.
-  const loading = detail === null && error === null;
+  const handleResume = async () => {
+    setResuming(true);
+    try {
+      const ok = await resumeTrainingRunFromHistory(runId);
+      if (ok) onResumeStarted?.();
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  const loading = currentResult === null;
 
   useEffect(() => {
     const controller = new AbortController();
     getTrainingRun(runId, controller.signal)
-      .then((result) => {
-        setDetail(result);
+      .then((detail) => {
+        setResult({
+          runId,
+          detail,
+          error: null,
+        });
       })
       .catch((err) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(
-          err instanceof Error
-            ? err.message
-            : translate("studio.history.loadingRun"),
-        );
+        setResult({
+          runId,
+          detail: null,
+          error:
+            err instanceof Error
+              ? err.message
+              : translate("studio.history.loadingRun"),
+        });
       });
     return () => {
       controller.abort();
-      // Reset on runId change so loading derives correctly for the next fetch.
-      setDetail(null);
-      setError(null);
     };
   }, [runId]);
 
   useEffect(() => {
     const offUpdated = onTrainingRunUpdated((updated) => {
       if (updated.id !== runId) return;
-      setDetail((prev) => (prev ? { ...prev, run: updated } : prev));
+      setResult((previous) =>
+        previous?.runId === runId && previous.detail
+          ? {
+              ...previous,
+              detail: {
+                ...previous.detail,
+                run: updated,
+              },
+            }
+          : previous,
+      );
     });
     return offUpdated;
   }, [runId]);
@@ -146,31 +193,36 @@ export function HistoricalTrainingView({
   }
 
   const viewData = mapToViewData(detail, t);
-  const configOverride = detail.config
-    ? {
-        epochs: detail.config.num_epochs as number | undefined,
-        batchSize: detail.config.batch_size as number | undefined,
-        learningRate: detail.config.learning_rate as string | undefined,
-        maxSteps: detail.config.max_steps as number | undefined,
-        contextLength: detail.config.max_seq_length as number | undefined,
-        warmupSteps: detail.config.warmup_steps as number | undefined,
-        optimizerType: detail.config.optim as string | undefined,
-        loraRank: detail.config.lora_r as number | undefined,
-        loraAlpha: detail.config.lora_alpha as number | undefined,
-        loraDropout: detail.config.lora_dropout as number | undefined,
-        loraVariant: detail.config.use_rslora
-          ? "rslora"
-          : detail.config.use_loftq
-            ? "loftq"
-            : "lora",
-      }
-    : undefined;
+  const configOverride = mapRunConfigToOverride(detail.config);
 
   return (
     <div className="flex flex-col gap-6">
+      {detail.run.can_resume && (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={startBlocked || resuming}
+            onClick={() => void handleResume()}
+          >
+            {resuming ? (
+              <Spinner className="size-3.5" />
+            ) : (
+              <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
+            )}
+            {stopRequested
+              ? t("studio.training.stopping")
+              : resuming
+                ? t("studio.history.resuming")
+                : t("studio.history.resumeTraining")}
+          </Button>
+        </div>
+      )}
       <ProgressSection
         data={viewData}
-        isHistorical
+        isHistorical={true}
         configOverride={configOverride}
       />
       <ChartsSection

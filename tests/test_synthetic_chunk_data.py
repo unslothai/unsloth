@@ -104,10 +104,71 @@ def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
         os.unlink(path)
 
 
+def test_chunk_data_uninitialized_error_names_real_class():
+    # Without max_seq_length the guard tells the user which method to call first.
+    # The message must name the real class (SyntheticDataKit) so copying it works;
+    # a misspelling would raise NameError when the user follows it verbatim.
+    kit = SyntheticDataKit.__new__(SyntheticDataKit)
+    kit.tokenizer = _MockTokenizer()  # max_seq_length intentionally unset
+    with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+        f.write("word " * 50)
+        path = f.name
+    try:
+        try:
+            kit.chunk_data(filename = path)
+            raise AssertionError("expected RuntimeError when max_seq_length is unset")
+        except RuntimeError as e:
+            msg = str(e)
+            assert (
+                "SyntheticDataKit.from_pretrained" in msg
+            ), f"error must name SyntheticDataKit.from_pretrained, got: {msg}"
+            assert (
+                "SynthetidDataKit" not in msg
+            ), f"error must not misspell the class name, got: {msg}"
+    finally:
+        os.unlink(path)
+
+
+def test_chunk_data_chunks_do_not_exceed_max_tokens():
+    # Every chunk must fit within max_tokens. The old multi-chunk path emitted one
+    # fewer, oversized chunk, and a doc just over the threshold came back unsplit.
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
+    max_tokens = 2048 - 760 * 2 - 128  # 400
+
+    for n_words in (500, 2000):
+        out, contents = _chunk("word " * n_words, kit = kit)
+        assert (
+            len(out) >= 2
+        ), f"a {n_words}-token doc (> max_tokens={max_tokens}) must be split, got {len(out)}"
+        for content in contents:
+            n_tokens = len(content.split())
+            assert (
+                n_tokens <= max_tokens
+            ), f"chunk has {n_tokens} tokens, exceeding max_tokens={max_tokens}"
+
+
+def test_chunk_data_does_not_over_split():
+    # n_chunks must be the minimum count: ceil((length - overlap) / stride), not
+    # ceil(length / stride) which over-splits just past a stride multiple. At 673
+    # tokens (max_tokens=400, overlap=64) the tight count gives 2 chunks (~369+368).
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
+    max_tokens = 2048 - 760 * 2 - 128  # 400
+    out, contents = _chunk("word " * 673, kit = kit)
+    assert len(out) == 2, f"673-token doc should yield the minimal 2 chunks, got {len(out)}"
+    for content in contents:
+        n_tokens = len(content.split())
+        assert (
+            n_tokens <= max_tokens
+        ), f"chunk has {n_tokens} tokens, exceeding max_tokens={max_tokens}"
+
+
 if __name__ == "__main__":
     test_chunk_data_keeps_single_chunk_document()
     test_chunk_data_still_splits_long_document()
     test_chunk_data_empty_document_yields_no_chunks()
     test_chunk_data_short_document_is_not_split_into_fragments()
     test_chunk_data_rejects_overlap_not_smaller_than_chunk()
+    test_chunk_data_uninitialized_error_names_real_class()
+    test_chunk_data_chunks_do_not_exceed_max_tokens()
+    test_chunk_data_does_not_over_split()
     print("OK")

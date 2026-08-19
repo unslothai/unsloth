@@ -11,6 +11,19 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+def _quiet_bar_kwargs() -> dict:
+    """Send our own conversion bars to a null stream while the log is quiet.
+
+    They still count (the UI status poller reads tqdm._instances), they just do not
+    write carriage-return fragments beside the worker's structured records.
+    """
+    try:
+        from loggers.config import quiet_bar_kwargs
+        return quiet_bar_kwargs()
+    except Exception:  # noqa: BLE001 - a bar is never worth failing a conversion for
+        return {}
+
+
 def standardize_chat_format(
     dataset,
     tokenizer = None,
@@ -406,10 +419,13 @@ def convert_to_vlm_format(
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
+                from utils.hf_cache_settings import active_hf_hub_cache
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    cache_dir = active_hf_hub_cache(),
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
@@ -608,7 +624,13 @@ def convert_to_vlm_format(
             _notify(progress_msg)
     else:
         # Sequential conversion for local/embedded images (no I/O bottleneck)
-        pbar = tqdm(dataset, total = total, desc = "Converting VLM samples", unit = "sample")
+        pbar = tqdm(
+            dataset,
+            total = total,
+            desc = "Converting VLM samples",
+            unit = "sample",
+            **_quiet_bar_kwargs(),
+        )
         for sample in pbar:
             try:
                 converted_list.append(_convert_single_sample(sample))
@@ -774,10 +796,13 @@ def convert_sharegpt_with_images_to_vlm_format(
                     return Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
+                from utils.hf_cache_settings import active_hf_hub_cache
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    cache_dir = active_hf_hub_cache(),
                 )
                 return Image.open(local_path).convert("RGB")
             else:
@@ -826,7 +851,13 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    pbar = tqdm(dataset, total = total, desc = "Converting ShareGPT+image", unit = "sample")
+    pbar = tqdm(
+        dataset,
+        total = total,
+        desc = "Converting ShareGPT+image",
+        unit = "sample",
+        **_quiet_bar_kwargs(),
+    )
     for sample in pbar:
         try:
             converted_list.append(_convert_single_sample(sample))

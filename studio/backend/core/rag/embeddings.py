@@ -5,22 +5,33 @@
 ``config.EMBED_BACKEND`` (``auto`` picks by hardware): ``sentence-transformers``
 (torch) or ``llama-server`` (GGUF, no torch).
 
+Either way the embedder stays off the GPU unless asked: this one runs in the backend
+process, where a CUDA context outlives every unload, and the other runs in a child.
+See ``_device``.
+
 Backends produce different vectors, so switching requires rebuilding the index. We
 degrade to llama.cpp rather than crash when ST breaks on a machine: an init-time
 probe falls back before any vector is produced (so spaces can't mix), and a
 runtime ``encode`` failure swaps the process to llama-server for the rest of its
 life (KBs already embedded with ST should then be reindexed).
+
+Torch driver faults bypass Python handlers, so ``_load_device`` probes allocation
+in a child and falls back to CPU without changing the embedding space.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Callable
 
 from utils.hardware.hardware import DeviceType, get_device
+from utils.transformers_dtype import dtype_kwargs
+from utils.utils import hf_env_offline
 
 from . import config
 
@@ -36,14 +47,74 @@ _lock = threading.Lock()
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
+# The backend that served this thread's most recent encode. The process embedder can
+# swap between an encode returning and the caller asking what produced the vectors,
+# and the answer has to be the backend that was actually used. See
+# ``encode_with_identity``.
+_served_by = threading.local()
 
 
-# Studio device -> torch device string. Apple has no torch device -> CPU.
+# Unsloth device -> torch device string. Apple has no torch device -> CPU.
 _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 
 def _device() -> str:
+    """Torch device for the in-process embedder. CPU unless asked otherwise.
+
+    Defaulting a GPU machine to CPU is deliberate. This embedder runs inside the
+    backend process, and the first CUDA allocation there creates a primary context
+    that is never returned while the process lives: measured at 712 MiB on a B200,
+    against 74 MiB for bge-small's own weights. So ingesting one document used to
+    cost most of a gigabyte of VRAM for the rest of the session, on a machine where
+    the user had loaded no model at all, and no amount of unloading gets it back --
+    ``del model; torch.cuda.empty_cache()`` returns none of it.
+
+    The trade is real but small at the sizes this runs at. bge-small is a 33M parameter
+    BERT: on the same host, one 128-token chunk takes 18.7ms on CPU against 5.2ms on
+    CUDA, which is noise next to parsing and chunking the document it came from. Bulk
+    indexing is where it shows, at batch 64: 445 chunks/s on CPU against 3174/s on CUDA.
+    ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+
+    This reads the same setting as the llama-server backend but resolves ``auto``
+    differently, which is intended: that backend offloads inside its own subprocess,
+    where the context dies with the child and costs the backend nothing.
+    """
+    if config.embed_device_preference() != "gpu":
+        return "cpu"
+    # Still a table lookup, so asking for a GPU on a host without one, or on Apple
+    # where this backend has no torch device, lands on CPU rather than on a device
+    # string torch cannot open.
     return _TORCH_DEVICE.get(get_device(), "cpu")
+
+
+class TorchDeviceUnusableError(RuntimeError):
+    """Raised when torch cannot allocate safely on the accelerator or CPU."""
+
+
+def _load_device() -> str:
+    """Choose a device after probing for fatal torch driver failures in a child.
+
+    Fall back to CPU to preserve the embedding space. Raise only if CPU also
+    crashes, allowing the caller to select the GGUF backend."""
+    device = _device()
+    if device == "cpu":
+        return device
+
+    from utils.torch_device_probe import device_can_allocate
+
+    if device_can_allocate(device):
+        return device
+    if device_can_allocate("cpu"):
+        logger.warning(
+            "torch cannot allocate on %s without crashing; loading the embedding model "
+            "on CPU instead. This install's torch build does not match this machine.",
+            device,
+        )
+        return "cpu"
+    raise TorchDeviceUnusableError(
+        f"torch crashes when allocating on {device}; this install's torch build does "
+        "not match this machine"
+    )
 
 
 _torchao_stub_done = False
@@ -63,21 +134,328 @@ def _install_torchao_stub_once() -> None:
     install_torchao_windows_rocm_stub()
 
 
+class UnsafeEmbeddingModelError(RuntimeError):
+    """Raised when the embedding model repo is flagged unsafe. A distinct type so the
+    llama-server fallback paths re-raise it instead of masking a security block as a
+    routine ST failure."""
+
+
+def _ambient_hf_token() -> str | None:
+    """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
+    the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    try:
+        from huggingface_hub import get_token
+        return get_token()
+    except Exception:
+        return None
+
+
+def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
+    """The module directories a SentenceTransformer load reads weights from, taken from
+    the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
+    ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
+    security scan: a flagged pickle directly under one must block. Returns () on any
+    failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
+    """
+    try:
+        import json
+
+        from utils.paths import is_local_path
+
+        if is_local_path(name):
+            from pathlib import Path
+            from utils.paths import normalize_path
+
+            path = Path(normalize_path(name)).expanduser() / "modules.json"
+            if not path.is_file():
+                return ()
+            data = json.loads(path.read_text(encoding = "utf-8-sig"))
+        else:
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.utils import EntryNotFoundError
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            try:
+                local = hf_hub_download(
+                    name,
+                    "modules.json",
+                    token = token or None,
+                    cache_dir = active_hf_hub_cache(),
+                )
+            except EntryNotFoundError:
+                return ()
+            data = json.loads(open(local, encoding = "utf-8-sig").read())
+        subdirs = []
+        for module in data or ():
+            sub = str((module or {}).get("path", "")).strip().strip("/")
+            if sub:
+                subdirs.append(sub)
+        return tuple(dict.fromkeys(subdirs))
+    except Exception:
+        return ()
+
+
+def _guard_model_security(name: str, local_only: bool = False) -> None:
+    """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
+    SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
+    /settings gate (a name can also arrive via env/default); local paths and unreachable
+    scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
+
+    ``local_only`` (offline) inspects the local cache; subdir probes are skipped (they'd hit the
+    network and hang, and the offline gate walks the whole snapshot anyway).
+    """
+    try:
+        from utils.security import evaluate_file_security, security_load_subdirs
+
+        token = _ambient_hf_token()
+        if local_only:
+            load_subdirs = ()
+        else:
+            # Union audio-model load roots with ST module dirs so a flagged pickle under a
+            # Transformer module dir blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
+                )
+            )
+        blocked = evaluate_file_security(
+            name, hf_token = token, load_subdirs = load_subdirs, local_only_load = local_only
+        ).blocked
+    except Exception:
+        return
+    if blocked:
+        reason = (
+            "has cached pickle weights that cannot be security-scanned offline and no "
+            "safetensors alternative"
+            if local_only
+            else "is flagged as unsafe by Hugging Face's security scan"
+        )
+        raise UnsafeEmbeddingModelError(
+            f"Embedding model {name!r} {reason}; refusing to load. "
+            "Set a different RAG embedding model."
+        )
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _CaptureLoadReport(logging.Filter):
+    """Swallow transformers' multi-line "<Model> LOAD REPORT" table, keeping the text.
+
+    transformers >= 5 emits the report through ``logger.warning`` with embedded ANSI
+    colour codes, so it lands in the server log as ~7 unstructured lines that break
+    every JSON consumer. It fires on every boot for the RAG embedder because
+    bge-small-en-v1.5 ships a legacy ``embeddings.position_ids`` key that the current
+    BertModel does not expect, which is benign and identical every time.
+
+    Nothing is lost: the caller re-emits the report (see ``_quiet_transformers_load``)
+    at debug when it only reports that known legacy key, and at warning when it
+    mentions anything that could change the model's behaviour.
+    """
+
+    _SERIOUS = ("MISSING", "MISMATCH", "CONVERSION")
+    # The only UNEXPECTED key worth downgrading is the legacy buffer every BERT-era
+    # sentence-transformer ships. Any other discarded weight can genuinely change
+    # retrieval quality, so it stays a warning. Matched on the whole key, not as a
+    # substring: "encoder.position_ids_projection.weight" is a real discarded weight.
+    _KNOWN_BENIGN_UNEXPECTED = "embeddings.position_ids"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reports: list[str] = []
+        # These filters sit on process-global loggers, so a concurrent load on another
+        # thread would otherwise have its report swallowed and attributed here. Only
+        # capture what the thread that opened the context emits.
+        self.thread_id = threading.get_ident()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if threading.get_ident() != self.thread_id:
+            return True
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 - a broken record must not break loading
+            return True
+        if "LOAD REPORT" not in msg:
+            return True
+        self.reports.append(msg)
+        return False
+
+    def is_serious(self) -> bool:
+        for report in self.reports:
+            if any(tag in report for tag in self._SERIOUS):
+                return True
+            # Row by row over the table only. transformers appends a "Notes:" section
+            # explaining each status ("- UNEXPECTED: can be ignored when loading from
+            # a different task/architecture"), and reading that as a key row would make
+            # every unexpected report serious, including the benign one.
+            table = report.split("Notes:", 1)[0]
+            for row in table.splitlines():
+                if "UNEXPECTED" not in row:
+                    continue
+                key = _ANSI_RE.sub("", row).split("|", 1)[0].strip()
+                if key != self._KNOWN_BENIGN_UNEXPECTED and not key.endswith(
+                    "." + self._KNOWN_BENIGN_UNEXPECTED
+                ):
+                    return True
+        return False
+
+
+_LOAD_REPORT_LOGGERS = (
+    "transformers.utils.loading_report",
+    "transformers.modeling_utils",
+    # An adapter-backed embedding model reports through the PEFT integration's own
+    # logger, which is not a descendant of either of the above.
+    "transformers.integrations.peft",
+)
+
+
+@contextmanager
+def _quiet_transformers_load():
+    """Keep a transformers weight load from writing raw ANSI/tqdm output to stdout.
+
+    Scoped to the embedder load only, so a user-visible model load keeps its normal
+    progress bar and report. Restores the progress-bar setting exactly as found, so
+    a caller that had already disabled bars stays disabled.
+    """
+    capture = _CaptureLoadReport()
+    attached = []
+    for name in _LOAD_REPORT_LOGGERS:
+        log = logging.getLogger(name)
+        log.addFilter(capture)
+        attached.append(log)
+
+    # The weight-load bar is transformers.utils.logging.tqdm, so disable_progress_bar()
+    # reaches it. The "is it on right now" probe has been spelled both ways across
+    # versions (is_progress_bar_enabled in 4.x/5.x, are_progress_bars_disabled in
+    # some builds), so accept either and skip the restore when neither exists rather
+    # than re-enabling a bar the caller had deliberately turned off.
+    # transformers' enable_progress_bar() also calls the Hub's enable_progress_bars(),
+    # so restoring the transformers flag would clobber a Hub-only disable that someone
+    # else installed (unsloth does exactly that in patch_ipykernel_hf_xet for the
+    # broken hf-xet/ipykernel pair). Snapshot the Hub state separately and put it back.
+    hub_bars_off = None
+    try:
+        from huggingface_hub.utils import are_progress_bars_disabled
+        hub_bars_off = bool(are_progress_bars_disabled())
+    except Exception:  # noqa: BLE001 - no Hub, or a version without the probe
+        hub_bars_off = None
+
+    reenable = False
+    hf_logging = None
+    try:
+        from transformers.utils import logging as hf_logging
+        if hasattr(hf_logging, "is_progress_bar_enabled"):
+            was_on = bool(hf_logging.is_progress_bar_enabled())
+        elif hasattr(hf_logging, "are_progress_bars_disabled"):
+            was_on = not bool(hf_logging.are_progress_bars_disabled())
+        else:
+            was_on = False
+        if was_on:
+            hf_logging.disable_progress_bar()
+            reenable = True
+    except Exception:  # noqa: BLE001 - older/absent transformers: nothing to disable
+        hf_logging = None
+
+    try:
+        yield capture
+    finally:
+        for log in attached:
+            log.removeFilter(capture)
+        if reenable and hf_logging is not None:
+            try:
+                hf_logging.enable_progress_bar()
+            except Exception:  # noqa: BLE001
+                pass
+            if hub_bars_off:
+                try:
+                    from huggingface_hub.utils import disable_progress_bars
+                    disable_progress_bars()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+def _one_line(text: str) -> str:
+    """The report as a single plain-text line.
+
+    This module logs through the stdlib logger, not structlog, so re-emitting the
+    captured table verbatim would put the ANSI escapes and embedded newlines straight
+    back into the server log, which is the thing being fixed.
+    """
+    plain = _ANSI_RE.sub("", text)
+    return " | ".join(part.strip() for part in plain.splitlines() if part.strip())
+
+
+def _emit_load_reports(report) -> None:
+    """Re-emit what the filter swallowed, as one record on our own logger: debug for
+    the expected legacy-key notice, warning for anything that could change the
+    embeddings. Drains the list so a retry does not report the same lines twice."""
+    serious = report.is_serious()
+    for text in report.reports:
+        if serious:
+            logger.warning("embedding model load report: %s", _one_line(text))
+        else:
+            logger.debug("embedding model load report: %s", _one_line(text))
+    report.reports.clear()
+
+
+def _st_accepts_local_files_only(st_cls) -> bool:
+    """Whether this SentenceTransformer version accepts local_files_only; passing it to an
+    older constructor raises, so gate on the signature."""
+    try:
+        import inspect
+        return "local_files_only" in inspect.signature(st_cls.__init__).parameters
+    except Exception:
+        return False
+
+
 def _get(model_name: str | None = None):
-    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
-    for a ~1.5x speedup at negligible accuracy loss."""
+    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
+    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
     global _model, _name
-    name = model_name or config.EMBEDDING_MODEL
+    name = model_name or config.effective_embedding_model()
+    # Capture offline state once so the gate and the load agree (no window where the gate is
+    # skipped as offline but the constructor then reaches the network).
+    local_only = hf_env_offline()
     with _lock:
         if _model is None or _name != name:
+            # Probe before loading sentence-transformers on the selected device.
+            device = _load_device()
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
+            from utils.hf_cache_settings import active_hf_hub_cache
 
-            device = _device()
             logger.info("loading embedding model %s on %s", name, device)
-            _model = SentenceTransformer(
-                name, device = device, model_kwargs = {"torch_dtype": "float16"}
+            _guard_model_security(name, local_only)
+            st_kwargs = dict(
+                device = device,
+                cache_folder = active_hf_hub_cache(),
+                # Keyed on the device we actually load on, not on whether we degraded
+                # onto it. fp16 BERT on CPU is slow where it works at all, and several
+                # ops raise "not implemented for 'Half'" -- which _SentenceTransformers
+                # Backend.encode() catches and answers by swapping the whole process to
+                # llama-server, so getting this wrong fails as a silent backend change
+                # rather than as an error.
+                model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
+            load_target = name
+            if local_only:
+                from utils.utils import hf_cache_snapshot_dir
+                snapshot = hf_cache_snapshot_dir(name)
+                if snapshot is not None:
+                    # Load from the local snapshot dir: a local path never touches the Hub, so
+                    # this is offline-safe on ANY sentence-transformers version (even ones
+                    # predating local_files_only).
+                    load_target = str(snapshot)
+                elif _st_accepts_local_files_only(SentenceTransformer):
+                    st_kwargs["local_files_only"] = True
+            with _quiet_transformers_load() as report:
+                # The re-emit runs in finally: a load that raises after transformers
+                # wrote its report is exactly when a MISSING or MISMATCH line matters,
+                # and letting the exception skip the loop would swallow it.
+                try:
+                    _model = SentenceTransformer(load_target, **st_kwargs)
+                finally:
+                    _emit_load_reports(report)
             _name = name
         return _model
 
@@ -159,12 +537,15 @@ class _SentenceTransformersBackend:
     ):
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
+        except UnsafeEmbeddingModelError:
+            raise  # a security block must hard-fail, not fall back to llama-server
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
             # ST loaded but this encode blew up; swap the process to the llama-server
             # embedder (so later encodes stay in one space) and retry.
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise
+            _served_by.backend = fallback
             return fallback.encode(texts, model_name = model_name, normalize = normalize)
 
     def token_counter(self, *, model_name = None):
@@ -191,9 +572,15 @@ _AUTO_ALIASES = frozenset({"auto", ""})
 def _resolve_auto() -> str:
     """Pick a backend for ``auto``: sentence-transformers when a CUDA/ROCm GPU is
     present (torch fp16 wins bulk indexing), else the torch-free GGUF llama-server
-    -- or ST if its binary is missing. GPU check is torch-free (nvidia-smi)."""
+    -- or ST if its binary is missing. The GPU check goes through an smi tool
+    (nvidia-smi, then amd-smi), so it costs no CUDA/HIP context unless neither
+    is installed."""
     from core.inference.llama_cpp import LlamaCppBackend
 
+    # Unfiltered probe on purpose: the winner here runs under PyTorch, so the
+    # ROCm arch gate (which asks what the installed llama.cpp prebuilt was built
+    # for, #7624) must not apply. A device that prebuilt lacks kernels for is
+    # usually still a perfectly good sentence-transformers device.
     if LlamaCppBackend._get_gpu_free_memory():
         return "sentence-transformers"
     if LlamaCppBackend._find_llama_server_binary():
@@ -222,6 +609,8 @@ def _build_st_backend_or_fallback():
     try:
         backend.warm(model_name = None)
         return backend
+    except UnsafeEmbeddingModelError:
+        raise  # a security block must hard-fail, not fall back to llama-server
     except Exception as st_err:  # noqa: BLE001 - any ST/torch import or load failure
         fallback = _try_make_llama_backend()
         if fallback is None:
@@ -290,6 +679,86 @@ def _reset_backend() -> None:
         _backend_key = None
 
 
+def active_backend_is_llama() -> bool:
+    """True when this process actually embeds via the llama-server (GGUF) backend.
+
+    Reflects the ACTUAL built backend once one exists: an ``auto`` install that
+    resolves to sentence-transformers but then falls back to llama-server at
+    runtime (``_build_st_backend_or_fallback`` on a torch/CUDA load failure, or
+    ``_switch_to_llama_fallback`` on an encode failure) loads only inert GGUF, so
+    callers gating on the ST pickle must see llama here. Before any backend is
+    built, defers to the resolver (``auto`` -> ``_resolve_auto()``, else the raw
+    key) exactly as a fresh process would. Never raises: a backend probe must not
+    block saving a model."""
+    try:
+        with _backend_lock:
+            backend = _backend
+        if backend is not None:
+            # A backend exists: report what it ACTUALLY is. A concrete
+            # sentence-transformers backend must return False even if the
+            # resolver would now pick llama, so its pickle stays gated. If the
+            # llama import fails we cannot be llama, so fall to the safe False.
+            try:
+                from .embed_llama_server import LlamaServerBackend
+            except Exception:  # noqa: BLE001 - llama plumbing import must never block
+                return False
+            return isinstance(backend, LlamaServerBackend)
+        raw = (config.EMBED_BACKEND or "auto").strip().lower()
+        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
+        return key in _LLAMA_ALIASES
+    except Exception:  # noqa: BLE001 - a backend probe must never block saving
+        return False
+
+
+def _identity(is_llama: bool, name: str) -> str:
+    if is_llama:
+        return config.embedding_identity(
+            "llama-server", name, gguf_repo = config.gguf_repo_for_embedding_model(name)
+        )
+    return config.embedding_identity("sentence-transformers", name)
+
+
+def embedding_identity(model_name: str | None = None) -> str:
+    """Identity of the vectors this process produces right now.
+
+    Recorded on every document, because the model name alone does not name the
+    embedding space: llama-server ignores the name and embeds through the GGUF
+    companion with its own pooling, and this process can switch to it at runtime. Two
+    spaces under one label is an index that answers with the wrong documents and says
+    nothing about it."""
+    return _identity(active_backend_is_llama(), model_name or config.effective_embedding_model())
+
+
+def _is_llama_backend(backend) -> bool:
+    """Whether a concrete backend object embeds through llama-server."""
+    try:
+        from .embed_llama_server import LlamaServerBackend
+    except Exception:  # noqa: BLE001 - llama plumbing import must never block
+        return False
+    return isinstance(backend, LlamaServerBackend)
+
+
+def encode_with_identity(
+    texts: list[str],
+    *,
+    model_name: str | None = None,
+    normalize: bool = True,
+):
+    """``(vectors, identity)``, the identity taken from the encode that produced them.
+
+    Not from the process embedder read afterwards: a concurrent ST encode failure
+    swaps that between the two, so the vectors would be labelled with a space they
+    were never in, and a query then searches (or a document is stored against) the
+    wrong half of the index."""
+    _served_by.backend = None
+    vectors = encode(texts, model_name = model_name, normalize = normalize)
+    served = getattr(_served_by, "backend", None)
+    name = model_name or config.effective_embedding_model()
+    if served is None:  # a stubbed encode never reached a backend
+        return vectors, embedding_identity(name)
+    return vectors, _identity(_is_llama_backend(served), name)
+
+
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
     _get_backend().warm(model_name = model_name)
@@ -302,7 +771,9 @@ def encode(
     normalize: bool = True,
 ):
     """Embed texts into an (N, dim) float32 numpy array."""
-    return _get_backend().encode(texts, model_name = model_name, normalize = normalize)
+    backend = _get_backend()
+    _served_by.backend = backend
+    return backend.encode(texts, model_name = model_name, normalize = normalize)
 
 
 def dim(model_name: str | None = None) -> int:

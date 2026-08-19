@@ -3,6 +3,8 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "@/lib/toast";
+import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
+import { useHubAvailability } from "./use-online-status";
 import {
   type HfModelResult,
   type HfModelSearchChannel,
@@ -24,10 +26,17 @@ export interface DiscoverSearch {
   hasMore: boolean;
   fetchMore: () => boolean;
   searchError: string | null;
+  /** Classified cause of the last failure, for a diagnosable error panel. */
+  searchFailure: HubFailure | null;
   handleRetrySearch: () => void;
 }
 
-type DiscoverErrorKind = "offline" | "auth" | "rate-limited" | "server" | "unknown";
+type DiscoverErrorKind =
+  | "offline"
+  | "auth"
+  | "rate-limited"
+  | "server"
+  | "unknown";
 
 const RECONNECT_RETRY_COOLDOWN_MS = 90_000;
 
@@ -69,7 +78,7 @@ function classifyDiscoverError(
 function discoverErrorTitle(kind: DiscoverErrorKind): string {
   switch (kind) {
     case "offline":
-      return "You're offline";
+      return "Can't reach Hugging Face";
     case "auth":
       return "Hugging Face auth failed";
     case "rate-limited":
@@ -88,7 +97,6 @@ export function useDiscoverSearch({
   direction,
   channel,
   ownerScope,
-  online,
 }: {
   debouncedQuery: string;
   accessToken: string | undefined;
@@ -98,21 +106,36 @@ export function useDiscoverSearch({
   direction: HfSortDirection;
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
-  online: boolean;
 }): DiscoverSearch {
+  const { phase, failure } = useHubAvailability();
+  // "probing" counts: a lapsed backoff is exactly when the next request should
+  // be allowed to test the network. Only a live backoff ("unavailable") holds it.
+  const canProbe = phase !== "unavailable";
+  // Only a success promotes to "available". A lapsed backoff is "probing", so a
+  // stale window can no longer announce "Back online" without a working request.
+  const online = phase === "available";
+
+  // Gated on the live backoff only, never on "probing". Gating on availability
+  // is what discarded the error and made every cause render the same, and that
+  // is now safe because the disabled path preserves it; but leaving it ungated
+  // let a user typing through an outage issue a request per debounce tick, each
+  // one re-arming the window it was meant to be waiting out.
   const modelSearch = useHubModelSearch(debouncedQuery, {
     accessToken,
     sortBy,
     sortDirection: direction,
     pinUnslothFirst: true,
     ownerScope,
-    enabled: online && isDiscoverTab && !isDatasetMode,
+    enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
     channel,
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,
-    enabled: online && isDiscoverTab && isDatasetMode,
+    // Not folded into `enabled`: that one also means "this tab is showing",
+    // and returns [] when false, so a backoff blanked every rendered row.
+    enabled: isDiscoverTab && isDatasetMode,
+    paused: !canProbe,
     sortBy,
     sortDirection: direction,
   });
@@ -129,26 +152,35 @@ export function useDiscoverSearch({
   const rawFetchMore = isDatasetMode
     ? datasetSearch.fetchMore
     : modelSearch.fetchMore;
+  // Already sanitized in useHubPaginatedSearch, where every consumer reads it.
   const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
-  const searchError = isDiscoverTab && online ? rawSearchError : null;
+  const needsRestart = isDatasetMode
+    ? datasetSearch.needsRestart
+    : modelSearch.needsRestart;
+  // Surfaced regardless of availability: the failure IS the thing worth showing.
+  const searchError = isDiscoverTab ? rawSearchError : null;
+  const searchFailure = isDiscoverTab ? failure : null;
   const fetchMore = useCallback(() => {
-    if (!online || !hasMore) return false;
+    if (!canProbe || !hasMore) return false;
+    // A page that failed took the iterator with it, so resuming would resolve
+    // done and quietly end pagination, leaving Load more inert on screen.
+    if (needsRestart()) {
+      retrySearch();
+      return true;
+    }
     return rawFetchMore();
-  }, [online, hasMore, rawFetchMore]);
+  }, [canProbe, hasMore, needsRestart, rawFetchMore, retrySearch]);
 
   const handleRetrySearch = useCallback(() => {
-    if (!online) {
-      toast.error("You're offline", {
-        description: "Reconnect to the internet to browse Hugging Face.",
-      });
-      return;
-    }
+    // Always re-probe: refusing during the backoff left users unable to test a
+    // firewall, DNS or certificate change without waiting out the timer.
+    clearRemoteBackoff();
     retrySearch();
     toast.message("Retrying…", {
       description: "Reaching Hugging Face for the latest models.",
     });
-  }, [online, retrySearch]);
+  }, [retrySearch]);
 
   const lastErrorRef = useRef<DiscoverErrorKind | null>(null);
   useEffect(() => {
@@ -164,27 +196,45 @@ export function useDiscoverSearch({
     if (lastErrorRef.current === errorKind) return;
     lastErrorRef.current = errorKind;
     toast.error(discoverErrorTitle(errorKind), {
-      description: online
-        ? searchError
-        : "Reconnect to the internet to browse models.",
+      // The classified failure names the cause; the raw message covers HTTP
+      // errors that never reach the network layer.
+      description: searchFailure?.message ?? searchError,
       action: { label: "Retry", onClick: handleRetrySearch },
     });
-  }, [isDiscoverTab, searchError, online, handleRetrySearch]);
+  }, [isDiscoverTab, searchError, searchFailure, online, handleRetrySearch]);
 
-  const wasOfflineRef = useRef(!online);
+  // Driven by a successful request, never a lapsed timer. Announcing recovery
+  // on TTL expiry produced a permanent offline/back-online loop.
+  const wasUnavailableRef = useRef(phase !== "available");
   const lastReconnectAtRef = useRef(0);
+  // Whether this feed is the one probing. Latched while it has a request in
+  // flight and cleared once it is idle and unavailable, so the reconnect effect
+  // can tell its own recovery from another surface's.
+  const selfProbedRef = useRef(false);
   useEffect(() => {
-    if (online && wasOfflineRef.current && isDiscoverTab) {
+    if (isLoading || isLoadingMore) {
+      selfProbedRef.current = true;
+    } else if (!online) {
+      selfProbedRef.current = false;
+    }
+  }, [online, isLoading, isLoadingMore]);
+  useEffect(() => {
+    if (online && wasUnavailableRef.current && isDiscoverTab) {
       const now = Date.now();
       if (now - lastReconnectAtRef.current > RECONNECT_RETRY_COOLDOWN_MS) {
         lastReconnectAtRef.current = now;
+        const selfProbed = selfProbedRef.current;
+        selfProbedRef.current = false;
         toast.success("Back online", {
           description: "Refreshing the discovery feed.",
         });
-        retrySearch();
+        // Only when something else proved the Hub reachable. Our own successful
+        // request is what usually clears the window, and its results are already
+        // rendered, so retrying would discard them and re-issue the same call.
+        if (!selfProbed) retrySearch();
       }
     }
-    wasOfflineRef.current = !online;
+    wasUnavailableRef.current = !online;
   }, [online, retrySearch, isDiscoverTab]);
 
   return {
@@ -196,6 +246,7 @@ export function useDiscoverSearch({
     hasMore,
     fetchMore,
     searchError,
+    searchFailure,
     handleRetrySearch,
   };
 }

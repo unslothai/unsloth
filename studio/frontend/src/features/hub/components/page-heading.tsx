@@ -13,7 +13,7 @@ type PageHeadingProps = {
 };
 
 const TITLE_CLASS =
-  "text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]";
+  "text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34";
 
 export function PageHeading({
   title,
@@ -29,7 +29,7 @@ export function PageHeading({
           onClick={onTitleClick}
           className={cn(
             TITLE_CLASS,
-            "cursor-pointer rounded-md text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring",
+            "cursor-pointer rounded-md text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-1 focus-visible:ring-ring",
           )}
         >
           {title}
@@ -38,7 +38,7 @@ export function PageHeading({
         <h1 className={TITLE_CLASS}>{title}</h1>
       )}
       {subtitle ? (
-        <p className="mt-2 text-[13px] leading-[19px] text-muted-foreground">
+        <p className="mt-2 text-ui-13 leading-ui-19 text-muted-foreground">
           {subtitle}
         </p>
       ) : null}
