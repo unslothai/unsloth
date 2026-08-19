@@ -241,8 +241,14 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         # later request is guaranteed to notice: the picker only refreshes while its form
         # is open, and the chat gate only refetches a catalog it does not already have.
         # Imported here because the client module imports this one at load time.
-        from core.inference.openai_codex_client import forget_subscription_models
+        from core.inference.openai_codex_client import (
+            forget_subscription_models,
+            mark_subscription_catalog_stale,
+        )
         forget_subscription_models(provider_id)
+        # The emptiness here is deliberate, not a cold start: until this account's own
+        # catalog is read, the saved models still describe the previous one.
+        mark_subscription_catalog_stale(provider_id)
 
 
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:

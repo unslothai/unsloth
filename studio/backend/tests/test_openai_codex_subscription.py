@@ -1861,3 +1861,55 @@ def test_a_hidden_slug_is_not_invocable_just_because_the_catalog_was_fetched(mon
         assert accepted.status_code == 401, accepted.detail
     finally:
         forget_subscription_models("codex-1")
+
+
+def test_chat_stops_trusting_the_seed_once_the_plan_catalog_is_known(monkeypatch):
+    """The registry seed bootstraps a connection; it says nothing about this account.
+
+    gpt-5.6-sol is seeded but a Go plan does not carry it, and sending it upstream only
+    to be refused is the failure this PR exists to remove.
+    """
+    seeded = get_provider_info("openai_codex")["default_models"][0]
+    forget_subscription_models("codex-1")
+    try:
+        # Nothing read yet: the seed is all there is, so it is still accepted.
+        cold = _codex_chat_gate(monkeypatch, seeded)
+        assert cold.status_code == 401, cold.detail
+
+        codex_client._offered_models["codex-1"] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
+        refused = _codex_chat_gate(monkeypatch, seeded)
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+
+        accepted = _codex_chat_gate(monkeypatch, "gpt-5.5")
+        assert accepted.status_code == 401, accepted.detail
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_does_not_trust_the_saved_row_after_a_rebind(monkeypatch):
+    """Rebinding empties the catalog on purpose, so absence is not a cold start here."""
+    stale_slug = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+    try:
+        # A plain cold start still trusts the row.
+        cold = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
+        assert cold.status_code == 401, cold.detail
+
+        # Rebound: the row is not evidence, so the gate reads the new account's catalog
+        # rather than trusting it, and that catalog does not carry the slug.
+        codex_client.mark_subscription_catalog_stale("codex-1")
+
+        async def _resolve(_provider_id):
+            return "secret-token", "acct-b"
+
+        fake = _models_response({"models": [{"slug": "gpt-5.5", "visibility": "list"}]})
+        monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+        refused = _codex_chat_gate(
+            monkeypatch, stale_slug, resolve = _resolve, saved_models = [stale_slug]
+        )
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+        assert len(fake.calls) == 1
+    finally:
+        forget_subscription_models("codex-1")

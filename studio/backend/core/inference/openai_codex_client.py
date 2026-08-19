@@ -286,6 +286,20 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
     }
 
 
+# Connections whose catalog was dropped because the account behind them changed. The
+# absence is deliberate, so it must not read as "nothing fetched yet" and license the
+# previous account's saved slugs.
+_stale_catalogs: set[str] = set()
+
+
+def mark_subscription_catalog_stale(provider_id: str) -> None:
+    _stale_catalogs.add(provider_id)
+
+
+def subscription_catalog_stale(provider_id: str) -> bool:
+    return provider_id in _stale_catalogs
+
+
 def subscription_catalog_known(provider_id: str) -> bool:
     """Whether this process has read a catalog for the connection at all.
 
@@ -305,6 +319,7 @@ def forget_subscription_models(provider_id: str) -> None:
     _models_cache.pop(provider_id, None)
     _offered_models.pop(provider_id, None)
     _catalog_accounts.pop(provider_id, None)
+    _stale_catalogs.discard(provider_id)
 
 
 async def list_subscription_models(
@@ -376,6 +391,7 @@ async def list_subscription_models(
     _models_cache[provider_id] = (time.time() + _MODELS_CACHE_TTL_SECONDS, models)
     _offered_models[provider_id] = {model["id"]: model for model in models}
     _catalog_accounts[provider_id] = account_id
+    _stale_catalogs.discard(provider_id)
     return models
 
 

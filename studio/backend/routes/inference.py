@@ -12412,6 +12412,7 @@ async def _proxy_to_external_provider(
             offered_subscription_model,
             offered_subscription_model_ids,
             subscription_catalog_known,
+            subscription_catalog_stale,
         )
 
         # Through the same helper the saved-credential exception uses, not a bare
@@ -12441,30 +12442,39 @@ async def _proxy_to_external_provider(
         # The seed is only a seed: /codex/models is what the plan can reach, and the
         # provider routes already accept saving a listed slug that is newer than it.
         # Gating chat on the seed alone rejects the model the picker just offered.
-        allowed_models = set(info.get("default_models", []))
-        allowed_models |= offered_subscription_model_ids(payload.provider_id)
-        # A slug already saved on this connection was authorized when it was accepted, so
-        # a later flip to "hide" retires it from what is offered, not from what the user
-        # may still call. That trust ends where the evidence does: once a catalog for the
-        # current account has been read, a saved slug it does not carry at all belongs to
-        # some other account and is no longer authorized here.
-        saved_models = set(config.get("models") or [])
-        if subscription_catalog_known(payload.provider_id):
-            saved_models = {
-                saved
-                for saved in saved_models
-                if offered_subscription_model(payload.provider_id, saved) is not None
-            }
-        allowed_models |= saved_models
+        def _allowed_codex_models() -> set[str]:
+            """What this connection may call, in order of what is actually known.
+
+            The plan's catalog is the authority once it has been read: the registry seed
+            is a bootstrapping list, not evidence about this account, so it stops
+            counting there. A saved slug survives a flip to "hide", because that retires
+            a model from what is offered rather than from what the user may call, but not
+            a plan that no longer carries it at all. With no catalog read yet the seed and
+            the saved row are all there is, unless the row was left behind by a different
+            account, in which case only the seed is safe to assume.
+            """
+            saved = set(config.get("models") or [])
+            if subscription_catalog_known(payload.provider_id):
+                return offered_subscription_model_ids(payload.provider_id) | {
+                    slug
+                    for slug in saved
+                    if offered_subscription_model(payload.provider_id, slug) is not None
+                }
+            if subscription_catalog_stale(payload.provider_id):
+                return set(info.get("default_models", []))
+            return set(info.get("default_models", [])) | saved
+
+        allowed_models = _allowed_codex_models()
         if model not in allowed_models:
             # The catalog is process-local, so a restart leaves a saved plan slug with
             # nothing to authorize it. Refresh once before refusing what the user picked.
             try:
-                allowed_models |= await ensure_subscription_models(payload.provider_id)
+                await ensure_subscription_models(payload.provider_id)
             except (CodexAuthError, CodexReauthorizationError) as exc:
                 # Say reconnect, not "choose another model": the catalog is unreadable
                 # because the connection is, and the model may be perfectly valid.
                 raise HTTPException(status_code = 401, detail = str(exc)) from exc
+            allowed_models = _allowed_codex_models()
         if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
