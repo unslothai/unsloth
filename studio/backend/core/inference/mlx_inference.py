@@ -1083,6 +1083,15 @@ def _vlm_prompt_cache_clone_expands(cache):
 def _vlm_block_cache_allowed(model):
     """Whether Studio can reproduce mlx-vlm's cold prefill partition."""
     language_model = getattr(model, "language_model", None)
+    cross_attention_layers = getattr(
+        getattr(language_model, "config", None),
+        "cross_attention_layers",
+        (),
+    )
+    if cross_attention_layers and callable(getattr(model, "_prepare_cross_attention_mask", None)):
+        # The mask is prepared for the full text sequence. Current mlx-vlm
+        # chunking slices the query without slicing that cross-attention axis.
+        return False
     candidates = (model, language_model) if language_model is not model else (model,)
     return all(
         candidate is None

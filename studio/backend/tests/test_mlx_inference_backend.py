@@ -1382,6 +1382,12 @@ def test_mlx_vlm_cache_reuses_only_compatible_state_and_reports_timing(monkeypat
     assert backend.last_generation_stats["timings"]["cache_n"] == 0
     assert {(id(entry[0]), entry[3]) for entry in entries.values()} == published
     del backend._model.chunked_prefill_policy
+    backend._model._prepare_cross_attention_mask = lambda *_args: None
+    backend._model.language_model.config = SimpleNamespace(cross_attention_layers = [1])
+    _cached_vlm_turn(backend, _VLM_TURN2, image)
+    assert control["state"] is None and control["prefill_step_size"] is None
+    del backend._model._prepare_cross_attention_mask
+    del backend._model.language_model.config
     for kwargs in (
         {"prompt": _VLM_OTHER},
         {"_adapter_state": False},
