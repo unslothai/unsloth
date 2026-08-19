@@ -5895,7 +5895,11 @@ def _remote_gguf_companion_bytes(
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_sizes: dict[str, int] = {}
-        for sibling in info.siblings or []:
+        from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+        # The same listing the downloader resolves against: a sidecar outranking the real drafter
+        # here budgets its own few KB for a load that then fetches the whole thing.
+        for sibling in drop_shadowed_appledouble_siblings(list(info.siblings or [])):
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
@@ -6018,9 +6022,13 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         from huggingface_hub import model_info
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
 
+        from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
         info = model_info(repo, token = hf_token, files_metadata = True)
         sizes: dict[str, int] = {}
-        for sibling in info.siblings or []:
+        # A sidecar's few KB stands in for the drafter the launch then fetches, and this figure
+        # is what admits or refuses a load beside a training run.
+        for sibling in drop_shadowed_appledouble_siblings(list(info.siblings or [])):
             name = sibling.rfilename or ""
             if not Path(name).name.lower().endswith(".gguf"):
                 continue
@@ -6095,7 +6103,10 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
                 ),
                 None,
             ) or max(revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None)
-            for f in getattr(chosen, "files", ()) or ():
+            from hub.services.models.cache_inventory import cached_repo_files
+
+            # Quant subdirectories share a basename, so the largest file carrying one is charged.
+            for f in cached_repo_files(chosen):
                 name = str(f.file_name)
                 if name.lower().endswith(".gguf"):
                     sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
@@ -16519,6 +16530,7 @@ from core.inference.tools import (
     _MAX_SNAPSHOT_FILES,
     _servable_segment,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -16581,6 +16593,8 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
             except OSError:
+                continue
+            if is_appledouble_metadata(Path(path)):
                 continue
             names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
             if len(names) >= _MAX_SNAPSHOT_FILES:
@@ -20526,6 +20540,7 @@ async def anthropic_messages(
                 model_name,
                 disable_parallel_tool_use = _disable_parallel,
                 openai_tools = openai_tools,
+                cancel_event = cancel_event,
             )
         )
 
@@ -20566,6 +20581,7 @@ async def anthropic_messages(
             _run_plain_gen,
             message_id,
             model_name,
+            cancel_event = cancel_event,
         )
     )
 
@@ -20842,11 +20858,19 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
     return HTTPException(status_code = 500, detail = _friendly_error(e))
 
 
-def _collect_anthropic_events(run_gen) -> list:
+async def _collect_anthropic_events(run_gen, cancel_event = None) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500."""
-    try:
+
+    def _drain():
         return list(run_gen())
+
+    drain_task = asyncio.create_task(asyncio.to_thread(_drain))
+    try:
+        return await asyncio.shield(drain_task)
+    except asyncio.CancelledError:
+        await _drain_pending_next_task(drain_task, cancel_event)
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -20878,6 +20902,7 @@ async def _anthropic_tool_non_streaming(
     model_name,
     disable_parallel_tool_use = False,
     openai_tools = None,
+    cancel_event = None,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -20903,7 +20928,7 @@ async def _anthropic_tool_non_streaming(
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
 
-    events = _collect_anthropic_events(run_gen)
+    events = await _collect_anthropic_events(run_gen, cancel_event)
 
     for event in events:
         etype = event.get("type", "")
@@ -20975,14 +21000,19 @@ async def _anthropic_tool_non_streaming(
     )
 
 
-async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
+async def _anthropic_plain_non_streaming(
+    run_gen,
+    message_id,
+    model_name,
+    cancel_event = None,
+):
     """Non-streaming response for the no-tool path."""
     text_parts = []
     usage = {}
     prev_text = ""
     captured_finish_reason = None
 
-    events = _collect_anthropic_events(run_gen)
+    events = await _collect_anthropic_events(run_gen, cancel_event)
 
     for cumulative in events:
         if isinstance(cumulative, dict):

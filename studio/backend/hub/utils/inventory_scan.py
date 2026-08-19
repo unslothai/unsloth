@@ -45,6 +45,7 @@ from hub.utils.hf_cache_state import (
     latest_snapshot_dir,
     repo_cache_dir_has_incomplete_blobs,
 )
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 # Inventory is invalidated explicitly on every app-driven cache mutation, so
 # this TTL only bounds staleness from out-of-band edits while skipping re-walks
@@ -284,7 +285,7 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
             if not snapshot.is_dir():
                 # Upstream treats a file here as corruption; defer to it.
                 return None
-            entries = sorted(snapshot.rglob("*"))
+            entries = drop_appledouble_metadata(sorted(snapshot.rglob("*")))
         except OSError:
             return None
         files: set[_RecoveredFileInfo] = set()
@@ -779,6 +780,11 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         rel = path.relative_to(snapshot_dir).as_posix()
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
+        # Metadata vouching for a quant marks a torn snapshot ready: a set whose sidecars are
+        # all present but whose weights are not answers the shard count exactly as the real
+        # files would, in its own family and under their quant.
+        if is_appledouble_metadata(path):
+            continue
         quant = gguf_variant_key(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
         # quant. Judged with the loader's label, since the two extractors disagree on
@@ -975,7 +981,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     unreachable_root: set[str] = set()
     unreadable: set[str] = set()
     try:
-        paths = list(snapshot_dir.rglob("*"))
+        paths = drop_appledouble_metadata(list(snapshot_dir.rglob("*")))
     except OSError:
         return None
     for path in paths:

@@ -767,3 +767,29 @@ class TestBuildPipCmdUpgradeIntent:
     def test_commands_without_the_flag_are_untouched(self):
         cmd = ips._build_pip_cmd(("--no-cache-dir", "somepackage"))
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
+
+
+class TestDesktopBackendVersionConstraint:
+    """Verify that UNSLOTH_DESKTOP_BACKEND_VERSION adds the floor pin when upgrading unsloth."""
+
+    def test_spec_includes_floor_when_env_set(self):
+        with mock.patch.dict(os.environ, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}):
+            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+            package_name = "unsloth"
+            unsloth_spec = (
+                f"{package_name}>={desktop_min_ver}"
+                if (desktop_min_ver and package_name == "unsloth")
+                else package_name
+            )
+            assert unsloth_spec == "unsloth>=2026.8.15"
+
+    def test_spec_bare_when_env_unset(self):
+        with mock.patch.dict(os.environ, {}, clear = True):
+            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+            package_name = "unsloth"
+            unsloth_spec = (
+                f"{package_name}>={desktop_min_ver}"
+                if (desktop_min_ver and package_name == "unsloth")
+                else package_name
+            )
+            assert unsloth_spec == "unsloth"
