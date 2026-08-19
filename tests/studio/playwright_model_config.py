@@ -883,7 +883,8 @@ with sync_playwright() as p:
         # closed popover from the Reset step and silently skipped until #7760 made it own
         # its state; the first time it actually ran, it failed.
         expected_pin = [
-            e for e in pinned
+            e
+            for e in pinned
             if e.get("gpuMemoryMode") == "manual"
             and isinstance(e.get("gpuLayers"), int)
             and e.get("gpuLayers") >= 0
