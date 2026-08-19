@@ -97,12 +97,11 @@ def _steps(doc: dict) -> list[tuple[str, dict, dict]]:
 
 
 def _apt_steps(path: Path) -> list[tuple[str, dict, dict]]:
-    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
     return [
         (job_id, job, step)
         for job_id, job, step in _steps(doc)
-        if _APT.search(step["run"])
-        and (path.name, step.get("name", "")) not in EXEMPT_STEPS
+        if _APT.search(step["run"]) and (path.name, step.get("name", "")) not in EXEMPT_STEPS
     ]
 
 
@@ -134,7 +133,7 @@ def _worst_case_seconds(step: dict, run: str) -> int:
     return calls * (attempts * per_attempt + (attempts - 1) * LOCK_WAIT_SECONDS)
 
 
-@pytest.mark.parametrize("path", _workflows(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_every_apt_step_goes_through_the_shared_helper(path: Path) -> None:
     if path.name in EXEMPT_WORKFLOWS:
         return
@@ -147,7 +146,7 @@ def test_every_apt_step_goes_through_the_shared_helper(path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("path", _workflows(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_every_apt_step_bounds_itself(path: Path) -> None:
     if path.name in EXEMPT_WORKFLOWS:
         return
@@ -159,7 +158,7 @@ def test_every_apt_step_bounds_itself(path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("path", _workflows(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_the_retry_budget_fits_inside_the_step_timeout(path: Path) -> None:
     """
     A step timeout smaller than the retries it authorises silently deletes the
@@ -179,7 +178,7 @@ def test_the_retry_budget_fits_inside_the_step_timeout(path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("path", _workflows(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_the_step_timeout_fits_inside_the_job_timeout(path: Path) -> None:
     """
     Otherwise the job timeout still fires first and the diagnosis is still lost:
@@ -200,14 +199,14 @@ def test_the_step_timeout_fits_inside_the_job_timeout(path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("path", _workflows(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
 def test_a_workflow_that_calls_the_helper_reruns_when_the_helper_changes(path: Path) -> None:
     """
     A paths-filtered workflow that calls the helper but does not list it is not
     covered by an edit to it: the helper could be broken and every consumer would
     keep showing the last green run.
     """
-    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
     if not any(HELPER in step["run"] for _, _, step in _steps(doc)):
         return
     triggers = doc.get(ON) or {}
@@ -232,7 +231,7 @@ def test_helper_defaults_are_what_the_budgets_assume() -> None:
     step that sets neither variable. If those defaults move and this fallback does
     not, every such budget check silently starts measuring the wrong number.
     """
-    source = (REPO_ROOT / HELPER).read_text(encoding="utf-8")
+    source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
     assert 'ATTEMPTS="${RETRY_ATTEMPTS:-3}"' in source
     assert 'ATTEMPT_TIMEOUT="${RETRY_ATTEMPT_TIMEOUT:-480}"' in source
     # 24 sleeps of 5s, then a kill and a final 5s.
@@ -245,10 +244,8 @@ def test_the_guard_is_not_vacuous() -> None:
     Every assertion above is a for-loop over steps this finds. If the detector
     stopped matching, all of them would pass by finding nothing.
     """
-    found = {
-        path.name: len(_apt_steps(path))
-        for path in _workflows()
-        if _apt_steps(path)
-    }
-    assert len(found) >= 10, f"only {len(found)} workflows matched; the detector looks broken: {found}"
+    found = {path.name: len(_apt_steps(path)) for path in _workflows() if _apt_steps(path)}
+    assert (
+        len(found) >= 10
+    ), f"only {len(found)} workflows matched; the detector looks broken: {found}"
     assert sum(found.values()) >= 15, f"only {sum(found.values())} apt steps matched: {found}"
