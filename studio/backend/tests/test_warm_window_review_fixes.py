@@ -671,7 +671,9 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
     # for, and stubbing it to None above would hide a snapshot that dropped it.
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", "mlx-vlm 0.4.3 (needs >=0.4.4)", raising = False)
     assert main_mod._hardware_snapshot() == (
-        True, "mlx_unavailable", "mlx-vlm 0.4.3 (needs >=0.4.4)",
+        True,
+        "mlx_unavailable",
+        "mlx-vlm 0.4.3 (needs >=0.4.4)",
     )
 
 
