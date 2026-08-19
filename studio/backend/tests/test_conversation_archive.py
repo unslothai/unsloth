@@ -560,8 +560,7 @@ def test_a_line_inserted_INTO_an_archived_turn_retires_it():
         is None
     )
     assert (
-        archive._scan_probes(probes, ["A: drain traffic\nuser: B: flip the flag"], 0, 1)
-        is not None
+        archive._scan_probes(probes, ["A: drain traffic\nuser: B: flip the flag"], 0, 1) is not None
     )
 
 
