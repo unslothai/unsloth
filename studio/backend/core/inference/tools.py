@@ -9237,7 +9237,7 @@ def _edit_file_create(
             with contextlib.suppress(OSError):
                 os.remove(target)
             return f"Error: cannot write '{name}': {exc}"
-        return f"Created {name} ({new.count(chr(10)) + 1} lines)"
+        return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
     try:
         st = os.stat(target)
     except OSError:
@@ -9259,7 +9259,7 @@ def _edit_file_create(
     error = _edit_file_write(target, new, newline, "", expect = b"", workdir = workdir)
     if error:
         return error
-    return f"Created {name} ({new.count(chr(10)) + 1} lines)"
+    return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
 
 
 def _edit_file(
@@ -9296,11 +9296,13 @@ def _edit_file(
     # Normalized for the same reason the file is, so the two can match.
     old = old.replace("\r\n", "\n")
     new = new.replace("\r\n", "\n")
-    if old == new:
-        return "Error: 'old_string' and 'new_string' are identical; nothing to change."
     replace_all = _edit_file_replace_all(arguments.get("replace_all"))
     if replace_all is None:
         return "Error: 'replace_all' must be true or false."
+    # Creation is decided before the no-op check below, not after. Both strings
+    # empty is the documented way to create an empty file -- __init__.py,
+    # py.typed, .gitkeep -- and read as "identical, nothing to change" it was
+    # refused, leaving the model no way at all to write a zero-byte file.
     if not old:
         return _edit_file_create(
             target,
@@ -9309,6 +9311,8 @@ def _edit_file(
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+    if old == new:
+        return "Error: 'old_string' and 'new_string' are identical; nothing to change."
     try:
         st = os.stat(target)
     except FileNotFoundError:

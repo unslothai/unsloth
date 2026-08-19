@@ -114,6 +114,15 @@ class TestCreation:
         assert (workdir / "new.py").read_text() == "x = 1\n"
         assert result.startswith("Created")
 
+    def test_both_strings_empty_creates_an_empty_file(self, workdir):
+        # __init__.py, py.typed and .gitkeep are all written this way, and the
+        # documented creation call for them has both strings empty. Read as an
+        # identical-strings no-op it was refused, so the model had no way to
+        # write a zero-byte file at all.
+        result = _edit(path = "pkg/__init__.py", old_string = "", new_string = "")
+        assert (workdir / "pkg" / "__init__.py").read_bytes() == b""
+        assert result.startswith("Created")
+
     def test_creation_never_clobbers_an_existing_file(self, workdir):
         target = workdir / "a.py"
         target.write_text("keep me\n")
