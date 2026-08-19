@@ -9,8 +9,13 @@ registerBundlerResolver();
 const { getImageInputUnavailableReason } = await import(
   "../src/features/chat/utils/image-input-support.ts"
 );
-const { isTextOnlyMmprojFallback, mmprojFallbackMessage, mmprojLoadNotice } =
-  await import("../src/features/chat/utils/mmproj-fallback.ts");
+const {
+  isTextOnlyMmprojFallback,
+  mmprojFallbackMessage,
+  mmprojLoadNotice,
+  loadFallbackNotice,
+  CPU_FALLBACK_MESSAGE,
+} = await import("../src/features/chat/utils/mmproj-fallback.ts");
 
 const IMAGE_INPUT_AVAILABLE = /Image input remains available/;
 const RELOADED_TEXT_ONLY = /reloaded this model in text-only mode/;
@@ -114,4 +119,70 @@ test("attachment and send gates forward projector fallback state", () => {
     "cpuFallbackReason = loadResponse.cpu_fallback_reason",
   );
   assert.match(interactiveLoad, /force_reload:\s*forceReload/);
+});
+
+// The combination neither load path handled. Both wrote
+// `mmproj ? mmprojMessage : cpu ? cpuMessage : undefined`, so a session that lost GPU
+// acceleration AND vision reported only the vision loss, and the user was never told
+// the model was running on the CPU.
+//
+// Reachable rather than theoretical: on a CPU-fallback replay llama_cpp.py preserves
+// _cpu_fallback_reason and clears _mmproj_fallback_reason, so the projector can fail
+// again inside that same launch. A low-VRAM box whose Vulkan backend crashed is
+// precisely where both happen.
+
+test("a load that lost both the GPU and the projector reports both", () => {
+  const notice = loadFallbackNotice(
+    "PaddleOCR loaded",
+    "vulkan_startup_crash",
+    "projector_startup_failure",
+  );
+  assert.equal(notice.title, "PaddleOCR loaded on CPU, without vision");
+  assert.match(notice.description ?? "", /GPU acceleration is disabled/);
+  assert.match(notice.description ?? "", /text-only mode/);
+  assert.equal(notice.degraded, true);
+});
+
+test("a CPU-offloaded projector under a CPU fallback does not claim vision is accelerated", () => {
+  const notice = loadFallbackNotice(
+    "PaddleOCR loaded",
+    "vulkan_startup_crash",
+    "cpu_offload",
+  );
+  // "on CPU" already covers the projector, so the title does not also say
+  // "with vision on CPU" -- but the description must still explain both.
+  assert.equal(notice.title, "PaddleOCR loaded on CPU");
+  assert.match(notice.description ?? "", /GPU acceleration is disabled/);
+  assert.match(notice.description ?? "", /Image input remains available/);
+  assert.equal(notice.degraded, true);
+});
+
+test("each fallback alone still reads exactly as it did before", () => {
+  const cpuOnly = loadFallbackNotice("X loaded", "vulkan_startup_crash", null);
+  assert.equal(cpuOnly.title, "X loaded on CPU");
+  assert.equal(cpuOnly.description, CPU_FALLBACK_MESSAGE);
+
+  const offload = loadFallbackNotice("X loaded", null, "cpu_offload");
+  assert.equal(offload.title, "X loaded with vision on CPU");
+  assert.equal(offload.description, mmprojFallbackMessage("cpu_offload"));
+  // The title the standalone helper produces, unchanged.
+  assert.equal(offload.title, mmprojLoadNotice("X", "cpu_offload").title);
+
+  const textOnly = loadFallbackNotice(
+    "X loaded",
+    null,
+    "projector_incompatible",
+  );
+  assert.equal(textOnly.title, "X loaded without vision");
+  assert.equal(
+    textOnly.description,
+    mmprojFallbackMessage("projector_incompatible"),
+  );
+});
+
+test("a clean load is not degraded and carries no description", () => {
+  const notice = loadFallbackNotice("X loaded", null, null);
+  assert.equal(notice.title, "X loaded");
+  assert.equal(notice.description, undefined);
+  assert.equal(notice.degraded, false);
 });
