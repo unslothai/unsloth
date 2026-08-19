@@ -50,7 +50,8 @@ export function mergeContextTruncation(
   };
 
   // boundary_messages needs no rule: it is absolute, so the spread above already keeps
-  // the latest fit's value. Summing it is the bug it exists to fix.
+  // the latest fit's value. Summing it is the bug it exists to fix. boundary_anchor rides
+  // along with it for the same reason, and the two must come from the SAME fit.
 
   // The irreducible diagnosis describes ONE fit that gave up, so an earlier failure
   // followed by a later success would otherwise leave those numbers on a result that fit.

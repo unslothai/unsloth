@@ -705,6 +705,11 @@ export interface OpenAIChatChunk {
     // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
     // times cannot advance the boundary past the turns actually evicted.
     boundary_messages?: number;
+    // The text the boundary landed ON, so the count can be re-derived by position. A count
+    // is only valid against the transcript it was counted on, and deleting an already
+    // evicted prompt shortens that transcript; without the anchor the replayed count then
+    // evicts live turns instead. Carried through untouched, like boundary_messages.
+    boundary_anchor?: string;
     // Whose message that is: in a tool loop the last one is often a tool result rather
     // than anything the user typed.
     latest_turn_role?: string;
