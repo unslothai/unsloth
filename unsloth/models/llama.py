@@ -1371,9 +1371,18 @@ from .mtp import compute_mtp_loss, filter_mtp_kwargs
 
 
 def add_mtp_loss(
-    self, hidden_states, labels, loss, n_items,
-    logit_softcapping, logit_scaling,
-    input_ids, position_ids, attention_mask, inputs_embeds, kwargs,
+    self,
+    hidden_states,
+    labels,
+    loss,
+    n_items,
+    logit_softcapping,
+    logit_scaling,
+    input_ids,
+    position_ids,
+    attention_mask,
+    inputs_embeds,
+    kwargs,
 ):
     mtp_loss = compute_mtp_loss(
         self,
@@ -1542,9 +1551,18 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_softcapping = logit_softcapping,
                 )
                 loss = add_mtp_loss(
-                    self, hidden_states, labels, loss, n_items,
-                    logit_softcapping, logit_scaling,
-                    input_ids, position_ids, attention_mask, inputs_embeds, kwargs,
+                    self,
+                    hidden_states,
+                    labels,
+                    loss,
+                    n_items,
+                    logit_softcapping,
+                    logit_scaling,
+                    input_ids,
+                    position_ids,
+                    attention_mask,
+                    inputs_embeds,
+                    kwargs,
                 )
                 if not return_dict:
                     # Fused CE never materializes `logits`; use EMPTY_LOGITS
@@ -1600,9 +1618,18 @@ def CausalLM_fast_forward(fast_forward_inference):
                 n_items = n_items,
             )
             loss = add_mtp_loss(
-                self, hidden_states, labels, loss, n_items,
-                logit_softcapping, logit_scaling,
-                input_ids, position_ids, attention_mask, inputs_embeds, kwargs,
+                self,
+                hidden_states,
+                labels,
+                loss,
+                n_items,
+                logit_softcapping,
+                logit_scaling,
+                input_ids,
+                position_ids,
+                attention_mask,
+                inputs_embeds,
+                kwargs,
             )
         else:
             if logit_scaling != 0:
