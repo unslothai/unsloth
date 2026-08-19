@@ -11,6 +11,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { chatModelSwitchMeta } from "../src/features/chat/components/chat-model-notice-switch.ts";
+import { chatLocalModelOptions } from "../src/features/chat/local-model-options.ts";
+
 function read(path: string): string {
   return readFileSync(new URL(path, import.meta.url), "utf8");
 }
@@ -93,8 +96,16 @@ test("switching chats does not show the outgoing chat's model", () => {
 
 test("the notice is wired to the picker's own handler, not a private path", () => {
   // handleCheckpointChange carries the confirmations, VRAM checks and external
-  // handling; a second switch path would drift from it.
-  assert.match(page, /onSwitch=\{handleCheckpointChange\}/);
+  // handling; a second switch path would drift from it. The wrapper only
+  // resolves the row metadata the picker also supplies, then calls it.
+  assert.match(page, /onSwitch=\{handleSwitchBackToChatModel\}/);
+  const wrapper = slice(
+    page,
+    "const handleSwitchBackToChatModel",
+    "const inventoryRefreshStartedRef",
+  );
+  assert.match(wrapper, /handleCheckpointChange\(/);
+  assert.match(wrapper, /chatModelSwitchMeta\(modelId, loraModels\)/);
   assert.match(page, /selectableModelIds=\{selectableModelIds\}/);
   // Offered only for a real saved chat, in the single-chat view.
   assert.match(page, /view\.mode === "single" && \(\s*<ChatModelNotice/);
@@ -273,4 +284,95 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
 
   const notice = slice(page, "<ChatModelNotice", "/>");
   assert.match(notice, /threadId=\{view\.threadId \?\? newChatThreadId \?\? undefined\}/);
+});
+
+// The switch back is the picker's handler, so it has to arrive carrying what the picker
+// itself would have put on it. A local or fine-tuned row is in neither /api/models/list
+// nor the external ids, so with the bare id selectModel resolves isGguf false and the
+// /load request loses n_parallel, n_batch, n_ubatch and llama_extra_args and sizes the
+// context down the transformers path.
+
+test("switching back to a single-file local GGUF still loads as a GGUF", () => {
+  const meta = chatModelSwitchMeta("/models/qwen3-4b-q4.gguf", [
+    {
+      id: "/models/qwen3-4b-q4.gguf",
+      name: "qwen3-4b-q4",
+      source: "local",
+      isGguf: true,
+    },
+  ]);
+  assert.deepEqual(meta, {
+    source: "local",
+    isLora: false,
+    isDownloaded: true,
+    isGguf: true,
+  });
+});
+
+test("a single .gguf file carries its format out of the local inventory", () => {
+  // chatLocalModelOptions is where the format is either kept or lost; the resolver
+  // above has nothing else to read it from.
+  const [option] = chatLocalModelOptions([
+    {
+      id: "/models/qwen3-4b-q4.gguf",
+      display_name: "qwen3-4b-q4",
+      path: "/models/qwen3-4b-q4.GGUF",
+      source: "custom",
+      model_format: "gguf",
+    },
+  ]);
+  assert.equal(option.isGguf, true);
+});
+
+test("a GGUF directory is not claimed as a GGUF, since its quant is unknown", () => {
+  // That row expands in the picker to pick a variant, and a chat row records only
+  // modelId. Sending llama-server flags for a quant nobody chose is worse than the
+  // plain switch.
+  const [option] = chatLocalModelOptions([
+    {
+      id: "/models/Qwen3-4B-GGUF",
+      display_name: "Qwen3-4B-GGUF",
+      path: "/models/Qwen3-4B-GGUF",
+      source: "models_dir",
+      model_format: "gguf",
+    },
+  ]);
+  assert.equal(option.isGguf, undefined);
+  assert.equal(
+    chatModelSwitchMeta("/models/Qwen3-4B-GGUF", [option])?.isGguf,
+    false,
+  );
+});
+
+test("switching back to a fine-tuned row mirrors the picker's own metadata", () => {
+  // Same fields the fine-tuned list's selectionMeta sets, so the two doors agree.
+  const adapters = [
+    { id: "run-1", name: "run-1", source: "training" as const },
+    {
+      id: "run-2",
+      name: "run-2",
+      source: "exported" as const,
+      exportType: "merged" as const,
+    },
+  ];
+  assert.deepEqual(chatModelSwitchMeta("run-1", adapters), {
+    source: "lora",
+    isLora: true,
+    isDownloaded: true,
+    isGguf: false,
+  });
+  assert.deepEqual(chatModelSwitchMeta("run-2", adapters), {
+    source: "exported",
+    isLora: false,
+    isDownloaded: true,
+    isGguf: false,
+  });
+});
+
+test("a Hub or external id is still switched on the id alone", () => {
+  // Those two resolve without help: /api/models/list carries isGguf, and
+  // isExternalModelId routes the rest. Inventing a "local" source for them would
+  // send them down the wrong branch of handleCheckpointChange.
+  assert.equal(chatModelSwitchMeta("unsloth/Qwen3-4B-GGUF", []), undefined);
+  assert.equal(chatModelSwitchMeta("openai:gpt-5-mini", []), undefined);
 });

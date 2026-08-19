@@ -135,6 +135,7 @@ import {
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
 import { ChatModelNotice } from "./components/chat-model-notice";
+import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -3296,6 +3297,20 @@ export function ChatPage({
     [models, loraModels, externalModels],
   );
 
+  // Still handleCheckpointChange, the picker's own handler, but reached the way
+  // the picker reaches it: with the row's metadata, not the bare id. A local or
+  // fine-tuned row is in neither `/api/models/list` nor the external ids, so
+  // without it the switch loads on different arguments than the menu would.
+  const handleSwitchBackToChatModel = useCallback(
+    (modelId: string) => {
+      handleCheckpointChange(
+        modelId,
+        chatModelSwitchMeta(modelId, loraModels),
+      );
+    },
+    [handleCheckpointChange, loraModels],
+  );
+
   const inventoryRefreshStartedRef = useRef(false);
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
@@ -3722,7 +3737,7 @@ export function ChatPage({
             threadId={view.threadId ?? newChatThreadId ?? undefined}
             checkpoint={inferenceParams.checkpoint}
             selectableModelIds={selectableModelIds}
-            onSwitch={handleCheckpointChange}
+            onSwitch={handleSwitchBackToChatModel}
           />
         )}
 
