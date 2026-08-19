@@ -139,9 +139,13 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
-    """Best-effort build number from ``llama-server --version`` (e.g.
-    'version: 9585 (abc)'). None when unparseable or <= 1: a source build with
-    no git tags reports 'version: 1', which we treat as unknown (offer update)."""
+    """Best-effort build number from ``llama-server --version``.
+
+    Current llama.cpp reports a semantic version followed by ``build NNNN``;
+    older binaries put the build directly after ``version:``. None when
+    unparseable or <= 1: a source build with no git tags reports build 1,
+    which we treat as unknown (offer update).
+    """
     if not binary:
         return None
     try:
@@ -155,7 +159,10 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
         )
     except Exception:  # pragma: no cover - defensive
         return None
-    m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
+    output = "\n".join((proc.stderr or "", proc.stdout or ""))
+    m = re.search(r"version:[^\r\n]*\bbuild\s+(\d+)\b", output)
+    if not m:
+        m = re.search(r"version:\s*(\d+)\b(?!\.)", output)
     if not m:
         return None
     n = int(m.group(1))
@@ -215,9 +222,10 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
-    # llama_tag is the upstream base (bNNNN, what --version reports); release_tag
-    # is the full tag, either a same-base mix (bNNNN-mix-<sha>) or a fork wrapper
-    # (e.g. v1.0). Compare the numeric base against llama_tag.
+    # llama_tag is the upstream bNNNN base whose numeric part matches the build
+    # field in --version; release_tag is the full tag, either a same-base mix
+    # (bNNNN-mix-<sha>) or a fork wrapper (e.g. v1.0). Compare the numeric base
+    # against llama_tag.
     base_tag = res.get("llama_tag") or res.get("release_tag")
     release_tag = res.get("release_tag")
     if not base_tag:

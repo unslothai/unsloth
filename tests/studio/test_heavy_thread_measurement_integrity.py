@@ -50,6 +50,36 @@ HARNESS_SOURCE = (Path(__file__).resolve().parent / "playwright_heavy_thread.py"
 )
 
 
+def _sync_api_stub() -> types.ModuleType:
+    """A `playwright.sync_api` that answers for every name a harness may import off it.
+
+    The stub lands in `sys.modules` at collection time and stays there for the rest of the
+    session, so it is not just this file's import that reads it: any later test that imports a
+    harness gets these names instead of the real package's. A stub that spelled out only the
+    names THIS file's harness needs therefore broke the others -- `playwright_strip_ansi_smoke`
+    also imports `Page` and `expect`, and got `cannot import name 'Page' from
+    'playwright.sync_api' (unknown location)` in the CPU job, from a stub two files away.
+
+    Every name resolves to a callable that raises, so the stub can satisfy an import without a
+    harness quietly measuring a browser that is not there. Dunders are left to fail: pytest and
+    inspect probe those, and answering them makes the stub look like a package.
+    """
+    module = types.ModuleType("playwright.sync_api")
+
+    def __getattr__(name: str):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+
+        def unavailable(*args, **kwargs):
+            raise RuntimeError(f"playwright is not installed: {name} needs a real browser")
+
+        unavailable.__name__ = name
+        return unavailable
+
+    module.__getattr__ = __getattr__
+    return module
+
+
 def _load_harness():
     """Import the harness module without needing a browser.
 
@@ -57,15 +87,18 @@ def _load_harness():
     this file calls. Stubbing it keeps these tests runnable in the CPU test job, where the
     Playwright package is not installed, rather than skipping the arithmetic along with the
     browser.
+
+    The probe imports the name off the submodule rather than the top-level package: a partial
+    install leaves `playwright` importable while `playwright.sync_api` resolves to an empty
+    namespace, which is the same failure with a longer traceback.
     """
     os.environ.setdefault("PW_ART_DIR", str(TEMP_ROOT / "artifacts"))
     if "playwright.sync_api" not in sys.modules:
         try:
-            import playwright.sync_api  # noqa: F401
+            from playwright.sync_api import sync_playwright  # noqa: F401
         except ImportError:
             package = types.ModuleType("playwright")
-            module = types.ModuleType("playwright.sync_api")
-            module.sync_playwright = None
+            module = _sync_api_stub()
             package.sync_api = module
             sys.modules["playwright"] = package
             sys.modules["playwright.sync_api"] = module
