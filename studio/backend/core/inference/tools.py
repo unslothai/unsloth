@@ -10504,6 +10504,20 @@ def _whole_doc_budget(scope: dict | None = None, conversation: list[dict] | None
     return min(budget, max(0, available))
 
 
+def _last_searchable_text(messages):
+    """The most recent EARLIER user turn that names something to search for, or None."""
+    try:
+        from core.inference import instruction_pin
+    except Exception:
+        return None
+    users = [m for m in (messages or []) if m.get("role") == "user"]
+    for message in reversed(users[:-1] if users else []):
+        text = _last_user_text([message])
+        if text and not instruction_pin.is_thin_query(text):
+            return text
+    return None
+
+
 def _last_user_text(conversation: list[dict]) -> str:
     """Plain text of the most recent user turn (text parts only)."""
     for msg in reversed(conversation):
@@ -10641,7 +10655,17 @@ def build_conversation_recall(
         from core.inference import instruction_pin
         thin = instruction_pin.is_thin_query(query)
         if thin:
-            anchor = instruction_pin.last_substantive_instruction(branch_messages or conversation)
+            _behind = branch_messages or conversation
+            anchor = instruction_pin.last_substantive_instruction(_behind)
+            if not anchor:
+                # An instruction is 80 characters; a QUERY need only name something. On a
+                # first reset a thread of short prompts ("Write a story about Mars", then
+                # "continue") had no anchor at all, so recall was skipped, the block
+                # carried nothing (the same length rule) and the archive was written after
+                # tool selection, so the model saw the nudge alone with no way to reach
+                # what it was continuing. `is_thin_query` already separates "names
+                # nothing" from "short", so ask it instead.
+                anchor = _last_searchable_text(_behind)
     except Exception:  # noqa: BLE001 -- a query refinement must never break a chat
         anchor = None
         thin = False

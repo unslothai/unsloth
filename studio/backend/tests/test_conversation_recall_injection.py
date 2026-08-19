@@ -1740,3 +1740,55 @@ def test_any_room_at_all_is_worth_one_recall_attempt():
     assert llama_cpp._recall_top_k(-5) == 0
     assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS - 1) == 1
     assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS * 2) >= 2
+
+
+def test_a_short_earlier_prompt_is_still_worth_searching_for(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    """An instruction is 80 characters; a QUERY only has to name something.
+
+    A thread of short prompts ("Write a story about Mars", then "continue") had no
+    substantive instruction behind the nudge, so recall was skipped entirely. On a first
+    reset that is the worst moment for it: the block carries nothing (the same length
+    rule) and the archive is written after tool selection, so the model sees the nudge
+    alone with no way to reach what it was asked to continue.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    turns = [
+        {"role": "user", "content": "Write a story about Mars"},
+        {"role": "assistant", "content": "Chapter one: the dust storm rolled in."},
+    ]
+    for index, message in enumerate(turns):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-m{index}",
+                "threadId": THREAD,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+    conversation_archive.archive_turns(THREAD, turns)
+
+    calls = []
+    real = conversation_archive.recall
+
+    def recording(thread_id, query, **kwargs):
+        calls.append((query, kwargs.get("extra_queries")))
+        return real(thread_id, query, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "recall", recording)
+    branch = turns + [{"role": "user", "content": "continue"}]
+    block = tools_mod.build_conversation_recall(
+        branch, THREAD, style = "inline", top_k = 4, branch_messages = branch
+    )
+
+    assert block is not None, "the nudge was searched for nothing at all"
+    # `recall` runs the extra query as its own pass, so the outermost call is the one that
+    # carries it.
+    assert calls[0] == ("continue", ["Write a story about Mars"]), calls
+    assert "Mars" in block["prefix"]
