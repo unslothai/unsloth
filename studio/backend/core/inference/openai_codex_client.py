@@ -443,6 +443,11 @@ async def list_subscription_models(
         # for an account this connection may no longer be on, and clear the mark that
         # says so, so hand the caller the models without storing them.
         return models
+    # That counter only sees this process. Rebinding travels through the installation DB,
+    # so ask it who owns the connection now before recording this as its catalog.
+    current_bundle = codex_auth.load_oauth_bundle(provider_id)
+    if current_bundle and current_bundle.get("account_id") != account_id:
+        return models
     if len(_models_cache) >= _MODELS_CACHE_MAX_ENTRIES:
         # Only the TTL response cache is bounded here. The per-account authorization
         # evidence deliberately outlives it: dropping it would make every other

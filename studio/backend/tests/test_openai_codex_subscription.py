@@ -2194,3 +2194,38 @@ def test_a_rejected_refresh_credential_is_a_reauthorization(monkeypatch):
             asyncio.run(list_subscription_models("provider-14", "stale", "acct-1"))
     finally:
         forget_subscription_models("provider-14")
+
+
+def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monkeypatch):
+    """The request counter is process-local; rebinding travels through the shared DB.
+
+    A read this worker started is not retired by another worker's rebind, so the stored
+    bundle is the only thing that can say the answer is for the wrong account.
+    """
+    import httpx
+
+    forget_subscription_models("provider-15")
+
+    class Slow:
+        async def get(self, _url, headers = None, params = None):
+            return httpx.Response(
+                200, json = {"models": [{"slug": "gpt-5.4", "visibility": "list"}]}
+            )
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Slow())
+    # While the read was out, another worker rebound the connection to acct-b.
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
+    try:
+        models = asyncio.run(list_subscription_models("provider-15", "token-a", "acct-a"))
+        assert [model["id"] for model in models] == ["gpt-5.4"]
+        assert codex_client.subscription_catalog_known("provider-15") is False
+
+        # The same read for the account the DB actually names does commit.
+        forget_subscription_models("provider-15")
+        asyncio.run(list_subscription_models("provider-15", "token-b", "acct-b"))
+        assert offered_subscription_model_ids("provider-15") == {"gpt-5.4"}
+    finally:
+        forget_subscription_models("provider-15")
