@@ -105,10 +105,16 @@ function ReloadSnapshotPrivacy() {
   return null;
 }
 
-function RouteBoundary({ children }: { children: ReactNode }) {
+function RouteBoundary({
+  children,
+  readyWhenCommitted = true,
+}: {
+  children: ReactNode;
+  readyWhenCommitted?: boolean;
+}) {
   return (
     <Suspense fallback={<RouteFallback />}>
-      <ReloadSnapshotReady />
+      {readyWhenCommitted && <ReloadSnapshotReady />}
       {children}
     </Suspense>
   );
@@ -423,7 +429,7 @@ function RootLayout() {
       <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
-          <RouteBoundary>
+          <RouteBoundary readyWhenCommitted={pathname !== "/hub"}>
             <Outlet />
           </RouteBoundary>
         </main>
@@ -527,7 +533,7 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <RouteBoundary>
+                    <RouteBoundary readyWhenCommitted={pathname !== "/hub"}>
                       <Outlet />
                     </RouteBoundary>
                   </motion.div>

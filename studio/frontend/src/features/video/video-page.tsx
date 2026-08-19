@@ -1929,7 +1929,11 @@ function VideoGenerator({
 
   // Re-sync model status when the tab becomes active again: while off-tab the video model may have been evicted.
   useEffect(() => {
-    if (!active || initialReadySent.current) return;
+    if (!active) return;
+    if (initialReadySent.current) {
+      void refreshStatus();
+      return;
+    }
     let cancelled = false;
     void (async () => {
       await Promise.all([

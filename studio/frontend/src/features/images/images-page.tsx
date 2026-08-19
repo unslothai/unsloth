@@ -2089,7 +2089,11 @@ export function ImagesPage({
 
   // Re-sync model status when the tab becomes active: the model may have been evicted while off-tab.
   useEffect(() => {
-    if (!active || initialReadySent.current) return;
+    if (!active) return;
+    if (initialReadySent.current) {
+      void refreshStatus();
+      return;
+    }
     let cancelled = false;
     void (async () => {
       await Promise.all([

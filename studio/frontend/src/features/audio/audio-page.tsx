@@ -651,6 +651,12 @@ export function AudioPage({
   // Resync on activation: another tab may have loaded/unloaded models meanwhile.
   useEffect(() => {
     if (!active) return;
+    if (initialReadySent.current) {
+      void refreshStatus();
+      void refreshSttStatus();
+      void refreshGallery();
+      return;
+    }
     let cancelled = false;
     void (async () => {
       const [initialClips] = await Promise.all([

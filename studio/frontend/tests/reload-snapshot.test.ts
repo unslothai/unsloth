@@ -38,6 +38,10 @@ const audioPageSource = readFileSync(
   new URL("../src/features/audio/audio-page.tsx", import.meta.url),
   "utf8",
 );
+const hubPageSource = readFileSync(
+  new URL("../src/features/hub/hub-page.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -623,6 +627,29 @@ test("media pages retire the shell only after gallery and preview hydration", ()
   assert.match(
     audioPageSource,
     /Promise\.all\(\[\s*refreshGallery\(\),\s*refreshStatus\(\),\s*refreshSttStatus\(\)[\s\S]*?await ensureClipSrc\(initialSelection\)[\s\S]*?onInitialReady\?\.\(\)/,
+  );
+  assert.match(
+    imagesPageSource,
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\)/,
+  );
+  assert.match(
+    videoPageSource,
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\)/,
+  );
+  assert.match(
+    audioPageSource,
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(\)/,
+  );
+});
+
+test("Hub owns reload readiness until route inventory settles", () => {
+  assert.match(
+    rootRouteSource,
+    /readyWhenCommitted=\{pathname !== "\/hub"\}/,
+  );
+  assert.match(
+    hubPageSource,
+    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
   );
 });
 
