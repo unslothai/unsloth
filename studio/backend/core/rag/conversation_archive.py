@@ -374,6 +374,7 @@ def archive_turns(
                 # archived -- which is the ordinary case on a thread being re-compacted,
                 # and therefore the only chance an upgraded archive gets to converge.
                 _restamp(conn, scope, digest, seats, commit = True)
+                _widen_span(conn, scope, digest, span)
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
@@ -1368,6 +1369,31 @@ def _archived_under(
 ) -> bool:
     """Cheap pre-check before the chunking and embedding pass."""
     return _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
+
+
+def _widen_span(conn, scope: str, digest: str, span: int) -> None:
+    """Grow a stored turn's window when the same text reappears over a LONGER span.
+
+    The digest is the rendered text, so two turns that read the same are one document,
+    but their transcript spans can differ: `_archivable` strips a retrieval call and its
+    result, so a three-message exchange and a four-message batch containing the same
+    exchange render identically. Archived in that order, the second is skipped and keeps
+    the first turn's span of three, and `_document_matches_one_run` then bounds its
+    four-message live run by three and rejects it as off-branch, so no query returns it.
+
+    Only ever UPWARDS. The window is a maximum, so a larger one still matches the shorter
+    turn, while narrowing it would break whichever turn was archived first.
+    """
+    try:
+        conn.execute(
+            "UPDATE documents SET archive_messages = ? "
+            "WHERE scope = ? AND sha256 = ? "
+            "AND (archive_messages IS NULL OR archive_messages < ?)",
+            (int(span), scope, digest, int(span)),
+        )
+        conn.commit()
+    except Exception:
+        logger.debug("conversation_archive.widen_span_failed", exc_info = True)
 
 
 def has_archive(thread_id: str) -> bool:

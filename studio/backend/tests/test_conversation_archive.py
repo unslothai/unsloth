@@ -3969,3 +3969,57 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
     ]
 
     assert conversation_archive._occurrences(positions, live) == [1]
+
+
+def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
+    """One document, two spans: the window has to fit the LONGER of them.
+
+    The digest is the rendered text, and `_archivable` strips a retrieval call and its
+    result, so a three-message tool exchange and a four-message batch containing that same
+    exchange render identically. Archived shortest first, the second was skipped as a
+    duplicate and inherited a window of three, which `_document_matches_one_run` then used
+    to bound a four-message live run: the turn was rejected as off-branch and no query
+    could return it.
+    """
+    short = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    long = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    assert conversation_archive.render_turn(
+        conversation_archive._archivable(short)
+    ) == conversation_archive.render_turn(conversation_archive._archivable(long))
+
+    _archive(short)
+    _archive(long)
+
+    scope = store.conversation_archive_scope(THREAD)
+    rows = conn.execute(
+        "SELECT archive_messages, sha256 FROM documents WHERE scope=?", (scope,)
+    ).fetchall()
+    assert [row["archive_messages"] for row in rows] == [4], "the window stayed at the shorter span"
+
+    # And the longer turn now validates against its own four-message run.
+    text = conversation_archive.render_turn(conversation_archive._archivable(long))
+    live = conversation_archive.branch_message_texts(long)
+    assert conversation_archive._document_matches_one_run([{"text": text}], live, 3) is False
+    assert conversation_archive._document_matches_one_run([{"text": text}], live, 4) is True
