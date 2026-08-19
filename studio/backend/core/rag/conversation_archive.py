@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import bisect
 import json
 import re
 from typing import Optional
@@ -534,6 +535,7 @@ def archive_turns(
                     digest = digest,
                     identity = identity,
                     group = group,
+                    span = span,
                     chunks = chunks,
                     vectors = group_vectors,
                     seats = seats,
@@ -590,10 +592,12 @@ _ARCHIVED = "archived"
 
 
 # How many leaves a branch seed will try. A thread accumulates one leaf per abandoned
-# retry, and each candidate costs a walk plus a render, so this bounds the search on a
-# thread that has been retried hundreds of times. Newest leaves are tried first, and the
-# branch the user is on is one of them in every case this exists for.
-_BRANCH_SEED_MAX_LEAVES = 32
+# retry, and the branch the user went BACK to is older than every retry made since, so a
+# tight cap excluded the one branch this exists to find: past this many retries the seed
+# could not pick the request's own branch however well it matched. Raised, and paid for by
+# rendering each stored message once rather than once per leaf -- sibling chains share
+# nearly all of their ancestors, so the scan is dominated by cache hits.
+_BRANCH_SEED_MAX_LEAVES = 512
 
 
 def _walk_from(by_id: dict, parent_of: dict, leaf) -> list[dict]:
@@ -635,13 +639,28 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     # a turn won the tie, that turn was handed the seat belonging to its earlier twin, and
     # two distinct turns claimed one seat. A multiset fixes the repeat case and not the
     # reordered one, which is why this scores an in-order run.
+    # System and developer messages are excluded because they have no persisted
+    # counterpart: Studio prepends chat and project instructions to the outbound request,
+    # and that synthetic message is not part of the stored chain.
     wanted = [
         text
-        for text in (_normalise_cased(_probe_text(message)) for message in _as_wire(branch))
+        for text in (
+            _normalise_cased(_probe_text(message))
+            for message in _as_wire(branch)
+            if str(message.get("role") or "") not in ("system", "developer")
+        )
         if text
     ]
     if not wanted:
         return None
+    # Where each text may be matched, so the scan can SKIP an entry with no stored
+    # counterpart instead of stalling on it. A strict cursor stalled on the first such
+    # entry and every leaf scored zero, which fell back to the newest row -- the abandoned
+    # branch this exists to avoid. Measured with an ordinary system prompt in front: the
+    # seed picked branch B over the request's own A on a thread it had just got right.
+    where: dict = {}
+    for index, text in enumerate(wanted):
+        where.setdefault(text, []).append(index)
     parents = {parent for parent in parent_of.values() if parent is not None}
     order = {message.get("id"): index for index, message in enumerate(messages)}
     leaves = sorted(
@@ -651,17 +670,40 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     )
     best = None
     best_score = 0
+    # Rendered once per STORED ROW, not once per leaf. `_as_wire` treats each row
+    # independently, so a row's expansion is the same whichever chain it is walked in.
+    rendered: dict = {}
+
+    def _texts_of(record: dict) -> list:
+        identifier = record.get("id")
+        if identifier is None:
+            return [_normalise_cased(_probe_text(m)) for m in _as_wire([record])]
+        if identifier not in rendered:
+            rendered[identifier] = [
+                _normalise_cased(_probe_text(m)) for m in _as_wire([record])
+            ]
+        return rendered[identifier]
+
     for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
         # Greedy in-order scan, gaps allowed on both sides: the newest branch message is
         # usually not persisted yet, and the evicted turns are no longer in the fitted
         # conversation, so neither side is a subsequence of the other.
         cursor = 0
-        for message in _as_wire(_walk_from(by_id, parent_of, leaf)):
-            text = _normalise_cased(_probe_text(message))
-            if text and cursor < len(wanted) and text == wanted[cursor]:
-                cursor += 1
-        if cursor > best_score:
-            best, best_score = leaf, cursor
+        score = 0
+        for record in _walk_from(by_id, parent_of, leaf):
+            for text in _texts_of(record):
+                spots = where.get(text) if text else None
+                if not spots:
+                    continue
+                index = bisect.bisect_left(spots, cursor)
+                if index < len(spots):
+                    cursor = spots[index] + 1
+                    score += 1
+        if score > best_score:
+            best, best_score = leaf, score
+        if best_score >= len(wanted):
+            # Every message the request carries is on this chain; nothing can beat it.
+            break
     return best
 
 
@@ -792,6 +834,52 @@ def _tool_result_content(result, tool_name: str = "") -> str:
     return json.dumps(result, separators = (",", ":"))
 
 
+def _replayable(part: dict) -> bool:
+    """Whether the serializer replays this tool call at all.
+
+    `chat-adapter.ts` drops the whole call when it has no result to send and cannot be
+    replayed without one: `if (!toolResult && !canReplayToolCallWithoutRoleTool(part))
+    continue`. That is every cancelled or still-running LOCAL card. Keeping it here and
+    merely omitting its `tool` message invented an assistant `tool_calls` message the
+    request never carried, which shifts the groups either side of it and can send an
+    otherwise live turn to a wrong ordinal or out of the branch check entirely.
+
+    A provider-side builtin is replayable without a result, but one with no native part
+    is dropped by `serializeAssistantToolCallPart` instead, so it is not a call here.
+    """
+    builtin, native = _server_builtin(part)
+    if builtin:
+        return native
+    return part.get("result") is not None
+
+
+def _local_round_id(part: dict):
+    """`codexLocalToolRoundId`: the round a LOCAL tool call belongs to, or None."""
+    provenance = part.get("provenance")
+    if not isinstance(provenance, dict) or provenance.get("source") != "local":
+        return None
+    round_id = provenance.get("round_id")
+    if isinstance(round_id, bool) or not isinstance(round_id, int):
+        return None
+    return round_id
+
+
+def _flushes_local_pair(part: dict) -> bool:
+    """`shouldFlushCompletedLocalToolPair`: a completed local call is its own round.
+
+    A local tool card that already has its result is flushed both BEFORE and AFTER it, so
+    two adjacent completed local calls replay as two sequential assistant/tool groups and
+    not as one parallel group. Batching them made `group_turns`, the occurrence ordinals
+    and the live-branch check all describe a transcript shape the request never sent.
+    """
+    provenance = part.get("provenance")
+    if not isinstance(provenance, dict) or provenance.get("source") != "local":
+        return False
+    if _server_builtin(part)[0]:
+        return False
+    return part.get("result") is not None
+
+
 def _as_wire(messages: list[dict]) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
@@ -820,12 +908,13 @@ def _as_wire(messages: list[dict]) -> list[dict]:
         # A provider-side builtin with no native part is not replayed at all, so it is
         # not a call here either: counting it made this take the tool-call path and
         # invent an exchange the request never carried.
+        # Any tool-call part sends the row down the replay loop, even one the serializer
+        # drops: the passthrough path would keep the dropped part in `content`, and
+        # `_probe_text` would then render a call the request never sent.
         calls = [
             part
             for part in (parts or [])
-            if isinstance(part, dict)
-            and part.get("type") == "tool-call"
-            and not (_server_builtin(part) == (True, False))
+            if isinstance(part, dict) and part.get("type") == "tool-call"
         ]
         if not calls:
             wire.append(
@@ -847,8 +936,11 @@ def _as_wire(messages: list[dict]) -> list[dict]:
         # also what the live form does with what the model said on its way to calling.
         pending_calls: list[dict] = []
         pending_text: list = []
+        # A one-slot box because `_flush` resets it and Python closures cannot rebind.
+        pending_round: list = [None]
 
         def _flush(role = message.get("role")) -> None:
+            pending_round[0] = None
             if not pending_calls and not pending_text:
                 return
             body: list = [
@@ -888,10 +980,26 @@ def _as_wire(messages: list[dict]) -> list[dict]:
 
         for part in parts:
             if isinstance(part, dict) and part.get("type") == "tool-call":
-                if _server_builtin(part) == (True, False):
+                if not _replayable(part):
                     # Dropped whole, call and result, exactly as the serializer does.
                     continue
+                round_id = _local_round_id(part)
+                if (
+                    pending_calls
+                    and pending_round[0] is not None
+                    and round_id is not None
+                    and pending_round[0] != round_id
+                ):
+                    # `startsNewCodexToolRound`: a new local round is a new group.
+                    _flush()
+                if round_id is not None:
+                    pending_round[0] = round_id
+                flush_pair = round_id is None and _flushes_local_pair(part)
+                if flush_pair and pending_calls:
+                    _flush()
                 pending_calls.append(part)
+                if flush_pair:
+                    _flush()
                 continue
             if pending_calls:
                 _flush()
@@ -1021,6 +1129,7 @@ def _write_copy(
     digest: str,
     identity: str,
     group: list[dict],
+    span: int,
     chunks,
     vectors,
     seats: list[int],
@@ -1030,6 +1139,12 @@ def _write_copy(
     Only for topping up after a re-embed, which replaces a copy rather than adding one.
     Returns False when there is no seat left to fill, so the caller stops rather than
     allocating a fresh ordinal and putting a repeat at the end of its own conversation.
+
+    ``span`` is the turn's size in the TRANSCRIPT and not ``len(group)``: `_archivable`
+    strips a retrieval call and its result, so a group of three can span four live
+    messages. Written short, the branch check bounds its run by the smaller figure and
+    filters this copy out of every recall -- the same bug the primary write path was
+    fixed for, reappearing on the top-up path.
     """
     copies = store.documents_by_hash(conn, scope, digest)
     if not seats or len(copies) >= len(seats):
@@ -1042,7 +1157,7 @@ def _write_copy(
         sha256 = digest,
         status = "completed",
         embedding_model = identity,
-        archive_messages = len(group),
+        archive_messages = span,
         archive_ordinal = seats[len(copies)],
         commit = False,
     )

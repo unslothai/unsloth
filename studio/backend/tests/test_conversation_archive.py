@@ -3716,3 +3716,205 @@ def test_a_batch_mixing_a_search_with_an_ordinary_tool_keeps_its_transcript_span
         ).fetchall()
     ]
     assert spans == [4], spans
+
+
+def test_a_system_prompt_does_not_stall_the_branch_seed(conn):
+    """Studio prepends chat and project instructions to every outbound request.
+
+    That synthetic `system` message is not part of the stored chain, so a strict cursor
+    stalled on it: no leaf could advance past `wanted[0]`, every one scored zero, and the
+    seed fell back to the newest row -- the abandoned branch it exists to avoid. Measured
+    with an ordinary system prompt in front, the seed picked branch B over the request's
+    own A on a thread it had just got right.
+    """
+    live = _branch_switch_thread()
+    with_system = [{"role": "system", "content": "You are a helpful assistant."}] + live
+
+    plain = conversation_archive._transcript_positions(THREAD, branch = live)
+    seeded = conversation_archive._transcript_positions(THREAD, branch = with_system)
+
+    assert len(plain) == 3, plain
+    assert seeded == plain
+
+
+def test_the_branch_seed_reaches_a_leaf_older_than_the_retry_pile(conn):
+    """The branch a user goes BACK to is older than every retry made since.
+
+    Capping the candidate leaves at a small number therefore excluded the one branch this
+    exists to find: past that many retries the request's own branch could not be selected
+    however well it matched, and the walk fell back to the newest abandoned leaf.
+    """
+    from storage import studio_db
+
+    live = _branch_switch_thread()
+    # A pile of newer abandoned retries, each its own leaf off the very first reply.
+    for index in range(40):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"r{index}",
+                "threadId": THREAD,
+                "parentId": "m1",
+                "role": "user",
+                "content": [{"type": "text", "text": f"abandoned retry {index}"}],
+                "createdAt": 100 + index,
+            }
+        )
+
+    positions = conversation_archive._transcript_positions(THREAD, branch = live)
+
+    assert len(positions) == 3, positions
+    assert conversation_archive._occurrences(positions, live[4:6]) == [2]
+
+
+def test_an_unfinished_local_tool_call_is_not_replayed_at_all():
+    """A cancelled card is not a call with a missing result, it is not a call.
+
+    `chat-adapter.ts` drops the whole thing (`if (!toolResult &&
+    !canReplayToolCallWithoutRoleTool(part)) continue`), so keeping the call and merely
+    omitting its `tool` message reconstructs an assistant `tool_calls` message the request
+    never carried. That shifts every group after it, which is what decides ordinals and
+    whether an archived turn passes the live-branch check.
+    """
+    row = {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool-call",
+                "toolCallId": "c1",
+                "toolName": "terminal",
+                "provenance": {"source": "local"},
+            },
+            {"type": "text", "text": "cancelled, moving on"},
+        ],
+    }
+
+    wire = conversation_archive._as_wire([row])
+
+    assert [message.get("role") for message in wire] == ["assistant"]
+    assert "tool_calls" not in wire[0]
+    assert not any(
+        isinstance(part, dict) and part.get("type") == "tool-call"
+        for part in wire[0]["content"]
+    ), "an unreplayable call was rebuilt into the wire form"
+
+
+def test_two_completed_local_tool_calls_replay_as_two_rounds():
+    """`shouldFlushCompletedLocalToolPair` makes each completed local pair its own group.
+
+    Batched into one parallel call message, `group_turns` sees one exchange where the
+    request sent two, so the second call matches no position and takes an invented
+    ordinal.
+    """
+    row = {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool-call",
+                "toolCallId": "c1",
+                "toolName": "terminal",
+                "provenance": {"source": "local"},
+                "result": "one",
+            },
+            {
+                "type": "tool-call",
+                "toolCallId": "c2",
+                "toolName": "terminal",
+                "provenance": {"source": "local"},
+                "result": "two",
+            },
+        ],
+    }
+
+    wire = conversation_archive._as_wire([row])
+
+    assert [message.get("role") for message in wire] == [
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert [message.get("tool_call_id") for message in wire if message["role"] == "tool"] == [
+        "c1",
+        "c2",
+    ]
+
+
+def test_a_new_local_tool_round_starts_a_new_group():
+    """`startsNewCodexToolRound`: same round batches, a different round flushes."""
+    def _call(identifier, round_id):
+        return {
+            "type": "tool-call",
+            "toolCallId": identifier,
+            "toolName": "terminal",
+            "provenance": {"source": "local", "round_id": round_id},
+            "result": identifier,
+        }
+
+    wire = conversation_archive._as_wire(
+        [{"role": "assistant", "content": [_call("c1", 1), _call("c2", 1), _call("c3", 2)]}]
+    )
+
+    assert [message.get("role") for message in wire] == [
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert [call["id"] for call in wire[0]["tool_calls"]] == ["c1", "c2"]
+    assert [call["id"] for call in wire[3]["tool_calls"]] == ["c3"]
+
+
+def test_a_topped_up_copy_keeps_the_transcript_span(conn):
+    """The top-up path writes the same document, so it needs the same span.
+
+    `_archivable` strips a retrieval call and its result, so a group of three can cover
+    four transcript messages. The primary write records the transcript figure; the
+    re-embed top-up recorded `len(group)`, and a copy written short is bounded by the
+    smaller run in `_document_matches_one_run` and filtered out of every recall.
+    """
+    group = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search_conversation", "arguments": '{"q":"x"}'}},
+                {"id": "c2", "function": {"name": "terminal", "arguments": '{"command":"ls"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "earlier turns about the repo"},
+        {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},
+        {"role": "assistant", "content": "The repo has two files."},
+    ]
+    archivable = conversation_archive._archivable(group)
+    assert len(archivable) == 3 and len(group) == 4
+
+    _archive(group)
+    scope = store.conversation_archive_scope(THREAD)
+    digest = [
+        row["sha256"]
+        for row in conn.execute("SELECT sha256 FROM documents WHERE scope=?", (scope,)).fetchall()
+    ][0]
+
+    assert conversation_archive._write_copy(
+        conn,
+        scope = scope,
+        thread_id = THREAD,
+        roles = "assistant",
+        digest = digest,
+        identity = "test-embedder",
+        group = archivable,
+        span = len(group),
+        chunks = [],
+        vectors = [],
+        seats = [0, 1],
+    ) is True
+    conn.commit()
+
+    spans = [
+        row["archive_messages"]
+        for row in conn.execute(
+            "SELECT archive_messages FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    ]
+    assert spans == [4, 4], spans
