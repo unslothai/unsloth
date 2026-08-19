@@ -299,7 +299,6 @@ def _studio_custom_path_active() -> bool:
     """True when Settings, rather than the managed installer, owns the runtime."""
     try:
         from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
-
         return custom_llama_cpp_path_source() == "studio"
     except Exception:
         return False

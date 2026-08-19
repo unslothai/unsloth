@@ -966,9 +966,7 @@ def update_hugging_face_cache(
 
 
 @router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
-def get_llama_cpp_path(
-    current_subject: str = Depends(get_current_subject),
-) -> LlamaCppPathResponse:
+def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
     return _llama_cpp_path_response()
 
 

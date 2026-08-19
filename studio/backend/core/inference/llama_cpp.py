@@ -4886,7 +4886,6 @@ class LlamaCppBackend:
             # Keep Settings validation and runtime discovery on one layout
             # contract so a folder accepted by the UI is always launchable.
             from utils.llama_cpp_path_settings import llama_server_candidates
-
             return list(llama_server_candidates(d))
 
         def _unavailable(p: object) -> None:
@@ -4937,7 +4936,6 @@ class LlamaCppBackend:
         # llama-server actually ran.
         try:
             from utils.llama_cpp_path_settings import get_stored_custom_llama_cpp_path
-
             studio_custom_llama_cpp = get_stored_custom_llama_cpp_path()
         except Exception:
             studio_custom_llama_cpp = None

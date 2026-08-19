@@ -66,8 +66,8 @@ def resolve_llama_server_binary(
     return next(
         (
             candidate
-            for candidate in llama_server_candidates(directory, platform=platform)
-            if _usable_binary(candidate, platform=platform)
+            for candidate in llama_server_candidates(directory, platform = platform)
+            if _usable_binary(candidate, platform = platform)
         ),
         None,
     )
@@ -77,7 +77,6 @@ def get_stored_custom_llama_cpp_path() -> Optional[Path]:
     """The Studio-selected directory, or ``None`` when automatic discovery is active."""
     try:
         from storage.studio_db import get_app_setting
-
         value = get_app_setting(CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)
     except Exception:
         # A settings DB problem must not take the bundled runtime down with it.
@@ -118,7 +117,7 @@ def _canonical_directory(value: str) -> Path:
     if len(raw) > MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH:
         raise ValueError("The llama.cpp folder path is too long.")
     try:
-        directory = Path(raw).expanduser().resolve(strict=True)
+        directory = Path(raw).expanduser().resolve(strict = True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("The llama.cpp folder does not exist or cannot be accessed.") from exc
     if not directory.is_dir():
@@ -139,7 +138,6 @@ def set_custom_llama_cpp_path(value: Optional[str]) -> Optional[Path]:
     directory = _canonical_directory(value) if value is not None else None
     with _settings_lock:
         from storage.studio_db import upsert_app_settings
-
         upsert_app_settings(
             {CUSTOM_LLAMA_CPP_PATH_SETTING_KEY: (str(directory) if directory is not None else None)}
         )

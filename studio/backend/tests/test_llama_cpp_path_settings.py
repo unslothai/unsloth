@@ -19,12 +19,12 @@ from utils import llama_cpp_path_settings as path_settings
 @pytest.fixture()
 def settings_store(monkeypatch):
     store = {}
-    monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising=False)
-    monkeypatch.delenv(path_settings.MANAGED_LLAMA_CPP_PATH_MARKER, raising=False)
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.delenv(path_settings.MANAGED_LLAMA_CPP_PATH_MARKER, raising = False)
     monkeypatch.setattr(
         "storage.studio_db.get_app_setting",
-        lambda key, fallback=None: store.get(key, fallback),
+        lambda key, fallback = None: store.get(key, fallback),
     )
     monkeypatch.setattr(
         "storage.studio_db.upsert_app_settings",
@@ -33,7 +33,12 @@ def settings_store(monkeypatch):
     return store
 
 
-def _binary(root: Path, *, platform: str | None = None, layout: str = "build") -> Path:
+def _binary(
+    root: Path,
+    *,
+    platform: str | None = None,
+    layout: str = "build",
+) -> Path:
     name = path_settings.llama_server_binary_name(platform)
     if layout == "root":
         binary = root / name
@@ -41,7 +46,7 @@ def _binary(root: Path, *, platform: str | None = None, layout: str = "build") -
         binary = root / "build" / "bin" / "Release" / name
     else:
         binary = root / "build" / "bin" / name
-    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.parent.mkdir(parents = True, exist_ok = True)
     binary.write_bytes(b"test llama-server")
     binary.chmod(0o755)
     return binary
@@ -60,9 +65,9 @@ def _binary(root: Path, *, platform: str | None = None, layout: str = "build") -
 )
 def test_supported_build_layouts_resolve(tmp_path, platform, layout):
     root = tmp_path / f"{platform}-{layout}"
-    expected = _binary(root, platform=platform, layout=layout)
+    expected = _binary(root, platform = platform, layout = layout)
 
-    assert path_settings.resolve_llama_server_binary(root, platform=platform) == expected
+    assert path_settings.resolve_llama_server_binary(root, platform = platform) == expected
 
 
 def test_setting_round_trip_and_reset(settings_store, tmp_path):
@@ -89,12 +94,12 @@ def test_setting_round_trip_and_reset(settings_store, tmp_path):
 
 
 def test_setting_rejects_missing_folder_and_folder_without_server(settings_store, tmp_path):
-    with pytest.raises(ValueError, match="does not exist"):
+    with pytest.raises(ValueError, match = "does not exist"):
         path_settings.set_custom_llama_cpp_path(str(tmp_path / "missing"))
 
     empty = tmp_path / "empty"
     empty.mkdir()
-    with pytest.raises(ValueError, match="No executable llama-server"):
+    with pytest.raises(ValueError, match = "No executable llama-server"):
         path_settings.set_custom_llama_cpp_path(str(empty))
 
     assert path_settings.CUSTOM_LLAMA_CPP_PATH_SETTING_KEY not in settings_store
@@ -115,7 +120,7 @@ def test_environment_path_is_displayed_and_locks_the_setting(settings_store, mon
     assert status["path"] == str(env_root)
     assert status["resolved_binary"] == str(env_binary)
     assert status["environment_variable"] == "UNSLOTH_LLAMA_CPP_PATH"
-    with pytest.raises(RuntimeError, match="UNSLOTH_LLAMA_CPP_PATH"):
+    with pytest.raises(RuntimeError, match = "UNSLOTH_LLAMA_CPP_PATH"):
         path_settings.set_custom_llama_cpp_path(str(stored))
 
 
@@ -177,7 +182,7 @@ def test_runtime_resolver_rejects_a_selected_binary_that_loses_execute_permissio
     from core.inference.llama_cpp import LlamaCppBackend
 
     selected = tmp_path / "selected"
-    binary = _binary(selected, platform="linux")
+    binary = _binary(selected, platform = "linux")
     settings_store[path_settings.CUSTOM_LLAMA_CPP_PATH_SETTING_KEY] = str(selected)
     real_access = os.access
 
@@ -220,11 +225,11 @@ def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypa
     monkeypatch.setattr(settings_route, "_llama_cpp_path_reload_required", lambda: False)
 
     saved = settings_route.update_llama_cpp_path(
-        settings_route.LlamaCppPathPayload(path=str(root)),
-        current_subject="studio-user",
-        via_api_key=False,
+        settings_route.LlamaCppPathPayload(path = str(root)),
+        current_subject = "studio-user",
+        via_api_key = False,
     )
-    loaded = settings_route.get_llama_cpp_path(current_subject="studio-user")
+    loaded = settings_route.get_llama_cpp_path(current_subject = "studio-user")
 
     assert saved.path == str(root.resolve())
     assert saved.source == "studio"
@@ -263,9 +268,9 @@ def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         settings_route.update_llama_cpp_path(
-            settings_route.LlamaCppPathPayload(path=None),
-            current_subject="api-client",
-            via_api_key=True,
+            settings_route.LlamaCppPathPayload(path = None),
+            current_subject = "api-client",
+            via_api_key = True,
         )
 
     assert exc_info.value.status_code == 403
@@ -281,9 +286,9 @@ def test_settings_route_returns_the_specific_validation_error(settings_store, tm
 
     with pytest.raises(HTTPException) as exc_info:
         settings_route.update_llama_cpp_path(
-            settings_route.LlamaCppPathPayload(path=str(empty)),
-            current_subject="studio-user",
-            via_api_key=False,
+            settings_route.LlamaCppPathPayload(path = str(empty)),
+            current_subject = "studio-user",
+            via_api_key = False,
         )
 
     assert exc_info.value.status_code == 400
