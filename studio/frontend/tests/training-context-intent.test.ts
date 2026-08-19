@@ -10,6 +10,9 @@ const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { useTrainingConfigStore } = await import(
   "../src/features/training/stores/training-config-store.ts"
 );
+const { mergeTrainingConfig } = await import(
+  "../src/features/training/stores/training-config-persistence.ts"
+);
 const { selectTrainingMethodForHardware } = await import(
   "../src/features/training/stores/training-method-hardware-policy.ts"
 );
@@ -55,6 +58,30 @@ test("explicit context survives same-model defaults and cache refresh", async ()
   assert.equal(useTrainingConfigStore.getState().contextLength, 8192);
 
   useTrainingConfigStore.getState().setContextLength(4096);
+  useTrainingConfigStore.getState().setSelectedModelCacheReference("org/first", {
+    localPath: "/cache/first",
+    modelFormat: null,
+  });
+  await settle();
+
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.contextLength, 4096);
+  assert.equal(state.contextLengthManuallySet, true);
+});
+
+test("rehydrated context ownership survives same-model model defaults", async () => {
+  const rehydrated = mergeTrainingConfig(
+    {
+      selectedModel: "org/first",
+      contextLength: 4096,
+      contextLengthManuallySet: true,
+      modelDefaultsAppliedFor: "org/first",
+      advancedSettingsBaseline: { contextLength: 8192 },
+    },
+    useTrainingConfigStore.getState(),
+  );
+  useTrainingConfigStore.setState(rehydrated);
+
   useTrainingConfigStore.getState().setSelectedModelCacheReference("org/first", {
     localPath: "/cache/first",
     modelFormat: null,
