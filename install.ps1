@@ -472,8 +472,12 @@ function Install-UnslothStudio {
         # location while the .NET file APIs are relative to the process working
         # directory, and Set-Location moves only the first, so probing a relative
         # value can check one directory and write to another.
+        # Whitespace-only is left exactly as it is, so the probe below rejects it.
+        # Resolving it first would turn "   " or a tab into the working directory
+        # plus that name, which is creatable on some filesystems, and the installer
+        # would manufacture a junk directory and then trust it as the host's temp.
         $absolute = $inherited
-        if (-not [string]::IsNullOrEmpty($inherited)) {
+        if (-not [string]::IsNullOrWhiteSpace($inherited)) {
             try { $absolute = [System.IO.Path]::GetFullPath($inherited) } catch { $absolute = $inherited }
         }
         if (Test-StudioDirectoryUsable -Path $absolute) {
