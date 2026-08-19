@@ -503,11 +503,8 @@ def test_setup_uv_cache_guard_covers_every_setup_uv_call_after_ownership_validat
     outer_try_at = source.index("try {", capture_at)
     cache_setup_at = source.index(cache_setup, outer_try_at)
     restore_at = source.index(restore, cache_setup_at)
-    # Every uv/uvx invocation, not just the `uv pip` pair that exists today: the point of
-    # the guard is that a later `uv venv` or `uv sync` cannot land ahead of it.
+    # Direct uv calls and the Python child that invokes uv must stay inside the region.
     uv_calls = [match.start() for match in re.finditer(r"(?m)^\s*(?:\$\w+ = )?& uvx?\b", source)]
-    # The reason this has to be the environment variable and not `uv --cache-dir`: this child
-    # runs its own `uv pip install`, so it has to inherit the setting.
     python_stack_at = source.index(r'python "$PSScriptRoot\install_python_stack.py"')
 
     assert ownership_rejection_at < capture_at < outer_try_at < cache_setup_at < restore_at

@@ -3581,11 +3581,8 @@ exit 0
         $_Migrated = $true
     }
 
-    # Keep uv's install cache with Studio's managed cache tree rather than the
-    # user-wide LOCALAPPDATA default. A regular file left at this managed path
-    # would otherwise make uv fail before it can create the virtual environment.
-    # Defer mutating the cache path until any existing venv passes its ownership
-    # guard. The outer install finally restores the caller's value on every exit.
+    # Keep uv's default cache under Studio so it is removed with Studio. Wait until any
+    # existing venv passes ownership validation; the outer finally restores the caller's value.
     if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
         $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioHome "cache") "uv"
         if (Test-Path -LiteralPath $env:UV_CACHE_DIR -PathType Leaf) {
