@@ -48,11 +48,11 @@ import json
 import sys
 from pathlib import Path
 
-if __package__ in (None, ""):                                                   # pragma: no cover
+if __package__ in (None, ""):  # pragma: no cover
     # Running the file directly rather than as a module, which is the first thing anyone tries.
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from tests.studio.studiobench.analysis import parity as P                       # noqa: E402
+from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 
 # The DECLARED unstable set, each entry carrying its mechanism. It lives in the studiobench
 # package rather than here so that a test can require a mechanism for every entry, and so that
@@ -66,8 +66,9 @@ UNSTABLE_ACTIONS = frozenset(P.UNSTABLE_ACTIONS)
 
 
 def rows(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()
-            if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
+    ]
 
 
 def arm_of(cell_id: str) -> str:
@@ -110,13 +111,22 @@ def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
         if "base" not in sides or "treatment" not in sides:
             # One arm never produced this row at all. Recorded rather than skipped: an action that
             # ran on one arm and not the other is itself a difference between the arms.
-            results.append((action, shard, rep, {
-                "verdict": P.NOT_COMPARABLE, "moved": [],
-                "reason": f"only the {next(iter(sides))} arm recorded this action",
-                "style_verdict": P.NOT_COMPARABLE, "style_reason": ""}))
+            results.append(
+                (
+                    action,
+                    shard,
+                    rep,
+                    {
+                        "verdict": P.NOT_COMPARABLE,
+                        "moved": [],
+                        "reason": f"only the {next(iter(sides))} arm recorded this action",
+                        "style_verdict": P.NOT_COMPARABLE,
+                        "style_reason": "",
+                    },
+                )
+            )
             continue
-        results.append((action, shard, rep,
-                        P.compare_rows(sides["base"], sides["treatment"])))
+        results.append((action, shard, rep, P.compare_rows(sides["base"], sides["treatment"])))
     return results, got
 
 
@@ -144,9 +154,11 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
     if not results:
         # An empty result is reported as an empty result. "No mismatches found" when nothing was
         # ever compared is the exact shape of a check that silently does nothing.
-        print(f"\n{label}: NO PARITY DATA in {len(paths)} payload(s). "
-              f"{got['missing']} action rows carried no digest. "
-              f"Was this run recorded before the parity instrument existed?")
+        print(
+            f"\n{label}: NO PARITY DATA in {len(paths)} payload(s). "
+            f"{got['missing']} action rows carried no digest. "
+            f"Was this run recorded before the parity instrument existed?"
+        )
         return 2
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
@@ -173,8 +185,10 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
     print(f"  unstable actions differing: {len(unstable_bad)}  (expected to vary; not a verdict)")
     print(f"  NOT COMPARABLE:             {len(blind)}  (never measured; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
-    print(f"  style probe differing:      {len(style_bad)}  (advisory: display/visibility/"
-          f"pointer-events)")
+    print(
+        f"  style probe differing:      {len(style_bad)}  (advisory: display/visibility/"
+        f"pointer-events)"
+    )
 
     if stable_bad:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
@@ -192,8 +206,10 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         # Named surfaces, deduplicated: what matters is WHICH actions this run never opened, not
         # that it failed to open one of them sixteen separate times.
         names = sorted({action for action, _s, _r, _w in idle})
-        print(f"\n  NOT EXERCISED -- {len(idle)} pair(s) over {len(names)} action(s) that did not "
-              f"run. These surfaces are UNCHECKED, not unchanged:")
+        print(
+            f"\n  NOT EXERCISED -- {len(idle)} pair(s) over {len(names)} action(s) that did not "
+            f"run. These surfaces are UNCHECKED, not unchanged:"
+        )
         for name in names:
             why = next(w[0] for a, _s, _r, w in idle if a == name)
             print(f"    {name:<26} {why}")
@@ -230,16 +246,21 @@ def tier_of(paths: list[Path]) -> set[str]:
 def shards_of(pattern: str) -> list[Path]:
     root = Path(pattern).parent if "/" in pattern else Path(".")
     stem = Path(pattern).name
-    return sorted(p / "payload.jsonl" for p in root.glob(stem)
-                  if (p / "payload.jsonl").exists())
+    return sorted(p / "payload.jsonl" for p in root.glob(stem) if (p / "payload.jsonl").exists())
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description = __doc__,
-                                 formatter_class = argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description = __doc__, formatter_class = argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("payloads", nargs = "+", help = "studiobench output dirs (globs allowed)")
-    ap.add_argument("--null", metavar = "OUTDIR", action = "append", default = [],
-                    help = "a base-vs-base run to derive the unstable set from")
+    ap.add_argument(
+        "--null",
+        metavar = "OUTDIR",
+        action = "append",
+        default = [],
+        help = "a base-vs-base run to derive the unstable set from",
+    )
     args = ap.parse_args(argv)
 
     null_paths: list[Path] = []
@@ -250,8 +271,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"UNSTABLE SET DERIVED from {len(null_paths)} null-control shard(s)")
         for key, entries in checks.items():
             print(f"  {key:<32} {', '.join(entries) if entries else '(none)'}")
-        print(f"  scoring against {len(unstable)} unstable action(s): "
-              f"{', '.join(sorted(unstable))}")
+        print(
+            f"  scoring against {len(unstable)} unstable action(s): "
+            f"{', '.join(sorted(unstable))}"
+        )
     else:
         print(f"UNSTABLE SET DECLARED, not measured: {', '.join(sorted(unstable))}")
         print("  pass --null OUTDIR of a base-vs-base run to derive it instead.")
@@ -266,9 +289,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
         tiers = tier_of(paths)
         if null_tiers and tiers and null_tiers != tiers:
-            print(f"\n  WARNING: the null control was recorded at tier {sorted(null_tiers)} and "
-                  f"this payload at {sorted(tiers)}. Which actions are unstable depends on the "
-                  f"film's slot spacing, so this unstable set does not transfer.")
+            print(
+                f"\n  WARNING: the null control was recorded at tier {sorted(null_tiers)} and "
+                f"this payload at {sorted(tiers)}. Which actions are unstable depends on the "
+                f"film's slot spacing, so this unstable set does not transfer."
+            )
         worst = max(worst, report(paths, f"UI PARITY: {pattern}", unstable))
     return worst
 

@@ -33,14 +33,17 @@ import statistics
 import sys
 from pathlib import Path
 
-if __package__ in (None, ""):                                                   # pragma: no cover
+if __package__ in (None, ""):  # pragma: no cover
     # Running the file directly rather than as a module. Supported because the first thing a new
     # contributor does with a script is run it by path, and failing there with an import error is a
     # bad first minute.
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from tests.studio.studiobench.scoring.from_payload import (                     # noqa: E402
-    ACTION_SOURCES, FRAME_METRICS, _actions_for, _frame_measures,
+from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
+    ACTION_SOURCES,
+    FRAME_METRICS,
+    _actions_for,
+    _frame_measures,
 )
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS
@@ -76,8 +79,7 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
             continue
         cid = row["cell_id"]
         vals: dict[str, float] = _action_timings(records, cid)
-        windows = [w for w in records
-                   if w.get("row_type") == "window" and w.get("cell_id") == cid]
+        windows = [w for w in records if w.get("row_type") == "window" and w.get("cell_id") == cid]
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
@@ -125,8 +127,9 @@ def tier_of(records: list[dict]) -> str:
 
 
 def read_rows(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()
-            if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
+    ]
 
 
 def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[str]]:
@@ -145,9 +148,11 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
         for metric, rows in paired(records, shard = str(path.parent.name)).items():
             pooled[metric].extend(rows)
     if len(tiers) > 1:
-        raise SystemExit(f"refusing to pool payloads from different tiers: {sorted(tiers)}. A "
-                         f"fast-tier film and a standard-tier film are different measurements of "
-                         f"the same action, not repetitions of one.")
+        raise SystemExit(
+            f"refusing to pool payloads from different tiers: {sorted(tiers)}. A "
+            f"fast-tier film and a standard-tier film are different measurements of "
+            f"the same action, not repetitions of one."
+        )
     return pooled, tiers
 
 
@@ -198,14 +203,20 @@ def verdict_for(stat: dict, floor: dict | None) -> tuple[float | None, str]:
     return f, ("faster" if stat["delta_pct"] < 0 else "SLOWER")
 
 
-def render(paths: list[Path], title: str, floors: dict | None = None,
-           floor_tier: str | None = None) -> int:
+def render(
+    paths: list[Path],
+    title: str,
+    floors: dict | None = None,
+    floor_tier: str | None = None,
+) -> int:
     stats = summarise(paths)
     tier = tier_of(read_rows(paths[0]))
     if floor_tier is not None and floor_tier != tier:
-        raise SystemExit(f"refusing to score a {tier}-tier payload against a {floor_tier}-tier "
-                         f"floor: the two run different films, so their spreads are not the same "
-                         f"quantity. Run a null control at --tier {tier}.")
+        raise SystemExit(
+            f"refusing to score a {tier}-tier payload against a {floor_tier}-tier "
+            f"floor: the two run different films, so their spreads are not the same "
+            f"quantity. Run a null control at --tier {tier}."
+        )
     if tier == "fast":
         print("\n  NOTE: fast tier. These are directions for iteration, not reportable numbers.")
     print(f"\n{title}")
@@ -216,8 +227,10 @@ def render(paths: list[Path], title: str, floors: dict | None = None,
     survivors = 0
     for metric in sorted(stats, key = lambda m: (m in METRICS, m)):
         s = stats[metric]
-        line = (f"  {metric:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
-                f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}")
+        line = (
+            f"  {metric:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
+            f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}"
+        )
         if floors is not None:
             f, verdict = verdict_for(s, floors.get(metric))
             line += (f"{'--':>13}" if f is None else f"{f:>13.1f}") + f"  {verdict}"
@@ -233,20 +246,26 @@ def shards_of(pattern: str) -> list[Path]:
     """`outputs/sbench_mine*` to every shard's payload, in a stable order."""
     root = Path(pattern).parent if "/" in pattern else Path(".")
     stem = Path(pattern).name
-    found = sorted(p / "payload.jsonl" for p in root.glob(stem)
-                   if (p / "payload.jsonl").exists())
+    found = sorted(p / "payload.jsonl" for p in root.glob(stem) if (p / "payload.jsonl").exists())
     return found or ([Path(pattern)] if Path(pattern).exists() else [])
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog = "studiobench.sweep.floor_table",
-        description = "Per-metric detection floor and the three verdict gates.")
-    ap.add_argument("payloads", nargs = "+",
-                    help = "studiobench output directories or payload paths (globs allowed)")
-    ap.add_argument("--floor", metavar = "OUTDIR",
-                    help = "the null control (base vs base) whose spread sets the floor. Without "
-                           "it this prints deltas and REFUSES to call any of them a result")
+        description = "Per-metric detection floor and the three verdict gates.",
+    )
+    ap.add_argument(
+        "payloads",
+        nargs = "+",
+        help = "studiobench output directories or payload paths (globs allowed)",
+    )
+    ap.add_argument(
+        "--floor",
+        metavar = "OUTDIR",
+        help = "the null control (base vs base) whose spread sets the floor. Without "
+        "it this prints deltas and REFUSES to call any of them a result",
+    )
     args = ap.parse_args(argv)
 
     floors, floor_tier = None, None
@@ -269,8 +288,10 @@ def main(argv: list[str] | None = None) -> int:
     if not seen:
         return 2
     if floors is None:
-        print("\n  NO FLOOR SUPPLIED. Nothing above is a result: without a null control there is "
-              "\n  no way to tell any of these deltas from the noise of two identical builds.")
+        print(
+            "\n  NO FLOOR SUPPLIED. Nothing above is a result: without a null control there is "
+            "\n  no way to tell any of these deltas from the noise of two identical builds."
+        )
     return 0
 
 
