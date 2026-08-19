@@ -52,23 +52,27 @@ from studiobench.scoring import Measure  # noqa: E402
 
 def _arm(arm_id: str) -> Arm:
     return Arm(
-        arm_id=arm_id,
-        title=arm_id,
-        mechanism="synthetic",
-        invariance=Invariance.EXACT,
-        potency=PotencyCounter(name="fired", min_delta=1, direction="increase"),
-        implies_fix="synthetic",
+        arm_id = arm_id,
+        title = arm_id,
+        mechanism = "synthetic",
+        invariance = Invariance.EXACT,
+        potency = PotencyCounter(name = "fired", min_delta = 1, direction = "increase"),
+        implies_fix = "synthetic",
     )
 
 
-def _outcome(key: str, cost: float, status: ArmStatus = ArmStatus.QUOTED) -> ArmOutcome:
+def _outcome(
+    key: str,
+    cost: float,
+    status: ArmStatus = ArmStatus.QUOTED,
+) -> ArmOutcome:
     return ArmOutcome(
-        arm=_arm(key),
-        cost=Measure.read(cost, "ms/update"),
-        status=status,
-        reason="synthetic",
-        potency_before=0,
-        potency_after=500,
+        arm = _arm(key),
+        cost = Measure.read(cost, "ms/update"),
+        status = status,
+        reason = "synthetic",
+        potency_before = 0,
+        potency_after = 500,
     )
 
 
@@ -102,8 +106,8 @@ def _all_outcomes() -> dict[str, ArmOutcome]:
 
 def _good_calibration():
     return evaluate_batch(
-        null_deltas=[Measure.read(0.04, "ms/update")],
-        spike_observations=[
+        null_deltas = [Measure.read(0.04, "ms/update")],
+        spike_observations = [
             {
                 "spike_ms": 0.1,
                 "burned_ms_per_update": Measure.read(0.1, "ms/update"),
@@ -125,8 +129,8 @@ def _good_calibration():
 
 def _blind_calibration():
     return evaluate_batch(
-        null_deltas=[Measure.read(0.04, "ms/update")],
-        spike_observations=[
+        null_deltas = [Measure.read(0.04, "ms/update")],
+        spike_observations = [
             {
                 "spike_ms": 2.0,
                 "burned_ms_per_update": Measure.read(2.0, "ms/update"),
@@ -169,9 +173,9 @@ def test_no_scene_durations_at_all_is_a_refusal_not_a_pass():
 
 def test_a_quotable_batch_renders_steps_interactions_and_verdicts():
     result = judge_batch(
-        rung_tokens=100_000,
-        outcomes=_all_outcomes(),
-        calibration=_good_calibration(),
+        rung_tokens = 100_000,
+        outcomes = _all_outcomes(),
+        calibration = _good_calibration(),
     )
     assert result.quotable is True
     assert result.detection_floor_ms == pytest.approx(0.5)
@@ -193,9 +197,9 @@ def test_no_absolute_arm_cost_appears_anywhere_in_the_rendered_batch():
     """The rule that no arm is quoted alone has to survive rendering, not just the API."""
 
     result = judge_batch(
-        rung_tokens=100_000,
-        outcomes=_all_outcomes(),
-        calibration=_good_calibration(),
+        rung_tokens = 100_000,
+        outcomes = _all_outcomes(),
+        calibration = _good_calibration(),
     )
     rendered = render_batch(result)
     # 34.0 and 26.0 are arm costs; 8.00 and 6.00 are adjacent differences
@@ -207,9 +211,9 @@ def test_no_absolute_arm_cost_appears_anywhere_in_the_rendered_batch():
 
 def test_a_not_quotable_batch_prints_no_ablation_numbers():
     result = judge_batch(
-        rung_tokens=100_000,
-        outcomes=_all_outcomes(),
-        calibration=_blind_calibration(),
+        rung_tokens = 100_000,
+        outcomes = _all_outcomes(),
+        calibration = _blind_calibration(),
     )
     assert result.quotable is False
     rendered = render_batch(result)
@@ -224,16 +228,14 @@ def test_voided_and_not_run_arms_are_named_in_the_render():
     outcomes = _all_outcomes()
     outcomes["A+B"] = _outcome("A+B", 26.0, ArmStatus.VOIDED)
     outcomes["A+B+C"] = ArmOutcome(
-        arm=_arm("A+B+C"),
-        cost=Measure.not_attempted("ms/update", "arm did not fire"),
-        status=ArmStatus.NOT_RUN,
-        reason="potency counter did not move",
-        potency_before=0,
-        potency_after=0,
+        arm = _arm("A+B+C"),
+        cost = Measure.not_attempted("ms/update", "arm did not fire"),
+        status = ArmStatus.NOT_RUN,
+        reason = "potency counter did not move",
+        potency_before = 0,
+        potency_after = 0,
     )
-    result = judge_batch(
-        rung_tokens=100_000, outcomes=outcomes, calibration=_good_calibration()
-    )
+    result = judge_batch(rung_tokens = 100_000, outcomes = outcomes, calibration = _good_calibration())
     rendered = render_batch(result)
     assert "VOIDED" in rendered
     assert "NOT RUN arms are not evidence of no effect" in rendered
@@ -242,9 +244,9 @@ def test_voided_and_not_run_arms_are_named_in_the_render():
 
 def test_fix_implications_rank_the_largest_step_and_name_its_fix():
     result = judge_batch(
-        rung_tokens=100_000,
-        outcomes=_all_outcomes(),
-        calibration=_good_calibration(),
+        rung_tokens = 100_000,
+        outcomes = _all_outcomes(),
+        calibration = _good_calibration(),
     )
     rendered = render_fix_implications(result)
     top = rendered.splitlines()[1].strip()
@@ -259,25 +261,25 @@ def test_fix_implications_rank_the_largest_step_and_name_its_fix():
 def test_a_batch_with_a_dose_fit_an_armpack_refusal_and_a_recovery_renders_all_three(tmp_path):
     dose = fit_dose_response(
         [
-            DosePoint(dose=d, cost=Measure.read(0.002 * d, "ms"), content_chars=50_000)
+            DosePoint(dose = d, cost = Measure.read(0.002 * d, "ms"), content_chars = 50_000)
             for d in (4, 40, 400, 4000)
         ],
-        detection_floor_ms=0.5,
+        detection_floor_ms = 0.5,
     )
     recovery = classify_recovery(
-        baseline=Measure.read(2.0, "ms/update"),
-        loaded=Measure.read(20.0, "ms/update"),
-        after_delete=Measure.read(19.0, "ms/update"),
-        noise_floor_ms=0.5,
+        baseline = Measure.read(2.0, "ms/update"),
+        loaded = Measure.read(20.0, "ms/update"),
+        after_delete = Measure.read(19.0, "ms/update"),
+        noise_floor_ms = 0.5,
     )
     armpack = discover_armpack([tmp_path / "absent"], "digest-1")
     result = judge_batch(
-        rung_tokens=100_000,
-        outcomes=_all_outcomes(),
-        calibration=_good_calibration(),
-        armpack=armpack,
-        dose=dose,
-        recovery=recovery,
+        rung_tokens = 100_000,
+        outcomes = _all_outcomes(),
+        calibration = _good_calibration(),
+        armpack = armpack,
+        dose = dose,
+        recovery = recovery,
     )
     rendered = render_batch(result)
     assert "ABLATION ARMS NOT AVAILABLE FOR THIS BUILD" in rendered
@@ -295,7 +297,7 @@ def test_harness_rows_assemble_and_their_attested_zeros_survive(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
     # written by hand rather than through PayloadWriter.write, because these are Layer 1's rows
-    with path.open("w", encoding="utf-8") as handle:
+    with path.open("w", encoding = "utf-8") as handle:
         rows = [
             '{"row_type":"run_meta","tier":"quick","tool_version":"1","corpus_hash":"c",'
             '"studio_ref":"main","bundle":"prod","platform":"linux","started_at":"now"}',
@@ -333,7 +335,7 @@ def test_a_run_with_no_completed_cell_is_not_complete(tmp_path: Path):
         '{"row_type":"run_meta","tier":"quick"}\n'
         '{"row_type":"cell","cell_id":"r1M.A0.rep0","completed":false,'
         '"failure_mode":"renderer crashed","fidelity":"real"}\n',
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     payload = assemble_rows(path)
     assert payload["complete"] is False
@@ -344,9 +346,9 @@ def test_a_run_with_no_completed_cell_is_not_complete(tmp_path: Path):
 def test_the_two_writers_produce_the_same_assembled_shape(tmp_path: Path):
     own = tmp_path / "own.jsonl"
     writer = PayloadWriter(own)
-    writer.write("header", info={"tier": "quick"})
-    writer.write("window", cell_id="r1K.A0.rep0", metrics={})
-    writer.write("footer", info={"exit": "ok"})
+    writer.write("header", info = {"tier": "quick"})
+    writer.write("window", cell_id = "r1K.A0.rep0", metrics = {})
+    writer.write("footer", info = {"exit": "ok"})
     writer.close()
 
     rows = tmp_path / "rows.jsonl"
@@ -354,7 +356,7 @@ def test_the_two_writers_produce_the_same_assembled_shape(tmp_path: Path):
         '{"row_type":"run_meta","tier":"quick"}\n'
         '{"row_type":"window","cell_id":"r1K.A0.rep0"}\n'
         '{"row_type":"cell","cell_id":"r1K.A0.rep0","completed":true}\n',
-        encoding="utf-8",
+        encoding = "utf-8",
     )
 
     left, right = assemble(own), assemble_rows(rows)
@@ -364,6 +366,6 @@ def test_the_two_writers_produce_the_same_assembled_shape(tmp_path: Path):
 
 
 def test_missing_cells_is_computed_not_assumed():
-    planned = [PlannedCell(arms=frozenset({"A"}), role="ladder")]
+    planned = [PlannedCell(arms = frozenset({"A"}), role = "ladder")]
     assert missing_cells(planned, {}) == [arms_key({"A"})]
     assert missing_cells(planned, {"A": _outcome("A", 1.0)}) == []

@@ -33,9 +33,7 @@ from typing import Any, Mapping
 
 from ..scoring.schema import Measure
 
-LAYOUTCOST_JS_PATH = (
-    Path(__file__).resolve().parents[1] / "instruments" / "layoutcost.js"
-)
+LAYOUTCOST_JS_PATH = Path(__file__).resolve().parents[1] / "instruments" / "layoutcost.js"
 
 #: The instrument level at which this may run. Headline numbers come from level 0 only.
 LAYOUTCOST_LEVEL = 3
@@ -52,24 +50,24 @@ COUNTER_FAMILIES = (
 
 
 def load_layoutcost_js() -> str:
-    return LAYOUTCOST_JS_PATH.read_text(encoding="utf-8")
+    return LAYOUTCOST_JS_PATH.read_text(encoding = "utf-8")
 
 
 @dataclass
 class LayoutCostReading:
     """One window's layout-cost counters, as Measures rather than bare integers."""
 
-    counters: dict[str, Measure] = field(default_factory=dict)
-    timings: dict[str, Measure] = field(default_factory=dict)
-    unavailable: list[str] = field(default_factory=list)
+    counters: dict[str, Measure] = field(default_factory = dict)
+    timings: dict[str, Measure] = field(default_factory = dict)
+    unavailable: list[str] = field(default_factory = list)
     self_cost_ms_per_call: Measure = field(
-        default_factory=lambda: Measure.not_attempted("ms", "self cost not estimated")
+        default_factory = lambda: Measure.not_attempted("ms", "self cost not estimated")
     )
     stabilizer_sets: Measure = field(
-        default_factory=lambda: Measure.not_attempted("count", "not read")
+        default_factory = lambda: Measure.not_attempted("count", "not read")
     )
     viewport_observer_callbacks: Measure = field(
-        default_factory=lambda: Measure.not_attempted("count", "not read")
+        default_factory = lambda: Measure.not_attempted("count", "not read")
     )
 
     def to_json(self) -> dict[str, Any]:
@@ -95,8 +93,8 @@ def reading_from_snapshot(snapshot: Mapping[str, Any] | None) -> LayoutCostReadi
 
     if not snapshot:
         return LayoutCostReading(
-            unavailable=list(COUNTER_FAMILIES),
-            counters={
+            unavailable = list(COUNTER_FAMILIES),
+            counters = {
                 name: Measure.not_attempted("count", "layoutcost produced no snapshot")
                 for name in COUNTER_FAMILIES
             },
@@ -107,7 +105,7 @@ def reading_from_snapshot(snapshot: Mapping[str, Any] | None) -> LayoutCostReadi
     raw_timings = dict(snapshot.get("timings") or {})
     attempted_map = dict(snapshot.get("attempted") or {})
 
-    reading = LayoutCostReading(unavailable=unavailable)
+    reading = LayoutCostReading(unavailable = unavailable)
     for name in COUNTER_FAMILIES:
         family_ok = attempted_map.get(name, name not in unavailable)
         if not family_ok:
@@ -132,7 +130,7 @@ def reading_from_snapshot(snapshot: Mapping[str, Any] | None) -> LayoutCostReadi
         reading.self_cost_ms_per_call = Measure.read(
             float(self_cost),
             "ms/call",
-            note=(
+            note = (
                 "measured against a detached clean element, so this is a LOWER BOUND on the "
                 "in-page cost; the paired with/without cell is the real number"
             ),
@@ -140,17 +138,13 @@ def reading_from_snapshot(snapshot: Mapping[str, Any] | None) -> LayoutCostReadi
 
     mo = dict(snapshot.get("mo") or {})
     if "viewportCallbacks" in mo:
-        reading.viewport_observer_callbacks = Measure.read(
-            float(mo["viewportCallbacks"]), "count"
-        )
+        reading.viewport_observer_callbacks = Measure.read(float(mo["viewportCallbacks"]), "count")
     if "stabilizerSets" in raw_counters:
         reading.stabilizer_sets = Measure.read(float(raw_counters["stabilizerSets"]), "count")
     return reading
 
 
-def in_situ_overhead(
-    with_instrument_ms: Measure, without_instrument_ms: Measure
-) -> Measure:
+def in_situ_overhead(with_instrument_ms: Measure, without_instrument_ms: Measure) -> Measure:
     """The instrument's real cost, from the paired cell. Not its own estimate of itself.
 
     Positive means the instrumented cell was slower, which is the expected direction. A negative
@@ -254,7 +248,7 @@ def register(register_instrument: Any) -> Any:
     a package another layer is still building.
     """
 
-    @register_instrument(name=LayoutCostInstrument.name, level=LAYOUTCOST_LEVEL)
+    @register_instrument(name = LayoutCostInstrument.name, level = LAYOUTCOST_LEVEL)
     def _make() -> LayoutCostInstrument:
         return LayoutCostInstrument()
 

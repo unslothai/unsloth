@@ -53,7 +53,7 @@ def load_all() -> dict[str, str]:
             continue
         try:
             importlib.import_module(f"{__name__}.{mod.name}")
-        except Exception as exc:                                   # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             _IMPORT_ERRORS[mod.name] = f"{type(exc).__name__}: {exc}"
     _LOADED = True
     return dict(_IMPORT_ERRORS)
@@ -84,7 +84,7 @@ def build(level: int, only: Optional[list[str]] = None) -> list:
             continue
         try:
             inst = entry.factory()
-        except Exception as exc:                                   # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             _IMPORT_ERRORS[entry.name] = f"{type(exc).__name__}: {exc}"
             continue
         inst.name = getattr(inst, "name", entry.name) or entry.name

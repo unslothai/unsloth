@@ -127,22 +127,22 @@ def null_arm(arm_id: str = "NULL", *, reference_id: str = "shipping") -> Arm:
     """
 
     return Arm(
-        arm_id=arm_id,
-        title=f"NULL calibration (byte-identical rebuild of {reference_id})",
-        mechanism="none: the same build, the same config, a different arm id",
-        invariance=Invariance.EXACT,
-        potency=PotencyCounter(
-            name="windows_measured",
-            min_delta=1,
-            direction="increase",
-            description="the cell ran; there is no treatment to detect",
+        arm_id = arm_id,
+        title = f"NULL calibration (byte-identical rebuild of {reference_id})",
+        mechanism = "none: the same build, the same config, a different arm id",
+        invariance = Invariance.EXACT,
+        potency = PotencyCounter(
+            name = "windows_measured",
+            min_delta = 1,
+            direction = "increase",
+            description = "the cell ran; there is no treatment to detect",
         ),
-        implies_fix=(
+        implies_fix = (
             "nothing. If this arm reads different from its reference, the batch is measuring the "
             "machine and not the build"
         ),
-        kind="calibration",
-        notes=(
+        kind = "calibration",
+        notes = (
             "non-droppable. A batch without a NULL arm has no measured noise floor, and every "
             "difference in it is being compared against a number nobody checked"
         ),
@@ -153,32 +153,30 @@ def spike_arm(spike_ms: float) -> Arm:
     """A known d ms of main-thread work per update. It must read +d."""
 
     return Arm(
-        arm_id=f"SPIKE{spike_ms:g}",
-        title=f"SPIKE calibration ({spike_ms:g} ms burned per DOM update batch)",
-        mechanism=f"an injected busy wait of {spike_ms:g} ms per update batch",
-        invariance=Invariance.EXACT,
-        potency=PotencyCounter(
-            name="spike_invocations",
-            min_delta=1,
-            direction="increase",
-            description="the spike observer fired at least once",
+        arm_id = f"SPIKE{spike_ms:g}",
+        title = f"SPIKE calibration ({spike_ms:g} ms burned per DOM update batch)",
+        mechanism = f"an injected busy wait of {spike_ms:g} ms per update batch",
+        invariance = Invariance.EXACT,
+        potency = PotencyCounter(
+            name = "spike_invocations",
+            min_delta = 1,
+            direction = "increase",
+            description = "the spike observer fired at least once",
         ),
-        implies_fix=(
+        implies_fix = (
             "nothing. This arm measures the instrument: if a known cost cannot be recovered, no "
             "unknown cost in this batch can be either"
         ),
-        kind="calibration",
-        init_script=spike_init_script(spike_ms),
-        notes=(
+        kind = "calibration",
+        init_script = spike_init_script(spike_ms),
+        notes = (
             "non-droppable. The 0.1 ms spike is expected to be invisible and is what the "
             "detection floor rests on; the 2.0 ms spike must be seen"
         ),
     )
 
 
-CALIBRATION_ARM_IDS: tuple[str, ...] = ("NULL",) + tuple(
-    f"SPIKE{d:g}" for d in SPIKE_SIZES_MS
-)
+CALIBRATION_ARM_IDS: tuple[str, ...] = ("NULL",) + tuple(f"SPIKE{d:g}" for d in SPIKE_SIZES_MS)
 
 
 def calibration_arms() -> list[Arm]:
@@ -233,8 +231,8 @@ class CalibrationVerdict:
     reason: str
     noise_floor_ms: Measure
     detection_floor_ms: Measure
-    null_deltas: list[Measure] = field(default_factory=list)
-    spikes: list[SpikeRecovery] = field(default_factory=list)
+    null_deltas: list[Measure] = field(default_factory = list)
+    spikes: list[SpikeRecovery] = field(default_factory = list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -254,9 +252,7 @@ class CalibrationVerdict:
             lines.append(f"  NULL delta        {null_delta.display()}")
         for spike in self.spikes:
             fraction = (
-                f"{spike.recovery_fraction:.2f}"
-                if spike.recovery_fraction is not None
-                else "n/a"
+                f"{spike.recovery_fraction:.2f}" if spike.recovery_fraction is not None else "n/a"
             )
             lines.append(
                 f"  SPIKE {spike.spike_ms:>4g} ms    burned {spike.burned_ms_per_update.display()}"
@@ -271,9 +267,7 @@ class CalibrationVerdict:
 
 
 def evaluate_batch(
-    *,
-    null_deltas: Sequence[Measure],
-    spike_observations: Sequence[Mapping[str, Any]],
+    *, null_deltas: Sequence[Measure], spike_observations: Sequence[Mapping[str, Any]]
 ) -> CalibrationVerdict:
     """Decide whether this batch may be quoted at all.
 
@@ -291,14 +285,14 @@ def evaluate_batch(
     usable_nulls = [m for m in null_deltas if m.has_reading]
     if not usable_nulls:
         return CalibrationVerdict(
-            quotable=False,
-            reason=(
+            quotable = False,
+            reason = (
                 "no NULL arm produced a reading, so this batch has no measured noise floor and "
                 "every difference in it is being compared against nothing"
             ),
-            noise_floor_ms=Measure.failed("ms/update", "no NULL arm produced a reading"),
-            detection_floor_ms=Measure.failed("ms/update", "not evaluated without a noise floor"),
-            null_deltas=list(null_deltas),
+            noise_floor_ms = Measure.failed("ms/update", "no NULL arm produced a reading"),
+            detection_floor_ms = Measure.failed("ms/update", "not evaluated without a noise floor"),
+            null_deltas = list(null_deltas),
         )
 
     noise_floor_value = max(abs(float(m.value)) for m in usable_nulls)
@@ -312,12 +306,12 @@ def evaluate_batch(
         if not (burned.has_reading and observed.has_reading) or float(burned.value) <= 0:
             recoveries.append(
                 SpikeRecovery(
-                    spike_ms=spike_ms,
-                    burned_ms_per_update=burned,
-                    observed_delta=observed,
-                    recovery_fraction=None,
-                    recovered=False,
-                    note=(
+                    spike_ms = spike_ms,
+                    burned_ms_per_update = burned,
+                    observed_delta = observed,
+                    recovery_fraction = None,
+                    recovered = False,
+                    note = (
                         "no usable reading. A spike that did not burn is a spike that did not "
                         "run, which says nothing about the instrument"
                     ),
@@ -343,31 +337,31 @@ def evaluate_batch(
             )
         recoveries.append(
             SpikeRecovery(
-                spike_ms=spike_ms,
-                burned_ms_per_update=burned,
-                observed_delta=observed,
-                recovery_fraction=fraction,
-                recovered=recovered,
-                note=note,
+                spike_ms = spike_ms,
+                burned_ms_per_update = burned,
+                observed_delta = observed,
+                recovery_fraction = fraction,
+                recovered = recovered,
+                note = note,
             )
         )
 
     recovered = [r for r in recoveries if r.recovered]
     if not recovered:
         return CalibrationVerdict(
-            quotable=False,
-            reason=(
+            quotable = False,
+            reason = (
                 "no SPIKE arm was recovered. The instrument could not see a cost it injected "
                 "itself at any magnitude tested, so an arm reading 'no difference' in this batch "
                 "is not evidence about the app"
             ),
-            noise_floor_ms=noise_floor,
-            detection_floor_ms=Measure.failed(
+            noise_floor_ms = noise_floor,
+            detection_floor_ms = Measure.failed(
                 "ms/update",
                 f"no spike up to {max(SPIKE_SIZES_MS):g} ms was recovered",
             ),
-            null_deltas=list(null_deltas),
-            spikes=recoveries,
+            null_deltas = list(null_deltas),
+            spikes = recoveries,
         )
 
     detection_floor_value = min(r.spike_ms for r in recovered)
@@ -378,36 +372,34 @@ def evaluate_batch(
     worst_null = max(abs(float(m.value)) for m in usable_nulls)
     if worst_null >= detection_floor_value:
         return CalibrationVerdict(
-            quotable=False,
-            reason=(
+            quotable = False,
+            reason = (
                 f"the NULL arm moved by {worst_null:.3f} ms/update, which is at or above the "
                 f"detection floor of {detection_floor_value:g} ms/update. Two identical builds "
                 "read as different, so a difference between two different builds means nothing "
                 "in this batch"
             ),
-            noise_floor_ms=noise_floor,
-            detection_floor_ms=detection_floor,
-            null_deltas=list(null_deltas),
-            spikes=recoveries,
+            noise_floor_ms = noise_floor,
+            detection_floor_ms = detection_floor,
+            null_deltas = list(null_deltas),
+            spikes = recoveries,
         )
 
     return CalibrationVerdict(
-        quotable=True,
-        reason=(
+        quotable = True,
+        reason = (
             f"the NULL arm read equal to within {worst_null:.3f} ms/update and the "
             f"{detection_floor_value:g} ms spike was recovered. One arm read the same and one "
             "read different, so differences in this batch are differences"
         ),
-        noise_floor_ms=noise_floor,
-        detection_floor_ms=detection_floor,
-        null_deltas=list(null_deltas),
-        spikes=recoveries,
+        noise_floor_ms = noise_floor,
+        detection_floor_ms = detection_floor,
+        null_deltas = list(null_deltas),
+        spikes = recoveries,
     )
 
 
-def null_delta_from_outcomes(
-    reference: ArmOutcome, null_outcome: ArmOutcome
-) -> Measure:
+def null_delta_from_outcomes(reference: ArmOutcome, null_outcome: ArmOutcome) -> Measure:
     """The NULL arm's difference from its reference, or an explicit non-reading."""
 
     if null_outcome.status is ArmStatus.VOIDED:

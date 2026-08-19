@@ -27,6 +27,7 @@ def read_bytes(relative: str) -> bytes:
     if direct.exists():
         return direct.read_bytes()
     from importlib.resources import files
+
     resource = files(PACKAGE)
     for part in relative.split("/"):
         resource = resource.joinpath(part)

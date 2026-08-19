@@ -62,13 +62,13 @@ def _arm(
     declared_diff: DeclaredDiff | None = None,
 ) -> Arm:
     return Arm(
-        arm_id=arm_id,
-        title=arm_id,
-        mechanism="test mechanism",
-        invariance=invariance,
-        declared_diff=declared_diff,
-        potency=PotencyCounter(name="fired", min_delta=1, direction="increase"),
-        implies_fix="test",
+        arm_id = arm_id,
+        title = arm_id,
+        mechanism = "test mechanism",
+        invariance = invariance,
+        declared_diff = declared_diff,
+        potency = PotencyCounter(name = "fired", min_delta = 1, direction = "increase"),
+        implies_fix = "test",
     )
 
 
@@ -80,11 +80,11 @@ def _arm(
 def test_an_exact_arm_that_drifts_is_voided_not_quoted():
     outcome = judge(
         _arm(),
-        cost=Measure.read(4.0, "ms/update"),
-        digest_before="aaaa1111",
-        digest_after="bbbb2222",
-        potency_before=0,
-        potency_after=700,
+        cost = Measure.read(4.0, "ms/update"),
+        digest_before = "aaaa1111",
+        digest_after = "bbbb2222",
+        potency_before = 0,
+        potency_after = 700,
     )
     assert outcome.status is ArmStatus.VOIDED
     assert outcome.quotable is False
@@ -95,11 +95,11 @@ def test_an_exact_arm_that_drifts_is_voided_not_quoted():
 def test_an_exact_arm_whose_potency_did_not_move_reads_not_run_never_no_effect():
     outcome = judge(
         _arm(),
-        cost=Measure.read(0.001, "ms/update"),
-        digest_before="same",
-        digest_after="same",
-        potency_before=0,
-        potency_after=0,
+        cost = Measure.read(0.001, "ms/update"),
+        digest_before = "same",
+        digest_after = "same",
+        potency_before = 0,
+        potency_after = 0,
     )
     assert outcome.status is ArmStatus.NOT_RUN
     assert "NOT RUN" in outcome.quote()
@@ -112,23 +112,23 @@ def test_drift_is_reported_ahead_of_a_dead_potency_counter():
 
     outcome = judge(
         _arm(),
-        cost=Measure.read(4.0, "ms/update"),
-        digest_before="aaaa",
-        digest_after="bbbb",
-        potency_before=0,
-        potency_after=0,
+        cost = Measure.read(4.0, "ms/update"),
+        digest_before = "aaaa",
+        digest_after = "bbbb",
+        potency_before = 0,
+        potency_after = 0,
     )
     assert outcome.status is ArmStatus.VOIDED
 
 
 def test_a_dom_changing_arm_is_quoted_only_as_a_bound():
     outcome = judge(
-        _arm(invariance=Invariance.DOM_CHANGING),
-        cost=Measure.read(12.5, "ms/update"),
-        digest_before="a",
-        digest_after="b",
-        potency_before=0,
-        potency_after=44,
+        _arm(invariance = Invariance.DOM_CHANGING),
+        cost = Measure.read(12.5, "ms/update"),
+        digest_before = "a",
+        digest_after = "b",
+        potency_before = 0,
+        potency_after = 44,
     )
     assert outcome.status is ArmStatus.BOUND
     assert outcome.quote().startswith("<= ")
@@ -136,32 +136,32 @@ def test_a_dom_changing_arm_is_quoted_only_as_a_bound():
 
 def test_an_equivalent_arm_must_produce_exactly_the_declared_diff():
     arm = _arm(
-        invariance=Invariance.EQUIVALENT,
-        declared_diff=DeclaredDiff(normaliser="skip_style_attribute", keys=("style",)),
+        invariance = Invariance.EQUIVALENT,
+        declared_diff = DeclaredDiff(normaliser = "skip_style_attribute", keys = ("style",)),
     )
     good = judge(
         arm,
-        cost=Measure.read(3.0, "ms/update"),
-        digest_before="raw-a",
-        digest_after="raw-b",
-        normalised_before="norm",
-        normalised_after="norm",
-        observed_diff_keys=("style",),
-        potency_before=0,
-        potency_after=685,
+        cost = Measure.read(3.0, "ms/update"),
+        digest_before = "raw-a",
+        digest_after = "raw-b",
+        normalised_before = "norm",
+        normalised_after = "norm",
+        observed_diff_keys = ("style",),
+        potency_before = 0,
+        potency_after = 685,
     )
     assert good.status is ArmStatus.QUOTED
 
     extra = judge(
         arm,
-        cost=Measure.read(3.0, "ms/update"),
-        digest_before="raw-a",
-        digest_after="raw-b",
-        normalised_before="norm",
-        normalised_after="norm",
-        observed_diff_keys=("style", "data-status"),
-        potency_before=0,
-        potency_after=685,
+        cost = Measure.read(3.0, "ms/update"),
+        digest_before = "raw-a",
+        digest_after = "raw-b",
+        normalised_before = "norm",
+        normalised_after = "norm",
+        observed_diff_keys = ("style", "data-status"),
+        potency_before = 0,
+        potency_after = 685,
     )
     assert extra.status is ArmStatus.VOIDED
     assert "undeclared" in extra.reason
@@ -170,11 +170,11 @@ def test_an_equivalent_arm_must_produce_exactly_the_declared_diff():
 def test_an_exact_arm_with_no_digest_is_voided_rather_than_believed():
     outcome = judge(
         _arm(),
-        cost=Measure.read(3.0, "ms/update"),
-        digest_before=None,
-        digest_after=None,
-        potency_before=0,
-        potency_after=99,
+        cost = Measure.read(3.0, "ms/update"),
+        digest_before = None,
+        digest_after = None,
+        potency_before = 0,
+        potency_after = 99,
     )
     assert outcome.status is ArmStatus.VOIDED
     assert "never checked" in outcome.reason
@@ -183,11 +183,11 @@ def test_an_exact_arm_with_no_digest_is_voided_rather_than_believed():
 def test_an_unavailable_arm_is_not_a_zero():
     outcome = judge(
         _arm(),
-        cost=Measure.read(0.0, "ms/update"),
-        digest_before="a",
-        digest_after="a",
-        available=False,
-        unavailable_reason="no armpack for this dist",
+        cost = Measure.read(0.0, "ms/update"),
+        digest_before = "a",
+        digest_after = "a",
+        available = False,
+        unavailable_reason = "no armpack for this dist",
     )
     assert outcome.status is ArmStatus.UNAVAILABLE
     assert outcome.cost.attempted is False
@@ -195,9 +195,9 @@ def test_an_unavailable_arm_is_not_a_zero():
 
 def test_an_equivalent_arm_must_declare_its_diff_and_an_exact_one_may_not():
     with pytest.raises(ValueError):
-        _arm(invariance=Invariance.EQUIVALENT)
+        _arm(invariance = Invariance.EQUIVALENT)
     with pytest.raises(ValueError):
-        _arm(declared_diff=DeclaredDiff(normaliser="n", keys=("style",)))
+        _arm(declared_diff = DeclaredDiff(normaliser = "n", keys = ("style",)))
 
 
 # ---------------------------------------------------------------------------------------
@@ -208,34 +208,34 @@ def test_an_equivalent_arm_must_declare_its_diff_and_an_exact_one_may_not():
 def test_a_step_removing_two_mechanisms_must_admit_it_is_fused():
     with pytest.raises(LadderError):
         Step(
-            arms_before=frozenset(),
-            arms_after=frozenset({"C"}),
-            mechanisms=("layout_geometry", "sibling_count"),
+            arms_before = frozenset(),
+            arms_after = frozenset({"C"}),
+            mechanisms = ("layout_geometry", "sibling_count"),
         )
     Step(
-        arms_before=frozenset(),
-        arms_after=frozenset({"C"}),
-        mechanisms=("layout_geometry", "sibling_count"),
-        fused=True,
-        fused_reason="no knob separates them",
+        arms_before = frozenset(),
+        arms_after = frozenset({"C"}),
+        mechanisms = ("layout_geometry", "sibling_count"),
+        fused = True,
+        fused_reason = "no knob separates them",
     )
 
 
 def test_a_step_must_be_nested_not_merely_different():
     with pytest.raises(LadderError):
         Step(
-            arms_before=frozenset({"A"}),
-            arms_after=frozenset({"B"}),
-            mechanisms=("paint_raster",),
+            arms_before = frozenset({"A"}),
+            arms_after = frozenset({"B"}),
+            mechanisms = ("paint_raster",),
         )
 
 
 def test_a_route_may_not_remove_the_same_mechanism_twice():
     with pytest.raises(LadderError):
         LadderRoute(
-            route_id="bad",
-            name="bad",
-            steps=(
+            route_id = "bad",
+            name = "bad",
+            steps = (
                 Step(frozenset(), frozenset({"A"}), ("paint_raster",)),
                 Step(frozenset({"A"}), frozenset({"A", "B"}), ("paint_raster",)),
             ),
@@ -245,16 +245,16 @@ def test_a_route_may_not_remove_the_same_mechanism_twice():
 def test_a_route_with_a_gap_is_refused():
     with pytest.raises(LadderError):
         LadderRoute(
-            route_id="gap",
-            name="gap",
-            steps=(
+            route_id = "gap",
+            name = "gap",
+            steps = (
                 Step(frozenset(), frozenset({"A"}), ("paint_raster",)),
                 Step(
                     frozenset({"A", "B"}),
                     frozenset({"A", "B", "C"}),
                     ("layout_geometry", "sibling_count"),
-                    fused=True,
-                    fused_reason="x",
+                    fused = True,
+                    fused_reason = "x",
                 ),
             ),
         )
@@ -264,12 +264,12 @@ def _outcomes(costs: dict[str, float]) -> dict[str, ArmOutcome]:
     out: dict[str, ArmOutcome] = {}
     for key, value in costs.items():
         out[key] = ArmOutcome(
-            arm=_arm(key),
-            cost=Measure.read(value, "ms/update"),
-            status=ArmStatus.QUOTED,
-            reason="synthetic",
-            potency_before=0,
-            potency_after=100,
+            arm = _arm(key),
+            cost = Measure.read(value, "ms/update"),
+            status = ArmStatus.QUOTED,
+            reason = "synthetic",
+            potency_before = 0,
+            potency_after = 100,
         )
     return out
 
@@ -286,9 +286,9 @@ _VISUAL_COSTS = {
 
 
 def test_the_telescoping_identity_holds_exactly_with_no_residual():
-    result = differences(ROUTE_VISUAL_FIRST, _outcomes(_VISUAL_COSTS), detection_floor_ms=0.5)
+    result = differences(ROUTE_VISUAL_FIRST, _outcomes(_VISUAL_COSTS), detection_floor_ms = 0.5)
     assert result.identity_holds is True
-    assert result.residual_ms == pytest.approx(0.0, abs=1e-12)
+    assert result.residual_ms == pytest.approx(0.0, abs = 1e-12)
     assert result.total.value == pytest.approx(38.0)
     assert result.sum_of_steps.value == pytest.approx(38.0)
     assert "no residual to attribute" in result.identity_note
@@ -297,7 +297,7 @@ def test_the_telescoping_identity_holds_exactly_with_no_residual():
 def test_a_missing_rung_means_the_identity_is_not_claimed():
     costs = dict(_VISUAL_COSTS)
     del costs["A+B"]
-    result = differences(ROUTE_VISUAL_FIRST, _outcomes(costs), detection_floor_ms=0.5)
+    result = differences(ROUTE_VISUAL_FIRST, _outcomes(costs), detection_floor_ms = 0.5)
     assert result.identity_holds is False
     assert "no complete chain" in result.identity_note
     assert any(not step.quotable for step in result.steps)
@@ -306,12 +306,12 @@ def test_a_missing_rung_means_the_identity_is_not_claimed():
 def test_a_voided_rung_poisons_only_its_own_steps():
     outcomes = _outcomes(_VISUAL_COSTS)
     outcomes["A+B"] = ArmOutcome(
-        arm=_arm("A+B"),
-        cost=Measure.read(26.0, "ms/update"),
-        status=ArmStatus.VOIDED,
-        reason="digest drifted",
+        arm = _arm("A+B"),
+        cost = Measure.read(26.0, "ms/update"),
+        status = ArmStatus.VOIDED,
+        reason = "digest drifted",
     )
-    result = differences(ROUTE_VISUAL_FIRST, outcomes, detection_floor_ms=0.5)
+    result = differences(ROUTE_VISUAL_FIRST, outcomes, detection_floor_ms = 0.5)
     quotable = [s for s in result.steps if s.quotable]
     assert len(quotable) == len(ROUTE_VISUAL_FIRST.steps) - 2
     assert result.identity_holds is False
@@ -320,13 +320,13 @@ def test_a_voided_rung_poisons_only_its_own_steps():
 def test_a_bound_rung_makes_its_adjacent_difference_a_bound():
     outcomes = _outcomes(_VISUAL_COSTS)
     outcomes["A+B+C+D+E+F"] = ArmOutcome(
-        arm=_arm("A+B+C+D+E+F"),
-        cost=Measure.read(2.0, "ms/update"),
-        status=ArmStatus.BOUND,
-        reason="DOM changing",
-        potency_after=10,
+        arm = _arm("A+B+C+D+E+F"),
+        cost = Measure.read(2.0, "ms/update"),
+        status = ArmStatus.BOUND,
+        reason = "DOM changing",
+        potency_after = 10,
     )
-    result = differences(ROUTE_VISUAL_FIRST, outcomes, detection_floor_ms=0.5)
+    result = differences(ROUTE_VISUAL_FIRST, outcomes, detection_floor_ms = 0.5)
     react_step = result.steps[-1]
     assert react_step.bound_only is True
     assert react_step.quote().startswith("<= ")
@@ -354,11 +354,11 @@ def test_route_disagreement_is_reported_as_an_interaction_not_averaged():
         "A+B+D+E+F": 8.0,
         "A+B+C+D+E+F": 2.0,
     }
-    visual = differences(ROUTE_VISUAL_FIRST, _outcomes(_VISUAL_COSTS), detection_floor_ms=0.5)
+    visual = differences(ROUTE_VISUAL_FIRST, _outcomes(_VISUAL_COSTS), detection_floor_ms = 0.5)
     scheduler = differences(
-        ROUTE_SCHEDULER_FIRST, _outcomes(scheduler_costs), detection_floor_ms=0.5
+        ROUTE_SCHEDULER_FIRST, _outcomes(scheduler_costs), detection_floor_ms = 0.5
     )
-    terms = {t.mechanism: t for t in interaction_terms(visual, scheduler, detection_floor_ms=0.5)}
+    terms = {t.mechanism: t for t in interaction_terms(visual, scheduler, detection_floor_ms = 0.5)}
     assert terms["autoscroll_forced_layout"].disagreement_ms == pytest.approx(9.0 - 18.0)
     assert "not additive" in terms["autoscroll_forced_layout"].note
     # nothing anywhere produced a mean of the two
@@ -368,9 +368,9 @@ def test_route_disagreement_is_reported_as_an_interaction_not_averaged():
 
 def test_routes_with_different_floors_cannot_be_compared():
     other = LadderRoute(
-        route_id="short",
-        name="short",
-        steps=(Step(frozenset(), frozenset({"A"}), ("paint_raster",)),),
+        route_id = "short",
+        name = "short",
+        steps = (Step(frozenset(), frozenset({"A"}), ("paint_raster",)),),
     )
     left = differences(ROUTE_VISUAL_FIRST, _outcomes(_VISUAL_COSTS))
     right = differences(other, _outcomes({"shipping": 40.0, "A": 34.0}))
@@ -407,8 +407,8 @@ def _spike(spike_ms: float, burned: float, observed: float) -> dict:
 
 def test_a_well_behaved_batch_is_quotable_and_prints_both_floors():
     verdict = evaluate_batch(
-        null_deltas=[Measure.read(0.03, "ms/update")],
-        spike_observations=[
+        null_deltas = [Measure.read(0.03, "ms/update")],
+        spike_observations = [
             _spike(0.1, 0.11, 0.02),
             _spike(0.5, 0.52, 0.49),
             _spike(2.0, 2.05, 1.98),
@@ -423,8 +423,8 @@ def test_a_well_behaved_batch_is_quotable_and_prints_both_floors():
 
 def test_a_batch_where_no_spike_is_recovered_is_not_quotable():
     verdict = evaluate_batch(
-        null_deltas=[Measure.read(0.01, "ms/update")],
-        spike_observations=[
+        null_deltas = [Measure.read(0.01, "ms/update")],
+        spike_observations = [
             _spike(0.1, 0.11, 0.001),
             _spike(0.5, 0.52, 0.004),
             _spike(2.0, 2.05, 0.01),
@@ -436,8 +436,8 @@ def test_a_batch_where_no_spike_is_recovered_is_not_quotable():
 
 def test_a_batch_whose_null_arm_drifted_past_the_detection_floor_is_not_quotable():
     verdict = evaluate_batch(
-        null_deltas=[Measure.read(0.6, "ms/update")],
-        spike_observations=[_spike(0.5, 0.5, 0.62), _spike(2.0, 2.0, 1.95)],
+        null_deltas = [Measure.read(0.6, "ms/update")],
+        spike_observations = [_spike(0.5, 0.5, 0.62), _spike(2.0, 2.0, 1.95)],
     )
     assert verdict.quotable is False
     assert "read as different" in verdict.reason
@@ -454,8 +454,8 @@ def test_a_noisy_batch_stays_quotable_but_only_at_a_coarser_floor():
     """
 
     verdict = evaluate_batch(
-        null_deltas=[Measure.read(0.9, "ms/update")],
-        spike_observations=[
+        null_deltas = [Measure.read(0.9, "ms/update")],
+        spike_observations = [
             _spike(0.1, 0.1, 0.02),
             _spike(0.5, 0.5, 0.49),
             _spike(2.0, 2.0, 1.99),
@@ -463,13 +463,13 @@ def test_a_noisy_batch_stays_quotable_but_only_at_a_coarser_floor():
     )
     assert verdict.quotable is True
     assert verdict.detection_floor_ms.value == pytest.approx(2.0)
-    assert Measure.read(0.3, "ms/update", floor=2.0).display().startswith("< 2")
+    assert Measure.read(0.3, "ms/update", floor = 2.0).display().startswith("< 2")
 
 
 def test_a_spike_read_at_the_wrong_magnitude_is_not_recovered():
     verdict = evaluate_batch(
-        null_deltas=[Measure.read(0.02, "ms/update")],
-        spike_observations=[_spike(2.0, 2.0, 8.0)],
+        null_deltas = [Measure.read(0.02, "ms/update")],
+        spike_observations = [_spike(2.0, 2.0, 8.0)],
     )
     assert verdict.spikes[0].recovered is False
     assert "outside" in verdict.spikes[0].note
@@ -478,8 +478,8 @@ def test_a_spike_read_at_the_wrong_magnitude_is_not_recovered():
 
 def test_a_batch_with_no_null_reading_has_no_noise_floor():
     verdict = evaluate_batch(
-        null_deltas=[Measure.failed("ms/update", "the NULL cell crashed")],
-        spike_observations=[_spike(2.0, 2.0, 1.9)],
+        null_deltas = [Measure.failed("ms/update", "the NULL cell crashed")],
+        spike_observations = [_spike(2.0, 2.0, 1.9)],
     )
     assert verdict.quotable is False
     assert "no measured noise floor" in verdict.reason
@@ -490,25 +490,31 @@ def test_a_batch_with_no_null_reading_has_no_noise_floor():
 # ---------------------------------------------------------------------------------------
 
 
-def _dose_points(per_child_ms: float, intercept: float = 0.0, chars: int = 50_000):
+def _dose_points(
+    per_child_ms: float,
+    intercept: float = 0.0,
+    chars: int = 50_000,
+):
     return [
-        DosePoint(dose=d, cost=Measure.read(intercept + per_child_ms * d, "ms"), content_chars=chars)
+        DosePoint(
+            dose = d, cost = Measure.read(intercept + per_child_ms * d, "ms"), content_chars = chars
+        )
         for d in (4, 40, 400, 4000)
     ]
 
 
 def test_a_line_through_the_origin_is_identified_as_o_children():
-    fit = fit_dose_response(_dose_points(0.002), detection_floor_ms=0.5)
+    fit = fit_dose_response(_dose_points(0.002), detection_floor_ms = 0.5)
     assert fit.verdict == "LINEAR THROUGH ORIGIN"
-    assert fit.slope_through_origin == pytest.approx(0.002, rel=1e-6)
+    assert fit.slope_through_origin == pytest.approx(0.002, rel = 1e-6)
 
 
 def test_a_flat_result_is_an_informative_null_with_a_bound():
     points = [
-        DosePoint(dose=d, cost=Measure.read(3.0, "ms"), content_chars=50_000)
+        DosePoint(dose = d, cost = Measure.read(3.0, "ms"), content_chars = 50_000)
         for d in (4, 40, 400, 4000)
     ]
-    fit = fit_dose_response(points, detection_floor_ms=0.5)
+    fit = fit_dose_response(points, detection_floor_ms = 0.5)
     assert fit.verdict == "UNDERPOWERED NULL"
     assert fit.min_detectable_slope.value == pytest.approx(0.5 / 4000)
     assert "real bound" in fit.note
@@ -516,7 +522,7 @@ def test_a_flat_result_is_an_informative_null_with_a_bound():
 
 def test_a_flat_result_without_a_detection_floor_cannot_be_turned_into_a_bound():
     points = [
-        DosePoint(dose=d, cost=Measure.read(3.0, "ms"), content_chars=50_000)
+        DosePoint(dose = d, cost = Measure.read(3.0, "ms"), content_chars = 50_000)
         for d in (4, 40, 400, 4000)
     ]
     fit = fit_dose_response(points)
@@ -525,21 +531,21 @@ def test_a_flat_result_without_a_detection_floor_cannot_be_turned_into_a_bound()
 
 
 def test_a_large_intercept_is_called_out_rather_than_reported_as_a_slope():
-    fit = fit_dose_response(_dose_points(0.0005, intercept=6.0), detection_floor_ms=0.1)
+    fit = fit_dose_response(_dose_points(0.0005, intercept = 6.0), detection_floor_ms = 0.1)
     assert fit.verdict == "MOSTLY FIXED COST"
 
 
 def test_varying_content_across_doses_voids_the_design():
     points = _dose_points(0.002)
-    points[-1] = DosePoint(dose=4000, cost=Measure.read(9.0, "ms"), content_chars=90_000)
-    fit = fit_dose_response(points, detection_floor_ms=0.5)
+    points[-1] = DosePoint(dose = 4000, cost = Measure.read(9.0, "ms"), content_chars = 90_000)
+    fit = fit_dose_response(points, detection_floor_ms = 0.5)
     assert fit.verdict == "INVALID"
     assert "confounded" in fit.note
 
 
 def test_two_points_do_not_make_a_line():
     points = _dose_points(0.002)[:2]
-    fit = fit_dose_response(points, detection_floor_ms=0.5)
+    fit = fit_dose_response(points, detection_floor_ms = 0.5)
     assert fit.verdict == "NO FIT"
 
 
@@ -548,11 +554,15 @@ def test_two_points_do_not_make_a_line():
 # ---------------------------------------------------------------------------------------
 
 
-def _write_armpack(root: Path, digest: str, arms=None) -> Path:
+def _write_armpack(
+    root: Path,
+    digest: str,
+    arms = None,
+) -> Path:
     arms = arms if arms is not None else {arm.arm_id: arm.arm_id.lower() for arm in BUNDLE_ARMS}
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents = True, exist_ok = True)
     for rel in arms.values():
-        (root / rel).mkdir(parents=True, exist_ok=True)
+        (root / rel).mkdir(parents = True, exist_ok = True)
     (root / "armpack.json").write_text(
         json.dumps(
             {
@@ -562,7 +572,7 @@ def _write_armpack(root: Path, digest: str, arms=None) -> Path:
                 "arms": arms,
             }
         ),
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     return root
 
@@ -589,7 +599,7 @@ def test_a_partial_armpack_missing_the_twin_is_refused(tmp_path: Path):
         for arm in BUNDLE_ARMS
         if arm.arm_id != ARM_FIBRE_FREE_TWIN.arm_id
     }
-    _write_armpack(tmp_path / "pack", "digest-1", arms=arms)
+    _write_armpack(tmp_path / "pack", "digest-1", arms = arms)
     resolution = discover_armpack([tmp_path / "pack"], "digest-1")
     assert resolution.available is False
     assert ARM_FIBRE_FREE_TWIN.arm_id in resolution.reason
@@ -609,20 +619,20 @@ def test_a_matching_armpack_resolves(tmp_path: Path):
 
 def test_full_recovery_is_occupancy():
     result = classify_recovery(
-        baseline=Measure.read(2.0, "ms/update"),
-        loaded=Measure.read(20.0, "ms/update"),
-        after_delete=Measure.read(2.4, "ms/update"),
-        noise_floor_ms=0.5,
+        baseline = Measure.read(2.0, "ms/update"),
+        loaded = Measure.read(20.0, "ms/update"),
+        after_delete = Measure.read(2.4, "ms/update"),
+        noise_floor_ms = 0.5,
     )
     assert result.classification == "OCCUPANCY"
 
 
 def test_no_recovery_is_retained_structure():
     result = classify_recovery(
-        baseline=Measure.read(2.0, "ms/update"),
-        loaded=Measure.read(20.0, "ms/update"),
-        after_delete=Measure.read(19.5, "ms/update"),
-        noise_floor_ms=0.5,
+        baseline = Measure.read(2.0, "ms/update"),
+        loaded = Measure.read(20.0, "ms/update"),
+        after_delete = Measure.read(19.5, "ms/update"),
+        noise_floor_ms = 0.5,
     )
     assert result.classification == "RETAINED STRUCTURE"
     assert "stays worse" in result.note
@@ -630,10 +640,10 @@ def test_no_recovery_is_retained_structure():
 
 def test_partial_recovery_is_not_rounded_to_whichever_is_convenient():
     result = classify_recovery(
-        baseline=Measure.read(2.0, "ms/update"),
-        loaded=Measure.read(20.0, "ms/update"),
-        after_delete=Measure.read(11.0, "ms/update"),
-        noise_floor_ms=0.5,
+        baseline = Measure.read(2.0, "ms/update"),
+        loaded = Measure.read(20.0, "ms/update"),
+        after_delete = Measure.read(11.0, "ms/update"),
+        noise_floor_ms = 0.5,
     )
     assert result.classification == "HYSTERETIC"
     assert result.recovered_fraction == pytest.approx(0.5)
@@ -641,10 +651,10 @@ def test_partial_recovery_is_not_rounded_to_whichever_is_convenient():
 
 def test_a_load_that_cost_nothing_has_an_undefined_recovery_not_a_perfect_one():
     result = classify_recovery(
-        baseline=Measure.read(2.0, "ms/update"),
-        loaded=Measure.read(2.2, "ms/update"),
-        after_delete=Measure.read(2.1, "ms/update"),
-        noise_floor_ms=0.5,
+        baseline = Measure.read(2.0, "ms/update"),
+        loaded = Measure.read(2.2, "ms/update"),
+        after_delete = Measure.read(2.1, "ms/update"),
+        noise_floor_ms = 0.5,
     )
     assert result.classification == "NOTHING TO RECOVER"
     assert result.recovered_fraction is None
@@ -653,10 +663,10 @@ def test_a_load_that_cost_nothing_has_an_undefined_recovery_not_a_perfect_one():
 
 def test_worse_after_delete_points_at_the_delete_path():
     result = classify_recovery(
-        baseline=Measure.read(2.0, "ms/update"),
-        loaded=Measure.read(20.0, "ms/update"),
-        after_delete=Measure.read(26.0, "ms/update"),
-        noise_floor_ms=0.5,
+        baseline = Measure.read(2.0, "ms/update"),
+        loaded = Measure.read(20.0, "ms/update"),
+        after_delete = Measure.read(26.0, "ms/update"),
+        noise_floor_ms = 0.5,
     )
     assert result.classification == "WORSE AFTER DELETE"
 

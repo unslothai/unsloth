@@ -62,10 +62,10 @@ def _metrics(keystroke_ms: float = 25.0) -> dict[str, Measure]:
 def test_a_crash_at_rung_four_still_ships_rungs_one_to_three(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
-    writer.write("header", info={"bench_version": "studiobench/1"})
+    writer.write("header", info = {"bench_version": "studiobench/1"})
     for rung in (1_000, 10_000, 100_000):
-        writer.write("window", rung_tokens=rung, metrics=_metrics())
-    writer.write("crash", where="renderer", error_type="TargetClosedError", error="oom")
+        writer.write("window", rung_tokens = rung, metrics = _metrics())
+    writer.write("crash", where = "renderer", error_type = "TargetClosedError", error = "oom")
     writer.close()
 
     payload = assemble(path)
@@ -78,10 +78,10 @@ def test_a_crash_at_rung_four_still_ships_rungs_one_to_three(tmp_path: Path):
 def test_a_half_written_final_line_is_discarded_not_fatal(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
-    writer.write("header", info={"bench_version": "studiobench/1"})
-    writer.write("window", rung_tokens=1_000, metrics=_metrics())
+    writer.write("header", info = {"bench_version": "studiobench/1"})
+    writer.write("window", rung_tokens = 1_000, metrics = _metrics())
     writer.close()
-    with path.open("a", encoding="utf-8") as handle:
+    with path.open("a", encoding = "utf-8") as handle:
         handle.write('{"kind":"window","rung_tokens":10000,"met')
 
     records, discarded = read_records(path)
@@ -96,7 +96,7 @@ def test_the_writer_records_a_crash_when_the_driver_dies(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     with pytest.raises(RuntimeError):
         with PayloadWriter(path) as writer:
-            writer.write("header", info={})
+            writer.write("header", info = {})
             raise RuntimeError("the driver fell over")
     payload = assemble(path)
     assert payload["crashes"][0]["error"] == "the driver fell over"
@@ -106,7 +106,7 @@ def test_the_writer_records_a_crash_when_the_driver_dies(tmp_path: Path):
 def test_assemble_validates_the_bare_zero_ban(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
-    writer.write("window", rung_tokens=1_000, react_stage_ms=0)
+    writer.write("window", rung_tokens = 1_000, react_stage_ms = 0)
     writer.close()
     with pytest.raises(PayloadSchemaError):
         assemble(path)
@@ -117,8 +117,8 @@ def test_measures_survive_the_round_trip_with_their_attempted_flag(tmp_path: Pat
     writer = PayloadWriter(path)
     writer.write(
         "window",
-        rung_tokens=1_000,
-        metrics={"react_stage_ms": Measure.not_attempted("ms", "profiling alias unverified")},
+        rung_tokens = 1_000,
+        metrics = {"react_stage_ms": Measure.not_attempted("ms", "profiling alias unverified")},
     )
     writer.close()
     payload = assemble(path)
@@ -136,7 +136,7 @@ def test_excluded_cells_are_totalled_by_reason(tmp_path: Path):
         ExcludedCell("r4.w7", "arm_voided_invariance", 1, "digest drifted"),
     ):
         writer.write("excluded", **cell.to_json())
-    writer.write("footer", info={"exit": "ok"})
+    writer.write("footer", info = {"exit": "ok"})
     writer.close()
     payload = assemble(path)
     assert excluded_totals(payload) == {"clock_disagreement": 3, "arm_voided_invariance": 1}
@@ -166,7 +166,7 @@ def test_a_single_frame_summary_may_not_be_a_headline():
 
 
 def test_frame_health_always_prints_all_three():
-    stats = compute_frame_stats([8.0] * 100 + [900.0], window_ms=1700.0)
+    stats = compute_frame_stats([8.0] * 100 + [900.0], window_ms = 1700.0)
     rendered = render_frame_health(stats)
     assert "time in jank" in rendered
     assert "jank index" in rendered
@@ -175,7 +175,7 @@ def test_frame_health_always_prints_all_three():
 
 
 def test_no_frames_recorded_is_called_out_in_the_render():
-    rendered = render_frame_health(compute_frame_stats([], window_ms=3000.0))
+    rendered = render_frame_health(compute_frame_stats([], window_ms = 3000.0))
     assert "not zero jank" in rendered
 
 
@@ -184,7 +184,7 @@ def test_the_headline_is_the_onset_rung_and_the_score_is_labelled_machine_local(
         [
             score_rung(1_000, _metrics()),
             score_rung(10_000, _metrics()),
-            score_rung(100_000, _metrics(keystroke_ms=460.0)),
+            score_rung(100_000, _metrics(keystroke_ms = 460.0)),
         ]
     )
     summary = render_summary({"complete": True, "excluded_cells": []}, ladder)
@@ -199,7 +199,7 @@ def test_a_void_ab_prints_no_numbers_at_all():
         Pair(1_000, "keystroke_p95_ms", Measure.read(100.0, "ms"), Measure.read(140.0, "ms"))
         for _ in range(4)
     ]
-    result = compare("base vs base", pairs, identity, identity, is_null_control=True)
+    result = compare("base vs base", pairs, identity, identity, is_null_control = True)
     rendered = render_ab_table(result)
     assert "VOID" in rendered
     assert "1.4" not in rendered
@@ -209,7 +209,7 @@ def test_a_void_ab_prints_no_numbers_at_all():
 def test_an_incomplete_run_says_so_before_any_numbers(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
-    writer.write("window", rung_tokens=1_000, metrics=_metrics())
+    writer.write("window", rung_tokens = 1_000, metrics = _metrics())
     writer.close()
     payload = assemble(path)
     summary = render_summary(payload, None)
@@ -220,7 +220,7 @@ def test_harness_bias_is_printed_and_never_subtracted():
     summary = render_summary(
         {"complete": True, "excluded_cells": []},
         None,
-        harness_bias={"keystroke_p95_ms": Measure.read(4.2, "%")},
+        harness_bias = {"keystroke_p95_ms": Measure.read(4.2, "%")},
     )
     assert "HARNESS BIAS" in summary
     assert "NOT subtracted" in summary

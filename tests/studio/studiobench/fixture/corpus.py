@@ -97,26 +97,106 @@ SHIPPED_CHARS_BUDGET = 460_000
 # meaning, and a vocabulary a reader can skim is a vocabulary a reader can spot a bug in.
 
 _NOUNS = (
-    "buffer", "scheduler", "fibre", "observer", "commit", "layout", "token", "shard", "lane",
-    "chunk", "boundary", "descriptor", "checkpoint", "gradient", "kernel", "adapter", "window",
-    "residual", "quantiser", "allocator", "transcript", "viewport", "sentinel", "digest",
+    "buffer",
+    "scheduler",
+    "fibre",
+    "observer",
+    "commit",
+    "layout",
+    "token",
+    "shard",
+    "lane",
+    "chunk",
+    "boundary",
+    "descriptor",
+    "checkpoint",
+    "gradient",
+    "kernel",
+    "adapter",
+    "window",
+    "residual",
+    "quantiser",
+    "allocator",
+    "transcript",
+    "viewport",
+    "sentinel",
+    "digest",
 )
 _VERBS = (
-    "reparses", "flushes", "clones", "invalidates", "schedules", "accumulates", "walks",
-    "coalesces", "materialises", "spills", "reconciles", "hoists", "pins", "drains",
+    "reparses",
+    "flushes",
+    "clones",
+    "invalidates",
+    "schedules",
+    "accumulates",
+    "walks",
+    "coalesces",
+    "materialises",
+    "spills",
+    "reconciles",
+    "hoists",
+    "pins",
+    "drains",
 )
 _ADJS = (
-    "cumulative", "monotonic", "deferred", "synchronous", "transient", "bounded", "retained",
-    "speculative", "interleaved", "hysteretic", "collinear", "saturating",
+    "cumulative",
+    "monotonic",
+    "deferred",
+    "synchronous",
+    "transient",
+    "bounded",
+    "retained",
+    "speculative",
+    "interleaved",
+    "hysteretic",
+    "collinear",
+    "saturating",
 )
 _CONNECTIVES = (
-    "which means", "so in practice", "and therefore", "but only when", "except that",
-    "as long as", "provided that", "which is why",
+    "which means",
+    "so in practice",
+    "and therefore",
+    "but only when",
+    "except that",
+    "as long as",
+    "provided that",
+    "which is why",
 )
 _LANGS = ("python", "typescript", "rust", "go", "c")
 # Short names for code. See _fence: span density is per TOKEN, so long names dilute it.
-_SHORT = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "n", "p", "q", "s", "t", "u",
-          "v", "w", "x", "y", "z", "acc", "buf", "idx", "key", "len", "map", "ptr", "res", "tmp")
+_SHORT = (
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+    "i",
+    "j",
+    "k",
+    "n",
+    "p",
+    "q",
+    "s",
+    "t",
+    "u",
+    "v",
+    "w",
+    "x",
+    "y",
+    "z",
+    "acc",
+    "buf",
+    "idx",
+    "key",
+    "len",
+    "map",
+    "ptr",
+    "res",
+    "tmp",
+)
 
 
 @dataclass(frozen = True)
@@ -124,9 +204,9 @@ class Unit:
     """One assistant turn's worth of content."""
 
     index: int
-    kind: str              # "reasoning" | "code"
-    reasoning: str         # goes out as delta.reasoning_content
-    content: str           # goes out as delta.content
+    kind: str  # "reasoning" | "code"
+    reasoning: str  # goes out as delta.reasoning_content
+    content: str  # goes out as delta.content
     chars: int
     sha256: str
     #: Stored tool-call parts for this turn, in the shape the app renders. Not counted in `chars`:
@@ -140,8 +220,12 @@ class Unit:
 
     def as_row(self) -> dict:
         return {
-            "index": self.index, "kind": self.kind, "chars": self.chars, "sha256": self.sha256,
-            "reasoning": self.reasoning, "content": self.content,
+            "index": self.index,
+            "kind": self.kind,
+            "chars": self.chars,
+            "sha256": self.sha256,
+            "reasoning": self.reasoning,
+            "content": self.content,
             "tool_calls": list(self.tool_calls),
         }
 
@@ -179,12 +263,15 @@ class Unit:
         content = take(self.content, max(1, chars - len(reasoning)))
         text = reasoning + content
         return Unit(
-            index = self.index, kind = self.kind, reasoning = reasoning, content = content,
+            index = self.index,
+            kind = self.kind,
+            reasoning = reasoning,
+            content = content,
             chars = len(text),
             # A DIFFERENT digest, deliberately. A clipped unit is not the frozen unit and must not
             # be checked against its hash or reported under it.
-            sha256 = "clip:" + hashlib.sha256(
-                f"{self.sha256}\x00{chars}".encode("utf-8")).hexdigest(),
+            sha256 = "clip:"
+            + hashlib.sha256(f"{self.sha256}\x00{chars}".encode("utf-8")).hexdigest(),
             # Tool calls survive clipping. They carry no `chars` weight, so dropping them would
             # silently remove a whole component from exactly the rung -- the smallest -- that every
             # growth ratio is taken against.
@@ -194,13 +281,18 @@ class Unit:
     @classmethod
     def from_row(cls, row: dict) -> "Unit":
         return cls(
-            index = row["index"], kind = row["kind"], reasoning = row["reasoning"],
-            content = row["content"], chars = row["chars"], sha256 = row["sha256"],
+            index = row["index"],
+            kind = row["kind"],
+            reasoning = row["reasoning"],
+            content = row["content"],
+            chars = row["chars"],
+            sha256 = row["sha256"],
             tool_calls = tuple(row.get("tool_calls") or ()),
         )
 
 
 # ── generation ──────────────────────────────────────────────────────
+
 
 def _sentence(rng: random.Random, salt: str) -> str:
     return (
@@ -227,7 +319,12 @@ def _prose(rng: random.Random, target: int, salt: str) -> str:
     return "\n\n".join(out)
 
 
-def _fence(rng: random.Random, target: int, salt: str, lang: Optional[str] = None) -> str:
+def _fence(
+    rng: random.Random,
+    target: int,
+    salt: str,
+    lang: Optional[str] = None,
+) -> str:
     """`target` characters of fenced code, unique to `salt`.
 
     The salt is in every identifier, not just in a comment. Shiki keys its cache on the whole
@@ -253,25 +350,36 @@ def _fence(rng: random.Random, target: int, salt: str, lang: Optional[str] = Non
         # the span density MEASURED in the DOM at run time, because Shiki merges adjacent
         # same-scope tokens and no offline count can predict that exactly.
         return rng.choice(_SHORT) if rng.random() < 0.55 else rng.choice(_NOUNS)
+
     while size < target:
         # ONE salted identifier per line is all the uniqueness Shiki's source-keyed cache needs,
         # and it leaves the rest of the line free to be dense.
         u = f"{rng.choice(_SHORT)}{salt}{i}"
         if lang == "python":
-            line = (f"    {u}={v()}[{r(0,9)}]*{r(2,99)}-{v()}({v()},{v()})+{v()}[{r(0,9)}:{r(1,9)}]"
-                    f";{v()}={v()}%{r(2,9)} if {v()}>{r(1,99)} else {v()}|{r(1,7)}")
+            line = (
+                f"    {u}={v()}[{r(0,9)}]*{r(2,99)}-{v()}({v()},{v()})+{v()}[{r(0,9)}:{r(1,9)}]"
+                f";{v()}={v()}%{r(2,9)} if {v()}>{r(1,99)} else {v()}|{r(1,7)}"
+            )
         elif lang == "typescript":
-            line = (f"  const {u}={{a:{v()}[{r(0,9)}],b:{v()}({v()},{r(1,99)}),c:{v()}?{v()}:"
-                    f"{r(0,9)}}};{v()}={v()}&{r(1,7)}|{v()}<<{r(1,7)};")
+            line = (
+                f"  const {u}={{a:{v()}[{r(0,9)}],b:{v()}({v()},{r(1,99)}),c:{v()}?{v()}:"
+                f"{r(0,9)}}};{v()}={v()}&{r(1,7)}|{v()}<<{r(1,7)};"
+            )
         elif lang == "rust":
-            line = (f"    let {u}:u64={v()}[{r(0,9)}]^{v()}({v()},{r(1,99)})&{r(1,255)};"
-                    f"{v()}={v()}.iter().map(|x|x*{r(2,99)}).sum::<u64>();")
+            line = (
+                f"    let {u}:u64={v()}[{r(0,9)}]^{v()}({v()},{r(1,99)})&{r(1,255)};"
+                f"{v()}={v()}.iter().map(|x|x*{r(2,99)}).sum::<u64>();"
+            )
         elif lang == "go":
-            line = (f"\t{u}:={v()}[{r(0,9)}]+{v()}({v()},{r(1,99)})*{r(2,99)};"
-                    f"{v()},{v()}={v()}%{r(2,9)},{v()}>>{r(1,7)}")
+            line = (
+                f"\t{u}:={v()}[{r(0,9)}]+{v()}({v()},{r(1,99)})*{r(2,99)};"
+                f"{v()},{v()}={v()}%{r(2,9)},{v()}>>{r(1,7)}"
+            )
         else:
-            line = (f"    uint64_t {u}={v()}[{r(0,9)}]|({v()}({v()},{r(1,99)})&0x{r(16,255):02x})"
-                    f";{v()}=*{v()}++^{r(1,255)};")
+            line = (
+                f"    uint64_t {u}={v()}[{r(0,9)}]|({v()}({v()},{r(1,99)})&0x{r(16,255):02x})"
+                f";{v()}=*{v()}++^{r(1,255)};"
+            )
         lines.append(line)
         size += len(line) + 1
         i += 1
@@ -279,8 +387,12 @@ def _fence(rng: random.Random, target: int, salt: str, lang: Optional[str] = Non
     return "\n".join(lines)
 
 
-def _jitter(rng: random.Random, mean: int, spread: float = BLOCK_JITTER,
-            floor: int = 80) -> int:
+def _jitter(
+    rng: random.Random,
+    mean: int,
+    spread: float = BLOCK_JITTER,
+    floor: int = 80,
+) -> int:
     """A size around `mean`, never below `floor`.
 
     Uniform on [1-spread, 1+spread] rather than lognormal: the point is to decorrelate block size
@@ -320,17 +432,20 @@ def _tool_calls(rng: random.Random, salt: str) -> list[dict]:
         name = rng.choice(TOOL_NAMES)
         query = _prose(rng, _jitter(rng, 220, floor = 40), f"{salt}t{i}q").replace("\n", " ")
         result = _prose(rng, _jitter(rng, 900, floor = 120), f"{salt}t{i}r")
-        args = {"query": query} if name in ("web_search", "search_knowledge_base") \
-            else {"code": query}
-        out.append({
-            "type": "tool-call",
-            "toolCallId": f"call_{salt}_{i}",
-            "toolName": name,
-            "argsText": json.dumps(args),
-            "args": args,
-            "state": "result",
-            "result": result,
-        })
+        args = (
+            {"query": query} if name in ("web_search", "search_knowledge_base") else {"code": query}
+        )
+        out.append(
+            {
+                "type": "tool-call",
+                "toolCallId": f"call_{salt}_{i}",
+                "toolName": name,
+                "argsText": json.dumps(args),
+                "args": args,
+                "state": "result",
+                "result": result,
+            }
+        )
     return out
 
 
@@ -340,7 +455,7 @@ def _unit_targets(index: int) -> tuple[str, int]:
     slot = index % 2
     base = 10_000 if slot == 0 else 8_000
     kind = "reasoning" if slot == 0 else "code"
-    nominal = min(MAX_UNIT_CHARS, base * (2 ** cycle))
+    nominal = min(MAX_UNIT_CHARS, base * (2**cycle))
     # Jittered around the nominal, deterministic in `index` alone so the escalating shape survives
     # while no two turns are the same size. A separate RNG from the body's, so changing block
     # jitter does not reshuffle which turns are large.
@@ -371,11 +486,19 @@ def generate_unit(index: int, seed: int = CORPUS_SEED) -> Unit:
     tools = tuple(_tool_calls(rng, salt))
     chars = len(reasoning) + len(content)
     digest = hashlib.sha256(
-        (f"{index}\x00{kind}\x00{reasoning}\x00{content}\x00"
-         + json.dumps(tools, sort_keys = True)).encode("utf-8")
+        (
+            f"{index}\x00{kind}\x00{reasoning}\x00{content}\x00" + json.dumps(tools, sort_keys = True)
+        ).encode("utf-8")
     ).hexdigest()
-    return Unit(index = index, kind = kind, reasoning = reasoning, content = content,
-                chars = chars, sha256 = digest, tool_calls = tools)
+    return Unit(
+        index = index,
+        kind = kind,
+        reasoning = reasoning,
+        content = content,
+        chars = chars,
+        sha256 = digest,
+        tool_calls = tools,
+    )
 
 
 def units_for_chars(total_chars: int, seed: int = CORPUS_SEED) -> list[Unit]:
@@ -395,8 +518,12 @@ def units_for_chars(total_chars: int, seed: int = CORPUS_SEED) -> list[Unit]:
 
 # ── freezing and loading ────────────────────────────────────────────
 
-def freeze(max_chars: int = SHIPPED_CHARS_BUDGET, seed: int = CORPUS_SEED,
-           out_dir: Path = FROZEN_DIR) -> dict:
+
+def freeze(
+    max_chars: int = SHIPPED_CHARS_BUDGET,
+    seed: int = CORPUS_SEED,
+    out_dir: Path = FROZEN_DIR,
+) -> dict:
     """Write `units.jsonl` and `manifest.json`. Run deliberately; never on a benchmark run."""
     out_dir.mkdir(parents = True, exist_ok = True)
     shipped = units_for_chars(max_chars, seed)
@@ -415,12 +542,15 @@ def freeze(max_chars: int = SHIPPED_CHARS_BUDGET, seed: int = CORPUS_SEED,
         "max_unit_chars": MAX_UNIT_CHARS,
         "shipped_units": len(shipped),
         "shipped_chars": sum(u.chars for u in shipped),
-        "units": [{"index": u.index, "kind": u.kind, "chars": u.chars, "sha256": u.sha256}
-                  for u in all_units],
+        "units": [
+            {"index": u.index, "kind": u.kind, "chars": u.chars, "sha256": u.sha256}
+            for u in all_units
+        ],
     }
     manifest["corpus_hash"] = corpus_hash(manifest)
     (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8")
+        json.dumps(manifest, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8"
+    )
     return manifest
 
 
@@ -431,8 +561,14 @@ def corpus_hash(manifest: dict) -> str:
     different declared densities would otherwise compare as identical.
     """
     h = hashlib.sha256()
-    for key in ("corpus_version", "seed", "prose_chars", "fence_chars", "preamble_fraction",
-                "max_unit_chars"):
+    for key in (
+        "corpus_version",
+        "seed",
+        "prose_chars",
+        "fence_chars",
+        "preamble_fraction",
+        "max_unit_chars",
+    ):
         h.update(f"{key}={manifest[key]}\x00".encode("utf-8"))
     for u in manifest["units"]:
         h.update(f"{u['index']}:{u['sha256']}\x00".encode("utf-8"))
@@ -456,6 +592,7 @@ class Corpus:
         # corpus is a zip member and every Path built from __file__ points at something that
         # cannot exist; the built artifact's own --doctor is what caught it.
         from ..runtime import resources
+
         if frozen_dir is not None:
             manifest_path = Path(frozen_dir) / "manifest.json"
             if not manifest_path.exists():
@@ -606,8 +743,11 @@ class RungPlan:
         return self.seeded_chars + self.streamed_chars + self.follow_up_chars
 
 
-def plan_rung(corpus: Corpus, rung: str,
-              chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN) -> RungPlan:
+def plan_rung(
+    corpus: Corpus,
+    rung: str,
+    chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
+) -> RungPlan:
     """Which units are SEEDED and which one STREAMS.
 
     Only the last reply streams. At the field's own cadence, 24 characters every 73ms, a million
@@ -673,21 +813,29 @@ def plan_rung(corpus: Corpus, rung: str,
         for i in range(1, turns)
     ]
 
-    return RungPlan(rung = rung, target_tokens = tokens, target_chars = target_chars,
-                    seeded_units = seeded, streamed_unit = streamed,
-                    follow_up_units = follow_ups)
+    return RungPlan(
+        rung = rung,
+        target_tokens = tokens,
+        target_chars = target_chars,
+        seeded_units = seeded,
+        streamed_unit = streamed,
+        follow_up_units = follow_ups,
+    )
 
 
 def _main(argv: list[str]) -> int:
     import argparse
+
     ap = argparse.ArgumentParser(description = "Build or verify the frozen studiobench corpus.")
     ap.add_argument("--freeze", action = "store_true", help = "regenerate frozen/*.jsonl")
     ap.add_argument("--verify", action = "store_true", help = "check the tree against the freeze")
     args = ap.parse_args(argv)
     if args.freeze:
         m = freeze()
-        print(f"froze {m['shipped_units']} units, {m['shipped_chars']:,} chars, "
-              f"{len(m['units'])} manifest entries")
+        print(
+            f"froze {m['shipped_units']} units, {m['shipped_chars']:,} chars, "
+            f"{len(m['units'])} manifest entries"
+        )
         print(f"corpus_hash {m['corpus_hash']}")
         return 0
     c = Corpus.load()
@@ -698,8 +846,10 @@ def _main(argv: list[str]) -> int:
     print(f"regenerated (not shipped as text): {len(c.regenerated)} units")
     for rung in RUNGS:
         p = plan_rung(c, rung)
-        print(f"  {rung:>5}: {len(p.seeded_units):>4} seeded units, "
-              f"{p.seeded_chars:>10,} seeded chars, {p.streamed_chars:>9,} streamed chars")
+        print(
+            f"  {rung:>5}: {len(p.seeded_units):>4} seeded units, "
+            f"{p.seeded_chars:>10,} seeded chars, {p.streamed_chars:>9,} streamed chars"
+        )
     return 0
 
 

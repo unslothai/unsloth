@@ -39,9 +39,7 @@ def render_route(result: RouteResult) -> str:
         mechanisms = ", ".join(step_result.step.mechanisms)
         if step_result.step.fused:
             mechanisms += "  [FUSED]"
-        lines.append(
-            f"  {step_result.step.label:<28} {mechanisms:<44} {step_result.quote()}"
-        )
+        lines.append(f"  {step_result.step.label:<28} {mechanisms:<44} {step_result.quote()}")
     lines.append("")
     if result.total is not None:
         lines.append(f"  top minus floor      {result.total.display()}")
@@ -70,9 +68,7 @@ def render_interactions(result: BatchResult) -> str:
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
     for term in result.interactions:
-        gap = (
-            f"{term.disagreement_ms:+.3f}" if term.disagreement_ms is not None else "n/a"
-        )
+        gap = f"{term.disagreement_ms:+.3f}" if term.disagreement_ms is not None else "n/a"
         lines.append(
             f"  {term.mechanism:<32} {term.value_a.display():>12} "
             f"{term.value_b.display():>12} {gap:>12}"
@@ -180,13 +176,11 @@ def render_fix_implications(result: BatchResult, *, top_n: int = 3) -> str:
                     )
                 )
     if not by_mechanism:
-        return (
-            "FIX IMPLICATIONS\n  none: no step on either route produced a usable difference"
-        )
+        return "FIX IMPLICATIONS\n  none: no step on either route produced a usable difference"
 
     ranked = sorted(
         by_mechanism.items(),
-        key=lambda item: (-max(value for _, value, _ in item[1]), item[0]),
+        key = lambda item: (-max(value for _, value, _ in item[1]), item[0]),
     )
     lines = [
         "FIX IMPLICATIONS (ranked by the largest measured step, which is a RANGE when the two "

@@ -94,7 +94,7 @@ class FrameStats:
     p99_frame_ms: Measure
     dropped_frames: Measure
     effective_fps: Measure
-    histogram: list[dict[str, Any]] = field(default_factory=list)
+    histogram: list[dict[str, Any]] = field(default_factory = list)
     no_frames_recorded: bool = False
 
     def to_json(self) -> dict[str, Any]:
@@ -154,20 +154,20 @@ def compute_frame_stats(
     if not attempted:
         reason = not_attempted_reason or "frame recorder not installed"
         return FrameStats(
-            frames_total=0,
-            window_ms=float(window_ms),
-            budget_ms=REFRESH_FALLBACK_MS,
-            refresh_source="not_attempted",
-            time_in_jank_pct=Measure.not_attempted("%", reason),
-            jank_index=Measure.not_attempted("ms", reason),
-            max_frame_ms=Measure.not_attempted("ms", reason),
-            p50_frame_ms=Measure.not_attempted("ms", reason),
-            p95_frame_ms=Measure.not_attempted("ms", reason),
-            p99_frame_ms=Measure.not_attempted("ms", reason),
-            dropped_frames=Measure.not_attempted("frames", reason),
-            effective_fps=Measure.not_attempted("fps", reason),
-            histogram=[],
-            no_frames_recorded=False,
+            frames_total = 0,
+            window_ms = float(window_ms),
+            budget_ms = REFRESH_FALLBACK_MS,
+            refresh_source = "not_attempted",
+            time_in_jank_pct = Measure.not_attempted("%", reason),
+            jank_index = Measure.not_attempted("ms", reason),
+            max_frame_ms = Measure.not_attempted("ms", reason),
+            p50_frame_ms = Measure.not_attempted("ms", reason),
+            p95_frame_ms = Measure.not_attempted("ms", reason),
+            p99_frame_ms = Measure.not_attempted("ms", reason),
+            dropped_frames = Measure.not_attempted("frames", reason),
+            effective_fps = Measure.not_attempted("fps", reason),
+            histogram = [],
+            no_frames_recorded = False,
         )
 
     usable = [float(d) for d in deltas if d is not None and math.isfinite(d) and d >= 0]
@@ -185,20 +185,20 @@ def compute_frame_stats(
         # the tri-clock gate upstream is what decides whether the window survives.
         reason = "frame recorder produced no frames (rAF may be unscheduled)"
         return FrameStats(
-            frames_total=0,
-            window_ms=window_ms,
-            budget_ms=budget_ms,
-            refresh_source=refresh_source,
-            time_in_jank_pct=Measure.failed("%", reason),
-            jank_index=Measure.failed("ms", reason),
-            max_frame_ms=Measure.failed("ms", reason),
-            p50_frame_ms=Measure.failed("ms", reason),
-            p95_frame_ms=Measure.failed("ms", reason),
-            p99_frame_ms=Measure.failed("ms", reason),
-            dropped_frames=Measure.failed("frames", reason),
-            effective_fps=Measure.failed("fps", reason),
-            histogram=[],
-            no_frames_recorded=True,
+            frames_total = 0,
+            window_ms = window_ms,
+            budget_ms = budget_ms,
+            refresh_source = refresh_source,
+            time_in_jank_pct = Measure.failed("%", reason),
+            jank_index = Measure.failed("ms", reason),
+            max_frame_ms = Measure.failed("ms", reason),
+            p50_frame_ms = Measure.failed("ms", reason),
+            p95_frame_ms = Measure.failed("ms", reason),
+            p99_frame_ms = Measure.failed("ms", reason),
+            dropped_frames = Measure.failed("frames", reason),
+            effective_fps = Measure.failed("fps", reason),
+            histogram = [],
+            no_frames_recorded = True,
         )
 
     ordered = sorted(usable)
@@ -208,22 +208,22 @@ def compute_frame_stats(
     dropped = sum(1 for d in usable if d > budget_ms * 1.5)
 
     return FrameStats(
-        frames_total=len(usable),
-        window_ms=window_ms,
-        budget_ms=budget_ms,
-        refresh_source=refresh_source,
-        time_in_jank_pct=Measure.read(
-            100.0 * jank_time_ms / denominator, "%", floor=FLOOR_TIME_IN_JANK_PCT
+        frames_total = len(usable),
+        window_ms = window_ms,
+        budget_ms = budget_ms,
+        refresh_source = refresh_source,
+        time_in_jank_pct = Measure.read(
+            100.0 * jank_time_ms / denominator, "%", floor = FLOOR_TIME_IN_JANK_PCT
         ),
-        jank_index=Measure.read(over_budget_sq / denominator, "ms", floor=FLOOR_JANK_INDEX),
-        max_frame_ms=Measure.read(max(usable), "ms", floor=FLOOR_FRAME_MS),
-        p50_frame_ms=Measure.read(_percentile(ordered, 50.0), "ms", floor=FLOOR_FRAME_MS),
-        p95_frame_ms=Measure.read(_percentile(ordered, 95.0), "ms", floor=FLOOR_FRAME_MS),
-        p99_frame_ms=Measure.read(_percentile(ordered, 99.0), "ms", floor=FLOOR_FRAME_MS),
-        dropped_frames=Measure.read(float(dropped), "frames", floor=None),
-        effective_fps=Measure.read(1000.0 * len(usable) / denominator, "fps", floor=None),
-        histogram=build_histogram(usable),
-        no_frames_recorded=False,
+        jank_index = Measure.read(over_budget_sq / denominator, "ms", floor = FLOOR_JANK_INDEX),
+        max_frame_ms = Measure.read(max(usable), "ms", floor = FLOOR_FRAME_MS),
+        p50_frame_ms = Measure.read(_percentile(ordered, 50.0), "ms", floor = FLOOR_FRAME_MS),
+        p95_frame_ms = Measure.read(_percentile(ordered, 95.0), "ms", floor = FLOOR_FRAME_MS),
+        p99_frame_ms = Measure.read(_percentile(ordered, 99.0), "ms", floor = FLOOR_FRAME_MS),
+        dropped_frames = Measure.read(float(dropped), "frames", floor = None),
+        effective_fps = Measure.read(1000.0 * len(usable) / denominator, "fps", floor = None),
+        histogram = build_histogram(usable),
+        no_frames_recorded = False,
     )
 
 
@@ -232,8 +232,7 @@ def build_histogram(deltas: Sequence[float]) -> list[dict[str, Any]]:
 
     edges = list(HISTOGRAM_EDGES_MS)
     buckets = [
-        {"lo_ms": edges[i], "hi_ms": edges[i + 1], "bucket_count": 0}
-        for i in range(len(edges) - 1)
+        {"lo_ms": edges[i], "hi_ms": edges[i + 1], "bucket_count": 0} for i in range(len(edges) - 1)
     ]
     buckets.append({"lo_ms": edges[-1], "hi_ms": None, "bucket_count": 0})
     for delta in deltas:

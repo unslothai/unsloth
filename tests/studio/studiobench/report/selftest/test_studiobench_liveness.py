@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.__main__ import main                                           # noqa: E402
+from studiobench.__main__ import main  # noqa: E402
 
 
 def write_payload(tmp_path: Path, rows: list[dict]) -> Path:
@@ -27,7 +27,12 @@ def write_payload(tmp_path: Path, rows: list[dict]) -> Path:
     return path
 
 
-def cell(actions: list[dict], *, completed: bool = True, cell_id: str = "100K/rep0") -> dict:
+def cell(
+    actions: list[dict],
+    *,
+    completed: bool = True,
+    cell_id: str = "100K/rep0",
+) -> dict:
     return {"row_type": "cell", "cell_id": cell_id, "completed": completed, "actions": actions}
 
 
@@ -41,8 +46,17 @@ def test_a_payload_where_everything_ran_passes(tmp_path):
 
 
 def test_an_action_that_did_not_run_fails(tmp_path):
-    path = write_payload(tmp_path, [
-        cell([ran("keystroke"), {"action": "message_menu", "ran": False, "reason": "slot closed"}])])
+    path = write_payload(
+        tmp_path,
+        [
+            cell(
+                [
+                    ran("keystroke"),
+                    {"action": "message_menu", "ran": False, "reason": "slot closed"},
+                ]
+            )
+        ],
+    )
     assert main(["--assert-liveness", str(path)]) == 1
 
 
@@ -69,20 +83,25 @@ def test_a_missing_payload_is_refused(tmp_path):
 
 
 def test_allow_not_run_excuses_only_the_names_given(tmp_path):
-    rows = [cell([{"action": "image_upload", "ran": False},
-                  {"action": "message_menu", "ran": False}])]
+    rows = [
+        cell([{"action": "image_upload", "ran": False}, {"action": "message_menu", "ran": False}])
+    ]
     path = write_payload(tmp_path, rows)
     assert main(["--assert-liveness", str(path), "--allow-not-run", "image_upload"]) == 1
-    assert main(["--assert-liveness", str(path),
-                 "--allow-not-run", "image_upload,message_menu"]) == 0
+    assert (
+        main(["--assert-liveness", str(path), "--allow-not-run", "image_upload,message_menu"]) == 0
+    )
 
 
 def test_non_cell_rows_are_ignored_but_do_not_count_as_cells(tmp_path):
-    path = write_payload(tmp_path, [
-        {"row_type": "window", "name": "stream:drain"},
-        {"row_type": "action", "action": "keystroke", "ran": False},
-        cell([ran("keystroke")]),
-    ])
+    path = write_payload(
+        tmp_path,
+        [
+            {"row_type": "window", "name": "stream:drain"},
+            {"row_type": "action", "action": "keystroke", "ran": False},
+            cell([ran("keystroke")]),
+        ],
+    )
     # The stray top-level action row must not fail the run: actions are read from inside their
     # cell, so counting them twice would make the gate depend on payload layout.
     assert main(["--assert-liveness", str(path)]) == 0

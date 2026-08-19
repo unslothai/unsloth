@@ -88,7 +88,11 @@ class CoverageSnapshot:
     def nonzero(self) -> list[FunctionCount]:
         return [f for f in self.functions if f.count > 0]
 
-    def top(self, limit: int = 40, url_filter: str | None = None) -> list[FunctionCount]:
+    def top(
+        self,
+        limit: int = 40,
+        url_filter: str | None = None,
+    ) -> list[FunctionCount]:
         rows = self.nonzero()
         if url_filter:
             rows = [f for f in rows if url_filter in f.url]
@@ -144,7 +148,13 @@ class PreciseCoverage:
     becomes "this ran 4,110 times since the page loaded".
     """
 
-    def __init__(self, cdp: Any, *, detailed: bool = False, allow_triggered_updates: bool = False) -> None:
+    def __init__(
+        self,
+        cdp: Any,
+        *,
+        detailed: bool = False,
+        allow_triggered_updates: bool = False,
+    ) -> None:
         self.cdp = cdp
         self.detailed = detailed
         self.allow_triggered_updates = allow_triggered_updates
@@ -238,6 +248,7 @@ def assert_integers_only(payload: dict[str, Any]) -> None:
     non-integral number. It is a cheap check that makes a silent category error
     into a loud one.
     """
+
     def check(node: Any, path: str) -> None:
         if isinstance(node, bool):
             return
@@ -291,11 +302,11 @@ def ambiguity(snapshot: CoverageSnapshot, name: str) -> int:
 # from this cell without having to know why. Only integers cross the boundary,
 # enforced by `assert_integers_only` on the way out rather than by convention.
 
-import time                                                              # noqa: E402
-from typing import Any                                                   # noqa: E402
+import time  # noqa: E402
+from typing import Any  # noqa: E402
 
-from ..analysis import assert_no_bare_zero, measured, merge, unmeasured   # noqa: E402
-from . import register_instrument                                        # noqa: E402
+from ..analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
+from . import register_instrument  # noqa: E402
 
 
 class CoverageInstrument:
@@ -333,7 +344,7 @@ class CoverageInstrument:
             # counts depend on the window boundaries.
             self.cov = PreciseCoverage(self.cdp)
             self.cov.start()
-        except Exception as exc:                                   # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self.cov = None
             self._start_reason = f"{type(exc).__name__}: {exc}"
         self._overhead_ms += (time.perf_counter() - t0) * 1000.0
@@ -361,26 +372,38 @@ class CoverageInstrument:
             payload = merge(
                 measured("total_calls", int(snap.total_calls())),
                 measured("functions_invoked", len(snap.nonzero())),
-                measured("top_functions", [
-                    {"function": f.function_name or "(anonymous)",
-                     "url": f.url,
-                     "start_offset": int(f.start_offset),
-                     "end_offset": int(f.end_offset),
-                     "count": int(f.count)}
-                    for f in top
-                ]),
+                measured(
+                    "top_functions",
+                    [
+                        {
+                            "function": f.function_name or "(anonymous)",
+                            "url": f.url,
+                            "start_offset": int(f.start_offset),
+                            "end_offset": int(f.end_offset),
+                            "count": int(f.count),
+                        }
+                        for f in top
+                    ],
+                ),
                 {
                     "timings_void": True,
                     "active": True,
-                    "note": ("precise coverage disables TurboFan and Maglev isolate-wide; "
-                             "no duration from this cell may be quoted"),
+                    "note": (
+                        "precise coverage disables TurboFan and Maglev isolate-wide; "
+                        "no duration from this cell may be quoted"
+                    ),
                 },
             )
             # The boundary guard. A float here would be a category error, not a
             # rounding problem, so it raises rather than warns.
-            assert_integers_only({k: v for k, v in payload.items()
-                                  if k in ("total_calls", "functions_invoked", "top_functions")})
-        except Exception as exc:                                   # noqa: BLE001
+            assert_integers_only(
+                {
+                    k: v
+                    for k, v in payload.items()
+                    if k in ("total_calls", "functions_invoked", "top_functions")
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
             payload = merge(
                 unmeasured("total_calls", f"{type(exc).__name__}: {exc}"),
                 {"timings_void": True, "active": True},

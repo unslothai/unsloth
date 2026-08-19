@@ -83,7 +83,7 @@ class DoseFit:
     min_detectable_slope: Measure
     verdict: str
     note: str
-    points: list[DosePoint] = field(default_factory=list)
+    points: list[DosePoint] = field(default_factory = list)
     content_varied: bool = False
 
     def to_json(self) -> dict[str, Any]:
@@ -135,9 +135,7 @@ def _r2(xs: Sequence[float], ys: Sequence[float], predict) -> float | None:
 
 
 def fit_dose_response(
-    points: Sequence[DosePoint],
-    *,
-    detection_floor_ms: float | None = None,
+    points: Sequence[DosePoint], *, detection_floor_ms: float | None = None
 ) -> DoseFit:
     """Fit both models and decide what the shape says.
 
@@ -151,7 +149,7 @@ def fit_dose_response(
     contents = {p.content_chars for p in points}
     content_varied = len(contents) > 1
 
-    max_dose = max((p.dose for p in points), default=0)
+    max_dose = max((p.dose for p in points), default = 0)
     if detection_floor_ms is not None and max_dose > 0:
         min_slope = Measure.read(detection_floor_ms / max_dose, "ms/child")
     else:
@@ -161,37 +159,37 @@ def fit_dose_response(
 
     if len(usable) < 3:
         return DoseFit(
-            slope_through_origin=None,
-            r2_through_origin=None,
-            slope_free=None,
-            intercept_free=None,
-            r2_free=None,
-            min_detectable_slope=min_slope,
-            verdict="NO FIT",
-            note=(
+            slope_through_origin = None,
+            r2_through_origin = None,
+            slope_free = None,
+            intercept_free = None,
+            r2_free = None,
+            min_detectable_slope = min_slope,
+            verdict = "NO FIT",
+            note = (
                 f"only {len(usable)} of {len(points)} doses produced a reading; three points is "
                 "the minimum that can distinguish a line from a step"
             ),
-            points=list(points),
-            content_varied=content_varied,
+            points = list(points),
+            content_varied = content_varied,
         )
 
     if content_varied:
         return DoseFit(
-            slope_through_origin=None,
-            r2_through_origin=None,
-            slope_free=None,
-            intercept_free=None,
-            r2_free=None,
-            min_detectable_slope=min_slope,
-            verdict="INVALID",
-            note=(
+            slope_through_origin = None,
+            r2_through_origin = None,
+            slope_free = None,
+            intercept_free = None,
+            r2_free = None,
+            min_detectable_slope = min_slope,
+            verdict = "INVALID",
+            note = (
                 "content length is not fixed across the doses "
                 f"({sorted(contents)}), so a slope in siblings is confounded with a slope in "
                 "content and the whole design is void"
             ),
-            points=list(points),
-            content_varied=True,
+            points = list(points),
+            content_varied = True,
         )
 
     xs = [float(p.dose) for p in usable]
@@ -274,14 +272,14 @@ def fit_dose_response(
         )
 
     return DoseFit(
-        slope_through_origin=slope_origin,
-        r2_through_origin=r2_origin,
-        slope_free=slope_free,
-        intercept_free=intercept_free,
-        r2_free=r2_free,
-        min_detectable_slope=min_slope,
-        verdict=verdict,
-        note=note,
-        points=list(points),
-        content_varied=False,
+        slope_through_origin = slope_origin,
+        r2_through_origin = r2_origin,
+        slope_free = slope_free,
+        intercept_free = intercept_free,
+        r2_free = r2_free,
+        min_detectable_slope = min_slope,
+        verdict = verdict,
+        note = note,
+        points = list(points),
+        content_varied = False,
     )

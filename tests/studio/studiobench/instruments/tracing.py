@@ -300,7 +300,12 @@ class TraceCapture:
         self._running = True
         self._t_start = time.perf_counter()
 
-    def stop(self, *, save_to: str | None = None, timeout_s: float = 120.0) -> TraceResult:
+    def stop(
+        self,
+        *,
+        save_to: str | None = None,
+        timeout_s: float = 120.0,
+    ) -> TraceResult:
         if not self._running:
             raise RuntimeError("TraceCapture.stop called without start")
         t_end = time.perf_counter()
@@ -309,11 +314,21 @@ class TraceCapture:
 
         if self.level == L0:
             return TraceResult(
-                level = L0, categories = (), text = "", path = None,
-                data_loss_occurred = False, max_percent_full = 0.0, buffer_polls = 0,
-                buffer_kb = 0, wall_ms = wall_ms, drain_ms = 0.0, drain_chunks = 0,
-                trace_format = "", stream_compression = "",
-                started_at_wall = self._t_start, ended_at_wall = t_end,
+                level = L0,
+                categories = (),
+                text = "",
+                path = None,
+                data_loss_occurred = False,
+                max_percent_full = 0.0,
+                buffer_polls = 0,
+                buffer_kb = 0,
+                wall_ms = wall_ms,
+                drain_ms = 0.0,
+                drain_chunks = 0,
+                trace_format = "",
+                stream_compression = "",
+                started_at_wall = self._t_start,
+                ended_at_wall = t_end,
             )
 
         self.cdp.send("Tracing.end")
@@ -554,7 +569,9 @@ class MetricsWindow:
 
     def delta(self) -> dict[str, float]:
         if not self.before or not self.after:
-            raise CellFailure("metrics_window_unclosed", "MetricsWindow.open/close were not both called")
+            raise CellFailure(
+                "metrics_window_unclosed", "MetricsWindow.open/close were not both called"
+            )
         return {
             k: self.after[k] - self.before.get(k, 0.0)
             for k in self.after
@@ -619,8 +636,8 @@ def load_trace_json(result: TraceResult) -> dict[str, Any]:
 # land inside the window, so it is timed and reported as `overhead_ms` rather
 # than waved away.
 
-from ..analysis import assert_no_bare_zero, measured, merge, unmeasured   # noqa: E402
-from . import register_instrument                                        # noqa: E402
+from ..analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
+from . import register_instrument  # noqa: E402
 
 
 class TracingInstrument:
@@ -707,7 +724,7 @@ class TracingInstrument:
                 unmeasured("task_ms", f"{exc.gate}: {exc.detail}"),
                 {"trace_level": self.trace_level, "active": True, "cell_failed": True},
             )
-        except Exception as exc:                                   # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self._failed_windows.append(f"{getattr(window, 'name', '?')}: {type(exc).__name__}")
             payload = merge(
                 unmeasured("task_ms", f"{type(exc).__name__}: {exc}"),
@@ -762,7 +779,9 @@ class TracingInstrument:
         if paths is None or not self._save_traces:
             return None
         cell_id = getattr(self.cell, "cell_id", "cell")
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in str(getattr(window, "name", "w")))
+        safe = "".join(
+            c if c.isalnum() or c in "-_." else "_" for c in str(getattr(window, "name", "w"))
+        )
         return str(getattr(paths, "traces") / f"{cell_id}.{safe}.json")
 
     def _analyse(self, result: TraceResult, window: Any) -> dict:
@@ -792,35 +811,50 @@ class TracingInstrument:
         # tolerated, but it does not void the window on its own.
         try:
             if self.metrics is not None:
-                payload.update(measured(
-                    "task_duration_crosscheck_drift",
-                    round(cross_check_with_metrics(cls.total_us, self.metrics.delta())["drift"], 5),
-                ))
+                payload.update(
+                    measured(
+                        "task_duration_crosscheck_drift",
+                        round(
+                            cross_check_with_metrics(cls.total_us, self.metrics.delta())["drift"], 5
+                        ),
+                    )
+                )
         except CellFailure as exc:
-            payload.update(unmeasured("task_duration_crosscheck_drift", f"{exc.gate}: {exc.detail}"))
-        except Exception as exc:                                   # noqa: BLE001
-            payload.update(unmeasured("task_duration_crosscheck_drift", f"{type(exc).__name__}: {exc}"))
+            payload.update(
+                unmeasured("task_duration_crosscheck_drift", f"{exc.gate}: {exc.detail}")
+            )
+        except Exception as exc:  # noqa: BLE001
+            payload.update(
+                unmeasured("task_duration_crosscheck_drift", f"{type(exc).__name__}: {exc}")
+            )
 
         # Named frames need the V8 profiler, which only L2+ turns on. At L1 this
         # is an honest null with a reason, never an empty list that reads as
         # "nothing was hot".
         if self.trace_level == L1:
-            payload.update(unmeasured(
-                "named_frames",
-                "the v8 CPU profiler category is off at instrument level 1, so samples "
-                "have no stacks and no frame can be named. Raise the level to 2.",
-            ))
+            payload.update(
+                unmeasured(
+                    "named_frames",
+                    "the v8 CPU profiler category is off at instrument level 1, so samples "
+                    "have no stacks and no frame can be named. Raise the level to 2.",
+                )
+            )
             return payload
 
         try:
             prof = C.main_thread_profile(trace)
             prof.assert_deltas_match_wall()
             rows, diag = C.self_time_in_windows(
-                prof, [(prof.chunk_ts_first, prof.chunk_ts_last)], limit = 12,
+                prof,
+                [(prof.chunk_ts_first, prof.chunk_ts_last)],
+                limit = 12,
             )
-            payload.update(measured("named_frames", [
-                {"frame": f.label(), "self_ms": round(us / 1000.0, 3)} for f, us in rows
-            ]))
+            payload.update(
+                measured(
+                    "named_frames",
+                    [{"frame": f.label(), "self_ms": round(us / 1000.0, 3)} for f, us in rows],
+                )
+            )
             payload["frame_ranking_underpowered"] = bool(diag["underpowered"])
             payload["js_sample_count"] = int(diag["js_sample_count"])
         except CellFailure as exc:

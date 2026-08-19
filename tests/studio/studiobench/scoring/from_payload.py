@@ -63,7 +63,9 @@ def _cell_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [r for r in records if r.get("row_type") == "cell"]
 
 
-def _actions_for(records: Sequence[Mapping[str, Any]], cell_id: str) -> dict[str, Mapping[str, Any]]:
+def _actions_for(
+    records: Sequence[Mapping[str, Any]], cell_id: str
+) -> dict[str, Mapping[str, Any]]:
     """Index the standalone `action` rows for one cell by action name.
 
     The `actions` list embedded in the cell row is not used: it carries the timings but drops the
@@ -78,10 +80,7 @@ def _actions_for(records: Sequence[Mapping[str, Any]], cell_id: str) -> dict[str
     return out
 
 
-def _action_measure(
-    metric_key: str,
-    actions: Mapping[str, Mapping[str, Any]],
-) -> Measure:
+def _action_measure(metric_key: str, actions: Mapping[str, Mapping[str, Any]]) -> Measure:
     action_name, timing_key = ACTION_SOURCES[metric_key]
     unit = METRIC_BY_KEY[metric_key].unit
     note = SCROLL_SETTLE_NOTE if metric_key == "scroll_settle_ms" else f"{action_name}.{timing_key}"
@@ -97,12 +96,10 @@ def _action_measure(
     value = (row.get("timings") or {}).get(timing_key)
     if value is None:
         return Measure.failed(unit, f"{action_name} ran but recorded no {timing_key}")
-    return Measure.read(float(value), unit, note=note)
+    return Measure.read(float(value), unit, note = note)
 
 
-def _frame_measures(
-    windows: Sequence[Mapping[str, Any]],
-) -> dict[str, Measure]:
+def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     """Pool the active windows of one cell into the three frame metrics.
 
     Pooled rather than averaged per window: `time_in_jank_pct` is a share of wall time and
@@ -142,7 +139,7 @@ def _frame_measures(
 
     out: dict[str, Measure] = {}
     out["max_frame_ms"] = (
-        Measure.read(max_frame, "ms", note="worst frame across the cell's active windows")
+        Measure.read(max_frame, "ms", note = "worst frame across the cell's active windows")
         if max_frame is not None
         else Measure.failed("ms", "the recorder ran but observed no frames")
     )
@@ -165,8 +162,7 @@ def _frame_measures(
 
 
 def measures_from_records(
-    records: Sequence[Mapping[str, Any]],
-    metric_keys: Iterable[str] | None = None,
+    records: Sequence[Mapping[str, Any]], metric_keys: Iterable[str] | None = None
 ) -> dict[int, dict[str, Measure]]:
     """Build `{rung_tokens: {metric_key: Measure}}` from one run's payload rows.
 
@@ -213,8 +209,7 @@ def measures_from_records(
 
 
 def measures_by_cell(
-    records: Sequence[Mapping[str, Any]],
-    metric_keys: Iterable[str] | None = None,
+    records: Sequence[Mapping[str, Any]], metric_keys: Iterable[str] | None = None
 ) -> dict[tuple[int, int], dict[str, Measure]]:
     """`{(rung_tokens, rep): {metric_key: Measure}}` -- one entry per CELL, not per rung.
 
@@ -232,10 +227,15 @@ def measures_by_cell(
         if cell_id is None or tokens is None:
             continue
         rep = int((cell.get("cell") or {}).get("rep") or 0)
-        single = measures_from_records([cell] + [
-            r for r in records
-            if r.get("row_type") in {"action", "window"} and r.get("cell_id") == cell_id
-        ], keys)
+        single = measures_from_records(
+            [cell]
+            + [
+                r
+                for r in records
+                if r.get("row_type") in {"action", "window"} and r.get("cell_id") == cell_id
+            ],
+            keys,
+        )
         for readings in single.values():
             out[(int(tokens), rep)] = readings
     return out

@@ -21,24 +21,39 @@ from typing import Any, Callable, Iterator, Optional
 
 SCHEMA = "studiobench/1"
 
-ROW_TYPES = frozenset({
-    "run_meta", "gate", "cell", "window", "action", "sample", "failure",
-    # The A/B run order, recorded before the first cell. Written even when the order is
-    # UNBALANCED, because whether linear drift cancelled is a property of the run that a reader
-    # of the table has no other way to recover.
-    "ab_plan",
-    # One UI surface swept by the optional `--surfaces` phase: a route, a settings tab, a menu.
-    # A row type of its own rather than an `action` row with a different name, because a surface
-    # has no slot, no budget and no timing to miss -- and reusing `action` would put forty rows
-    # with a null `timings` into the column the report scores actions from.
-    "surface",
-})
+ROW_TYPES = frozenset(
+    {
+        "run_meta",
+        "gate",
+        "cell",
+        "window",
+        "action",
+        "sample",
+        "failure",
+        # The A/B run order, recorded before the first cell. Written even when the order is
+        # UNBALANCED, because whether linear drift cancelled is a property of the run that a reader
+        # of the table has no other way to recover.
+        "ab_plan",
+        # One UI surface swept by the optional `--surfaces` phase: a route, a settings tab, a menu.
+        # A row type of its own rather than an `action` row with a different name, because a surface
+        # has no slot, no budget and no timing to miss -- and reusing `action` would put forty rows
+        # with a null `timings` into the column the report scores actions from.
+        "surface",
+    }
+)
 
 # Required keys per row type. Enforced in Recorder.emit, because a row that silently lost its
 # `ran` flag reads downstream as a fast action rather than as a missing one.
 ROW_REQUIRED: dict[str, tuple[str, ...]] = {
-    "run_meta": ("tier", "tool_version", "corpus_hash", "studio_ref", "bundle", "platform",
-                 "started_at"),
+    "run_meta": (
+        "tier",
+        "tool_version",
+        "corpus_hash",
+        "studio_ref",
+        "bundle",
+        "platform",
+        "started_at",
+    ),
     "gate": ("name", "passed", "detail"),
     "cell": ("cell", "completed", "fidelity"),
     "window": ("name", "kind", "t_open_ms", "duration_ms"),
@@ -53,6 +68,7 @@ ROW_REQUIRED: dict[str, tuple[str, ...]] = {
 
 
 # ── the cell ────────────────────────────────────────────────────────
+
 
 @dataclass(frozen = True)
 class Cell:
@@ -78,10 +94,18 @@ class Cell:
 
     def as_dict(self) -> dict:
         return {
-            "cell_id": self.cell_id, "rung": self.rung, "rung_tokens": self.rung_tokens,
-            "arm": self.arm, "rep": self.rep, "tier": self.tier, "transport": self.transport,
-            "instrument_level": self.instrument_level, "seed": self.seed,
-            "corpus_hash": self.corpus_hash, "session_id": self.session_id, "meta": self.meta,
+            "cell_id": self.cell_id,
+            "rung": self.rung,
+            "rung_tokens": self.rung_tokens,
+            "arm": self.arm,
+            "rep": self.rep,
+            "tier": self.tier,
+            "transport": self.transport,
+            "instrument_level": self.instrument_level,
+            "seed": self.seed,
+            "corpus_hash": self.corpus_hash,
+            "session_id": self.session_id,
+            "meta": self.meta,
         }
 
 
@@ -130,6 +154,7 @@ class Window:
 
 # ── actions ─────────────────────────────────────────────────────────
 
+
 @dataclass
 class ActionResult:
     """The outcome of one action.
@@ -170,9 +195,13 @@ class ActionResult:
         }
 
 
-def not_run(reason: str, *, slot_missed: bool = False, expect: Optional[dict] = None) -> ActionResult:
-    return ActionResult(ran = False, reason = reason, slot_missed = slot_missed,
-                        expect = expect or {})
+def not_run(
+    reason: str,
+    *,
+    slot_missed: bool = False,
+    expect: Optional[dict] = None,
+) -> ActionResult:
+    return ActionResult(ran = False, reason = reason, slot_missed = slot_missed, expect = expect or {})
 
 
 @dataclass(frozen = True)
@@ -200,6 +229,7 @@ class ActionContext:
 
 # ── instruments ─────────────────────────────────────────────────────
 
+
 class Instrument:
     """Base class. Subclassing is optional; duck typing on `name`/`level` is enough."""
 
@@ -209,12 +239,17 @@ class Instrument:
     def attach(self, ctx: "BenchContext") -> None: ...
     def start_cell(self, cell: Cell) -> None: ...
     def open(self, window: Window) -> None: ...
-    def close(self, window: Window) -> Optional[dict]: return None
-    def end_cell(self, cell: Cell) -> Optional[dict]: return None
+    def close(self, window: Window) -> Optional[dict]:
+        return None
+
+    def end_cell(self, cell: Cell) -> Optional[dict]:
+        return None
+
     def detach(self) -> None: ...
 
 
 # ── paths and context ───────────────────────────────────────────────
+
 
 @dataclass
 class Paths:
@@ -259,11 +294,17 @@ class BenchContext:
 
 # ── the recorder ────────────────────────────────────────────────────
 
+
 class Recorder:
     """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still
     ships rungs 1 to 3 plus the crash record."""
 
-    def __init__(self, path: Path, session_id: str, t0: Optional[float] = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        session_id: str,
+        t0: Optional[float] = None,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self.session_id = session_id
@@ -294,13 +335,23 @@ class Recorder:
             pass
         self._count += 1
 
-    def gate(self, name: str, passed: bool, detail: Optional[dict] = None) -> None:
-        self.emit({"row_type": "gate", "name": name, "passed": bool(passed),
-                   "detail": detail or {}})
+    def gate(
+        self,
+        name: str,
+        passed: bool,
+        detail: Optional[dict] = None,
+    ) -> None:
+        self.emit(
+            {"row_type": "gate", "name": name, "passed": bool(passed), "detail": detail or {}}
+        )
 
-    def failure(self, cell_id: Optional[str], kind: str, detail: Optional[dict] = None) -> None:
-        self.emit({"row_type": "failure", "cell_id": cell_id, "kind": kind,
-                   "detail": detail or {}})
+    def failure(
+        self,
+        cell_id: Optional[str],
+        kind: str,
+        detail: Optional[dict] = None,
+    ) -> None:
+        self.emit({"row_type": "failure", "cell_id": cell_id, "kind": kind, "detail": detail or {}})
 
     def rows(self, row_type: Optional[str] = None) -> Iterator[dict]:
         if not self.path.exists():
@@ -329,8 +380,20 @@ def new_session_id() -> str:
 
 
 __all__ = [
-    "SCHEMA", "ROW_TYPES", "ROW_REQUIRED",
-    "Cell", "make_cell_id", "Window", "WINDOW_KINDS",
-    "ActionResult", "not_run", "Slot", "ActionContext",
-    "Instrument", "Paths", "BenchContext", "Recorder", "new_session_id",
+    "SCHEMA",
+    "ROW_TYPES",
+    "ROW_REQUIRED",
+    "Cell",
+    "make_cell_id",
+    "Window",
+    "WINDOW_KINDS",
+    "ActionResult",
+    "not_run",
+    "Slot",
+    "ActionContext",
+    "Instrument",
+    "Paths",
+    "BenchContext",
+    "Recorder",
+    "new_session_id",
 ]

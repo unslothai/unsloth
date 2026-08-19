@@ -44,7 +44,7 @@ from dataclasses import dataclass, asdict
 from typing import Iterable, Mapping
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class MetricAnchor:
     """One perceptual metric, its two anchors, its weight and its direction."""
 
@@ -72,52 +72,52 @@ class MetricAnchor:
 
 METRIC_ANCHORS: tuple[MetricAnchor, ...] = (
     MetricAnchor(
-        key="keystroke_p95_ms",
-        unit="ms",
-        good=20.0,
-        bad=500.0,
-        weight=0.25,
-        rationale="the shipped complaint is typing latency, so it carries the most weight",
+        key = "keystroke_p95_ms",
+        unit = "ms",
+        good = 20.0,
+        bad = 500.0,
+        weight = 0.25,
+        rationale = "the shipped complaint is typing latency, so it carries the most weight",
     ),
     MetricAnchor(
-        key="time_in_jank_pct",
-        unit="%",
-        good=0.5,
-        bad=60.0,
-        weight=0.20,
-        rationale="catches uniform mediocrity, which max and p95 both hide",
+        key = "time_in_jank_pct",
+        unit = "%",
+        good = 0.5,
+        bad = 60.0,
+        weight = 0.20,
+        rationale = "catches uniform mediocrity, which max and p95 both hide",
     ),
     MetricAnchor(
-        key="jank_index",
-        unit="ms",
-        good=0.1,
-        bad=50.0,
-        weight=0.15,
-        rationale="squared over-budget time, so one long freeze dominates many small ones",
+        key = "jank_index",
+        unit = "ms",
+        good = 0.1,
+        bad = 50.0,
+        weight = 0.15,
+        rationale = "squared over-budget time, so one long freeze dominates many small ones",
     ),
     MetricAnchor(
-        key="max_frame_ms",
-        unit="ms",
-        good=33.0,
-        bad=2000.0,
-        weight=0.15,
-        rationale="the single stall, unsummarised",
+        key = "max_frame_ms",
+        unit = "ms",
+        good = 33.0,
+        bad = 2000.0,
+        weight = 0.15,
+        rationale = "the single stall, unsummarised",
     ),
     MetricAnchor(
-        key="scroll_settle_ms",
-        unit="ms",
-        good=100.0,
-        bad=3000.0,
-        weight=0.15,
-        rationale="scrolling a long thread is the second half of the shipped complaint",
+        key = "scroll_settle_ms",
+        unit = "ms",
+        good = 100.0,
+        bad = 3000.0,
+        weight = 0.15,
+        rationale = "scrolling a long thread is the second half of the shipped complaint",
     ),
     MetricAnchor(
-        key="menu_open_ms",
-        unit="ms",
-        good=50.0,
-        bad=1500.0,
-        weight=0.10,
-        rationale="a slow menu reads as a click that did not register",
+        key = "menu_open_ms",
+        unit = "ms",
+        good = 50.0,
+        bad = 1500.0,
+        weight = 0.10,
+        rationale = "a slow menu reads as a click that did not register",
     ),
 )
 
@@ -156,10 +156,10 @@ def _canonical_table() -> dict:
 def weights_id() -> str:
     """Stable hash of every judgement in this file. Changing any of it changes the id."""
 
-    blob = json.dumps(_canonical_table(), sort_keys=True, separators=(",", ":"))
+    blob = json.dumps(_canonical_table(), sort_keys = True, separators = (",", ":"))
     return "w-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
 def rung_ladder_id(rungs: Iterable[int] = RUNG_TOKENS) -> str:
-    blob = json.dumps(sorted(int(r) for r in rungs), separators=(",", ":"))
+    blob = json.dumps(sorted(int(r) for r in rungs), separators = (",", ":"))
     return "r-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]

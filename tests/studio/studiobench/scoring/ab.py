@@ -41,7 +41,7 @@ class IncomparableRuns(AssertionError):
     """Raised when two runs cannot be put in the same table."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class RunIdentity:
     """Everything that has to match before two sets of numbers may be compared."""
 
@@ -194,11 +194,11 @@ class AbResult:
     identity_treatment: RunIdentity
     noise_floor_pct: float
     noise_floor_source: str
-    metrics: list[MetricComparison] = field(default_factory=list)
-    pairs: list[Pair] = field(default_factory=list)
+    metrics: list[MetricComparison] = field(default_factory = list)
+    pairs: list[Pair] = field(default_factory = list)
     void: bool = False
     void_reason: str | None = None
-    regressions: list[str] = field(default_factory=list)
+    regressions: list[str] = field(default_factory = list)
     headline_ratio: float | None = None
     is_null_control: bool = False
 
@@ -253,13 +253,13 @@ def compare(
     assert_comparable(identity_base, identity_treatment)
 
     result = AbResult(
-        label=label,
-        identity_base=identity_base,
-        identity_treatment=identity_treatment,
-        noise_floor_pct=float(noise_floor_pct),
-        noise_floor_source=noise_floor_source,
-        pairs=list(pairs),
-        is_null_control=is_null_control,
+        label = label,
+        identity_base = identity_base,
+        identity_treatment = identity_treatment,
+        noise_floor_pct = float(noise_floor_pct),
+        noise_floor_source = noise_floor_source,
+        pairs = list(pairs),
+        is_null_control = is_null_control,
     )
 
     by_metric: dict[str, list[Pair]] = {}
@@ -271,15 +271,15 @@ def compare(
         usable = [p for p in metric_pairs if p.usable]
         ratios = [p.ratio for p in usable]
         geo = _geomean(ratios)
-        lo, hi = bootstrap_geomean_ci(ratios, bootstrap_seed=bootstrap_seed)
+        lo, hi = bootstrap_geomean_ci(ratios, bootstrap_seed = bootstrap_seed)
         comparison = MetricComparison(
-            metric_key=metric_key,
-            n_pairs=len(usable),
-            ratio_geomean=geo,
-            ratio_min=min(ratios) if ratios else None,
-            ratio_max=max(ratios) if ratios else None,
-            ci_low=lo,
-            ci_high=hi,
+            metric_key = metric_key,
+            n_pairs = len(usable),
+            ratio_geomean = geo,
+            ratio_min = min(ratios) if ratios else None,
+            ratio_max = max(ratios) if ratios else None,
+            ci_low = lo,
+            ci_high = hi,
         )
         if geo is None:
             comparison.verdict = "no_reading"
@@ -305,9 +305,7 @@ def compare(
 
     if weighted_logs:
         total_weight = sum(w for w, _ in weighted_logs)
-        result.headline_ratio = math.exp(
-            sum(w * lg for w, lg in weighted_logs) / total_weight
-        )
+        result.headline_ratio = math.exp(sum(w * lg for w, lg in weighted_logs) / total_weight)
 
     if is_null_control:
         # A null control that shows a difference is the harness moving, not the build. Whatever
@@ -315,8 +313,7 @@ def compare(
         offenders = [
             f"{m.metric_key}: {abs((m.ratio_geomean - 1.0) * 100):.1f}%"
             for m in result.metrics
-            if m.ratio_geomean is not None
-            and abs(m.ratio_geomean - 1.0) * 100.0 > noise_floor_pct
+            if m.ratio_geomean is not None and abs(m.ratio_geomean - 1.0) * 100.0 > noise_floor_pct
         ]
         if offenders:
             result.void = True
@@ -374,5 +371,5 @@ def pairs_from_cells(
             treatment = treatment_cells[rung].get(key)
             if base is None or treatment is None:
                 continue
-            out.append(Pair(rung_tokens=int(rung), metric_key=key, base=base, treatment=treatment))
+            out.append(Pair(rung_tokens = int(rung), metric_key = key, base = base, treatment = treatment))
     return out

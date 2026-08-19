@@ -46,7 +46,7 @@ class OverheadVerdict:
     reason: str
     growth_ratio: float | None
     growth_ms: Measure
-    by_rung: dict[int, Measure] = field(default_factory=dict)
+    by_rung: dict[int, Measure] = field(default_factory = dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -92,13 +92,13 @@ def overhead_growth_gate(
 
     readings = {int(rung): m for rung, m in by_rung.items() if m.has_reading}
     verdict = OverheadVerdict(
-        level=level,
-        instrument=instrument,
-        disqualified=False,
-        reason="",
-        growth_ratio=None,
-        growth_ms=Measure.not_attempted("ms", "overhead was not measured across rungs"),
-        by_rung={int(rung): m for rung, m in by_rung.items()},
+        level = level,
+        instrument = instrument,
+        disqualified = False,
+        reason = "",
+        growth_ratio = None,
+        growth_ms = Measure.not_attempted("ms", "overhead was not measured across rungs"),
+        by_rung = {int(rung): m for rung, m in by_rung.items()},
     )
 
     if level <= 0:

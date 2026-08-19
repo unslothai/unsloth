@@ -85,9 +85,9 @@ class CallFrame:
 
 @dataclass
 class Sample:
-    ts: int          # microseconds, monotonic, same clock as trace `ts`
+    ts: int  # microseconds, monotonic, same clock as trace `ts`
     node_id: int
-    delta: int       # microseconds attributed to this sample
+    delta: int  # microseconds attributed to this sample
 
 
 @dataclass
@@ -165,14 +165,22 @@ class CpuProfile:
         """The deliverable: (timestamp, stack) pairs, leaf first."""
         return [(s.ts, self.stack(s.node_id)) for s in self.window(t0, t1)]
 
-    def window(self, t0: int | None = None, t1: int | None = None) -> list[Sample]:
+    def window(
+        self,
+        t0: int | None = None,
+        t1: int | None = None,
+    ) -> list[Sample]:
         lo = t0 if t0 is not None else -(1 << 62)
         hi = t1 if t1 is not None else (1 << 62)
         return [s for s in self.samples if lo <= s.ts < hi]
 
     # ------------------------------------------------------------- aggregation
 
-    def self_time_us(self, t0: int | None = None, t1: int | None = None) -> dict[tuple[str, str, int, int], int]:
+    def self_time_us(
+        self,
+        t0: int | None = None,
+        t1: int | None = None,
+    ) -> dict[tuple[str, str, int, int], int]:
         """Microseconds where a frame was the LEAF of the stack, by frame key."""
         out: dict[tuple[str, str, int, int], int] = {}
         for s in self.window(t0, t1):
@@ -182,7 +190,11 @@ class CpuProfile:
             out[frame.key] = out.get(frame.key, 0) + s.delta
         return out
 
-    def total_time_us(self, t0: int | None = None, t1: int | None = None) -> dict[tuple[str, str, int, int], int]:
+    def total_time_us(
+        self,
+        t0: int | None = None,
+        t1: int | None = None,
+    ) -> dict[tuple[str, str, int, int], int]:
         """Microseconds where a frame appeared ANYWHERE on the stack."""
         out: dict[tuple[str, str, int, int], int] = {}
         for s in self.window(t0, t1):
@@ -278,7 +290,8 @@ def parse_cpu_profiles(trace: Trace) -> dict[str, CpuProfile]:
         )
 
     chunks = [
-        e for e in trace.events
+        e
+        for e in trace.events
         if e.get("name") == "ProfileChunk" and "cpu_profiler" in str(e.get("cat", ""))
     ]
     chunks.sort(key = lambda e: int(e.get("ts", 0)))
@@ -438,7 +451,11 @@ def stacks_under(
     return out
 
 
-def summarise(profile: CpuProfile, t0: int | None = None, t1: int | None = None) -> dict[str, Any]:
+def summarise(
+    profile: CpuProfile,
+    t0: int | None = None,
+    t1: int | None = None,
+) -> dict[str, Any]:
     win = profile.window(t0, t1)
     total = sum(s.delta for s in win)
     synthetic = 0
@@ -459,8 +476,7 @@ def summarise(profile: CpuProfile, t0: int | None = None, t1: int | None = None)
 
 
 def iter_leaf_frames(
-    profile: CpuProfile,
-    samples: Iterable[Sample] | None = None,
+    profile: CpuProfile, samples: Iterable[Sample] | None = None
 ) -> Iterable[tuple[Sample, CallFrame | None]]:
     for s in samples if samples is not None else profile.samples:
         yield s, profile.nodes.get(s.node_id)

@@ -34,12 +34,12 @@ from .types import Cell
 class Target:
     """One side of the comparison: a Studio to drive and everything needed to drive it."""
 
-    label: str                      # "base" or "treatment"
-    ref: str                        # the git ref, for the report
+    label: str  # "base" or "treatment"
+    ref: str  # the git ref, for the report
     base_url: str
     seeder: Any
-    runner: Any                     # a CellRunner bound to this target's base_url and seeder
-    install: Any = None             # StudioInstall, when we own it
+    runner: Any  # a CellRunner bound to this target's base_url and seeder
+    install: Any = None  # StudioInstall, when we own it
     owns_studio: bool = False
 
 
@@ -53,16 +53,17 @@ def origin_scoped(base_url: str, script: str) -> str:
     which points back here.
     """
     import json as _json
-
     return (
-        "(() => { if (window.location.origin !== " + _json.dumps(base_url.rstrip("/")) +
-        ") return; " + script + " })();"
+        "(() => { if (window.location.origin !== "
+        + _json.dumps(base_url.rstrip("/"))
+        + ") return; "
+        + script
+        + " })();"
     )
 
 
 def interleave(
-    cells: list[tuple[Cell, RungPlan]],
-    targets: list[Target],
+    cells: list[tuple[Cell, RungPlan]], targets: list[Target]
 ) -> list[tuple[Target, Cell, RungPlan]]:
     """Order the work so the two sides sit next to each other in time, not in separate halves.
 
@@ -74,7 +75,7 @@ def interleave(
     for cell, plan in cells:
         order = list(targets) if cell.rep % 2 == 0 else list(reversed(targets))
         for target in order:
-            out.append((target, cell.derive(arm=target.label), plan))
+            out.append((target, cell.derive(arm = target.label), plan))
     return out
 
 
@@ -117,9 +118,9 @@ def readings_by_arm(records: list[dict]) -> dict[str, dict[int, dict]]:
 
     for arm, ids in cell_ids.items():
         subset = [
-            r for r in records
-            if r.get("row_type") not in {"cell", "action", "window"}
-            or str(r.get("cell_id")) in ids
+            r
+            for r in records
+            if r.get("row_type") not in {"cell", "action", "window"} or str(r.get("cell_id")) in ids
         ]
         arms[arm] = subset
 
@@ -149,11 +150,11 @@ def compare_arms(
 
     rung_ladder_id = _ladder_id(sorted({rung for rung, _rep in set(base) | set(treatment)}))
     identity_kwargs = dict(
-        bench_version=bench_version,
-        corpus_hash=corpus_hash,
-        rung_ladder_id=rung_ladder_id,
-        weights_id=weights_id() if callable(weights_id) else str(weights_id),
-        session_id=session_id,
+        bench_version = bench_version,
+        corpus_hash = corpus_hash,
+        rung_ladder_id = rung_ladder_id,
+        weights_id = weights_id() if callable(weights_id) else str(weights_id),
+        session_id = session_id,
     )
     # Paired PER REPETITION, matching (rung, rep) on both sides. Repetition r of the base and
     # repetition r of the treatment ran adjacent in time, so pairing them is what makes the
@@ -167,25 +168,28 @@ def compare_arms(
             treatment_measure = treatment[key].get(metric_key)
             if base_measure is None or treatment_measure is None:
                 continue
-            pairs.append(Pair(rung_tokens=int(rung), metric_key=metric_key,
-                              base=base_measure, treatment=treatment_measure))
+            pairs.append(
+                Pair(
+                    rung_tokens = int(rung),
+                    metric_key = metric_key,
+                    base = base_measure,
+                    treatment = treatment_measure,
+                )
+            )
 
     return compare(
         label,
         pairs,
         RunIdentity(**identity_kwargs),
         RunIdentity(**identity_kwargs),
-        noise_floor_pct=(
-            DEFAULT_NOISE_FLOOR_PCT if noise_floor_pct is None else noise_floor_pct
-        ),
-        noise_floor_source=noise_floor_source,
-        is_null_control=is_null_control,
+        noise_floor_pct = (DEFAULT_NOISE_FLOOR_PCT if noise_floor_pct is None else noise_floor_pct),
+        noise_floor_source = noise_floor_source,
+        is_null_control = is_null_control,
     )
 
 
 def _ladder_id(rungs: list) -> str:
     import hashlib
-
     digest = hashlib.sha256(",".join(str(int(r)) for r in rungs).encode()).hexdigest()[:12]
     return f"r-{digest}"
 
@@ -212,8 +216,7 @@ def make_target(
     Both sides talk to the SAME pacer, so the bytes on the wire are identical by construction
     rather than by two configurations that are meant to match.
     """
-    from .lifecycle import (authenticate, external_checkpoint_id, pacer_provider,
-                            register_provider)
+    from .lifecycle import authenticate, external_checkpoint_id, pacer_provider, register_provider
     from .seeder import Seeder
     from .session import CellRunner
 
@@ -223,11 +226,21 @@ def make_target(
     checkpoint = external_checkpoint_id(provider, model_id)
     log(f"  {label}: {base_url} -> pacer {pacer.base_url}, checkpoint {checkpoint}")
 
-    seeder = Seeder(base_url=base_url, auth=auth, model_id=model_id, log=log)
-    runner = CellRunner(session=session, pacer=pacer, seeder=seeder, corpus=corpus,
-                        base_url=base_url, model_id=model_id, tier=tier,
-                        paths=paths, log=log, cadence=cadence, image_path=image_path)
-    target = Target(label=label, ref=ref, base_url=base_url, seeder=seeder, runner=runner)
-    target.auth = auth              # type: ignore[attr-defined]
+    seeder = Seeder(base_url = base_url, auth = auth, model_id = model_id, log = log)
+    runner = CellRunner(
+        session = session,
+        pacer = pacer,
+        seeder = seeder,
+        corpus = corpus,
+        base_url = base_url,
+        model_id = model_id,
+        tier = tier,
+        paths = paths,
+        log = log,
+        cadence = cadence,
+        image_path = image_path,
+    )
+    target = Target(label = label, ref = ref, base_url = base_url, seeder = seeder, runner = runner)
+    target.auth = auth  # type: ignore[attr-defined]
     target.checkpoint = checkpoint  # type: ignore[attr-defined]
     return target

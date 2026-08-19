@@ -88,7 +88,7 @@ MAX_IDENTITY_MAPPING_FRACTION = 0.5
 class FunctionVector:
     """A function identified by its exact call counts across the rung ladder."""
 
-    build: str                    # "dev" or "prod"
+    build: str  # "dev" or "prod"
     url: str
     function_name: str
     script_id: str
@@ -142,7 +142,9 @@ class Bridge:
             return None
         return self.mapping.get(self.prod_key(url, start_offset, end_offset))
 
-    def resolve_frame_label(self, url: str, start_offset: int, end_offset: int, fallback: str) -> str:
+    def resolve_frame_label(
+        self, url: str, start_offset: int, end_offset: int, fallback: str
+    ) -> str:
         name = self.resolve(url, start_offset, end_offset)
         return f"{name} (bridged)" if name else fallback
 
@@ -293,7 +295,9 @@ def vectors_from_snapshots(
     return out
 
 
-def _index_unique(vectors: Iterable[FunctionVector]) -> tuple[dict[tuple[int, ...], FunctionVector], list[str]]:
+def _index_unique(
+    vectors: Iterable[FunctionVector],
+) -> tuple[dict[tuple[int, ...], FunctionVector], list[str]]:
     """Index by count vector, keeping only vectors unique within this build."""
     buckets: dict[tuple[int, ...], list[FunctionVector]] = {}
     for v in vectors:
@@ -306,7 +310,9 @@ def _index_unique(vectors: Iterable[FunctionVector]) -> tuple[dict[tuple[int, ..
         if len(group) == 1:
             unique[counts] = group[0]
         else:
-            ambiguous.append(f"{list(counts)} shared by {len(group)}: " + ", ".join(g.label() for g in group[:4]))
+            ambiguous.append(
+                f"{list(counts)} shared by {len(group)}: " + ", ".join(g.label() for g in group[:4])
+            )
     return unique, ambiguous
 
 
@@ -475,8 +481,7 @@ def build_bridge(
 
 
 def apply_bridge(
-    bridge: Bridge,
-    frames: Sequence[tuple[str, str, int, int]],
+    bridge: Bridge, frames: Sequence[tuple[str, str, int, int]]
 ) -> dict[tuple[str, str, int, int], str]:
     """Resolve `(label, url, start, end)` tuples to bridged names where possible."""
     out: dict[tuple[str, str, int, int], str] = {}

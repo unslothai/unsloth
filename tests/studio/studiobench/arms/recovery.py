@@ -76,9 +76,7 @@ class RecoveryResult:
 
     def render(self) -> str:
         fraction = (
-            f"{self.recovered_fraction:.0%}"
-            if self.recovered_fraction is not None
-            else "undefined"
+            f"{self.recovered_fraction:.0%}" if self.recovered_fraction is not None else "undefined"
         )
         return "\n".join(
             [
@@ -106,15 +104,15 @@ def classify_recovery(
 
     def refuse(reason: str) -> RecoveryResult:
         return RecoveryResult(
-            baseline=baseline,
-            loaded=loaded,
-            after_delete=after_delete,
-            turns=turns,
-            noise_floor_ms=float(noise_floor_ms),
-            recovered_fraction=None,
-            classification="NOT CLASSIFIED",
-            implies_fix="none: this run cannot distinguish the cases",
-            note=reason,
+            baseline = baseline,
+            loaded = loaded,
+            after_delete = after_delete,
+            turns = turns,
+            noise_floor_ms = float(noise_floor_ms),
+            recovered_fraction = None,
+            classification = "NOT CLASSIFIED",
+            implies_fix = "none: this run cannot distinguish the cases",
+            note = reason,
         )
 
     if not (baseline.has_reading and loaded.has_reading and after_delete.has_reading):
@@ -129,18 +127,18 @@ def classify_recovery(
 
     if load_cost <= noise_floor_ms:
         return RecoveryResult(
-            baseline=baseline,
-            loaded=loaded,
-            after_delete=after_delete,
-            turns=turns,
-            noise_floor_ms=float(noise_floor_ms),
-            recovered_fraction=None,
-            classification="NOTHING TO RECOVER",
-            implies_fix=(
+            baseline = baseline,
+            loaded = loaded,
+            after_delete = after_delete,
+            turns = turns,
+            noise_floor_ms = float(noise_floor_ms),
+            recovered_fraction = None,
+            classification = "NOTHING TO RECOVER",
+            implies_fix = (
                 "none from this test. Seeding the thread did not make it measurably slower on "
                 "this machine, so the recovery question does not arise here"
             ),
-            note=(
+            note = (
                 f"the loaded phase is only {load_cost:.3f} ms above baseline, at or below the "
                 f"noise floor of {noise_floor_ms:.3f} ms. The recovery fraction is UNDEFINED, "
                 "not 100%: there was no cost to give back"
@@ -151,19 +149,19 @@ def classify_recovery(
 
     if after_v > loaded_v + noise_floor_ms:
         return RecoveryResult(
-            baseline=baseline,
-            loaded=loaded,
-            after_delete=after_delete,
-            turns=turns,
-            noise_floor_ms=float(noise_floor_ms),
-            recovered_fraction=fraction,
-            classification="WORSE AFTER DELETE",
-            implies_fix=(
+            baseline = baseline,
+            loaded = loaded,
+            after_delete = after_delete,
+            turns = turns,
+            noise_floor_ms = float(noise_floor_ms),
+            recovered_fraction = fraction,
+            classification = "WORSE AFTER DELETE",
+            implies_fix = (
                 "look at the delete path itself. Something about removing the turns costs more "
                 "than keeping them, which usually means detached subtrees still observed, or "
                 "state rebuilt on every removal"
             ),
-            note=(
+            note = (
                 "the post-delete reading is worse than the loaded one. This is not recovery "
                 "failing, it is the deletion adding cost of its own"
             ),
@@ -202,13 +200,13 @@ def classify_recovery(
         )
 
     return RecoveryResult(
-        baseline=baseline,
-        loaded=loaded,
-        after_delete=after_delete,
-        turns=turns,
-        noise_floor_ms=float(noise_floor_ms),
-        recovered_fraction=fraction,
-        classification=classification,
-        implies_fix=implies,
-        note=note,
+        baseline = baseline,
+        loaded = loaded,
+        after_delete = after_delete,
+        turns = turns,
+        noise_floor_ms = float(noise_floor_ms),
+        recovered_fraction = fraction,
+        classification = classification,
+        implies_fix = implies,
+        note = note,
     )

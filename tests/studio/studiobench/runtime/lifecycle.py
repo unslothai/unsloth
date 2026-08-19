@@ -77,13 +77,27 @@ class ProviderSeed:
     id: str = field(default_factory = lambda: uuid.uuid4().hex[:16])
 
     def as_provider_entry(self) -> dict:
-        return {"id": self.id, "providerType": self.provider_type, "name": self.name,
-                "baseUrl": self.base_url, "models": list(self.models)}
+        return {
+            "id": self.id,
+            "providerType": self.provider_type,
+            "name": self.name,
+            "baseUrl": self.base_url,
+            "models": list(self.models),
+        }
 
 
-def pacer_provider(base_url: str, models: list[str], api_key: str = "sb-local") -> ProviderSeed:
-    return ProviderSeed(provider_type = "custom", name = "studiobench pacer",
-                        base_url = base_url, models = models, api_key = api_key)
+def pacer_provider(
+    base_url: str,
+    models: list[str],
+    api_key: str = "sb-local",
+) -> ProviderSeed:
+    return ProviderSeed(
+        provider_type = "custom",
+        name = "studiobench pacer",
+        base_url = base_url,
+        models = models,
+        api_key = api_key,
+    )
 
 
 def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -> str:
@@ -105,23 +119,32 @@ def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -
     harness from having to RSA-encrypt a dummy secret against the server's published public key
     just to have it ignored.
     """
-    existing = request_json(f"{base_url.rstrip('/')}/api/providers/",
-                            token = auth.access_token) or []
+    existing = request_json(f"{base_url.rstrip('/')}/api/providers/", token = auth.access_token) or []
     for row in existing:
         # Idempotent across runs. Every run binds a NEW ephemeral pacer port, so a stale entry
         # from a previous run points at a port nothing is listening on, and leaving it there gives
         # the picker two identically named models of which one is dead.
         if row.get("display_name") == provider.name:
             try:
-                request_json(f"{base_url.rstrip('/')}/api/providers/{row['id']}",
-                             method = "DELETE", token = auth.access_token)
+                request_json(
+                    f"{base_url.rstrip('/')}/api/providers/{row['id']}",
+                    method = "DELETE",
+                    token = auth.access_token,
+                )
             except HttpError:
                 pass
     created = request_json(
-        f"{base_url.rstrip('/')}/api/providers/", method = "POST", token = auth.access_token,
-        body = {"provider_type": provider.provider_type, "display_name": provider.name,
-                "base_url": provider.base_url, "models": list(provider.models),
-                "available_models": list(provider.models)})
+        f"{base_url.rstrip('/')}/api/providers/",
+        method = "POST",
+        token = auth.access_token,
+        body = {
+            "provider_type": provider.provider_type,
+            "display_name": provider.name,
+            "base_url": provider.base_url,
+            "models": list(provider.models),
+            "available_models": list(provider.models),
+        },
+    )
     provider.id = created["id"]
     return created["id"]
 
@@ -146,6 +169,7 @@ def external_checkpoint_id(provider: ProviderSeed, model_id: str) -> str:
 
 # ── HTTP, stdlib ────────────────────────────────────────────────────
 
+
 class HttpError(RuntimeError):
     def __init__(self, status: int, body: str, url: str) -> None:
         super().__init__(f"HTTP {status} from {url}: {body[:400]}")
@@ -154,8 +178,14 @@ class HttpError(RuntimeError):
         self.url = url
 
 
-def request_json(url: str, *, method: str = "GET", body: Optional[dict] = None,
-                 token: Optional[str] = None, timeout: float = 30.0) -> Any:
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    body: Optional[dict] = None,
+    token: Optional[str] = None,
+    timeout: float = 30.0,
+) -> Any:
     data = None if body is None else json.dumps(body).encode("utf-8")
     headers = {"Accept": "application/json"}
     if data is not None:
@@ -178,7 +208,7 @@ def wait_for_healthz(base_url: str, timeout_s: float = 180.0) -> bool:
             with urllib.request.urlopen(f"{base_url}/healthz", timeout = 3) as r:
                 if r.status == 200:
                     return True
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
         time.sleep(1)
     return False
@@ -186,15 +216,32 @@ def wait_for_healthz(base_url: str, timeout_s: float = 180.0) -> bool:
 
 # ── install and launch ──────────────────────────────────────────────
 
-def _run(cmd: list[str], cwd: Optional[Path] = None, env: Optional[dict] = None,
-         check: bool = True, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd = cwd, env = {**os.environ, **(env or {})}, check = check,
-                          timeout = timeout, text = True, capture_output = True)
+
+def _run(
+    cmd: list[str],
+    cwd: Optional[Path] = None,
+    env: Optional[dict] = None,
+    check: bool = True,
+    timeout: Optional[int] = None,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd,
+        cwd = cwd,
+        env = {**os.environ, **(env or {})},
+        check = check,
+        timeout = timeout,
+        text = True,
+        capture_output = True,
+    )
 
 
-def install_studio(branch: str, home: Path, repo: Optional[Path] = None,
-                   remote: str = "https://github.com/unslothai/unsloth",
-                   reuse_clone: bool = True) -> StudioInstall:
+def install_studio(
+    branch: str,
+    home: Path,
+    repo: Optional[Path] = None,
+    remote: str = "https://github.com/unslothai/unsloth",
+    reuse_clone: bool = True,
+) -> StudioInstall:
     home = Path(home).resolve()
     home.mkdir(parents = True, exist_ok = True)
     repo = (repo or (home.parent / f"{home.name}_repo")).resolve()
@@ -209,15 +256,21 @@ def install_studio(branch: str, home: Path, repo: Optional[Path] = None,
     install_sh = repo / "install.sh"
     if not install_sh.exists():
         raise FileNotFoundError(f"install.sh missing at {install_sh}")
-    _run(["bash", str(install_sh), "--local"], cwd = repo,
-         env = {"UNSLOTH_STUDIO_HOME": str(home)}, timeout = 60 * 45)
+    _run(
+        ["bash", str(install_sh), "--local"],
+        cwd = repo,
+        env = {"UNSLOTH_STUDIO_HOME": str(home)},
+        timeout = 60 * 45,
+    )
     return StudioInstall(home = home, repo = repo, branch = branch)
 
 
 def _find_unsloth_bin(install: StudioInstall) -> str:
-    for candidate in (install.home / "bin" / "unsloth",
-                      install.home / ".venv_t5_550" / "bin" / "unsloth",
-                      install.home / ".venv_t5_530" / "bin" / "unsloth"):
+    for candidate in (
+        install.home / "bin" / "unsloth",
+        install.home / ".venv_t5_550" / "bin" / "unsloth",
+        install.home / ".venv_t5_530" / "bin" / "unsloth",
+    ):
         if candidate.exists():
             return str(candidate)
     for venv in sorted(install.home.glob(".venv*")):
@@ -248,9 +301,14 @@ def _read_bootstrap_password(home: Path, log_path: Path, deadline: float) -> Opt
     return None
 
 
-def launch_studio(install: StudioInstall, port: int, log_path: Path,
-                  extra_env: Optional[dict] = None, healthz_timeout_s: int = 240,
-                  password_timeout_s: int = 30) -> StudioInstall:
+def launch_studio(
+    install: StudioInstall,
+    port: int,
+    log_path: Path,
+    extra_env: Optional[dict] = None,
+    healthz_timeout_s: int = 240,
+    password_timeout_s: int = 30,
+) -> StudioInstall:
     log_path = Path(log_path).resolve()
     log_path.parent.mkdir(parents = True, exist_ok = True)
     log_path.write_text("")
@@ -259,20 +317,31 @@ def launch_studio(install: StudioInstall, port: int, log_path: Path,
     # NOT `UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1`: that opt-in SSRF guard rejects any
     # non-global address, which is exactly what the pacer's 127.0.0.1 base URL is.
     env.pop("UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS", None)
-    cmd = ["setsid", "-f", "bash", "-c",
-           f"{shlex.quote(bin_path)} studio -p {port} 2>&1 | tee -a {shlex.quote(str(log_path))}"]
-    subprocess.Popen(cmd, env = {**os.environ, **env}, stdout = subprocess.DEVNULL,
-                     stderr = subprocess.DEVNULL, start_new_session = True)
+    cmd = [
+        "setsid",
+        "-f",
+        "bash",
+        "-c",
+        f"{shlex.quote(bin_path)} studio -p {port} 2>&1 | tee -a {shlex.quote(str(log_path))}",
+    ]
+    subprocess.Popen(
+        cmd,
+        env = {**os.environ, **env},
+        stdout = subprocess.DEVNULL,
+        stderr = subprocess.DEVNULL,
+        start_new_session = True,
+    )
     install.port = port
     install.bootstrap_password = _read_bootstrap_password(
-        install.home, log_path, time.time() + password_timeout_s)
+        install.home, log_path, time.time() + password_timeout_s
+    )
     if not wait_for_healthz(install.base_url, healthz_timeout_s):
         raise TimeoutError(f"Studio on :{port} did not pass /healthz within {healthz_timeout_s}s")
     try:
         out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check = False).stdout.strip()
         if out:
             install.pid = int(out.splitlines()[0])
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         pass
     return install
 
@@ -281,7 +350,7 @@ def stop_studio(install: StudioInstall) -> None:
     if install.pid:
         try:
             os.killpg(os.getpgid(install.pid), signal.SIGTERM)
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -291,15 +360,26 @@ BENCH_PASSWORD = "studiobench-Passw0rd!"
 
 
 def login(base_url: str, username: str, password: str) -> StudioAuth:
-    body = request_json(f"{base_url}/api/auth/login", method = "POST",
-                        body = {"username": username, "password": password})
-    return StudioAuth(access_token = body["access_token"],
-                      refresh_token = body.get("refresh_token", ""), base_url = base_url,
-                      username = username, password = password)
+    body = request_json(
+        f"{base_url}/api/auth/login",
+        method = "POST",
+        body = {"username": username, "password": password},
+    )
+    return StudioAuth(
+        access_token = body["access_token"],
+        refresh_token = body.get("refresh_token", ""),
+        base_url = base_url,
+        username = username,
+        password = password,
+    )
 
 
-def authenticate(base_url: str, username: str, password: str,
-                 new_password: str = BENCH_PASSWORD) -> StudioAuth:
+def authenticate(
+    base_url: str,
+    username: str,
+    password: str,
+    new_password: str = BENCH_PASSWORD,
+) -> StudioAuth:
     """Log in and CLEAR the password-change gate if it is set.
 
     Not optional and not cosmetic. When `must_change_password` is set, login succeeds and returns
@@ -330,23 +410,34 @@ def authenticate(base_url: str, username: str, password: str,
     if auth is None:
         raise RuntimeError(
             f"could not log in as {username!r} with the supplied password or with the password a "
-            f"previous studiobench run would have rotated to. Last error: {last}")
+            f"previous studiobench run would have rotated to. Last error: {last}"
+        )
     try:
         status = request_json(f"{base_url}/api/auth/status", token = auth.access_token) or {}
     except HttpError:
         status = {}
     if status.get("requires_password_change"):
-        body = request_json(f"{base_url}/api/auth/change-password", method = "POST",
-                            token = auth.access_token,
-                            body = {"current_password": password, "new_password": new_password})
-        auth = StudioAuth(access_token = body["access_token"],
-                          refresh_token = body.get("refresh_token", ""), base_url = base_url,
-                          username = username, password = new_password)
+        body = request_json(
+            f"{base_url}/api/auth/change-password",
+            method = "POST",
+            token = auth.access_token,
+            body = {"current_password": password, "new_password": new_password},
+        )
+        auth = StudioAuth(
+            access_token = body["access_token"],
+            refresh_token = body.get("refresh_token", ""),
+            base_url = base_url,
+            username = username,
+            password = new_password,
+        )
     return auth
 
 
-def seed_init_script(auth: StudioAuth, providers: list[ProviderSeed],
-                     extra_local_storage: Optional[dict] = None) -> str:
+def seed_init_script(
+    auth: StudioAuth,
+    providers: list[ProviderSeed],
+    extra_local_storage: Optional[dict] = None,
+) -> str:
     """localStorage the SPA reads on its FIRST paint, so it boots already logged in and already
     holding the provider. The plaintext key is RSA-encrypted by the SPA per request against the
     server's published public key, so seeding it plainly here is the supported path."""
@@ -355,11 +446,15 @@ def seed_init_script(auth: StudioAuth, providers: list[ProviderSeed],
         "unsloth_refresh_token": auth.refresh_token,
         "unsloth_chat_external_providers": json.dumps([p.as_provider_entry() for p in providers]),
         "unsloth_chat_external_provider_keys": json.dumps(
-            {p.id: p.api_key for p in providers if p.api_key}),
+            {p.id: p.api_key for p in providers if p.api_key}
+        ),
         "unsloth_chat_connections_enabled": "true",
     }
     for k, v in (extra_local_storage or {}).items():
         payload[k] = v if isinstance(v, str) else json.dumps(v)
-    return ("(() => { const seed = " + json.dumps(payload) +
-            "; for (const k of Object.keys(seed)) { try { window.localStorage.setItem(k, seed[k]);"
-            " } catch (e) {} } })();")
+    return (
+        "(() => { const seed = "
+        + json.dumps(payload)
+        + "; for (const k of Object.keys(seed)) { try { window.localStorage.setItem(k, seed[k]);"
+        " } catch (e) {} } })();"
+    )

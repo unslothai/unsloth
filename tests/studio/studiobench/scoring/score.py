@@ -93,12 +93,12 @@ def score_metric(anchor: MetricAnchor, measure: Measure) -> MetricScore:
     if not measure.has_reading:
         reason = measure.note or ("not attempted" if not measure.attempted else "no reading")
         return MetricScore(
-            key=anchor.key,
-            score=None,
-            scored=False,
-            weight=anchor.weight,
-            measure=measure,
-            reason=reason,
+            key = anchor.key,
+            score = None,
+            scored = False,
+            weight = anchor.weight,
+            measure = measure,
+            reason = reason,
         )
 
     value = float(measure.value)
@@ -118,11 +118,11 @@ def score_metric(anchor: MetricAnchor, measure: Measure) -> MetricScore:
     fraction = (math.log(bad) - math.log(value)) / span
     score = 100.0 * max(0.0, min(1.0, fraction))
     return MetricScore(
-        key=anchor.key,
-        score=score,
-        scored=True,
-        weight=anchor.weight,
-        measure=measure,
+        key = anchor.key,
+        score = score,
+        scored = True,
+        weight = anchor.weight,
+        measure = measure,
     )
 
 
@@ -135,9 +135,9 @@ class RungScore:
     complete: bool
     usable: bool
     weight_coverage: float
-    metric_scores: list[MetricScore] = field(default_factory=list)
+    metric_scores: list[MetricScore] = field(default_factory = list)
     incomplete_reason: str | None = None
-    zeroed_by: list[str] = field(default_factory=list)
+    zeroed_by: list[str] = field(default_factory = list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -166,18 +166,20 @@ def score_rung(
     not a missing data point, and the score that describes it is 0.
     """
 
-    metric_scores = [score_metric(anchor, metrics.get(anchor.key) or _absent(anchor))
-                     for anchor in METRIC_ANCHORS]
+    metric_scores = [
+        score_metric(anchor, metrics.get(anchor.key) or _absent(anchor))
+        for anchor in METRIC_ANCHORS
+    ]
 
     if not completed:
         return RungScore(
-            tokens=int(tokens),
-            score=0.0,
-            complete=False,
-            usable=False,
-            weight_coverage=0.0,
-            metric_scores=metric_scores,
-            incomplete_reason=failure_mode or "rung did not complete",
+            tokens = int(tokens),
+            score = 0.0,
+            complete = False,
+            usable = False,
+            weight_coverage = 0.0,
+            metric_scores = metric_scores,
+            incomplete_reason = failure_mode or "rung did not complete",
         )
 
     scored = [m for m in metric_scores if m.scored]
@@ -186,13 +188,13 @@ def score_rung(
 
     if coverage < MIN_WEIGHT_COVERAGE:
         return RungScore(
-            tokens=int(tokens),
-            score=0.0,
-            complete=False,
-            usable=False,
-            weight_coverage=coverage,
-            metric_scores=metric_scores,
-            incomplete_reason=(
+            tokens = int(tokens),
+            score = 0.0,
+            complete = False,
+            usable = False,
+            weight_coverage = coverage,
+            metric_scores = metric_scores,
+            incomplete_reason = (
                 f"only {coverage:.0%} of the declared metric weight produced a reading, "
                 f"below the {MIN_WEIGHT_COVERAGE:.0%} floor"
             ),
@@ -208,17 +210,17 @@ def score_rung(
         denominator = sum(m.weight for m in scored)
         rung_score = math.exp(numerator / denominator)
 
-    worst = min((float(m.score) for m in scored), default=0.0)
+    worst = min((float(m.score) for m in scored), default = 0.0)
     usable = rung_score >= ONSET_SCORE_THRESHOLD and worst >= ONSET_METRIC_FLOOR
 
     return RungScore(
-        tokens=int(tokens),
-        score=rung_score,
-        complete=True,
-        usable=usable,
-        weight_coverage=coverage,
-        metric_scores=metric_scores,
-        zeroed_by=zeroed_by,
+        tokens = int(tokens),
+        score = rung_score,
+        complete = True,
+        usable = usable,
+        weight_coverage = coverage,
+        metric_scores = metric_scores,
+        zeroed_by = zeroed_by,
     )
 
 
@@ -259,8 +261,8 @@ class LadderScore:
     onset_rung_tokens: int | None
     onset_reason: str
     non_monotonic: bool
-    rungs: list[RungScore] = field(default_factory=list)
-    rung_weights: list[float] = field(default_factory=list)
+    rungs: list[RungScore] = field(default_factory = list)
+    rung_weights: list[float] = field(default_factory = list)
     weights_id: str = ""
     rung_ladder_id: str = ""
 
@@ -285,7 +287,7 @@ def score_ladder(rungs: Sequence[RungScore]) -> LadderScore:
     aggregating over what was attempted is the crash-beats-limp bug in a different costume.
     """
 
-    ordered = sorted(rungs, key=lambda r: r.tokens)
+    ordered = sorted(rungs, key = lambda r: r.tokens)
     weights = log_rung_weights([r.tokens for r in ordered])
     aggregate = sum(w * float(r.score) for w, r in zip(weights, ordered))
 
@@ -324,12 +326,12 @@ def score_ladder(rungs: Sequence[RungScore]) -> LadderScore:
             non_monotonic = True
 
     return LadderScore(
-        aggregate=aggregate,
-        onset_rung_tokens=onset,
-        onset_reason=onset_reason,
-        non_monotonic=non_monotonic,
-        rungs=list(ordered),
-        rung_weights=weights,
-        weights_id=weights_id(),
-        rung_ladder_id=rung_ladder_id([r.tokens for r in ordered] or RUNG_TOKENS),
+        aggregate = aggregate,
+        onset_rung_tokens = onset,
+        onset_reason = onset_reason,
+        non_monotonic = non_monotonic,
+        rungs = list(ordered),
+        rung_weights = weights,
+        weights_id = weights_id(),
+        rung_ladder_id = rung_ladder_id([r.tokens for r in ordered] or RUNG_TOKENS),
     )

@@ -38,7 +38,7 @@ from studiobench.arms.knobs import (  # noqa: E402
 )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def knobs_js() -> str:
     return load_knobs_js()
 
@@ -123,12 +123,12 @@ def test_preboot_arms_are_the_ones_that_patch_a_prototype(knobs_js: str):
         assert needle in knobs_js
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.skipif(shutil.which("node") is None, reason = "node is not installed")
 def test_knobs_js_parses():
     result = subprocess.run(
         ["node", "--check", str(KNOBS_JS_PATH)],
-        capture_output=True,
-        text=True,
-        check=False,
+        capture_output = True,
+        text = True,
+        check = False,
     )
     assert result.returncode == 0, result.stderr

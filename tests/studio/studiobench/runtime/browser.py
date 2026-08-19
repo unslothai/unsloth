@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+
 # The engine matching the tester's desktop webview family. Studio ships as a Tauri app, so the
 # thing a user actually looks at is a system webview, not the browser they happen to have.
 #   Windows -> WebView2, which is Chromium: `channel="msedge"` is the closest available.
@@ -34,8 +35,14 @@ def default_engine() -> tuple[str, dict, str]:
         return "chromium", {"channel": "msedge"}, "Edge/WebView2, the Windows desktop webview"
     if system == "Darwin":
         return "webkit", {}, "WebKit, the engine behind macOS WKWebView"
-    return "webkit", {}, ("WebKit, A PROXY FOR WebKitGTK: Playwright's webkit is a different "
-                          "embedding of the same engine, not the GTK one Studio runs in on Linux")
+    return (
+        "webkit",
+        {},
+        (
+            "WebKit, A PROXY FOR WebKitGTK: Playwright's webkit is a different "
+            "embedding of the same engine, not the GTK one Studio runs in on Linux"
+        ),
+    )
 
 
 def _robust() -> Any:
@@ -43,15 +50,19 @@ def _robust() -> Any:
     for name in ("tests.studio._playwright_robust", "_playwright_robust"):
         try:
             return importlib.import_module(name)
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             continue
     return None
 
 
 _FALLBACK_CHROMIUM_ARGS = [
-    "--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu",
-    "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
-    "--disable-backgrounding-occluded-windows", "--disable-features=TranslateUI",
+    "--disable-dev-shm-usage",
+    "--no-sandbox",
+    "--disable-gpu",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-features=TranslateUI",
     "--disable-ipc-flooding-protection",
 ]
 
@@ -68,27 +79,36 @@ class BrowserBundle:
     robust: Any
 
     def close(self) -> None:
-        for closer in (lambda: self.context.close(), lambda: self.browser.close(),
-                       lambda: self.playwright.stop()):
+        for closer in (
+            lambda: self.context.close(),
+            lambda: self.browser.close(),
+            lambda: self.playwright.stop(),
+        ):
             try:
                 closer()
-            except Exception:                                       # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 pass
 
 
-def launch(engine: Optional[str] = None, *, headless: bool = True,
-           init_scripts: Optional[list[str]] = None,
-           viewport: tuple[int, int] = (1440, 960),
-           log: Callable[[str], None] = print) -> BrowserBundle:
-    from playwright.sync_api import sync_playwright                 # lazy, see the module docstring
+def launch(
+    engine: Optional[str] = None,
+    *,
+    headless: bool = True,
+    init_scripts: Optional[list[str]] = None,
+    viewport: tuple[int, int] = (1440, 960),
+    log: Callable[[str], None] = print,
+) -> BrowserBundle:
+    from playwright.sync_api import sync_playwright  # lazy, see the module docstring
 
     chosen, launch_kwargs, note = default_engine()
     if engine:
-        chosen, launch_kwargs = engine, ({} if engine != "chromium" or chosen != "chromium"
-                                         else launch_kwargs)
+        chosen, launch_kwargs = (
+            engine,
+            ({} if engine != "chromium" or chosen != "chromium" else launch_kwargs),
+        )
         note = f"{engine}, chosen explicitly"
     robust = _robust()
-    args = (robust.chromium_launch_args() if robust is not None else _FALLBACK_CHROMIUM_ARGS)
+    args = robust.chromium_launch_args() if robust is not None else _FALLBACK_CHROMIUM_ARGS
 
     pw = sync_playwright().start()
     factory = getattr(pw, chosen)
@@ -106,9 +126,9 @@ def launch(engine: Optional[str] = None, *, headless: bool = True,
     if robust is not None:
         try:
             robust.install_view_transition_killer(context)
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
-    for script in (init_scripts or []):
+    for script in init_scripts or []:
         context.add_init_script(script)
     page = context.new_page()
     # A GLOBAL CEILING on Playwright's actionability waits. The default is 30 seconds, which is
@@ -122,11 +142,19 @@ def launch(engine: Optional[str] = None, *, headless: bool = True,
         try:
             cdp = context.new_cdp_session(page)
             cdp.send("Performance.enable")
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             cdp = None
     log(f"  browser: {chosen} ({note}){'' if cdp else ', no CDP session'}")
-    return BrowserBundle(playwright = pw, browser = browser, context = context, page = page,
-                         cdp = cdp, engine = chosen, engine_note = note, robust = robust)
+    return BrowserBundle(
+        playwright = pw,
+        browser = browser,
+        context = context,
+        page = page,
+        cdp = cdp,
+        engine = chosen,
+        engine_note = note,
+        robust = robust,
+    )
 
 
 def cdp_metrics(cdp) -> dict:
@@ -134,7 +162,7 @@ def cdp_metrics(cdp) -> dict:
         return {}
     try:
         got = cdp.send("Performance.getMetrics")
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         return {}
     return {m["name"]: m["value"] for m in got["metrics"]}
 
@@ -149,43 +177,59 @@ def cdp_counters(before: dict, after: dict) -> dict:
     adapter and no real DOM mutations, it did not.
     """
     if not before or not after:
-        return {"layout_count": None, "recalc_style_count": None, "layout_ms": None,
-                "recalc_style_ms": None, "task_ms": None, "cdp_attempted": False}
+        return {
+            "layout_count": None,
+            "recalc_style_count": None,
+            "layout_ms": None,
+            "recalc_style_ms": None,
+            "task_ms": None,
+            "cdp_attempted": False,
+        }
 
     def d(name: str) -> float:
         return after.get(name, 0.0) - before.get(name, 0.0)
 
-    return {"layout_count": round(d("LayoutCount"), 1),
-            "recalc_style_count": round(d("RecalcStyleCount"), 1),
-            "layout_ms": round(d("LayoutDuration") * 1000, 1),
-            "recalc_style_ms": round(d("RecalcStyleDuration") * 1000, 1),
-            "task_ms": round(d("TaskDuration") * 1000, 1),
-            "script_ms": round(d("ScriptDuration") * 1000, 1),
-            "cdp_attempted": True}
+    return {
+        "layout_count": round(d("LayoutCount"), 1),
+        "recalc_style_count": round(d("RecalcStyleCount"), 1),
+        "layout_ms": round(d("LayoutDuration") * 1000, 1),
+        "recalc_style_ms": round(d("RecalcStyleDuration") * 1000, 1),
+        "task_ms": round(d("TaskDuration") * 1000, 1),
+        "script_ms": round(d("ScriptDuration") * 1000, 1),
+        "cdp_attempted": True,
+    }
 
 
 def find_python_root_pid() -> int:
     return __import__("os").getpid()
 
 
-def dump_diagnostics(page, out_dir: Path, label: str, log: Callable[[str], None] = print) -> None:
+def dump_diagnostics(
+    page,
+    out_dir: Path,
+    label: str,
+    log: Callable[[str], None] = print,
+) -> None:
     robust = _robust()
     if robust is not None and hasattr(robust, "dump_diagnostics"):
         try:
             robust.dump_diagnostics(page, out_dir, label)
             return
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
     try:
         out_dir.mkdir(parents = True, exist_ok = True)
         page.screenshot(path = str(out_dir / f"{label}.png"), full_page = False)
         (out_dir / f"{label}.html").write_text(page.content(), encoding = "utf-8")
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log(f"  diagnostics for {label} could not be written: {exc}")
 
 
-def install_wall_clock_watchdog(deadline_s: float, label: str = "studiobench",
-                                log: Callable[[str], None] = print):
+def install_wall_clock_watchdog(
+    deadline_s: float,
+    label: str = "studiobench",
+    log: Callable[[str], None] = print,
+):
     robust = _robust()
     if robust is not None and hasattr(robust, "install_wall_clock_watchdog"):
         return robust.install_wall_clock_watchdog(deadline_s, label = label, info = log)

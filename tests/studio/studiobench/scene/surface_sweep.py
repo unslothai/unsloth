@@ -59,16 +59,17 @@ class _Driver:
             verb, args = step[0], step[1:]
             try:
                 self._step(verb, args)
-            except Exception as exc:                                # noqa: BLE001
-                return (f"step {verb!r}{list(args)!r} failed: "
-                        f"{type(exc).__name__}: {str(exc).strip().splitlines()[0][:200]}")
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    f"step {verb!r}{list(args)!r} failed: "
+                    f"{type(exc).__name__}: {str(exc).strip().splitlines()[0][:200]}"
+                )
         return None
 
     def _step(self, verb: str, args: tuple) -> None:
         page = self.page
         if verb == "goto":
-            page.goto(f"{self.base_url}{args[0]}", wait_until = "domcontentloaded",
-                      timeout = 60_000)
+            page.goto(f"{self.base_url}{args[0]}", wait_until = "domcontentloaded", timeout = 60_000)
         elif verb == "click":
             # A REAL mouse click through the driver, not element.click(). Radix menus open on
             # pointerdown, and a synthetic click never opens them -- which reads downstream as a
@@ -87,7 +88,7 @@ class _Driver:
             page.fill(args[0], args[1], timeout = 6000)
         elif verb == "wait":
             page.wait_for_timeout(int(args[0]))
-        else:                                                       # pragma: no cover
+        else:  # pragma: no cover
             raise ValueError(f"unknown step verb {verb!r}")
 
     def settle(self, spec: Optional[dict], deadline: float) -> dict:
@@ -97,9 +98,8 @@ class _Driver:
         last = {"ok": False, "detail": "never evaluated"}
         while time.monotonic() < deadline:
             try:
-                last = self.page.evaluate(
-                    "(spec) => window.__sb.surfaces.settled(spec)", spec)
-            except Exception as exc:                                # noqa: BLE001
+                last = self.page.evaluate("(spec) => window.__sb.surfaces.settled(spec)", spec)
+            except Exception as exc:  # noqa: BLE001
                 last = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
             if last.get("ok"):
                 return {"settled": True, "detail": last.get("detail"), "spec": spec}
@@ -109,21 +109,22 @@ class _Driver:
     def capture(self, root: tuple) -> dict:
         try:
             return self.page.evaluate("(root) => window.__sb.surfaces.capture(root)", list(root))
-        except Exception as exc:                                    # noqa: BLE001
-            return {"parity_attempted": False,
-                    "reason": f"the digest could not be taken: {type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "parity_attempted": False,
+                "reason": f"the digest could not be taken: {type(exc).__name__}: {exc}",
+            }
 
     def facts(self, root: tuple) -> dict:
         try:
             return self.page.evaluate("(root) => window.__sb.surfaces.facts(root)", list(root))
-        except Exception as exc:                                    # noqa: BLE001
-            return {"facts_attempted": False,
-                    "reason": f"{type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"facts_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
     def is_clean(self) -> dict:
         try:
             return self.page.evaluate("() => window.__sb.surfaces.isClean()")
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             return {"clean_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
@@ -133,23 +134,39 @@ def _row(surface: registry.Surface, cell_id: Optional[str]) -> dict:
     Built up front rather than assembled on the success path, so an exception anywhere below
     leaves a row that says it did not run instead of a row that is missing.
     """
-    return {"row_type": "surface", "cell_id": cell_id, "surface": surface.id,
-            "group": surface.group, "title": surface.title,
-            "reached": False, "reason": "the sweep did not get to this surface",
-            "conditional": surface.conditional, "also_in_film": surface.also_in_film,
-            # Carried on the ROW, not only in the registry, so a reader of a payload can tell a
-            # digest that is a parity signal from one that moves on its own without needing this
-            # source tree in front of them.
-            "volatile": surface.volatile,
-            "parity": {"parity_attempted": False, "reason": "not captured"},
-            "settle": None, "facts": None, "restored": None,
-            "sweep_attempted": True, "reach_ms": None}
+    return {
+        "row_type": "surface",
+        "cell_id": cell_id,
+        "surface": surface.id,
+        "group": surface.group,
+        "title": surface.title,
+        "reached": False,
+        "reason": "the sweep did not get to this surface",
+        "conditional": surface.conditional,
+        "also_in_film": surface.also_in_film,
+        # Carried on the ROW, not only in the registry, so a reader of a payload can tell a
+        # digest that is a parity signal from one that moves on its own without needing this
+        # source tree in front of them.
+        "volatile": surface.volatile,
+        "parity": {"parity_attempted": False, "reason": "not captured"},
+        "settle": None,
+        "facts": None,
+        "restored": None,
+        "sweep_attempted": True,
+        "reach_ms": None,
+    }
 
 
-def sweep(page: Any, base_url: str, log: Callable[[str], None] = _log_noop,
-          only: Optional[list] = None, cell_id: Optional[str] = None,
-          recorder: Any = None, settle_timeout_ms: Optional[int] = None,
-          surface_budget_ms: Optional[int] = None) -> tuple[list[dict], dict]:
+def sweep(
+    page: Any,
+    base_url: str,
+    log: Callable[[str], None] = _log_noop,
+    only: Optional[list] = None,
+    cell_id: Optional[str] = None,
+    recorder: Any = None,
+    settle_timeout_ms: Optional[int] = None,
+    surface_budget_ms: Optional[int] = None,
+) -> tuple[list[dict], dict]:
     """Drive every registered surface once. Returns `(rows, manifest)`.
 
     `recorder`, when given, receives each row as it is produced, so a sweep that dies halfway
@@ -175,14 +192,20 @@ def sweep(page: Any, base_url: str, log: Callable[[str], None] = _log_noop,
     # page-wide reading and the sweep's forty passes mean nothing. Asked ONCE, up front, and the
     # answer is carried on every row rather than assumed.
     home = driver.run(registry.HOME)
-    scoping = {"scoped": False, "scoping_attempted": False,
-               "reason": "the known state could not be reached, so scoping was never probed"}
+    scoping = {
+        "scoped": False,
+        "scoping_attempted": False,
+        "reason": "the known state could not be reached, so scoping was never probed",
+    }
     if home is None:
         try:
             scoping = page.evaluate("() => window.__sb.surfaces.probeScoping()")
-        except Exception as exc:                                    # noqa: BLE001
-            scoping = {"scoped": False, "scoping_attempted": False,
-                       "reason": f"the scoping probe raised {type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            scoping = {
+                "scoped": False,
+                "scoping_attempted": False,
+                "reason": f"the scoping probe raised {type(exc).__name__}: {exc}",
+            }
     if not scoping.get("scoped"):
         log(f"  surface digests are NOT scoped to their surface: {scoping.get('reason')}")
 
@@ -218,14 +241,14 @@ def sweep(page: Any, base_url: str, log: Callable[[str], None] = _log_noop,
             continue
 
         # Whichever runs out first: the settle window or what is left of the surface's budget.
-        settled = driver.settle(
-            surface.settle, min(deadline, time.monotonic() + settle_ms / 1000))
+        settled = driver.settle(surface.settle, min(deadline, time.monotonic() + settle_ms / 1000))
         row["settle"] = settled
         row["facts"] = driver.facts(surface.root)
         row["reach_ms"] = round((time.monotonic() - started) * 1000, 1)
         if not settled.get("settled"):
-            row["reason"] = (f"the reach ran but the surface never settled: "
-                             f"{settled.get('detail')}")
+            row["reason"] = (
+                f"the reach ran but the surface never settled: " f"{settled.get('detail')}"
+            )
             rows.append(row)
             _emit(recorder, row)
             log(f"    {surface.id}: NOT REACHED -- {row['reason']}")
@@ -248,9 +271,11 @@ def sweep(page: Any, base_url: str, log: Callable[[str], None] = _log_noop,
         row["reached"] = True
         row["reason"] = None
         rows.append(row)
-        log(f"    {surface.id}: digest {parity.get('digest')} "
+        log(
+            f"    {surface.id}: digest {parity.get('digest')} "
             f"({parity.get('chars')} chars from {parity.get('root_selector')}, "
-            f"{(row['facts'] or {}).get('root_elements')} elements)")
+            f"{(row['facts'] or {}).get('root_elements')} elements)"
+        )
 
         restored = driver.run(surface.restore)
         clean = driver.is_clean()
@@ -265,7 +290,8 @@ def sweep(page: Any, base_url: str, log: Callable[[str], None] = _log_noop,
             # would quietly include a leftover overlay.
             row["restore_reason"] = (
                 f"the restore ran but left {clean.get('open_dialogs')} dialog(s) and "
-                f"{clean.get('open_menus')} menu(s) open")
+                f"{clean.get('open_menus')} menu(s) open"
+            )
             row["restored"] = False
             _recover(driver, log)
         _emit(recorder, row)
@@ -279,7 +305,7 @@ def _emit(recorder: Any, row: dict) -> None:
         return
     try:
         recorder.emit(dict(row))
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         # A recorder that rejects a row must not cost the sweep the rest of its surfaces. The row
         # is still in the returned list and in the manifest.
         pass
@@ -313,23 +339,38 @@ def build_manifest(rows: list, entries: list, scoping: dict) -> dict:
         "not_reached_hard": len(hard_misses),
         # Against the surfaces that COULD have rendered on this host. Reported next to the raw
         # count, never instead of it.
-        "coverage_pct": (round(100.0 * len(reached) / (registered - len(conditional_misses)), 1)
-                         if registered - len(conditional_misses) > 0 else None),
-        "coverage_pct_of_registered": (round(100.0 * len(reached) / registered, 1)
-                                       if registered else None),
+        "coverage_pct": (
+            round(100.0 * len(reached) / (registered - len(conditional_misses)), 1)
+            if registered - len(conditional_misses) > 0
+            else None
+        ),
+        "coverage_pct_of_registered": (
+            round(100.0 * len(reached) / registered, 1) if registered else None
+        ),
         "digests_scoped": bool(scoping.get("scoped")),
         "digests_scoped_reason": scoping.get("reason"),
-        "failures": [{"id": r["surface"], "group": r["group"], "reason": r["reason"],
-                      "conditional": r.get("conditional")} for r in failed],
-        "restore_failures": [{"id": r["surface"], "reason": r.get("restore_reason")}
-                             for r in rows if r.get("restored") is False],
+        "failures": [
+            {
+                "id": r["surface"],
+                "group": r["group"],
+                "reason": r["reason"],
+                "conditional": r.get("conditional"),
+            }
+            for r in failed
+        ],
+        "restore_failures": [
+            {"id": r["surface"], "reason": r.get("restore_reason")}
+            for r in rows
+            if r.get("restored") is False
+        ],
         # Reached, digested, and NOT a parity signal. Counted separately because the number that
         # matters to somebody comparing two arms is how many surfaces can carry a verdict, and
         # that is `comparable`, not `reached`.
         "volatile": len([r for r in reached if r.get("volatile")]),
         "comparable": len([r for r in reached if not r.get("volatile")]),
-        "volatile_surfaces": [{"id": r["surface"], "mechanism": r["volatile"]}
-                              for r in reached if r.get("volatile")],
+        "volatile_surfaces": [
+            {"id": r["surface"], "mechanism": r["volatile"]} for r in reached if r.get("volatile")
+        ],
         "by_group": _by_group(rows),
         "known_uncovered": [dict(u) for u in registry.KNOWN_UNCOVERED],
         "known_uncovered_count": len(registry.KNOWN_UNCOVERED),
@@ -339,7 +380,9 @@ def build_manifest(rows: list, entries: list, scoping: dict) -> dict:
 def _by_group(rows: list) -> dict:
     out: dict[str, dict] = {}
     for r in rows:
-        bucket = out.setdefault(r["group"], {"reached": 0, "not_reached": 0, "group_attempted": True})
+        bucket = out.setdefault(
+            r["group"], {"reached": 0, "not_reached": 0, "group_attempted": True}
+        )
         bucket["reached" if r.get("reached") else "not_reached"] += 1
     return out
 
@@ -350,17 +393,24 @@ def render_manifest(manifest: dict) -> str:
     lines.append("UI SURFACE COVERAGE")
     lines.append("=" * 78)
     pct = manifest.get("coverage_pct")
-    lines.append(f"{manifest['reached']} of {manifest['registered']} registered surfaces reached"
-                 + (f" ({pct}% of those this host can render)" if pct is not None else ""))
+    lines.append(
+        f"{manifest['reached']} of {manifest['registered']} registered surfaces reached"
+        + (f" ({pct}% of those this host can render)" if pct is not None else "")
+    )
     if not manifest.get("digests_scoped"):
         lines.append("")
-        lines.append("  WARNING: the digests are NOT scoped to their surface -- "
-                     f"{manifest.get('digests_scoped_reason')}")
-        lines.append("  Every digest below is a whole-page reading, so two different surfaces "
-                     "can agree")
+        lines.append(
+            "  WARNING: the digests are NOT scoped to their surface -- "
+            f"{manifest.get('digests_scoped_reason')}"
+        )
+        lines.append(
+            "  Every digest below is a whole-page reading, so two different surfaces can agree"
+        )
         lines.append("  for reasons that have nothing to do with either of them.")
-    lines.append(f"{manifest.get('comparable', 0)} of those carry a comparable digest; "
-                 f"{manifest.get('volatile', 0)} move between two runs of the same build")
+    lines.append(
+        f"{manifest.get('comparable', 0)} of those carry a comparable digest; "
+        f"{manifest.get('volatile', 0)} move between two runs of the same build"
+    )
     lines.append("")
     lines.append(f"{'group':<12} {'reached':>8} {'not reached':>12}")
     lines.append("-" * 78)
@@ -391,8 +441,10 @@ def render_manifest(manifest: dict) -> str:
             lines.append(f"  {entry['id']}")
             lines.append(f"      {entry['mechanism']}")
     lines.append("")
-    lines.append(f"KNOWN UNCOVERED ({manifest['known_uncovered_count']} surfaces, out of reach "
-                 "by mechanism, not by oversight)")
+    lines.append(
+        f"KNOWN UNCOVERED ({manifest['known_uncovered_count']} surfaces, out of reach "
+        "by mechanism, not by oversight)"
+    )
     lines.append("-" * 78)
     for entry in manifest.get("known_uncovered", []):
         lines.append(f"  {entry['id']}: {entry['title']}")

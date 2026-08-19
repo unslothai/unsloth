@@ -39,8 +39,8 @@ from ..scene.actions import paint_floor_ms
 from ..scene.schedule import SceneRunner
 from .browser import cdp_counters, cdp_metrics, dump_diagnostics
 from .lifecycle import StudioAuth
-from .seeder import (Seeder, compare_signatures, dom_signature, measure_chars_per_token)
-from .types import (BenchContext, Cell, Paths, Recorder, Window, make_cell_id, new_session_id)
+from .seeder import Seeder, compare_signatures, dom_signature, measure_chars_per_token
+from .types import BenchContext, Cell, Paths, Recorder, Window, make_cell_id, new_session_id
 
 # A 1x1 PNG, written to disk once per run so the image-upload action has a real file to attach.
 # Generated rather than shipped as a binary asset: the artifact is a zipapp and a tester's
@@ -49,7 +49,8 @@ from .types import (BenchContext, Cell, Paths, Recorder, Window, make_cell_id, n
 _PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d494844520000000100000001080600000"
     "01f15c4890000000d49444154789c6360000002000100ffff03000006"
-    "0005570b8f0000000049454e44ae426082")
+    "0005570b8f0000000049454e44ae426082"
+)
 
 
 def ensure_probe_image(paths: Paths) -> Path:
@@ -57,6 +58,7 @@ def ensure_probe_image(paths: Paths) -> Path:
     if not png.exists():
         png.write_bytes(_PNG_1X1)
     return png
+
 
 IDLE_CALIBRATION_MS = 1500
 # The rung the seeded-vs-streamed equivalence is CHECKED at. 10K, because both paths are
@@ -81,12 +83,17 @@ class Session:
     # ── windows ─────────────────────────────────────────────────────
 
     @contextlib.contextmanager
-    def window(self, name: str, kind: str = "action"):
+    def window(
+        self,
+        name: str,
+        kind: str = "action",
+    ):
         """Open a measurement window. Windows do NOT nest and do NOT overlap."""
         if self._open is not None:
             raise WindowInUse(
                 f"cannot open window {name!r}: {self._open.name!r} is still open. Overlapping "
-                "windows would charge the same work to both.")
+                "windows would charge the same work to both."
+            )
         w = Window(name = name, kind = kind, cell = self.cell, t_open_ms = self._now_ms())
         self._open = w
         for inst in sorted(self.instruments, key = lambda i: i.name):
@@ -111,9 +118,10 @@ class Session:
             return None
         try:
             return fn(*args)
-        except Exception as exc:                                    # noqa: BLE001
-            self.ctx.log(f"    instrument {inst.name}.{method} failed: "
-                         f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            self.ctx.log(
+                f"    instrument {inst.name}.{method} failed: " f"{type(exc).__name__}: {exc}"
+            )
             if inst in self.instruments:
                 self.instruments.remove(inst)
             return {"error": f"{type(exc).__name__}: {exc}", "disabled": True}
@@ -146,22 +154,34 @@ class CellRunner:
         s.cell = cell
         rec = s.ctx.recorder
         page = s.ctx.page
-        self.log(f"\n=== cell {cell.cell_id}: {plan.rung} "
-                 f"({plan.seeded_chars:,} seeded + {plan.streamed_chars:,} streamed chars)")
+        self.log(
+            f"\n=== cell {cell.cell_id}: {plan.rung} "
+            f"({plan.seeded_chars:,} seeded + {plan.streamed_chars:,} streamed chars)"
+        )
         for inst in s.instruments:
             s._safe(inst, "start_cell", cell)
 
-        row: dict = {"row_type": "cell", "cell_id": cell.cell_id, "cell": cell.as_dict(),
-                     "completed": False, "fidelity": "unknown",
-                     "seeded_chars": plan.seeded_chars, "streamed_chars": plan.streamed_chars,
-                     "target_chars": plan.target_chars, "target_tokens": plan.target_tokens,
-                     "instruments": {}}
+        row: dict = {
+            "row_type": "cell",
+            "cell_id": cell.cell_id,
+            "cell": cell.as_dict(),
+            "completed": False,
+            "fidelity": "unknown",
+            "seeded_chars": plan.seeded_chars,
+            "streamed_chars": plan.streamed_chars,
+            "target_chars": plan.target_chars,
+            "target_tokens": plan.target_tokens,
+            "instruments": {},
+        }
         try:
             self._run_inner(cell, plan, row)
             row["completed"] = True
-        except Exception as exc:                                    # noqa: BLE001
-            row["failure"] = {"kind": type(exc).__name__, "message": str(exc),
-                              "traceback": traceback.format_exc()[-3000:]}
+        except Exception as exc:  # noqa: BLE001
+            row["failure"] = {
+                "kind": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc()[-3000:],
+            }
             self.log(f"  cell FAILED: {type(exc).__name__}: {exc}")
             rec.failure(cell.cell_id, type(exc).__name__, {"message": str(exc)})
             with contextlib.suppress(Exception):
@@ -190,15 +210,21 @@ class CellRunner:
         row["seed_seconds"] = round(seeded.seconds, 2)
         row["seeded_messages"] = seeded.messages
 
-        page.goto(f"{self.base_url}/chat?thread={seeded.thread_id}",
-                  wait_until = "domcontentloaded", timeout = 120_000)
+        page.goto(
+            f"{self.base_url}/chat?thread={seeded.thread_id}",
+            wait_until = "domcontentloaded",
+            timeout = 120_000,
+        )
         self._wait_for_thread(page, seeded.messages)
 
         # ── the enforced idle window ────────────────────────────────
         frames = next((i for i in s.instruments if i.name == "frames"), None)
         with s.window("idle:calibrate", kind = "idle") as w:
-            clamp = frames.calibrate(IDLE_CALIBRATION_MS) if frames else {
-                "clampMs": None, "reason": "the frames instrument is not loaded"}
+            clamp = (
+                frames.calibrate(IDLE_CALIBRATION_MS)
+                if frames
+                else {"clampMs": None, "reason": "the frames instrument is not loaded"}
+            )
             w.note("clamp", clamp)
         row["clamp"] = clamp
         if clamp.get("clampMs") is None:
@@ -208,60 +234,87 @@ class CellRunner:
             self.log(f"  timer clamp NOT established: {clamp.get('reason')}")
             rec.gate("timer_clamp", False, clamp)
         else:
-            self.log(f"  timer clamp {clamp['clampMs']:.2f}ms "
-                     f"over {clamp.get('samples')} idle ticks")
+            self.log(
+                f"  timer clamp {clamp['clampMs']:.2f}ms " f"over {clamp.get('samples')} idle ticks"
+            )
             rec.gate("timer_clamp", True, clamp)
 
         row["paint_floor_ms"] = paint_floor_ms(page)
         row["census_before"] = dom_signature(page)
-        self.log(f"  at rest: {row['census_before']['messages']} messages, "
-                 f"{row['census_before']['elements']:,} elements, "
-                 f"{row['census_before']['highlight_spans']:,} highlight spans")
+        self.log(
+            f"  at rest: {row['census_before']['messages']} messages, "
+            f"{row['census_before']['elements']:,} elements, "
+            f"{row['census_before']['highlight_spans']:,} highlight spans"
+        )
 
         cpt = measure_chars_per_token(
-            (plan.streamed_unit.reasoning + plan.streamed_unit.content) if plan.streamed_unit
-            else "", self.base_url, self.seeder.auth, self.model_id)
-        row.update({"chars_per_token": cpt.get("chars_per_token"),
-                    "chars_per_token_source": cpt.get("source"),
-                    "chars_per_token_detail": cpt})
-        self.log(f"  chars per token: {cpt.get('chars_per_token')} "
-                 f"(measured via {cpt.get('source')})")
+            (plan.streamed_unit.reasoning + plan.streamed_unit.content)
+            if plan.streamed_unit
+            else "",
+            self.base_url,
+            self.seeder.auth,
+            self.model_id,
+        )
+        row.update(
+            {
+                "chars_per_token": cpt.get("chars_per_token"),
+                "chars_per_token_source": cpt.get("source"),
+                "chars_per_token_detail": cpt,
+            }
+        )
+        self.log(
+            f"  chars per token: {cpt.get('chars_per_token')} "
+            f"(measured via {cpt.get('source')})"
+        )
 
         # ── the film ────────────────────────────────────────────────
         unit = plan.streamed_unit
         self.pacer.reset()
-        self.pacer.load(unit.reasoning, unit.content, cadence = self.cadence,
-                        tag = cell.cell_id, model = self.model_id)
+        self.pacer.load(
+            unit.reasoning,
+            unit.content,
+            cadence = self.cadence,
+            tag = cell.cell_id,
+            model = self.model_id,
+        )
         expected_ms = self.pacer.expected_duration_ms(unit.reasoning, unit.content, self.cadence)
         row["stream_expected_ms"] = expected_ms
-        self.log(f"  streaming {len(unit.reasoning):,} reasoning + {len(unit.content):,} "
-                 f"content chars, cadence {self.cadence}, {expected_ms / 1000:.0f}s expected")
+        self.log(
+            f"  streaming {len(unit.reasoning):,} reasoning + {len(unit.content):,} "
+            f"content chars, cadence {self.cadence}, {expected_ms / 1000:.0f}s expected"
+        )
 
         before_metrics = cdp_metrics(s.ctx.cdp)
         t0 = self._press_send(page)
 
         scene = scene_schedule.SCENES.get(self.tier, scene_schedule.QUICK)
-        runner = SceneRunner(cell = cell, page = page, cdp = s.ctx.cdp,
-                             dom = None, recorder = rec, open_window = s.window, log = self.log,
-                             base_args = {"base_url": self.base_url,
-                                          "thread_id": seeded.thread_id,
-                                          "cell_id": cell.cell_id,
-                                          "cadence": self.cadence,
-                                          "image_path": str(self.image_path)
-                                          if self.image_path else None,
-                                          # The follow-up turns `send_turn` streams mid-film, and
-                                          # the pacer it reloads to serve them.
-                                          "_pacer": self.pacer,
-                                          "_stream_queue": [
-                                              {"reasoning": u.reasoning, "content": u.content,
-                                               "kind": u.kind}
-                                              for u in (plan.follow_up_units or [])],
-                                          # Shared and MUTABLE, so consecutive sends advance
-                                          # through the queue. See send_turn.
-                                          "_stream_cursor": {"i": 0},
-                                          "_input_instrument": next(
-                                              (i for i in s.instruments if i.name == "input"),
-                                              None)})
+        runner = SceneRunner(
+            cell = cell,
+            page = page,
+            cdp = s.ctx.cdp,
+            dom = None,
+            recorder = rec,
+            open_window = s.window,
+            log = self.log,
+            base_args = {
+                "base_url": self.base_url,
+                "thread_id": seeded.thread_id,
+                "cell_id": cell.cell_id,
+                "cadence": self.cadence,
+                "image_path": str(self.image_path) if self.image_path else None,
+                # The follow-up turns `send_turn` streams mid-film, and
+                # the pacer it reloads to serve them.
+                "_pacer": self.pacer,
+                "_stream_queue": [
+                    {"reasoning": u.reasoning, "content": u.content, "kind": u.kind}
+                    for u in (plan.follow_up_units or [])
+                ],
+                # Shared and MUTABLE, so consecutive sends advance
+                # through the queue. See send_turn.
+                "_stream_cursor": {"i": 0},
+                "_input_instrument": next((i for i in s.instruments if i.name == "input"), None),
+            },
+        )
         row["actions"] = runner.run(scene, t0)
         row["scene"] = scene.name
         row["scene_duration_ms"] = scene.duration_ms
@@ -303,8 +356,10 @@ class CellRunner:
         # rather than quietly compare two different workloads.
         row["chars_per_span"] = round(chars / spans, 2) if spans else None
         row["chars_per_span_target"] = 5.6
-        self.log(f"  after: {census['elements']:,} elements, {spans:,} spans, "
-                 f"{chars:,} assistant chars -> {row['chars_per_span']} chars/span")
+        self.log(
+            f"  after: {census['elements']:,} elements, {spans:,} spans, "
+            f"{chars:,} assistant chars -> {row['chars_per_span']} chars/span"
+        )
 
         row["fidelity"] = "streamed_and_seeded" if plan.seeded_units else "streamed_only"
 
@@ -317,16 +372,22 @@ class CellRunner:
                 # A FINDING, printed, not a bug to hide. It says exactly which of this tool's
                 # numbers are about the streaming path and which are about a thread that was put
                 # there, and it is the reason the higher rungs carry a fidelity label at all.
-                self.log("  SEEDED IS NOT EQUIVALENT TO STREAMED at the 10K rung. Rungs above it "
-                         "are labelled fidelity: seeded_only.")
+                self.log(
+                    "  SEEDED IS NOT EQUIVALENT TO STREAMED at the 10K rung. Rungs above it "
+                    "are labelled fidelity: seeded_only."
+                )
                 for key, field in (eq.get("fields") or {}).items():
                     if field.get("within_tolerance") is False:
-                        self.log(f"    {key}: streamed {field['streamed']} vs seeded "
-                                 f"{field['seeded']} ({field['drift']:.1%} drift)")
+                        self.log(
+                            f"    {key}: streamed {field['streamed']} vs seeded "
+                            f"{field['seeded']} ({field['drift']:.1%} drift)"
+                        )
                 self.equivalence_failed = True
             else:
-                self.log("  seeded and streamed agree on CONTENT at the 10K rung within "
-                         f"{eq['tolerance']:.0%}")
+                self.log(
+                    "  seeded and streamed agree on CONTENT at the 10K rung within "
+                    f"{eq['tolerance']:.0%}"
+                )
                 # Passing the content gate is not the same as the two threads being identical,
                 # and the difference is large enough that leaving it unsaid would mislead: a
                 # seeded rung carries the same rendered content and materially less mounted DOM.
@@ -334,10 +395,12 @@ class CellRunner:
                 for key in ("reasoning_spans", "highlight_spans", "assistant_chars"):
                     field = fields.get(key) or {}
                     if field.get("drift"):
-                        self.log(f"    but {key}: streamed {field['streamed']} vs seeded "
-                                 f"{field['seeded']} ({field['drift']:.1%}) -- a collapsed "
-                                 "reasoning pane mounts its children only when the text was "
-                                 "streamed into it")
+                        self.log(
+                            f"    but {key}: streamed {field['streamed']} vs seeded "
+                            f"{field['seeded']} ({field['drift']:.1%}) -- a collapsed "
+                            "reasoning pane mounts its children only when the text was "
+                            "streamed into it"
+                        )
         if self.equivalence_failed and plan.seeded_units:
             row["fidelity"] = "seeded_only"
 
@@ -353,20 +416,29 @@ class CellRunner:
         streamed = row.get("census_peak") or row.get("census_after") or {}
         try:
             all_units = list(plan.seeded_units) + [plan.streamed_unit]
-            mirror = RungPlan(rung = plan.rung, target_tokens = plan.target_tokens,
-                              target_chars = plan.target_chars, seeded_units = all_units,
-                              streamed_unit = None)
+            mirror = RungPlan(
+                rung = plan.rung,
+                target_tokens = plan.target_tokens,
+                target_chars = plan.target_chars,
+                seeded_units = all_units,
+                streamed_unit = None,
+            )
             seeded_thread = self.seeder.seed(mirror)
-            page.goto(f"{self.base_url}/chat?thread={seeded_thread.thread_id}",
-                      wait_until = "domcontentloaded", timeout = 120_000)
+            page.goto(
+                f"{self.base_url}/chat?thread={seeded_thread.thread_id}",
+                wait_until = "domcontentloaded",
+                timeout = 120_000,
+            )
             self._wait_for_thread(page, seeded_thread.messages)
             # Let the highlighter finish, or the span count is a race rather than a comparison.
             page.wait_for_timeout(4000)
             seeded_sig = dom_signature(page)
-        except Exception as exc:                                    # noqa: BLE001
-            return {"equivalent": None, "checked_attempted": False,
-                    "reason": f"the mirror thread could not be built: "
-                              f"{type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "equivalent": None,
+                "checked_attempted": False,
+                "reason": f"the mirror thread could not be built: " f"{type(exc).__name__}: {exc}",
+            }
         out = compare_signatures(streamed, seeded_sig)
         out["streamed_census"] = streamed
         out["seeded_census"] = seeded_sig
@@ -386,8 +458,9 @@ class CellRunner:
                 last = got
                 self.log(f"  mounting: {got}/{expected_messages} messages")
             page.wait_for_timeout(500)
-        raise TimeoutError(f"the thread mounted {last} of {expected_messages} messages in "
-                           f"{MOUNT_TIMEOUT_S}s")
+        raise TimeoutError(
+            f"the thread mounted {last} of {expected_messages} messages in " f"{MOUNT_TIMEOUT_S}s"
+        )
 
     def _press_send(self, page) -> float:
         """Type a prompt and press send. Returns the driver monotonic time the film starts."""
@@ -415,24 +488,45 @@ class CellRunner:
         started = time.monotonic()
         while time.monotonic() < deadline:
             if not page.evaluate("() => window.__sb.dom.isRunning()"):
-                return {"finished": True, "drain_ms": round((time.monotonic() - started) * 1000, 1),
-                        "expected_ms": expected_ms}
+                return {
+                    "finished": True,
+                    "drain_ms": round((time.monotonic() - started) * 1000, 1),
+                    "expected_ms": expected_ms,
+                }
             page.wait_for_timeout(250)
-        return {"finished": False, "drain_ms": round((time.monotonic() - started) * 1000, 1),
-                "expected_ms": expected_ms,
-                "reason": "the run was still going three times past its own cadence"}
+        return {
+            "finished": False,
+            "drain_ms": round((time.monotonic() - started) * 1000, 1),
+            "expected_ms": expected_ms,
+            "reason": "the run was still going three times past its own cadence",
+        }
 
 
-def make_context(browser_bundle, base_url: str, tier: str, instrument_level: int,
-                 paths: Paths, log: Callable[[str], None],
-                 browser_procs: Optional[list] = None) -> tuple[BenchContext, Session]:
+def make_context(
+    browser_bundle,
+    base_url: str,
+    tier: str,
+    instrument_level: int,
+    paths: Paths,
+    log: Callable[[str], None],
+    browser_procs: Optional[list] = None,
+) -> tuple[BenchContext, Session]:
     session_id = new_session_id()
     recorder = Recorder(paths.payload_jsonl, session_id)
-    ctx = BenchContext(browser = browser_bundle.browser, context = browser_bundle.context,
-                       page = browser_bundle.page, cdp = browser_bundle.cdp, base_url = base_url,
-                       session_id = session_id, tier = tier,
-                       instrument_level = instrument_level, paths = paths, recorder = recorder,
-                       log = log, browser_procs = browser_procs or [])
+    ctx = BenchContext(
+        browser = browser_bundle.browser,
+        context = browser_bundle.context,
+        page = browser_bundle.page,
+        cdp = browser_bundle.cdp,
+        base_url = base_url,
+        session_id = session_id,
+        tier = tier,
+        instrument_level = instrument_level,
+        paths = paths,
+        recorder = recorder,
+        log = log,
+        browser_procs = browser_procs or [],
+    )
     instruments = build_instruments(instrument_level)
     errors = import_errors()
     for name, err in errors.items():
@@ -441,24 +535,40 @@ def make_context(browser_bundle, base_url: str, tier: str, instrument_level: int
     for inst in instruments:
         try:
             inst.attach(ctx)
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             log(f"  instrument {inst.name} failed to attach: {exc}")
-    log(f"  instruments at level {instrument_level}: "
-        f"{', '.join(i.name for i in instruments) or 'none'}")
+    log(
+        f"  instruments at level {instrument_level}: "
+        f"{', '.join(i.name for i in instruments) or 'none'}"
+    )
     return ctx, Session(ctx = ctx, instruments = instruments)
 
 
-def build_cells(rungs: list[str], corpus: Corpus, tier: str, session_id: str,
-                instrument_level: int, reps: int = 1,
-                chars_per_token: float = 4.0) -> list[tuple[Cell, RungPlan]]:
+def build_cells(
+    rungs: list[str],
+    corpus: Corpus,
+    tier: str,
+    session_id: str,
+    instrument_level: int,
+    reps: int = 1,
+    chars_per_token: float = 4.0,
+) -> list[tuple[Cell, RungPlan]]:
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
         plan = plan_rung(corpus, rung, chars_per_token)
         for rep in range(reps):
-            cell = Cell(cell_id = make_cell_id(rung, "A0", rep), rung = rung,
-                        rung_tokens = plan.target_tokens, arm = "A0", rep = rep, tier = tier,
-                        transport = "provider", instrument_level = instrument_level,
-                        seed = corpus.seed, corpus_hash = corpus.corpus_hash,
-                        session_id = session_id)
+            cell = Cell(
+                cell_id = make_cell_id(rung, "A0", rep),
+                rung = rung,
+                rung_tokens = plan.target_tokens,
+                arm = "A0",
+                rep = rep,
+                tier = tier,
+                transport = "provider",
+                instrument_level = instrument_level,
+                seed = corpus.seed,
+                corpus_hash = corpus.corpus_hash,
+                session_id = session_id,
+            )
             out.append((cell, plan))
     return out

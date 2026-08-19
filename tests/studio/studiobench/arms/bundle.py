@@ -53,84 +53,84 @@ class ArmpackUnavailable(RuntimeError):
 
 
 ARM_FROZEN_ELEMENTS = Arm(
-    arm_id="BUNDLE_FROZEN_ELEMENTS",
-    title="frozen elements for the retained prefix",
-    mechanism=(
+    arm_id = "BUNDLE_FROZEN_ELEMENTS",
+    title = "frozen elements for the retained prefix",
+    mechanism = (
         "the prefix is re-emitted as the same element objects every render, so React allocates "
         "nothing per child while the fibre count and the DOM stay identical"
     ),
-    invariance=Invariance.EXACT,
-    potency=PotencyCounter(
-        name="frozen_element_reuses",
-        min_delta=1,
-        direction="increase",
-        description="element identity was reused for a prefix child at least once",
+    invariance = Invariance.EXACT,
+    potency = PotencyCounter(
+        name = "frozen_element_reuses",
+        min_delta = 1,
+        direction = "increase",
+        description = "element identity was reused for a prefix child at least once",
     ),
-    implies_fix=(
+    implies_fix = (
         "if this removes the slope, the cost is per-child ALLOCATION rather than the walk itself, "
         "and the fix is to stop producing new element objects for unchanged prefix children"
     ),
-    kind="bundle",
-    requires_armpack=True,
+    kind = "bundle",
+    requires_armpack = True,
 )
 
 ARM_PREFIX_FOLD = Arm(
-    arm_id="BUNDLE_PREFIX_FOLD",
-    title="fold the retained prefix behind one memo boundary",
-    mechanism=(
+    arm_id = "BUNDLE_PREFIX_FOLD",
+    title = "fold the retained prefix behind one memo boundary",
+    mechanism = (
         "the prefix becomes a single memoised child, so an update below it reaches one sibling "
         "instead of every retained message"
     ),
-    invariance=Invariance.EQUIVALENT,
-    declared_diff=DeclaredDiff(
-        normaliser="strip_fold_wrapper",
-        keys=("data-sb-fold-wrapper",),
-        rationale=(
+    invariance = Invariance.EQUIVALENT,
+    declared_diff = DeclaredDiff(
+        normaliser = "strip_fold_wrapper",
+        keys = ("data-sb-fold-wrapper",),
+        rationale = (
             "the fold introduces exactly one wrapper element carrying one marker attribute. The "
             "normaliser removes that element from the canonical serialisation and nothing else; "
             "if anything other than that attribute differs, the arm is voided, because the extra "
             "difference is the one nobody reviewed"
         ),
     ),
-    potency=PotencyCounter(
-        name="prefix_fold_children",
-        min_delta=1,
-        direction="increase",
-        description="the number of prefix children collapsed behind the boundary",
+    potency = PotencyCounter(
+        name = "prefix_fold_children",
+        min_delta = 1,
+        direction = "increase",
+        description = "the number of prefix children collapsed behind the boundary",
     ),
-    implies_fix=(
+    implies_fix = (
         "if this removes the slope, the fix is structural: give the retained prefix its own memo "
         "boundary, or virtualise the list so the prefix is not a sibling sequence at all"
     ),
-    kind="bundle",
-    requires_armpack=True,
+    kind = "bundle",
+    requires_armpack = True,
 )
 
 ARM_FIBRE_FREE_TWIN = Arm(
-    arm_id="BUNDLE_FIBRE_FREE_TWIN",
-    title="fibre-free twin: identical markup, no fibres",
-    mechanism=(
+    arm_id = "BUNDLE_FIBRE_FREE_TWIN",
+    title = "fibre-free twin: identical markup, no fibres",
+    mechanism = (
         "the retained prefix is re-emitted as identical markup via dangerouslySetInnerHTML. The "
         "DOM nodes, bytes and pixels are the same; the fibres behind them are gone"
     ),
-    invariance=Invariance.EXACT,
-    potency=PotencyCounter(
-        name="twin_prefix_fibres",
-        min_delta=1,
-        direction="decrease",
-        description=(
+    invariance = Invariance.EXACT,
+    potency = PotencyCounter(
+        name = "twin_prefix_fibres",
+        min_delta = 1,
+        direction = "decrease",
+        description = (
             "fibres behind the prefix must FALL while the DOM node count stays put; that "
             "combination is the whole point of the arm"
         ),
     ),
-    implies_fix=(
+    implies_fix = (
         "this arm does not imply a fix, it decides which of two fixes to look for. If the cost "
         "goes with the fibres it is a React structure problem; if it stays with the DOM it is a "
         "style, layout and paint problem, and no amount of memoisation will touch it"
     ),
-    kind="bundle",
-    requires_armpack=True,
-    notes=(
+    kind = "bundle",
+    requires_armpack = True,
+    notes = (
         "the only arm that breaks fibre/DOM collinearity. Without it, cost proportional to fibres "
         "and cost proportional to DOM are unidentifiable and the report cannot name either"
     ),
@@ -143,7 +143,7 @@ BUNDLE_ARMS: tuple[Arm, ...] = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ArmpackManifest:
     """What an armpack claims about itself. Read from `armpack.json` inside the pack."""
 
@@ -156,7 +156,7 @@ class ArmpackManifest:
     @classmethod
     def load(cls, path: str | Path) -> "ArmpackManifest":
         manifest_path = Path(path)
-        blob = json.loads(manifest_path.read_text(encoding="utf-8"))
+        blob = json.loads(manifest_path.read_text(encoding = "utf-8"))
         missing = [
             key
             for key in ("armpack_version", "built_from_sha", "target_dist_digest", "arms")
@@ -168,11 +168,11 @@ class ArmpackManifest:
                 "which dist it was built against cannot be matched to one"
             )
         return cls(
-            armpack_version=str(blob["armpack_version"]),
-            built_from_sha=str(blob["built_from_sha"]),
-            target_dist_digest=str(blob["target_dist_digest"]),
-            arms=dict(blob["arms"]),
-            root=manifest_path.parent,
+            armpack_version = str(blob["armpack_version"]),
+            built_from_sha = str(blob["built_from_sha"]),
+            target_dist_digest = str(blob["target_dist_digest"]),
+            arms = dict(blob["arms"]),
+            root = manifest_path.parent,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -192,8 +192,8 @@ class ArmpackResolution:
     available: bool
     reason: str
     manifest: ArmpackManifest | None = None
-    arms: list[Arm] = field(default_factory=list)
-    searched: list[str] = field(default_factory=list)
+    arms: list[Arm] = field(default_factory = list)
+    searched: list[str] = field(default_factory = list)
 
     def require(self) -> ArmpackManifest:
         if not self.available or self.manifest is None:
@@ -263,58 +263,56 @@ def discover_armpack(
 
     if not candidates:
         return ArmpackResolution(
-            available=False,
-            reason="no armpack.json was found on any search path",
-            searched=searched,
+            available = False,
+            reason = "no armpack.json was found on any search path",
+            searched = searched,
         )
 
     matched = [m for m in candidates if m.target_dist_digest == install_dist_digest]
     if not matched:
         found = ", ".join(sorted({m.target_dist_digest[:12] for m in candidates}))
         return ArmpackResolution(
-            available=False,
-            reason=(
+            available = False,
+            reason = (
                 f"no armpack targets this install's dist digest {install_dist_digest[:12]}; "
                 f"found packs for {found}. Running a mismatched pack would measure the build "
                 "difference and report it as a mechanism"
             ),
-            searched=searched,
+            searched = searched,
         )
 
     manifest = matched[0]
     missing = [arm.arm_id for arm in required_arms if arm.arm_id not in manifest.arms]
     if missing:
         return ArmpackResolution(
-            available=False,
-            reason=(
+            available = False,
+            reason = (
                 f"the matching armpack is missing required arms {missing}. A partial pack is "
                 "refused rather than run: the arm most likely to be missing is the fibre-free "
                 "twin, and without it the remaining arms cannot identify what they appear to"
             ),
-            manifest=manifest,
-            searched=searched,
+            manifest = manifest,
+            searched = searched,
         )
 
     absent_dirs = [
-        arm_id
-        for arm_id, rel in manifest.arms.items()
-        if not (manifest.root / rel).is_dir()
+        arm_id for arm_id, rel in manifest.arms.items() if not (manifest.root / rel).is_dir()
     ]
     if absent_dirs:
         return ArmpackResolution(
-            available=False,
-            reason=(
+            available = False,
+            reason = (
                 f"the armpack manifest lists arms whose dist directories are absent: "
                 f"{sorted(absent_dirs)}"
             ),
-            manifest=manifest,
-            searched=searched,
+            manifest = manifest,
+            searched = searched,
         )
 
     return ArmpackResolution(
-        available=True,
-        reason="armpack matched this install",
-        manifest=manifest,
-        arms=list(required_arms),
-        searched=searched,
+        available = True,
+        reason = "armpack matched this install",
+        manifest = manifest,
+        arms = list(required_arms),
+        searched = searched,
     )

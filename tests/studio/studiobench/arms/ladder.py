@@ -113,7 +113,7 @@ def arms_key(arms: Iterable[str]) -> str:
     return "+".join(ordered) if ordered else "shipping"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Step:
     """One rung-to-rung transition: which arms are added, which mechanisms that removes."""
 
@@ -252,7 +252,7 @@ class RouteResult:
     """A whole route's differences, plus the telescoping identity check."""
 
     route: LadderRoute
-    steps: list[StepResult] = field(default_factory=list)
+    steps: list[StepResult] = field(default_factory = list)
     total: Measure | None = None
     sum_of_steps: Measure | None = None
     residual_ms: float = 0.0
@@ -307,7 +307,7 @@ def differences(
     a claim about arithmetic that was never performed.
     """
 
-    result = RouteResult(route=route)
+    result = RouteResult(route = route)
     all_readable = True
 
     for step in route.steps:
@@ -317,23 +317,23 @@ def differences(
             all_readable = False
             result.steps.append(
                 StepResult(
-                    step=step,
-                    difference=Measure.failed("ms", before_reason or after_reason),
-                    quotable=False,
-                    reason=before_reason or after_reason,
+                    step = step,
+                    difference = Measure.failed("ms", before_reason or after_reason),
+                    quotable = False,
+                    reason = before_reason or after_reason,
                 )
             )
             continue
         delta = float(before.value) - float(after.value)
-        measure = Measure.read(delta, before.unit, floor=detection_floor_ms)
+        measure = Measure.read(delta, before.unit, floor = detection_floor_ms)
         bound_only = before_bound or after_bound
         result.steps.append(
             StepResult(
-                step=step,
-                difference=measure,
-                quotable=True,
-                bound_only=bound_only,
-                reason=(
+                step = step,
+                difference = measure,
+                quotable = True,
+                bound_only = bound_only,
+                reason = (
                     "one or both rungs are DOM-changing, so this difference bounds the mechanism"
                     if bound_only
                     else "both rungs held their invariance and fired"
@@ -345,7 +345,7 @@ def differences(
     floor, floor_reason, _ = _cost_of(outcomes, route.floor)
     if top is not None and floor is not None:
         result.total = Measure.read(
-            float(top.value) - float(floor.value), top.unit, floor=detection_floor_ms
+            float(top.value) - float(floor.value), top.unit, floor = detection_floor_ms
         )
     else:
         result.total = Measure.failed("ms", top_reason or floor_reason)
@@ -355,10 +355,15 @@ def differences(
         result.sum_of_steps = Measure.read(
             sum(float(s.difference.value) for s in readable_steps),
             readable_steps[0].difference.unit,
-            floor=detection_floor_ms,
+            floor = detection_floor_ms,
         )
 
-    if all_readable and result.total is not None and result.total.has_reading and result.sum_of_steps:
+    if (
+        all_readable
+        and result.total is not None
+        and result.total.has_reading
+        and result.sum_of_steps
+    ):
         result.residual_ms = float(result.total.value) - float(result.sum_of_steps.value)
         # This is an arithmetic identity, not an empirical claim: the interior terms cancel. A
         # non-zero residual here means a bug in this function, not a finding about the app.
@@ -445,14 +450,14 @@ def interaction_terms(
         if not (value_a.has_reading and value_b.has_reading):
             terms.append(
                 InteractionTerm(
-                    mechanism=mechanism,
-                    route_a=result_a.route.route_id,
-                    route_b=result_b.route.route_id,
-                    value_a=value_a,
-                    value_b=value_b,
-                    disagreement_ms=None,
-                    disagreement_pct=None,
-                    note="one route produced no reading for this mechanism",
+                    mechanism = mechanism,
+                    route_a = result_a.route.route_id,
+                    route_b = result_b.route.route_id,
+                    value_a = value_a,
+                    value_b = value_b,
+                    disagreement_ms = None,
+                    disagreement_pct = None,
+                    note = "one route produced no reading for this mechanism",
                 )
             )
             continue
@@ -477,14 +482,14 @@ def interaction_terms(
             )
         terms.append(
             InteractionTerm(
-                mechanism=mechanism,
-                route_a=result_a.route.route_id,
-                route_b=result_b.route.route_id,
-                value_a=value_a,
-                value_b=value_b,
-                disagreement_ms=delta,
-                disagreement_pct=pct,
-                note=note,
+                mechanism = mechanism,
+                route_a = result_a.route.route_id,
+                route_b = result_b.route.route_id,
+                value_a = value_a,
+                value_b = value_b,
+                disagreement_ms = delta,
+                disagreement_pct = pct,
+                note = note,
             )
         )
     return terms
@@ -499,44 +504,44 @@ _SHIPPING: frozenset[str] = frozenset()
 #: Route 1 walks down the rendering pipeline first: stop painting, then stop laying out
 #: off-screen, then stop occupying layout at all, and only then touch the observers and React.
 ROUTE_VISUAL_FIRST = LadderRoute(
-    route_id="visual_first",
-    name="paint, then off-screen layout, then geometry, then observers, then React",
-    steps=(
+    route_id = "visual_first",
+    name = "paint, then off-screen layout, then geometry, then observers, then React",
+    steps = (
         Step(
-            arms_before=_SHIPPING,
-            arms_after=frozenset({"A"}),
-            mechanisms=("paint_raster",),
+            arms_before = _SHIPPING,
+            arms_after = frozenset({"A"}),
+            mechanisms = ("paint_raster",),
         ),
         Step(
-            arms_before=frozenset({"A"}),
-            arms_after=frozenset({"A", "B"}),
-            mechanisms=("offscreen_style_layout",),
+            arms_before = frozenset({"A"}),
+            arms_after = frozenset({"A", "B"}),
+            mechanisms = ("offscreen_style_layout",),
         ),
         Step(
-            arms_before=frozenset({"A", "B"}),
-            arms_after=frozenset({"A", "B", "C"}),
-            mechanisms=("layout_geometry", "sibling_count"),
-            fused=True,
-            fused_reason=(
+            arms_before = frozenset({"A", "B"}),
+            arms_after = frozenset({"A", "B", "C"}),
+            mechanisms = ("layout_geometry", "sibling_count"),
+            fused = True,
+            fused_reason = (
                 "display:none removes the element from layout AND from the sibling sequence React "
                 "walks. No runtime knob removes one without the other, so the step is quoted as "
                 "the pair rather than mislabelled as either one"
             ),
         ),
         Step(
-            arms_before=frozenset({"A", "B", "C"}),
-            arms_after=frozenset({"A", "B", "C", "D"}),
-            mechanisms=("autoscroll_forced_layout",),
+            arms_before = frozenset({"A", "B", "C"}),
+            arms_after = frozenset({"A", "B", "C", "D"}),
+            mechanisms = ("autoscroll_forced_layout",),
         ),
         Step(
-            arms_before=frozenset({"A", "B", "C", "D"}),
-            arms_after=frozenset({"A", "B", "C", "D", "E"}),
-            mechanisms=("stabilizer_style_invalidation",),
+            arms_before = frozenset({"A", "B", "C", "D"}),
+            arms_after = frozenset({"A", "B", "C", "D", "E"}),
+            mechanisms = ("stabilizer_style_invalidation",),
         ),
         Step(
-            arms_before=frozenset({"A", "B", "C", "D", "E"}),
-            arms_after=frozenset({"A", "B", "C", "D", "E", "F"}),
-            mechanisms=("react_reconciliation",),
+            arms_before = frozenset({"A", "B", "C", "D", "E"}),
+            arms_after = frozenset({"A", "B", "C", "D", "E", "F"}),
+            mechanisms = ("react_reconciliation",),
         ),
     ),
 )
@@ -545,40 +550,40 @@ ROUTE_VISUAL_FIRST = LadderRoute(
 #: then walk down the rendering pipeline. If the mechanisms are additive both routes report the
 #: same per-mechanism numbers. Where they do not, that gap is the interaction term.
 ROUTE_SCHEDULER_FIRST = LadderRoute(
-    route_id="scheduler_first",
-    name="observers, then React, then paint, then off-screen layout, then geometry",
-    steps=(
+    route_id = "scheduler_first",
+    name = "observers, then React, then paint, then off-screen layout, then geometry",
+    steps = (
         Step(
-            arms_before=_SHIPPING,
-            arms_after=frozenset({"D"}),
-            mechanisms=("autoscroll_forced_layout",),
+            arms_before = _SHIPPING,
+            arms_after = frozenset({"D"}),
+            mechanisms = ("autoscroll_forced_layout",),
         ),
         Step(
-            arms_before=frozenset({"D"}),
-            arms_after=frozenset({"D", "E"}),
-            mechanisms=("stabilizer_style_invalidation",),
+            arms_before = frozenset({"D"}),
+            arms_after = frozenset({"D", "E"}),
+            mechanisms = ("stabilizer_style_invalidation",),
         ),
         Step(
-            arms_before=frozenset({"D", "E"}),
-            arms_after=frozenset({"D", "E", "F"}),
-            mechanisms=("react_reconciliation",),
+            arms_before = frozenset({"D", "E"}),
+            arms_after = frozenset({"D", "E", "F"}),
+            mechanisms = ("react_reconciliation",),
         ),
         Step(
-            arms_before=frozenset({"D", "E", "F"}),
-            arms_after=frozenset({"A", "D", "E", "F"}),
-            mechanisms=("paint_raster",),
+            arms_before = frozenset({"D", "E", "F"}),
+            arms_after = frozenset({"A", "D", "E", "F"}),
+            mechanisms = ("paint_raster",),
         ),
         Step(
-            arms_before=frozenset({"A", "D", "E", "F"}),
-            arms_after=frozenset({"A", "B", "D", "E", "F"}),
-            mechanisms=("offscreen_style_layout",),
+            arms_before = frozenset({"A", "D", "E", "F"}),
+            arms_after = frozenset({"A", "B", "D", "E", "F"}),
+            mechanisms = ("offscreen_style_layout",),
         ),
         Step(
-            arms_before=frozenset({"A", "B", "D", "E", "F"}),
-            arms_after=frozenset({"A", "B", "C", "D", "E", "F"}),
-            mechanisms=("layout_geometry", "sibling_count"),
-            fused=True,
-            fused_reason=(
+            arms_before = frozenset({"A", "B", "D", "E", "F"}),
+            arms_after = frozenset({"A", "B", "C", "D", "E", "F"}),
+            mechanisms = ("layout_geometry", "sibling_count"),
+            fused = True,
+            fused_reason = (
                 "same fusion as the other route: display:none is the only knob that removes "
                 "layout geometry, and it removes the sibling from the sequence at the same time"
             ),

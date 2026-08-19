@@ -112,9 +112,7 @@ def render_headline(ladder: LadderScore) -> str:
 
 
 def render_rung_table(ladder: LadderScore) -> str:
-    header = (
-        f"{'tokens':>10}  {'score':>6}  {'weight':>6}  {'usable':>6}  status"
-    )
+    header = f"{'tokens':>10}  {'score':>6}  {'weight':>6}  {'usable':>6}  status"
     rows = [header, "-" * len(header)]
     for rung, weight in zip(ladder.rungs, ladder.rung_weights):
         status = "complete"
@@ -152,18 +150,14 @@ def render_rung_metrics(rung: RungScore, *, indent: str = "  ") -> str:
         return "\n".join(lines)
     for metric in rung.metric_scores:
         anchor = METRIC_BY_KEY.get(metric.key)
-        anchor_text = (
-            f"[{anchor.good:g} -> 100, {anchor.bad:g} -> 0]" if anchor is not None else ""
-        )
+        anchor_text = f"[{anchor.good:g} -> 100, {anchor.bad:g} -> 0]" if anchor is not None else ""
         if metric.scored:
             lines.append(
                 f"{indent}  {metric.key:<20} {metric.measure.display():>28}   "
                 f"score {float(metric.score):5.1f}  {anchor_text}"
             )
         else:
-            lines.append(
-                f"{indent}  {metric.key:<20} {'NOT SCORED':>28}   {metric.reason}"
-            )
+            lines.append(f"{indent}  {metric.key:<20} {'NOT SCORED':>28}   {metric.reason}")
     return "\n".join(lines)
 
 
@@ -178,7 +172,7 @@ def render_excluded(payload: Mapping[str, Any]) -> str:
         lines.append("  none. Every cell that was measured is in the numbers above.")
         return "\n".join(lines)
     totals = excluded_totals(payload)
-    for reason, count in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0])):
+    for reason, count in sorted(totals.items(), key = lambda kv: (-kv[1], kv[0])):
         lines.append(f"  {count:>4}  {reason}")
     lines.append("")
     for cell in cells:
@@ -230,9 +224,7 @@ def render_ab_table(result: AbResult) -> str:
         )
         return "\n".join(lines)
 
-    lines.append(
-        f"noise floor {result.noise_floor_pct:.2f}%  ({result.noise_floor_source})"
-    )
+    lines.append(f"noise floor {result.noise_floor_pct:.2f}%  ({result.noise_floor_source})")
     lines.append("")
     header = f"{'metric':<20} {'pairs':>5}  {'ratio':>7}  {'range':>17}  {'ci95':>17}  verdict"
     lines.append(header)
@@ -284,10 +276,16 @@ def render_ceiling_shift(base: LadderScore, treatment: LadderScore) -> str:
     lines = ["CEILING SHIFT (reported separately, never folded into the score)"]
     base_onset = base.onset_rung_tokens
     treat_onset = treatment.onset_rung_tokens
-    lines.append(f"  base onset rung      {base_onset:,} tokens" if base_onset else
-                 "  base onset rung      none")
-    lines.append(f"  treatment onset rung {treat_onset:,} tokens" if treat_onset else
-                 "  treatment onset rung none")
+    lines.append(
+        f"  base onset rung      {base_onset:,} tokens"
+        if base_onset
+        else "  base onset rung      none"
+    )
+    lines.append(
+        f"  treatment onset rung {treat_onset:,} tokens"
+        if treat_onset
+        else "  treatment onset rung none"
+    )
     if base_onset and treat_onset:
         if treat_onset > base_onset:
             lines.append(f"  the ceiling MOVED UP: {base_onset:,} -> {treat_onset:,}")
@@ -329,15 +327,14 @@ def render_summary(
         sections.append(render_headline(ladder))
         sections.append(render_rung_table(ladder))
         sections.append(
-            "PER-RUNG METRICS\n"
-            + "\n".join(render_rung_metrics(rung) for rung in ladder.rungs)
+            "PER-RUNG METRICS\n" + "\n".join(render_rung_metrics(rung) for rung in ladder.rungs)
         )
 
     if frame_stats_by_rung:
         blocks = ["FRAME HEALTH"]
         for tokens in sorted(frame_stats_by_rung):
             blocks.append(f"  {tokens:,} tokens")
-            blocks.append(render_frame_health(frame_stats_by_rung[tokens], indent="    "))
+            blocks.append(render_frame_health(frame_stats_by_rung[tokens], indent = "    "))
         sections.append("\n".join(blocks))
 
     sections.extend(extra_sections)

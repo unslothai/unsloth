@@ -140,13 +140,16 @@ def compare_with_trace_profile(
     wrong, and since the in-trace one is the one this layer depends on, that is
     a finding and not a warning.
     """
+
     def shares(p: CpuProfile) -> dict[str, float]:
         by_name: dict[str, int] = {}
         for s in p.samples:
             f = p.nodes.get(s.node_id)
             if f is None or f.is_synthetic:
                 continue
-            by_name[f.function_name or "(anonymous)"] = by_name.get(f.function_name or "(anonymous)", 0) + s.delta
+            by_name[f.function_name or "(anonymous)"] = (
+                by_name.get(f.function_name or "(anonymous)", 0) + s.delta
+            )
         total = sum(by_name.values())
         if total <= 0:
             return {}
@@ -154,8 +157,7 @@ def compare_with_trace_profile(
 
     def js_samples(p: CpuProfile) -> int:
         return sum(
-            1 for s in p.samples
-            if (f := p.nodes.get(s.node_id)) is not None and not f.is_synthetic
+            1 for s in p.samples if (f := p.nodes.get(s.node_id)) is not None and not f.is_synthetic
         )
 
     # A comparison built on a handful of JS samples cannot distinguish the two
@@ -165,10 +167,13 @@ def compare_with_trace_profile(
     # "standalone" profile IS the in-trace profile and comparing them is
     # comparing a thing with itself, which always agrees and therefore proves
     # nothing. Detected structurally rather than trusted to the caller.
-    if (len(standalone.samples) == len(in_trace.samples)
-            and len(standalone.nodes) == len(in_trace.nodes)
-            and standalone.samples[:8] and in_trace.samples[:8]
-            and [s.node_id for s in standalone.samples[:8]] == [s.node_id for s in in_trace.samples[:8]]):
+    if (
+        len(standalone.samples) == len(in_trace.samples)
+        and len(standalone.nodes) == len(in_trace.nodes)
+        and standalone.samples[:8]
+        and in_trace.samples[:8]
+        and [s.node_id for s in standalone.samples[:8]] == [s.node_id for s in in_trace.samples[:8]]
+    ):
         return {
             "agrees": None,
             "verdict": "same_profile",
@@ -180,7 +185,10 @@ def compare_with_trace_profile(
             ),
         }
 
-    power = {"standalone_js_samples": js_samples(standalone), "in_trace_js_samples": js_samples(in_trace)}
+    power = {
+        "standalone_js_samples": js_samples(standalone),
+        "in_trace_js_samples": js_samples(in_trace),
+    }
     if min(power.values()) < MIN_JS_SAMPLES_FOR_COMPARISON:
         return {
             "agrees": None,
@@ -195,8 +203,12 @@ def compare_with_trace_profile(
     a, b = shares(standalone), shares(in_trace)
     common = sorted(set(a) & set(b), key = lambda k: -(a[k] + b[k]))[:10]
     rows = [
-        {"function": k, "standalone_share": round(a[k], 4), "in_trace_share": round(b[k], 4),
-         "abs_diff": round(abs(a[k] - b[k]), 4)}
+        {
+            "function": k,
+            "standalone_share": round(a[k], 4),
+            "in_trace_share": round(b[k], 4),
+            "abs_diff": round(abs(a[k] - b[k]), 4),
+        }
         for k in common
     ]
     worst = max((r["abs_diff"] for r in rows), default = 0.0)
@@ -234,10 +246,10 @@ def compare_with_trace_profile(
 # At level 2 and above it stands down and says so, rather than quietly
 # duplicating what `tracing` already has.
 
-import time                                                              # noqa: E402
+import time  # noqa: E402
 
-from ..analysis import assert_no_bare_zero, measured, merge, unmeasured   # noqa: E402
-from . import register_instrument                                        # noqa: E402
+from ..analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
+from . import register_instrument  # noqa: E402
 
 _STAND_DOWN = (
     "instrument level {lvl} already records the v8 CPU profiler inside the trace. "
@@ -305,9 +317,13 @@ class CpuProfileInstrument:
             prof = self.profiler.stop()
             payload = self._summarise(prof)
         except CellFailure as exc:
-            payload = merge(unmeasured("self_ms_top", f"{exc.gate}: {exc.detail}"), {"active": True})
-        except Exception as exc:                                   # noqa: BLE001
-            payload = merge(unmeasured("self_ms_top", f"{type(exc).__name__}: {exc}"), {"active": True})
+            payload = merge(
+                unmeasured("self_ms_top", f"{exc.gate}: {exc.detail}"), {"active": True}
+            )
+        except Exception as exc:  # noqa: BLE001
+            payload = merge(
+                unmeasured("self_ms_top", f"{type(exc).__name__}: {exc}"), {"active": True}
+            )
         finally:
             self.profiler = None
         self._windows += 1
@@ -337,12 +353,15 @@ class CpuProfileInstrument:
         from ..analysis import cpuprofile as C
 
         rows, diag = C.self_time_in_windows(
-            prof, [(prof.chunk_ts_first, prof.chunk_ts_last)], limit = 12,
+            prof,
+            [(prof.chunk_ts_first, prof.chunk_ts_last)],
+            limit = 12,
         )
         payload = merge(
-            measured("self_ms_top", [
-                {"frame": f.label(), "self_ms": round(us / 1000.0, 3)} for f, us in rows
-            ]),
+            measured(
+                "self_ms_top",
+                [{"frame": f.label(), "self_ms": round(us / 1000.0, 3)} for f, us in rows],
+            ),
             measured("js_sample_count", int(diag["js_sample_count"])),
             measured("sampling_interval_us", round(prof.sampling_interval_us(), 2)),
             {

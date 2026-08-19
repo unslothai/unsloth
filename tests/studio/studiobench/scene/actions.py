@@ -30,11 +30,15 @@ from . import register_action
 SETTLE_TIMEOUT_MS = 8000
 
 
-def _ev(ctx: ActionContext, script: str, arg: Any = None) -> Any:
+def _ev(
+    ctx: ActionContext,
+    script: str,
+    arg: Any = None,
+) -> Any:
     """Evaluate, and turn a thrown page error into `ran = False` rather than a lost cell."""
     try:
         return ctx.page.evaluate(script, arg) if arg is not None else ctx.page.evaluate(script)
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         ctx.log(f"    action js failed: {type(exc).__name__}: {exc}")
         return {"__error": f"{type(exc).__name__}: {exc}"}
 
@@ -72,11 +76,12 @@ async (samples) => {
 def paint_floor_ms(page, samples: int = 9) -> float | None:
     try:
         return round(page.evaluate(PAINT_FLOOR_JS, samples), 2)
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         return None
 
 
 # ── 1. keystroke to paint ───────────────────────────────────────────
+
 
 @register_action(name = "keystroke", default_budget_ms = 6000)
 def keystroke(ctx: ActionContext) -> ActionResult:
@@ -94,8 +99,11 @@ def keystroke(ctx: ActionContext) -> ActionResult:
         return not_run("no composer on the page")
 
     inst = ctx.args.get("_input_instrument")
-    armed = inst.arm(selector) if inst is not None else {"armed": False,
-                                                        "reason": "input instrument not loaded"}
+    armed = (
+        inst.arm(selector)
+        if inst is not None
+        else {"armed": False, "reason": "input instrument not loaded"}
+    )
     if not armed.get("armed"):
         return not_run(f"could not arm the input instrument: {armed.get('reason')}")
 
@@ -112,19 +120,29 @@ def keystroke(ctx: ActionContext) -> ActionResult:
     grew = got.get("grew_by")
     if not got.get("samples"):
         return not_run(f"no keystroke reached the composer ({got.get('reason', 'no samples')})")
-    expect = {"commanded_chars": count, "measured_keystrokes": got.get("samples"),
-              "coalesced": got.get("coalesced"), "composer_grew_by": grew,
-              "composer_text_length": got.get("text_length")}
+    expect = {
+        "commanded_chars": count,
+        "measured_keystrokes": got.get("samples"),
+        "coalesced": got.get("coalesced"),
+        "composer_grew_by": grew,
+        "composer_text_length": got.get("text_length"),
+    }
     # The composer's VALUE grew, which proves the characters reached the controlled component and
     # not merely the DOM node.
     ok = grew is not None and grew >= count
     return ActionResult(
-        ran = True, expect_ok = ok, expect = expect,
-        timings = {"p50_ms": got.get("p50_ms"), "p95_ms": got.get("p95_ms"),
-                   "max_ms": got.get("max_ms"), "first_ms": got.get("first_ms"),
-                   "total_ms": round(elapsed_ms, 1)},
-        reason = None if ok else
-        f"typed {count} characters but the composer value grew by {grew}")
+        ran = True,
+        expect_ok = ok,
+        expect = expect,
+        timings = {
+            "p50_ms": got.get("p50_ms"),
+            "p95_ms": got.get("p95_ms"),
+            "max_ms": got.get("max_ms"),
+            "first_ms": got.get("first_ms"),
+            "total_ms": round(elapsed_ms, 1),
+        },
+        reason = None if ok else f"typed {count} characters but the composer value grew by {grew}",
+    )
 
 
 # ── 2, 3. scrolling ─────────────────────────────────────────────────
@@ -200,15 +218,25 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
     # happen. Travel is the only thing that separates the two.
     ok = commanded > 0 and travelled >= 0.9 * commanded
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"commanded_px": commanded, "travelled_px": travelled,
-                  "travel_fraction": round(travelled / commanded, 3) if commanded else None,
-                  "landed_at": raw["landedAt"], "bottom": raw["bottom"], "phase": label},
-        timings = {"gesture_ms": raw["gestureMs"],
-                   "per_step_ms": round(raw["gestureMs"] / max(1, steps), 2)},
-        reason = None if ok else
-        f"the gesture commanded {commanded}px and the viewport moved {travelled}px, so the "
-        f"autoscroll snapped it back and nothing was scrolled")
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "commanded_px": commanded,
+            "travelled_px": travelled,
+            "travel_fraction": round(travelled / commanded, 3) if commanded else None,
+            "landed_at": raw["landedAt"],
+            "bottom": raw["bottom"],
+            "phase": label,
+        },
+        timings = {
+            "gesture_ms": raw["gestureMs"],
+            "per_step_ms": round(raw["gestureMs"] / max(1, steps), 2),
+        },
+        reason = None
+        if ok
+        else f"the gesture commanded {commanded}px and the viewport moved {travelled}px, so the "
+        f"autoscroll snapped it back and nothing was scrolled",
+    )
 
 
 @register_action(name = "scroll_during_generation", default_budget_ms = 8000)
@@ -277,17 +305,27 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
     # Both directions, and the pane count is read from `data-state` on the Collapsible ROOT.
     # Radix keeps collapsed content mounted for its animation, so a presence check on the content
     # element reports every pane as open and the assertion can never fail.
-    ok = (raw["openMs"] is not None and raw["closeMs"] is not None
-          and raw["openCount"] == raw["panes"] and raw["afterClose"] == 0)
+    ok = (
+        raw["openMs"] is not None
+        and raw["closeMs"] is not None
+        and raw["openCount"] == raw["panes"]
+        and raw["afterClose"] == 0
+    )
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"panes": raw["panes"], "open_after_expand": raw["openCount"],
-                  "open_after_collapse": raw["afterClose"],
-                  "highlight_spans_while_open": raw["spansOpen"]},
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "panes": raw["panes"],
+            "open_after_expand": raw["openCount"],
+            "open_after_collapse": raw["afterClose"],
+            "highlight_spans_while_open": raw["spansOpen"],
+        },
         timings = {"open_ms": raw["openMs"], "close_ms": raw["closeMs"]},
-        reason = None if ok else
-        f"{raw['openCount']} of {raw['panes']} panes opened and "
-        f"{raw['afterClose']} were still open after collapsing")
+        reason = None
+        if ok
+        else f"{raw['openCount']} of {raw['panes']} panes opened and "
+        f"{raw['afterClose']} were still open after collapsing",
+    )
 
 
 # ── 5. stop generation ──────────────────────────────────────────────
@@ -371,9 +409,10 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     button = ctx.page.query_selector('button[aria-label="Stop generating"]')
     if button is None:
         queue = ctx.page.query_selector('button[aria-label="Queue message"]')
-        return not_run("the stop button is not present" +
-                       (" -- the composer still has text, so it is a Queue button" if queue
-                        else ""))
+        return not_run(
+            "the stop button is not present"
+            + (" -- the composer still has text, so it is a Queue button" if queue else "")
+        )
     chars_before = _ev(ctx, "() => window.__sb.dom.assistantChars()")
     started = time.monotonic()
     button.click()
@@ -398,28 +437,35 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS)
         ctx.page.wait_for_timeout(200)
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"chars_before": chars_before, "chars_after": chars_after,
-                  "still_running": not ok,
-                  # Which reply was stopped. A reader comparing `chars_added_after_stop` across
-                  # rungs needs to know whether this was a throwaway turn or the cell's own.
-                  "own_generation": own_generation,
-                  # Whether the scaffolding was removed again. Reported rather than asserted: a
-                  # cleanup that failed leaves an extra turn in the thread, and every census
-                  # after this point needs to be readable in that light.
-                  "scaffold_removed": (None if removed is None
-                                       else bool(removed.get("removed"))),
-                  "scaffold_note": (None if removed is None else removed.get("reason")),
-                  # A stop that worked leaves the text where it was, give or take the chunks
-                  # already in flight. A large jump means the stream ran on.
-                  "chars_added_after_stop": (None if chars_after is None or chars_before is None
-                                             else chars_after - chars_before)},
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "chars_before": chars_before,
+            "chars_after": chars_after,
+            "still_running": not ok,
+            # Which reply was stopped. A reader comparing `chars_added_after_stop` across
+            # rungs needs to know whether this was a throwaway turn or the cell's own.
+            "own_generation": own_generation,
+            # Whether the scaffolding was removed again. Reported rather than asserted: a
+            # cleanup that failed leaves an extra turn in the thread, and every census
+            # after this point needs to be readable in that light.
+            "scaffold_removed": (None if removed is None else bool(removed.get("removed"))),
+            "scaffold_note": (None if removed is None else removed.get("reason")),
+            # A stop that worked leaves the text where it was, give or take the chunks
+            # already in flight. A large jump means the stream ran on.
+            "chars_added_after_stop": (
+                None if chars_after is None or chars_before is None else chars_after - chars_before
+            ),
+        },
         timings = {"stop_ms": None if stopped_ms is None else round(stopped_ms, 1)},
-        reason = None if ok else
-        f"the run was still going {SETTLE_TIMEOUT_MS}ms after stop was pressed")
+        reason = None
+        if ok
+        else f"the run was still going {SETTLE_TIMEOUT_MS}ms after stop was pressed",
+    )
 
 
 # ── 6. settings ─────────────────────────────────────────────────────
+
 
 @register_action(name = "settings", default_budget_ms = 12000)
 def settings(ctx: ActionContext) -> ActionResult:
@@ -446,7 +492,9 @@ def settings(ctx: ActionContext) -> ActionResult:
     if opened_ms is None:
         return not_run("the settings dialog never appeared")
 
-    scrolled = _ev(ctx, """
+    scrolled = _ev(
+        ctx,
+        """
       async () => {
         const D = window.__sb.dom;
         const el = D.settingsScroller();
@@ -461,7 +509,8 @@ def settings(ctx: ActionContext) -> ActionResult:
         return { ran: true, commandedPx: Math.round(bottom), landedAt: Math.round(landed),
                  ms: Math.round((performance.now() - started) * 10) / 10 };
       }
-    """)
+    """,
+    )
 
     close_started = time.monotonic()
     ctx.page.keyboard.press("Escape")
@@ -473,21 +522,34 @@ def settings(ctx: ActionContext) -> ActionResult:
             break
         ctx.page.wait_for_timeout(50)
 
-    scroll_ok = bool(scrolled and scrolled.get("ran") and
-                     (scrolled.get("commandedPx", 0) == 0 or
-                      scrolled.get("landedAt", 0) >= 0.9 * scrolled.get("commandedPx", 1)))
+    scroll_ok = bool(
+        scrolled
+        and scrolled.get("ran")
+        and (
+            scrolled.get("commandedPx", 0) == 0
+            or scrolled.get("landedAt", 0) >= 0.9 * scrolled.get("commandedPx", 1)
+        )
+    )
     ok = closed_ms is not None and scroll_ok
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"opened": True, "closed": closed_ms is not None,
-                  "scroll": scrolled if isinstance(scrolled, dict) else None},
-        timings = {"open_ms": round(opened_ms, 1),
-                   "close_ms": None if closed_ms is None else round(closed_ms, 1),
-                   "scroll_ms": (scrolled or {}).get("ms")},
-        reason = None if ok else "the dialog did not close, or its body did not scroll")
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "opened": True,
+            "closed": closed_ms is not None,
+            "scroll": scrolled if isinstance(scrolled, dict) else None,
+        },
+        timings = {
+            "open_ms": round(opened_ms, 1),
+            "close_ms": None if closed_ms is None else round(closed_ms, 1),
+            "scroll_ms": (scrolled or {}).get("ms"),
+        },
+        reason = None if ok else "the dialog did not close, or its body did not scroll",
+    )
 
 
 # ── 7. model change ─────────────────────────────────────────────────
+
 
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
@@ -518,7 +580,9 @@ def model_change(ctx: ActionContext) -> ActionResult:
         return not_run("the model picker never opened")
     options = _ev(ctx, "() => window.__sb.dom.modelOptions().map(b => (b.textContent||'').trim())")
     select_started = time.monotonic()
-    picked = _ev(ctx, """
+    picked = _ev(
+        ctx,
+        """
       (name) => {
         const opts = window.__sb.dom.modelOptions();
         const target = opts.find(b => (b.textContent || '').trim() === name) || opts[0];
@@ -526,22 +590,32 @@ def model_change(ctx: ActionContext) -> ActionResult:
         target.click();
         return (target.textContent || '').trim();
       }
-    """, ctx.args.get("model_name", ""))
+    """,
+        ctx.args.get("model_name", ""),
+    )
     ctx.page.wait_for_timeout(300)
     select_ms = (time.monotonic() - select_started) * 1000
     after = _ev(ctx, "() => window.__sb.dom.currentModelLabel()")
     closed = not _ev(ctx, "() => Boolean(window.__sb.dom.modelMenu())")
     ok = picked is not None and closed
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"options_offered": len(options or []), "picked": picked,
-                  "label_before": before, "label_after": after, "menu_closed": closed,
-                  "selector_confidence": "low: the option rows carry no stable attribute"},
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "options_offered": len(options or []),
+            "picked": picked,
+            "label_before": before,
+            "label_after": after,
+            "menu_closed": closed,
+            "selector_confidence": "low: the option rows carry no stable attribute",
+        },
         timings = {"open_ms": round(opened_ms, 1), "select_ms": round(select_ms, 1)},
-        reason = None if ok else "no option could be selected, or the menu stayed open")
+        reason = None if ok else "no option could be selected, or the menu stayed open",
+    )
 
 
 # ── 8. composer lengths, then send ──────────────────────────────────
+
 
 @register_action(name = "composer_fill", default_budget_ms = 10000)
 def composer_fill(ctx: ActionContext) -> ActionResult:
@@ -559,7 +633,9 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
     observed: dict = {}
     for n in lengths:
         text = ("studiobench composer probe " * ((n // 27) + 1))[:n]
-        got = _ev(ctx, """
+        got = _ev(
+            ctx,
+            """
           async ([sel, text]) => {
             const el = document.querySelector(sel);
             if (!el) return null;
@@ -576,7 +652,9 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
                      runtimeLength: (window.__sb.dom.composerText() || "").length,
                      rows: Math.round(el.getBoundingClientRect().height) };
           }
-        """, [selector, text])
+        """,
+            [selector, text],
+        )
         if not isinstance(got, dict) or got.get("ms") is None:
             return not_run(f"the composer did not accept {n} characters")
         timings[f"fill_{n}_ms"] = got["ms"]
@@ -593,13 +671,16 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
         ctx.page.fill(selector, "")
     ok = all(observed.get(f"length_{n}") == n for n in lengths)
     return ActionResult(
-        ran = True, expect_ok = ok, expect = {**observed, "sent": sent,
-                                              "lengths_requested": list(lengths)},
+        ran = True,
+        expect_ok = ok,
+        expect = {**observed, "sent": sent, "lengths_requested": list(lengths)},
         timings = timings,
-        reason = None if ok else "the composer did not hold every length it was given")
+        reason = None if ok else "the composer did not hold every length it was given",
+    )
 
 
 # ── 9. copy markdown ────────────────────────────────────────────────
+
 
 @register_action(name = "copy_markdown", default_budget_ms = 6000)
 def copy_markdown(ctx: ActionContext) -> ActionResult:
@@ -616,14 +697,17 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     }""")
     ctx.page.wait_for_timeout(150)
     started = time.monotonic()
-    ok_click = _ev(ctx, """
+    ok_click = _ev(
+        ctx,
+        """
       () => {
         const b = window.__sb.dom.actionButton("Copy");
         if (!b) return false;
         b.click();
         return true;
       }
-    """)
+    """,
+    )
     if not ok_click:
         return not_run("no Copy button on the last assistant message")
     ctx.page.wait_for_timeout(200)
@@ -635,24 +719,29 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     reason = None
     try:
         clip = ctx.page.evaluate("async () => await navigator.clipboard.readText()")
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         reason = f"the clipboard could not be read back: {type(exc).__name__}"
     chars = len(clip) if isinstance(clip, str) else None
     ok = chars is not None and chars > 0
     return ActionResult(
-        ran = True, expect_ok = ok if reason is None else False,
+        ran = True,
+        expect_ok = ok if reason is None else False,
         expect = {"clipboard_chars": chars, "clipboard_readable": reason is None},
         timings = {"copy_ms": round(elapsed, 1)},
-        reason = reason or (None if ok else "the clipboard was empty after Copy"))
+        reason = reason or (None if ok else "the clipboard was empty after Copy"),
+    )
 
 
 # ── 10, 11. selection ───────────────────────────────────────────────
+
 
 @register_action(name = "select_text", default_budget_ms = 6000)
 def select_text(ctx: ActionContext) -> ActionResult:
     """Select a range inside the last assistant message. Selection over a large thread forces the
     engine to walk and paint selection geometry across whatever is mounted."""
-    raw = _ev(ctx, """
+    raw = _ev(
+        ctx,
+        """
       async () => {
         const m = window.__sb.dom.lastAssistantMessage();
         if (!m) return { ran: false, reason: "no assistant message" };
@@ -675,7 +764,8 @@ def select_text(ctx: ActionContext) -> ActionResult:
                  visibleChars: (m.innerText || "").length,
                  messageChars: (m.textContent || "").length };
       }
-    """)
+    """,
+    )
     err = _failed(raw)
     if err:
         return not_run(err)
@@ -692,12 +782,17 @@ def select_text(ctx: ActionContext) -> ActionResult:
     # message got selected; the fraction belongs in the evidence, not in the verdict.
     ok = raw["chars"] > 0
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"selected_chars": raw["chars"], "visible_chars": visible,
-                  "coverage": round(raw["chars"] / visible, 3) if visible else None,
-                  "message_chars_including_collapsed": raw["messageChars"]},
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "selected_chars": raw["chars"],
+            "visible_chars": visible,
+            "coverage": round(raw["chars"] / visible, 3) if visible else None,
+            "message_chars_including_collapsed": raw["messageChars"],
+        },
         timings = {"select_ms": raw["ms"]},
-        reason = None if ok else "the selection was empty")
+        reason = None if ok else "the selection was empty",
+    )
 
 
 @register_action(name = "select_all_copy", default_budget_ms = 10000)
@@ -709,7 +804,9 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
         if (v) v.focus({ preventScroll: true });
     }""")
     started = time.monotonic()
-    raw = _ev(ctx, """
+    raw = _ev(
+        ctx,
+        """
       async () => {
         const started = performance.now();
         const sel = window.getSelection();
@@ -722,7 +819,8 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
         const chars = sel.toString().length;
         return { selectMs: Math.round((performance.now() - started) * 10) / 10, chars };
       }
-    """)
+    """,
+    )
     err = _failed(raw)
     if err:
         return not_run(err)
@@ -733,14 +831,20 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     ctx.page.evaluate("() => window.getSelection().removeAllRanges()")
     ok = raw["chars"] > 0
     return ActionResult(
-        ran = True, expect_ok = ok,
+        ran = True,
+        expect_ok = ok,
         expect = {"selected_chars": raw["chars"]},
-        timings = {"select_all_ms": raw["selectMs"], "copy_ms": round(copy_ms, 1),
-                   "total_ms": round((time.monotonic() - started) * 1000, 1)},
-        reason = None if ok else "select-all selected nothing")
+        timings = {
+            "select_all_ms": raw["selectMs"],
+            "copy_ms": round(copy_ms, 1),
+            "total_ms": round((time.monotonic() - started) * 1000, 1),
+        },
+        reason = None if ok else "select-all selected nothing",
+    )
 
 
 # ── 12. image upload ────────────────────────────────────────────────
+
 
 @register_action(name = "send_turn", default_budget_ms = 10000)
 def send_turn(ctx: ActionContext) -> ActionResult:
@@ -778,8 +882,12 @@ def send_turn(ctx: ActionContext) -> ActionResult:
     unit = queue[index]
     cursor["i"] = index + 1
     pacer.reset()
-    pacer.load(unit["reasoning"], unit["content"], cadence = ctx.args.get("cadence", "field"),
-               tag = f"{ctx.args.get('cell_id', 'cell')}#turn{index + 1}")
+    pacer.load(
+        unit["reasoning"],
+        unit["content"],
+        cadence = ctx.args.get("cadence", "field"),
+        tag = f"{ctx.args.get('cell_id', 'cell')}#turn{index + 1}",
+    )
 
     selector = 'textarea[aria-label="Message input"]'
     if ctx.page.query_selector(selector) is None:
@@ -800,16 +908,26 @@ def send_turn(ctx: ActionContext) -> ActionResult:
     after = _ev(ctx, "() => window.__sb.dom.messageCount()")
     # A POSITIVE consequence: the turn actually started streaming AND the thread grew. A send that
     # silently failed leaves both unchanged and would otherwise read as an instant send.
-    ok = first_ms is not None and isinstance(after, int) and isinstance(before, int) \
+    ok = (
+        first_ms is not None
+        and isinstance(after, int)
+        and isinstance(before, int)
         and after > before
+    )
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"messages_before": before, "messages_after": after,
-                  "turn_index": index + 1, "queued_turns": len(queue),
-                  "streamed_chars": len(unit["reasoning"]) + len(unit["content"]),
-                  "unit_kind": unit.get("kind")},
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "messages_before": before,
+            "messages_after": after,
+            "turn_index": index + 1,
+            "queued_turns": len(queue),
+            "streamed_chars": len(unit["reasoning"]) + len(unit["content"]),
+            "unit_kind": unit.get("kind"),
+        },
         timings = {"to_first_token_ms": None if first_ms is None else round(first_ms, 1)},
-        reason = None if ok else "the send did not start a new streaming reply")
+        reason = None if ok else "the send did not start a new streaming reply",
+    )
 
 
 #: What the page can tell us when the attachments button cannot be found. Reads geometry, style,
@@ -872,7 +990,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     locator = ctx.page.locator('button[aria-label="Tools and attachments"]:visible').first
     try:
         plus = locator.element_handle(timeout = 2000)
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         plus = None
     if plus is None:
         # WHY, not just THAT. A bare "not visible" is the opaque zero of the action layer: it
@@ -882,15 +1000,20 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         # after a settings round trip and under a 20,000-character composer fill, so whatever
         # this is, it is none of those. Carrying the state into the row means the NEXT run
         # answers it instead of the next investigation.
-        return not_run("no visible attachments button on the composer: "
-                       + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {}))
-    before = _ev(ctx, "() => document.querySelectorAll('.aui-composer-attachment, "
-                      "[data-slot=\"composer-attachment\"]').length")
+        return not_run(
+            "no visible attachments button on the composer: "
+            + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
+        )
+    before = _ev(
+        ctx,
+        "() => document.querySelectorAll('.aui-composer-attachment, "
+        '[data-slot="composer-attachment"]\').length',
+    )
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         return not_run(f"the attachments button could not be clicked: {type(exc).__name__}")
     ctx.page.wait_for_timeout(200)
     try:
@@ -900,22 +1023,28 @@ def image_upload(ctx: ActionContext) -> ActionResult:
                 if (item) item.click();
             }""")
         fc.value.set_files(png)
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         ctx.page.keyboard.press("Escape")
         return not_run(f"the file chooser never opened: {type(exc).__name__}: {exc}")
     ctx.page.wait_for_timeout(800)
-    after = _ev(ctx, "() => document.querySelectorAll('.aui-composer-attachment, "
-                     "[data-slot=\"composer-attachment\"]').length")
+    after = _ev(
+        ctx,
+        "() => document.querySelectorAll('.aui-composer-attachment, "
+        '[data-slot="composer-attachment"]\').length',
+    )
     elapsed = (time.monotonic() - started) * 1000
     ok = after is not None and before is not None and after > before
     return ActionResult(
-        ran = True, expect_ok = ok,
+        ran = True,
+        expect_ok = ok,
         expect = {"attachments_before": before, "attachments_after": after},
         timings = {"upload_ms": round(elapsed, 1)},
-        reason = None if ok else "no attachment appeared in the composer after the file was set")
+        reason = None if ok else "no attachment appeared in the composer after the file was set",
+    )
 
 
 # ── 13. thread reopen ───────────────────────────────────────────────
+
 
 @register_action(name = "thread_reopen", default_budget_ms = 30000)
 def thread_reopen(ctx: ActionContext) -> ActionResult:
@@ -937,8 +1066,9 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     # label overlays the New chat button and intercepts the pointer, so the click retries until it
     # times out on a button that is visible, enabled and stable -- and the action then reports a
     # rebuild that never happened. `/chat?new=` is what the button itself does.
-    if not _click_or_navigate(ctx, 'button[aria-label="New chat"]',
-                              f"{ctx.args['base_url']}/chat?new=studiobench"):
+    if not _click_or_navigate(
+        ctx, 'button[aria-label="New chat"]', f"{ctx.args['base_url']}/chat?new=studiobench"
+    ):
         return not_run("the thread could not be left, by click or by navigation")
     # Unmount FIRST, or "already back" is indistinguishable from "never left".
     closed_ms = None
@@ -952,8 +1082,9 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         return not_run("the thread never unmounted, so the rebuild could not be timed")
 
     reopen_started = time.monotonic()
-    if not _click_or_navigate(ctx, f'[data-thread-id="{thread_id}"]',
-                              f"{ctx.args['base_url']}/chat?thread={thread_id}"):
+    if not _click_or_navigate(
+        ctx, f'[data-thread-id="{thread_id}"]', f"{ctx.args['base_url']}/chat?thread={thread_id}"
+    ):
         return not_run("the thread could not be reopened, by click or by navigation")
     reopen_ms = None
     deadline = reopen_started + 60
@@ -966,13 +1097,15 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     spans = _ev(ctx, "() => document.querySelectorAll('pre span').length")
     ok = reopen_ms is not None and after == before
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"messages_before": before, "messages_after": after,
-                  "highlight_spans_after": spans},
-        timings = {"close_ms": round(closed_ms, 1),
-                   "reopen_ms": None if reopen_ms is None else round(reopen_ms, 1)},
-        reason = None if ok else
-        f"the thread came back with {after} of {before} messages")
+        ran = True,
+        expect_ok = ok,
+        expect = {"messages_before": before, "messages_after": after, "highlight_spans_after": spans},
+        timings = {
+            "close_ms": round(closed_ms, 1),
+            "reopen_ms": None if reopen_ms is None else round(reopen_ms, 1),
+        },
+        reason = None if ok else f"the thread came back with {after} of {before} messages",
+    )
 
 
 def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> bool:
@@ -989,12 +1122,12 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> bool:
         try:
             handle.click(timeout = 2000)
             return True
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             ctx.log(f"    {selector} was not clickable; navigating instead")
     try:
         ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
         return True
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         ctx.log(f"    navigation to {url} failed: {type(exc).__name__}: {exc}")
         return False
 
@@ -1065,18 +1198,29 @@ def message_menu(ctx: ActionContext) -> ActionResult:
     # a menu that never rendered its items.
     ok = raw["openMs"] is not None and raw["closeMs"] is not None and raw["items"] > 0
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"items_while_open": raw["items"],
-                  # Radix puts the body on the modal layer while the menu is up, which is the
-                  # fan-out under suspicion. This proves the open really took that path.
-                  "body_pointer_events_open": raw["bodyPointerEvents"],
-                  "body_pointer_events_closed": raw["bodyPointerEventsAfterClose"]},
-        timings = {"open_ms": raw["openMs"], "close_ms": raw["closeMs"],
-                   "open_close_ms": (None if raw["openMs"] is None or raw["closeMs"] is None
-                                     else round(raw["openMs"] + raw["closeMs"], 1))},
-        reason = None if ok else
-        f"opened={raw['openMs'] is not None} closed={raw['closeMs'] is not None} "
-        f"items={raw['items']}")
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "items_while_open": raw["items"],
+            # Radix puts the body on the modal layer while the menu is up, which is the
+            # fan-out under suspicion. This proves the open really took that path.
+            "body_pointer_events_open": raw["bodyPointerEvents"],
+            "body_pointer_events_closed": raw["bodyPointerEventsAfterClose"],
+        },
+        timings = {
+            "open_ms": raw["openMs"],
+            "close_ms": raw["closeMs"],
+            "open_close_ms": (
+                None
+                if raw["openMs"] is None or raw["closeMs"] is None
+                else round(raw["openMs"] + raw["closeMs"], 1)
+            ),
+        },
+        reason = None
+        if ok
+        else f"opened={raw['openMs'] is not None} closed={raw['closeMs'] is not None} "
+        f"items={raw['items']}",
+    )
 
 
 # ── 15. delete ──────────────────────────────────────────────────────
@@ -1119,9 +1263,13 @@ def delete_message(ctx: ActionContext) -> ActionResult:
     # different bug and must not read as a successful delete.
     ok = raw["ms"] is not None and raw["after"] < raw["before"]
     return ActionResult(
-        ran = True, expect_ok = ok,
-        expect = {"messages_before": raw["before"], "messages_after": raw["after"],
-                  "dropped": raw["before"] - raw["after"]},
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            "messages_before": raw["before"],
+            "messages_after": raw["after"],
+            "dropped": raw["before"] - raw["after"],
+        },
         timings = {"delete_ms": raw["ms"]},
-        reason = None if ok else
-        f"the message count went {raw['before']} -> {raw['after']}")
+        reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",
+    )

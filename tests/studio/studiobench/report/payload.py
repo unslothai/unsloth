@@ -82,10 +82,15 @@ class PayloadWriter:
     which is not a case worth slowing the benchmark down for.
     """
 
-    def __init__(self, path: str | Path, *, fsync: bool = False) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        fsync: bool = False,
+    ) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = self.path.open("a", encoding="utf-8")
+        self.path.parent.mkdir(parents = True, exist_ok = True)
+        self._fh = self.path.open("a", encoding = "utf-8")
         self._fsync = bool(fsync)
         self._started = time.monotonic()
         self.records_written = 0
@@ -98,7 +103,7 @@ class PayloadWriter:
             "at_ms": round((time.monotonic() - self._started) * 1000.0, 3),
             **{k: encode(v) for k, v in fields.items()},
         }
-        self._fh.write(json.dumps(record, separators=(",", ":"), sort_keys=False) + "\n")
+        self._fh.write(json.dumps(record, separators = (",", ":"), sort_keys = False) + "\n")
         self._fh.flush()
         if self._fsync:
             os.fsync(self._fh.fileno())
@@ -120,9 +125,9 @@ class PayloadWriter:
             try:
                 self.write(
                     "crash",
-                    where="driver",
-                    error_type=getattr(exc_type, "__name__", str(exc_type)),
-                    error=str(exc),
+                    where = "driver",
+                    error_type = getattr(exc_type, "__name__", str(exc_type)),
+                    error = str(exc),
                 )
             except Exception:
                 pass
@@ -142,7 +147,7 @@ def read_records(path: str | Path) -> tuple[list[dict[str, Any]], int]:
     file_path = Path(path)
     if not file_path.exists():
         return records, discarded
-    with file_path.open("r", encoding="utf-8") as handle:
+    with file_path.open("r", encoding = "utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
@@ -154,11 +159,7 @@ def read_records(path: str | Path) -> tuple[list[dict[str, Any]], int]:
     return records, discarded
 
 
-def assemble(
-    path: str | Path,
-    *,
-    validate: bool = True,
-) -> dict[str, Any]:
+def assemble(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     """Turn a JSONL stream into one payload dict, complete or not.
 
     `excluded_cells` is materialised here and is always a list, never absent and never null,
@@ -225,11 +226,7 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
 }
 
 
-def assemble_rows(
-    path: str | Path,
-    *,
-    validate: bool = True,
-) -> dict[str, Any]:
+def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     """Assemble a payload from the HARNESS layer's row stream (`row_type`, not `kind`).
 
     Two writers exist on purpose and they are not redundant. `PayloadWriter` is this layer's own
@@ -304,7 +301,9 @@ def excluded_from_rows(records: Sequence[Mapping[str, Any]]) -> list[dict[str, A
                     "cell_id": row.get("cell_id", "unknown"),
                     "reason": "rung_incomplete",
                     "count": 1,
-                    "detail": str(row.get("failure_mode") or row.get("reason") or "cell did not complete"),
+                    "detail": str(
+                        row.get("failure_mode") or row.get("reason") or "cell did not complete"
+                    ),
                 }
             )
         elif row_type == "gate" and row.get("passed") is False:

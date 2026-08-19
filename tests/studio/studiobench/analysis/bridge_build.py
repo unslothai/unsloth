@@ -41,7 +41,7 @@ DEFAULT_BRIDGE_RUNGS: tuple[str, ...] = ("bridge_s", "bridge_m", "bridge_l")
 class BridgeArm:
     """One build under test: how to reach it and what it is."""
 
-    build: str                 # "dev" or "prod"
+    build: str  # "dev" or "prod"
     cdp: Any
     page: Any
     react_version: str = ""
@@ -346,7 +346,12 @@ def assert_attribution_build(page: Any) -> dict[str, Any]:
     return {"attribution_build_verified": True}
 
 
-def verify_build_provenance(page: Any, base_url: str, *, require_attribution: bool = True) -> dict[str, Any]:
+def verify_build_provenance(
+    page: Any,
+    base_url: str,
+    *,
+    require_attribution: bool = True,
+) -> dict[str, Any]:
     """All the provenance gates at once, for a Studio that is up and rendering.
 
     Call this once per cell before any measurement. Every failure raises, and

@@ -97,7 +97,7 @@ class Gate:
 
 @dataclass
 class SelfCheckReport:
-    gates: list[Gate] = field(default_factory=list)
+    gates: list[Gate] = field(default_factory = list)
 
     @property
     def ok(self) -> bool:
@@ -147,22 +147,22 @@ def evaluate_stall_gate(
 
     if observed_ms is None:
         return Gate(
-            name="injected_stall_seen",
-            passed=False,
-            measured=Measure.failed("ms", "the frame recorder reported no stall at all"),
-            expected=f"{injected_ms:g} +/- {tolerance_ms:g} ms",
-            detail=(
+            name = "injected_stall_seen",
+            passed = False,
+            measured = Measure.failed("ms", "the frame recorder reported no stall at all"),
+            expected = f"{injected_ms:g} +/- {tolerance_ms:g} ms",
+            detail = (
                 "a stall this harness injected itself was not observed. The recorder is not "
                 "watching the window it thinks it is"
             ),
         )
     error = abs(float(observed_ms) - injected_ms)
     return Gate(
-        name="injected_stall_seen",
-        passed=error <= tolerance_ms,
-        measured=Measure.read(float(observed_ms), "ms"),
-        expected=f"{injected_ms:g} +/- {tolerance_ms:g} ms",
-        detail=(
+        name = "injected_stall_seen",
+        passed = error <= tolerance_ms,
+        measured = Measure.read(float(observed_ms), "ms"),
+        expected = f"{injected_ms:g} +/- {tolerance_ms:g} ms",
+        detail = (
             f"observed longest frame is {error:.1f} ms from the injected stall"
             + ("" if error <= tolerance_ms else "; the recorder is mis-attributing samples")
         ),
@@ -180,22 +180,22 @@ def evaluate_input_delay_gate(
 
     if baseline_p95_ms is None or delayed_p95_ms is None:
         return Gate(
-            name="input_delay_seen",
-            passed=False,
-            measured=Measure.failed("ms", "one of the two keystroke measurements is missing"),
-            expected=f">= {min_shift_ms:g} ms shift for a {injected_ms:g} ms delay",
-            detail=(
+            name = "input_delay_seen",
+            passed = False,
+            measured = Measure.failed("ms", "one of the two keystroke measurements is missing"),
+            expected = f">= {min_shift_ms:g} ms shift for a {injected_ms:g} ms delay",
+            detail = (
                 "without both readings there is no shift to check, and an input path that is not "
                 "verified is an input path that may be measuring the DOM setter"
             ),
         )
     shift = float(delayed_p95_ms) - float(baseline_p95_ms)
     return Gate(
-        name="input_delay_seen",
-        passed=shift >= min_shift_ms,
-        measured=Measure.read(shift, "ms"),
-        expected=f">= {min_shift_ms:g} ms shift for a {injected_ms:g} ms delay",
-        detail=(
+        name = "input_delay_seen",
+        passed = shift >= min_shift_ms,
+        measured = Measure.read(shift, "ms"),
+        expected = f">= {min_shift_ms:g} ms shift for a {injected_ms:g} ms delay",
+        detail = (
             f"keystroke p95 moved {shift:.1f} ms"
             + (
                 ""
@@ -217,19 +217,19 @@ def evaluate_scene_contrast_gate(
 
     if heavy_ms is None or trivial_ms is None or trivial_ms <= 0:
         return Gate(
-            name="scene_contrast",
-            passed=False,
-            measured=Measure.failed("%", "one of the two contrast scenes produced no reading"),
-            expected=f"> {min_pct:g}% difference",
-            detail="a contrast check with a missing side proves nothing",
+            name = "scene_contrast",
+            passed = False,
+            measured = Measure.failed("%", "one of the two contrast scenes produced no reading"),
+            expected = f"> {min_pct:g}% difference",
+            detail = "a contrast check with a missing side proves nothing",
         )
     contrast = (float(heavy_ms) - float(trivial_ms)) / float(trivial_ms) * 100.0
     return Gate(
-        name="scene_contrast",
-        passed=contrast > min_pct,
-        measured=Measure.read(contrast, "%"),
-        expected=f"> {min_pct:g}% difference",
-        detail=(
+        name = "scene_contrast",
+        passed = contrast > min_pct,
+        measured = Measure.read(contrast, "%"),
+        expected = f"> {min_pct:g}% difference",
+        detail = (
             f"the heavy scene is {contrast:.1f}% slower than the trivial one"
             if contrast > min_pct
             else (
@@ -245,23 +245,23 @@ def evaluate_longtask_support(supported_entry_types: Sequence[str] | None) -> Ga
 
     if supported_entry_types is None:
         return Gate(
-            name="longtask_support",
-            passed=False,
-            measured=Measure.failed("bool", "supportedEntryTypes was not readable"),
-            expected="supportedEntryTypes readable",
-            detail=(
+            name = "longtask_support",
+            passed = False,
+            measured = Measure.failed("bool", "supportedEntryTypes was not readable"),
+            expected = "supportedEntryTypes readable",
+            detail = (
                 "the support list itself could not be read, so support cannot be established by "
                 "the only method that works"
             ),
-            fatal=False,
+            fatal = False,
         )
     supported = "longtask" in list(supported_entry_types)
     return Gate(
-        name="longtask_support",
-        passed=True,  # not supporting longtask is a fact about the engine, not a failure
-        measured=Measure.read(1.0 if supported else 0.0, "bool"),
-        expected="read from supportedEntryTypes",
-        detail=(
+        name = "longtask_support",
+        passed = True,  # not supporting longtask is a fact about the engine, not a failure
+        measured = Measure.read(1.0 if supported else 0.0, "bool"),
+        expected = "read from supportedEntryTypes",
+        detail = (
             "longtask entries are available on this engine"
             if supported
             else (
@@ -270,7 +270,7 @@ def evaluate_longtask_support(supported_entry_types: Sequence[str] | None) -> Ga
                 "never fired, which is why support is read from the list and not from a try/catch"
             )
         ),
-        fatal=False,
+        fatal = False,
     )
 
 
@@ -284,20 +284,20 @@ def evaluate_clock_pair(
 
     if page_ms is None or driver_ms is None or driver_ms <= 0:
         return Gate(
-            name="clock_pair_control",
-            passed=False,
-            measured=Measure.failed("ratio", "a clock pair reading is missing"),
-            expected=f"1.0 +/- {tolerance_pct:g}%",
-            detail="without the control ratio there is nothing holding the ladder flat",
+            name = "clock_pair_control",
+            passed = False,
+            measured = Measure.failed("ratio", "a clock pair reading is missing"),
+            expected = f"1.0 +/- {tolerance_pct:g}%",
+            detail = "without the control ratio there is nothing holding the ladder flat",
         )
     ratio = float(page_ms) / float(driver_ms)
     drift_pct = abs(ratio - 1.0) * 100.0
     return Gate(
-        name="clock_pair_control",
-        passed=drift_pct <= tolerance_pct,
-        measured=Measure.read(ratio, "ratio"),
-        expected=f"1.0 +/- {tolerance_pct:g}%",
-        detail=(
+        name = "clock_pair_control",
+        passed = drift_pct <= tolerance_pct,
+        measured = Measure.read(ratio, "ratio"),
+        expected = f"1.0 +/- {tolerance_pct:g}%",
+        detail = (
             f"the control ratio is {drift_pct:.2f}% from unity"
             + (
                 ""
@@ -324,10 +324,10 @@ class TriClockVerdict:
         if self.agreed:
             return None
         return ExcludedCell(
-            cell_id=cell_id,
-            reason="clock_disagreement",
-            count=1,
-            detail=self.reason,
+            cell_id = cell_id,
+            reason = "clock_disagreement",
+            count = 1,
+            detail = self.reason,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -372,22 +372,22 @@ def evaluate_tri_clock(
 
     if wall_ms <= 0:
         return TriClockVerdict(
-            agreed=False,
-            wall_ms=float(wall_ms),
-            spans=spans,
-            worst_clock=None,
-            worst_disagreement_pct=None,
-            reason="the window has no positive wall duration, so no clock can be checked",
+            agreed = False,
+            wall_ms = float(wall_ms),
+            spans = spans,
+            worst_clock = None,
+            worst_disagreement_pct = None,
+            reason = "the window has no positive wall duration, so no clock can be checked",
         )
 
     if raf_frames is not None and raf_frames <= 0:
         return TriClockVerdict(
-            agreed=False,
-            wall_ms=float(wall_ms),
-            spans=spans,
-            worst_clock="raf",
-            worst_disagreement_pct=100.0,
-            reason=(
+            agreed = False,
+            wall_ms = float(wall_ms),
+            spans = spans,
+            worst_clock = "raf",
+            worst_disagreement_pct = 100.0,
+            reason = (
                 "the rAF loop produced no frames at all. That is not a smooth window, it is an "
                 "unmeasured one: rAF stops being scheduled when the compositor decides nothing "
                 "is visible"
@@ -402,27 +402,27 @@ def evaluate_tri_clock(
 
     if len(disagreements) < 2:
         return TriClockVerdict(
-            agreed=False,
-            wall_ms=float(wall_ms),
-            spans=spans,
-            worst_clock=None,
-            worst_disagreement_pct=None,
-            reason=(
+            agreed = False,
+            wall_ms = float(wall_ms),
+            spans = spans,
+            worst_clock = None,
+            worst_disagreement_pct = None,
+            reason = (
                 f"only {len(disagreements)} of three clocks reported. Agreement between fewer "
                 "than two clocks is not agreement"
             ),
         )
 
-    worst_clock = max(disagreements, key=lambda k: disagreements[k])
+    worst_clock = max(disagreements, key = lambda k: disagreements[k])
     worst = disagreements[worst_clock]
     agreed = worst <= tolerance_pct
     return TriClockVerdict(
-        agreed=agreed,
-        wall_ms=float(wall_ms),
-        spans=spans,
-        worst_clock=worst_clock,
-        worst_disagreement_pct=worst,
-        reason=(
+        agreed = agreed,
+        wall_ms = float(wall_ms),
+        spans = spans,
+        worst_clock = worst_clock,
+        worst_disagreement_pct = worst,
+        reason = (
             f"all reporting clocks are within {tolerance_pct:g}% of wall time "
             f"(worst: {worst_clock} at {worst:.1f}%)"
             if agreed
@@ -534,14 +534,12 @@ def run_gates(
     """
 
     report = SelfCheckReport()
-    report.gates.append(
-        evaluate_stall_gate(stall_observed_ms, injected_ms=injected_stall_ms)
-    )
+    report.gates.append(evaluate_stall_gate(stall_observed_ms, injected_ms = injected_stall_ms))
     report.gates.append(
         evaluate_input_delay_gate(
             keystroke_p95_baseline_ms,
             keystroke_p95_delayed_ms,
-            injected_ms=injected_input_delay_ms,
+            injected_ms = injected_input_delay_ms,
         )
     )
     report.gates.append(evaluate_scene_contrast_gate(heavy_scene_ms, trivial_scene_ms))

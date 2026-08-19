@@ -42,8 +42,12 @@ NOT_MEASURED = "not_measured"
 # specific mechanical meaning, so reporting the ratio hands over a hypothesis
 # rather than a mystery.
 _KNOWN_RATIOS: dict[Fraction, str] = {
-    Fraction(2, 1): "exactly 2x predicted: React StrictMode double invoke, or the render ran twice per commit",
-    Fraction(1, 2): "exactly half predicted: the structural count is double counting, or only one of two passes is instrumented",
+    Fraction(
+        2, 1
+    ): "exactly 2x predicted: React StrictMode double invoke, or the render ran twice per commit",
+    Fraction(
+        1, 2
+    ): "exactly half predicted: the structural count is double counting, or only one of two passes is instrumented",
     Fraction(3, 1): "exactly 3x predicted: three passes over the same structure",
 }
 
@@ -179,9 +183,7 @@ def _ratio_note(measured: int, predicted: int) -> str | None:
 
 
 def check(
-    frame: str,
-    exact_call_count: int | None,
-    quantities: Sequence[StructuralQuantity],
+    frame: str, exact_call_count: int | None, quantities: Sequence[StructuralQuantity]
 ) -> OracleVerdict:
     """Compare one frame's exact count against every candidate structural quantity.
 
@@ -249,8 +251,7 @@ def check(
 
 
 def check_all(
-    frames: Sequence[tuple[str, int | None]],
-    quantities: Sequence[StructuralQuantity],
+    frames: Sequence[tuple[str, int | None]], quantities: Sequence[StructuralQuantity]
 ) -> dict[str, Any]:
     verdicts = [check(name, count, quantities) for name, count in frames]
     namings = [v for v in verdicts if v.is_naming]
@@ -264,8 +265,7 @@ def check_all(
 
 
 def predicted_next_rung(
-    quantity_fn: Callable[[int], StructuralQuantity],
-    next_structural_input: int,
+    quantity_fn: Callable[[int], StructuralQuantity], next_structural_input: int
 ) -> int:
     """The count a naming PREDICTS at the next rung.
 
@@ -323,7 +323,9 @@ PAGE_COUNTER_CONTRACT: dict[str, dict[str, str]] = {
 }
 
 
-def cumulative_reparse_chars(final_content_chars: int, deltas: int, source: str) -> StructuralQuantity:
+def cumulative_reparse_chars(
+    final_content_chars: int, deltas: int, source: str
+) -> StructuralQuantity:
     """M2 under the CUMULATIVE hypothesis: the whole buffer is re-parsed per delta.
 
     If `parseAssistantContent(cumulativeText)` runs on every delta, the i-th
@@ -399,6 +401,7 @@ def reparse_regime(
     out["ratio_to_linear"] = round(r_lin, 3)
     out["ratio_to_quadratic"] = round(r_quad, 3)
     import math
+
     if abs(math.log(r_quad)) < abs(math.log(r_lin)):
         out["regime"] = REGIME_QUADRATIC
         out["reason"] = (
@@ -415,9 +418,7 @@ def reparse_regime(
 
 
 def forced_layout_per_callback(
-    observer_callbacks: int,
-    forced_layouts: int,
-    source: str,
+    observer_callbacks: int, forced_layouts: int, source: str
 ) -> OracleVerdict:
     """M3's exact oracle: one forced layout per observer callback.
 
@@ -431,16 +432,20 @@ def forced_layout_per_callback(
     return check(
         "autoscroll MutationObserver forced layout",
         forced_layouts,
-        [StructuralQuantity(
-            name = "observer_callbacks",
-            value = observer_callbacks,
-            source = source,
-            components = {"observer_callbacks": observer_callbacks},
-        )],
+        [
+            StructuralQuantity(
+                name = "observer_callbacks",
+                value = observer_callbacks,
+                source = source,
+                components = {"observer_callbacks": observer_callbacks},
+            )
+        ],
     )
 
 
-def forced_layout_cost_quantity(forced_layouts: int, thread_nodes: int, source: str) -> StructuralQuantity:
+def forced_layout_cost_quantity(
+    forced_layouts: int, thread_nodes: int, source: str
+) -> StructuralQuantity:
     """M3's cost shape: each forced layout is proportional to the whole thread.
 
     The mechanism is invisible to a React Profiler, to markdown timing and to a
@@ -470,7 +475,9 @@ def evaluate_page_counters(counters: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(m2, dict):
         out["m2"] = {"skipped": True, "reason": "no m2_reparse counter block was emitted"}
     else:
-        missing = [k for k in ("chars_rescanned", "final_content_chars", "deltas_received") if k not in m2]
+        missing = [
+            k for k in ("chars_rescanned", "final_content_chars", "deltas_received") if k not in m2
+        ]
         if missing:
             out["m2"] = {"skipped": True, "reason": f"m2_reparse is missing {missing}"}
         else:
@@ -489,12 +496,16 @@ def evaluate_page_counters(counters: dict[str, Any]) -> dict[str, Any]:
             out["m3"] = {"skipped": True, "reason": f"m3_forced_layout is missing {missing}"}
         else:
             verdict = forced_layout_per_callback(
-                int(m3["observer_callbacks"]), int(m3["forced_layouts"]), source = "page counters",
+                int(m3["observer_callbacks"]),
+                int(m3["forced_layouts"]),
+                source = "page counters",
             )
             block = verdict.as_row()
             if "thread_nodes" in m3:
                 block["cost_quantity"] = forced_layout_cost_quantity(
-                    int(m3["forced_layouts"]), int(m3["thread_nodes"]), source = "page counters",
+                    int(m3["forced_layouts"]),
+                    int(m3["thread_nodes"]),
+                    source = "page counters",
                 ).describe()
             out["m3"] = block
     return out

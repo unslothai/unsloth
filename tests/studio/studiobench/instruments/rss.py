@@ -31,8 +31,8 @@ from . import register_instrument
 
 try:
     import psutil
-except ImportError:                                                 # pragma: no cover
-    psutil = None                                                   # type: ignore[assignment]
+except ImportError:  # pragma: no cover
+    psutil = None  # type: ignore[assignment]
 
 SAMPLE_MS = 500
 
@@ -42,7 +42,7 @@ def snapshot_children(root_pid: int) -> dict:
         return {}
     try:
         return {p.pid: p for p in psutil.Process(root_pid).children(recursive = True)}
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -57,7 +57,7 @@ def new_roots(root_pid: int, before: dict) -> list:
         try:
             if proc.ppid() not in new:
                 roots.append(proc)
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             continue
     return roots
 
@@ -70,13 +70,13 @@ def tree_rss_mb(roots: list) -> Optional[float]:
     for root in roots:
         try:
             procs = [root, *root.children(recursive = True)]
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             continue
         for proc in procs:
             try:
                 total += proc.memory_info().rss
                 read_any = True
-            except Exception:                                       # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 continue
     return round(total / 1048576, 1) if read_any else None
 
@@ -86,7 +86,11 @@ class RssSampler:
     whole run and cannot sample anything itself. Touches no Playwright object, only psutil, so it
     is safe alongside the sync API's greenlet."""
 
-    def __init__(self, roots: list, period_ms: int = SAMPLE_MS) -> None:
+    def __init__(
+        self,
+        roots: list,
+        period_ms: int = SAMPLE_MS,
+    ) -> None:
         self.roots = roots
         self.period_s = max(0.05, period_ms / 1000)
         self.samples: list[tuple[float, Optional[float]]] = []
@@ -180,8 +184,11 @@ class RssInstrument(Instrument):
 
     def end_cell(self, cell: Cell) -> Optional[dict]:
         if self.sampler is None or self.sampler.reason:
-            return {"rss_growth_mb": None, "rss_attempted": False,
-                    "reason": (self.sampler.reason if self.sampler else "no sampler")}
+            return {
+                "rss_growth_mb": None,
+                "rss_attempted": False,
+                "reason": (self.sampler.reason if self.sampler else "no sampler"),
+            }
         cell_samples = self.sampler.between(self._cell_start_ms or 0.0, self._now_ms())
         growth = None
         if len(cell_samples) >= 2:

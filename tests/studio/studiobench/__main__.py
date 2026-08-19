@@ -47,20 +47,26 @@ def _log(msg: str = "") -> None:
 
 # ── doctor ──────────────────────────────────────────────────────────
 
+
 def doctor(args) -> int:
     """What is here, what is missing, and what each missing thing costs. Never raises."""
     ok = True
     _log(f"studiobench {TOOL_VERSION}")
-    _log(f"  python      {sys.version.split()[0]} on {platform.system()} "
-         f"{platform.machine()}")
+    _log(f"  python      {sys.version.split()[0]} on {platform.system()} " f"{platform.machine()}")
 
-    def check(label: str, fn, *, fatal: bool = True, cost: str = "") -> bool:
+    def check(
+        label: str,
+        fn,
+        *,
+        fatal: bool = True,
+        cost: str = "",
+    ) -> bool:
         nonlocal ok
         try:
             detail = fn()
             _log(f"  [ok]   {label}: {detail}")
             return True
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             mark = "FAIL" if fatal else "warn"
             _log(f"  [{mark}] {label}: {type(exc).__name__}: {exc}")
             if cost:
@@ -71,24 +77,28 @@ def doctor(args) -> int:
 
     def _playwright():
         import subprocess
-        import playwright                                           # noqa: F401
+        import playwright  # noqa: F401
+
         # In a SUBPROCESS. Starting and stopping Playwright's node driver just to read the engine
         # paths leaves asyncio tearing down a cancelled task, and it prints a TargetClosedError
         # traceback to stderr after the check has already passed. A doctor that prints a
         # traceback next to `[ok]` is a doctor nobody believes.
-        probe = ("from playwright.sync_api import sync_playwright\n"
-                 "with sync_playwright() as pw:\n"
-                 "    import pathlib\n"
-                 "    out = []\n"
-                 "    for n in ('chromium', 'webkit', 'firefox'):\n"
-                 "        try:\n"
-                 "            p = getattr(pw, n).executable_path\n"
-                 "            out.append(n if pathlib.Path(p).exists() else n + ' (not installed)')\n"
-                 "        except Exception:\n"
-                 "            out.append(n + ' (unavailable)')\n"
-                 "    print(', '.join(out))\n")
-        got = subprocess.run([sys.executable, "-c", probe], capture_output = True, text = True,
-                             timeout = 120)
+        probe = (
+            "from playwright.sync_api import sync_playwright\n"
+            "with sync_playwright() as pw:\n"
+            "    import pathlib\n"
+            "    out = []\n"
+            "    for n in ('chromium', 'webkit', 'firefox'):\n"
+            "        try:\n"
+            "            p = getattr(pw, n).executable_path\n"
+            "            out.append(n if pathlib.Path(p).exists() else n + ' (not installed)')\n"
+            "        except Exception:\n"
+            "            out.append(n + ' (unavailable)')\n"
+            "    print(', '.join(out))\n"
+        )
+        got = subprocess.run(
+            [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 120
+        )
         if got.returncode != 0:
             raise RuntimeError((got.stderr or "the engine probe failed").strip().splitlines()[-1])
         return got.stdout.strip()
@@ -99,47 +109,59 @@ def doctor(args) -> int:
 
     def _corpus():
         from .fixture.corpus import Corpus, RUNGS, plan_rung
+
         c = Corpus.load()
         lines = []
         for rung in RUNGS:
             p = plan_rung(c, rung)
             lines.append(f"{rung}={p.total_chars:,}c")
-        return (f"corpus_hash {c.corpus_hash[:16]}, {len(c.manifest['units'])} units "
-                f"({' '.join(lines)})")
+        return (
+            f"corpus_hash {c.corpus_hash[:16]}, {len(c.manifest['units'])} units "
+            f"({' '.join(lines)})"
+        )
 
     def _registries():
         from .instruments import available, import_errors
         from .scene import action_names
+
         errs = import_errors()
         note = "" if not errs else f"; {len(errs)} module(s) failed to import: {list(errs)}"
-        return (f"{len(action_names())} actions, "
-                f"instruments {[n for n, _ in available()]}{note}")
+        return f"{len(action_names())} actions, " f"instruments {[n for n, _ in available()]}{note}"
 
     def _engine():
         from .runtime.browser import default_engine
         name, _, note = default_engine()
         return f"{name} -- {note}"
 
-    check("playwright", _playwright,
-          cost = "no browser can be driven; install with `pip install playwright` then "
-                 "`playwright install`")
-    check("psutil", _psutil, fatal = False,
-          cost = "RSS is reported as null with a reason instead of a number; everything else runs")
-    check("frozen corpus", _corpus,
-          cost = "the corpus cannot be loaded, so no cell can be built")
+    check(
+        "playwright",
+        _playwright,
+        cost = "no browser can be driven; install with `pip install playwright` then "
+        "`playwright install`",
+    )
+    check(
+        "psutil",
+        _psutil,
+        fatal = False,
+        cost = "RSS is reported as null with a reason instead of a number; everything else runs",
+    )
+    check("frozen corpus", _corpus, cost = "the corpus cannot be loaded, so no cell can be built")
     check("registries", _registries)
     check("desktop webview proxy", _engine, fatal = False)
 
     if args.attach:
+
         def _studio():
             from .runtime.bundle_guard import check_bundle
             from .runtime.lifecycle import wait_for_healthz
+
             if not wait_for_healthz(args.attach, 10):
                 raise RuntimeError(f"{args.attach}/healthz did not answer 200")
             v = check_bundle(args.attach)
             if not v.production:
                 raise RuntimeError(v.reason)
             return f"production build, react-dom bundleType {v.bundle_type}"
+
         check(f"studio at {args.attach}", _studio)
 
     def _pacer():
@@ -158,17 +180,24 @@ def doctor(args) -> int:
 
 # ── the run ─────────────────────────────────────────────────────────
 
+
 def run(args, ab_ref = None) -> int:
     from .fixture.corpus import Corpus
-    from .instruments import build as build_instruments                # noqa: F401
+    from .instruments import build as build_instruments  # noqa: F401
     from .pacer import Pacer
     from .runtime import browser as browser_mod
     from .runtime.bundle_guard import check_bundle
-    from .runtime.lifecycle import (authenticate, external_checkpoint_id, install_studio,
-                                    launch_studio,
-                                    pacer_provider, register_provider, seed_init_script,
-                                    stop_studio,
-                                    wait_for_healthz)
+    from .runtime.lifecycle import (
+        authenticate,
+        external_checkpoint_id,
+        install_studio,
+        launch_studio,
+        pacer_provider,
+        register_provider,
+        seed_init_script,
+        stop_studio,
+        wait_for_healthz,
+    )
     from .runtime.seeder import Seeder
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
@@ -179,7 +208,8 @@ def run(args, ab_ref = None) -> int:
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
 
     watchdog = browser_mod.install_wall_clock_watchdog(
-        TIER_BUDGET_S[args.tier] * 3, "studiobench", _log)
+        TIER_BUDGET_S[args.tier] * 3, "studiobench", _log
+    )
 
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
@@ -229,10 +259,14 @@ def run(args, ab_ref = None) -> int:
         if verdict is None:
             verdict = side_verdict
         if not side_verdict.production and not args.allow_dev_server:
-            _log("  REFUSING TO RUN. A development build inflates the very axis under "
-                 "investigation")
-            _log("  by about 3.2x, so a measurement here would confirm any hypothesis brought "
-                 "to it.")
+            _log(
+                "  REFUSING TO RUN. A development build inflates the very axis under "
+                "investigation"
+            )
+            _log(
+                "  by about 3.2x, so a measurement here would confirm any hypothesis brought "
+                "to it."
+            )
             _log("  Pass --allow-dev-server only to demonstrate that this gate matters.")
             return 3
 
@@ -246,9 +280,11 @@ def run(args, ab_ref = None) -> int:
     init_scripts = []
     for index, side in enumerate(sides):
         side_install = installs[index][0]
-        side_auth = authenticate(side["base_url"], args.username,
-                                 args.password or (side_install.bootstrap_password
-                                                   if side_install else ""))
+        side_auth = authenticate(
+            side["base_url"],
+            args.username,
+            args.password or (side_install.bootstrap_password if side_install else ""),
+        )
         _log(f"  {side['label']}: authenticated as {side_auth.username}")
 
         # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
@@ -260,16 +296,22 @@ def run(args, ab_ref = None) -> int:
         # for a completion.
         register_provider(side["base_url"], side_auth, side_provider)
         side_checkpoint = external_checkpoint_id(side_provider, model_id)
-        _log(f"  {side['label']}: provider {side_provider.provider_type} -> "
-             f"{side_provider.base_url}, checkpoint {side_checkpoint}")
+        _log(
+            f"  {side['label']}: provider {side_provider.provider_type} -> "
+            f"{side_provider.base_url}, checkpoint {side_checkpoint}"
+        )
         side["auth"] = side_auth
 
-        seed = seed_init_script(side_auth, [side_provider], extra_local_storage = {
-            # The SELECTION, without which nothing is ever generated. See
-            # lifecycle.external_checkpoint_id.
-            "unsloth_chat_last_external_checkpoint": side_checkpoint,
-            "unsloth_chat_connections_enabled": "true",
-        })
+        seed = seed_init_script(
+            side_auth,
+            [side_provider],
+            extra_local_storage = {
+                # The SELECTION, without which nothing is ever generated. See
+                # lifecycle.external_checkpoint_id.
+                "unsloth_chat_last_external_checkpoint": side_checkpoint,
+                "unsloth_chat_connections_enabled": "true",
+            },
+        )
         # Origin-gated even in the single-target case, so the one-build and two-build paths are
         # the same code and the gate cannot rot while unused.
         init_scripts.append(origin_scoped(side["base_url"], seed))
@@ -287,29 +329,43 @@ def run(args, ab_ref = None) -> int:
     try:
         from .instruments.rss import new_roots, snapshot_children
         procs_before = snapshot_children(os.getpid())
-    except Exception:                                               # noqa: BLE001
-        new_roots = None                                            # type: ignore[assignment]
+    except Exception:  # noqa: BLE001
+        new_roots = None  # type: ignore[assignment]
 
-    bundle = browser_mod.launch(args.engine, headless = not args.headed,
-                                init_scripts = init_scripts, log = _log)
+    bundle = browser_mod.launch(
+        args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
+    )
     procs = []
     if new_roots is not None:
         time.sleep(1.0)
         procs = new_roots(os.getpid(), procs_before)
 
-    ctx, session = make_context(bundle, base_url, args.tier, args.instrument_level, paths,
-                               _log, procs)
+    ctx, session = make_context(
+        bundle, base_url, args.tier, args.instrument_level, paths, _log, procs
+    )
     rec = ctx.recorder
-    rec.emit({"row_type": "run_meta", "tier": args.tier, "tool_version": TOOL_VERSION,
-              "corpus_hash": corpus.corpus_hash,
-              "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
-              "bundle": verdict.as_dict(), "platform": {
-                  "system": platform.system(), "machine": platform.machine(),
-                  "python": sys.version.split()[0], "engine": bundle.engine,
-                  "engine_note": bundle.engine_note},
-              "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-              "pacer_base_url": pacer.base_url, "cadence": args.cadence,
-              "rungs": TIER_RUNGS[args.tier], "instrument_level": args.instrument_level})
+    rec.emit(
+        {
+            "row_type": "run_meta",
+            "tier": args.tier,
+            "tool_version": TOOL_VERSION,
+            "corpus_hash": corpus.corpus_hash,
+            "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
+            "bundle": verdict.as_dict(),
+            "platform": {
+                "system": platform.system(),
+                "machine": platform.machine(),
+                "python": sys.version.split()[0],
+                "engine": bundle.engine,
+                "engine_note": bundle.engine_note,
+            },
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pacer_base_url": pacer.base_url,
+            "cadence": args.cadence,
+            "rungs": TIER_RUNGS[args.tier],
+            "instrument_level": args.instrument_level,
+        }
+    )
     rec.gate("production_build", verdict.production, verdict.as_dict())
 
     if args.tier == "fast":
@@ -324,21 +380,40 @@ def run(args, ab_ref = None) -> int:
         _log("  One rung (100K), a 47s film. Use it to see whether a fix moved anything at all,")
         _log("  then confirm with --tier standard and a null control before quoting a number.")
         _log("")
-    rec.gate("reportable_tier", args.tier != "fast",
-             {"tier": args.tier, "scene": TIER_RUNGS[args.tier],
-              "reason": ("the fast tier is an iteration loop: one rung, a compressed film, and a "
-                         "wider floor than the standard tier")
-                        if args.tier == "fast" else "standard measurement protocol"})
+    rec.gate(
+        "reportable_tier",
+        args.tier != "fast",
+        {
+            "tier": args.tier,
+            "scene": TIER_RUNGS[args.tier],
+            "reason": (
+                "the fast tier is an iteration loop: one rung, a compressed film, and a "
+                "wider floor than the standard tier"
+            )
+            if args.tier == "fast"
+            else "standard measurement protocol",
+        },
+    )
 
     image_path = ensure_probe_image(paths)
     for side in sides:
-        side_seeder = Seeder(base_url = side["base_url"], auth = side["auth"],
-                             model_id = model_id, log = _log)
+        side_seeder = Seeder(
+            base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
+        )
         side["seeder"] = side_seeder
         side["runner"] = CellRunner(
-            session = session, pacer = pacer, seeder = side_seeder, corpus = corpus,
-            base_url = side["base_url"], model_id = model_id, tier = args.tier,
-            paths = paths, log = _log, cadence = args.cadence, image_path = image_path)
+            session = session,
+            pacer = pacer,
+            seeder = side_seeder,
+            corpus = corpus,
+            base_url = side["base_url"],
+            model_id = model_id,
+            tier = args.tier,
+            paths = paths,
+            log = _log,
+            cadence = args.cadence,
+            image_path = image_path,
+        )
 
     seeder = sides[0]["seeder"]
     runner = sides[0]["runner"]
@@ -347,8 +422,9 @@ def run(args, ab_ref = None) -> int:
         _sweep_surfaces(sides, ctx, paths)
 
     rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
-    cells = build_cells(rungs, corpus, args.tier, ctx.session_id, args.instrument_level,
-                        reps = args.reps)
+    cells = build_cells(
+        rungs, corpus, args.tier, ctx.session_id, args.instrument_level, reps = args.reps
+    )
 
     done = _resume_set(paths) if args.resume else set()
     if done:
@@ -357,18 +433,34 @@ def run(args, ab_ref = None) -> int:
     if ab_ref:
         from .runtime.ab import Target, interleave, order_is_balanced
 
-        targets = [Target(label = s["label"], ref = s["ref"], base_url = s["base_url"],
-                          seeder = s["seeder"], runner = s["runner"]) for s in sides]
+        targets = [
+            Target(
+                label = s["label"],
+                ref = s["ref"],
+                base_url = s["base_url"],
+                seeder = s["seeder"],
+                runner = s["runner"],
+            )
+            for s in sides
+        ]
         work = interleave(cells, targets)
         if not order_is_balanced(work):
             # Said out loud rather than silently absorbed: with an odd number of reps one side
             # always runs first, so anything drifting monotonically through the session lands on
             # the other one instead of cancelling.
-            _log("  WARNING: the run order is not balanced (use an even --reps). Linear drift "
-                 "within the session is charged to whichever side runs second.")
-        rec.emit({"row_type": "ab_plan", "base_ref": sides[0]["ref"],
-                  "treatment_ref": sides[1]["ref"], "balanced": order_is_balanced(work),
-                  "order": [c.cell_id for _t, c, _p in work]})
+            _log(
+                "  WARNING: the run order is not balanced (use an even --reps). Linear drift "
+                "within the session is charged to whichever side runs second."
+            )
+        rec.emit(
+            {
+                "row_type": "ab_plan",
+                "base_ref": sides[0]["ref"],
+                "treatment_ref": sides[1]["ref"],
+                "balanced": order_is_balanced(work),
+                "order": [c.cell_id for _t, c, _p in work],
+            }
+        )
     else:
         work = [(None, cell, plan) for cell, plan in cells]
 
@@ -387,7 +479,7 @@ def run(args, ab_ref = None) -> int:
             session._safe(inst, "detach")
         try:
             watchdog.cancel()
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
         bundle.close()
         pacer.stop()
@@ -417,19 +509,24 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
     are the measurement, and a broken selector in the registry must not stop them.
     """
     from .scene.surface_sweep import render_manifest, sweep
-
     for side in sides:
         label = side["label"]
         _log(f"\n### surface sweep: {label} at {side['base_url']}")
         try:
-            rows, manifest = sweep(ctx.page, side["base_url"], log = _log,
-                                   cell_id = f"surfaces.{label}", recorder = ctx.recorder)
-        except Exception as exc:                                    # noqa: BLE001
+            rows, manifest = sweep(
+                ctx.page,
+                side["base_url"],
+                log = _log,
+                cell_id = f"surfaces.{label}",
+                recorder = ctx.recorder,
+            )
+        except Exception as exc:  # noqa: BLE001
             # Recorded as a failed gate rather than swallowed. A sweep that raised and a sweep
             # that found nothing look identical in a payload that only carries the rows.
             _log(f"  the surface sweep failed: {type(exc).__name__}: {exc}")
-            ctx.recorder.gate(f"surface_sweep:{label}", False,
-                              {"error": f"{type(exc).__name__}: {exc}"})
+            ctx.recorder.gate(
+                f"surface_sweep:{label}", False, {"error": f"{type(exc).__name__}: {exc}"}
+            )
             continue
         for row in rows:
             row["arm"] = label
@@ -466,17 +563,25 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     # Detected, not declared. `--ab main` against the same Studio IS a null control whether or not
     # the caller says so, and a null control that renders as an ordinary A/B invites somebody to
     # quote "7.7% faster" from a build compared with itself.
-    is_null = (sides[0]["ref"] == sides[1]["ref"]
-               and sides[0]["base_url"] == sides[1]["base_url"])
-    label = (f"null control: {sides[0]['ref']} vs itself" if is_null
-             else f"{sides[0]['ref']} -> {sides[1]['ref']}")
+    is_null = sides[0]["ref"] == sides[1]["ref"] and sides[0]["base_url"] == sides[1]["base_url"]
+    label = (
+        f"null control: {sides[0]['ref']} vs itself"
+        if is_null
+        else f"{sides[0]['ref']} -> {sides[1]['ref']}"
+    )
 
     try:
         result = compare_arms(
-            records, sides[0]["label"], sides[1]["label"],
-            bench_version = TOOL_VERSION, corpus_hash = corpus_hash, session_id = session_id,
-            label = label, is_null_control = is_null)
-    except Exception as exc:                                        # noqa: BLE001
+            records,
+            sides[0]["label"],
+            sides[1]["label"],
+            bench_version = TOOL_VERSION,
+            corpus_hash = corpus_hash,
+            session_id = session_id,
+            label = label,
+            is_null_control = is_null,
+        )
+    except Exception as exc:  # noqa: BLE001
         _log(f"\nA/B table could not be built: {type(exc).__name__}: {exc}")
         return
 
@@ -489,13 +594,17 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
         from .scoring.ab import noise_floor_from_null_control
         try:
             floor, source = noise_floor_from_null_control(result)
-            _log(f"THIS MACHINE'S NOISE FLOOR: {floor:.1f}% ({source}). Pass it to a real A/B; "
-                 f"a difference smaller than this is not a difference.")
-        except Exception as exc:                                    # noqa: BLE001
+            _log(
+                f"THIS MACHINE'S NOISE FLOOR: {floor:.1f}% ({source}). Pass it to a real A/B; "
+                f"a difference smaller than this is not a difference."
+            )
+        except Exception as exc:  # noqa: BLE001
             _log(f"could not derive a noise floor from the null control: {exc}")
     else:
-        _log("NOTE: no null control (base vs base) was run, so the noise floor here is the "
-             "declared default and not this machine's. A win inside that floor is not a win.")
+        _log(
+            "NOTE: no null control (base vs base) was run, so the noise floor here is the "
+            "declared default and not this machine's. A win inside that floor is not a win."
+        )
 
 
 def _resume_set(paths) -> set:
@@ -519,8 +628,10 @@ def _summarise(rows: list, paths) -> None:
     if not rows:
         return
     _log("\n" + "=" * 78)
-    _log(f"{'cell':<16} {'chars':>10} {'elems':>8} {'spans':>8} {'c/span':>7} "
-         f"{'ran':>6} {'miss':>5} {'exp!':>5} {'busy%':>7}")
+    _log(
+        f"{'cell':<16} {'chars':>10} {'elems':>8} {'spans':>8} {'c/span':>7} "
+        f"{'ran':>6} {'miss':>5} {'exp!':>5} {'busy%':>7}"
+    )
     _log("-" * 78)
     for r in rows:
         actions = r.get("actions") or []
@@ -528,12 +639,14 @@ def _summarise(rows: list, paths) -> None:
         # The PEAK, not the end state: the film's last two actions reopen the thread and delete
         # a message, so an end-of-film census describes a thread that is no longer there.
         census = r.get("census_peak") or r.get("census_after") or {}
-        _log(f"{r['cell_id']:<16} {r.get('assistant_chars_in_dom') or 0:>10,} "
-             f"{census.get('elements') or 0:>8,} {census.get('highlight_spans') or 0:>8,} "
-             f"{str(r.get('chars_per_span') or '-'):>7} "
-             f"{ran}/{len(actions):>4} {r.get('slots_missed', 0):>5} "
-             f"{r.get('expect_failures', 0):>5} "
-             f"{'-' if not r.get('completed') else 'ok':>7}")
+        _log(
+            f"{r['cell_id']:<16} {r.get('assistant_chars_in_dom') or 0:>10,} "
+            f"{census.get('elements') or 0:>8,} {census.get('highlight_spans') or 0:>8,} "
+            f"{str(r.get('chars_per_span') or '-'):>7} "
+            f"{ran}/{len(actions):>4} {r.get('slots_missed', 0):>5} "
+            f"{r.get('expect_failures', 0):>5} "
+            f"{'-' if not r.get('completed') else 'ok':>7}"
+        )
         if not r.get("completed"):
             f = r.get("failure") or {}
             _log(f"    FAILED: {f.get('kind')}: {str(f.get('message'))[:100]}")
@@ -563,11 +676,12 @@ def report_only(args) -> int:
         _log(f"no payload at {path}")
         return 2
 
-    declared = _rung_tokens(args.rungs.split(",")) if args.rungs else _rung_tokens(
-        TIER_RUNGS[args.tier])
+    declared = (
+        _rung_tokens(args.rungs.split(",")) if args.rungs else _rung_tokens(TIER_RUNGS[args.tier])
+    )
     try:
         text, ladder, _payload = build_report(path, declared)
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # A payload that cannot be scored is reported as such rather than half-rendered: a
         # partial report is exactly the artefact that gets quoted without its caveats.
         _log(f"could not build a report from {path}: {type(exc).__name__}: {exc}")
@@ -633,47 +747,90 @@ def assert_liveness(args) -> int:
         return 2
     for line in problems:
         _log(f"  {line}")
-    _log(f"{cells} cell(s), {len(problems)} liveness problem(s)"
-         + (f", {len(allowed)} action(s) allowed not to run" if allowed else ""))
+    _log(
+        f"{cells} cell(s), {len(problems)} liveness problem(s)"
+        + (f", {len(allowed)} action(s) allowed not to run" if allowed else "")
+    )
     return 1 if problems else 0
 
 
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(
-        prog = "studiobench",
-        description = "A real-path performance benchmark for Unsloth Studio.")
-    ap.add_argument("--tier", choices = TIERS, default = "quick",
-                    help = "quick ~5min (1K,10K), standard ~20min (+100K), full ~60min (+500K,1M)")
-    ap.add_argument("--doctor", action = "store_true",
-                    help = "report what is installed and what each missing piece costs")
-    ap.add_argument("--attach", metavar = "URL",
-                    help = "drive a Studio that is already running instead of installing one")
-    ap.add_argument("--resume", action = "store_true",
-                    help = "skip cells already completed in the output payload")
-    ap.add_argument("--ab", metavar = "REF",
-                    help = "A/B a second ref, interleaved within one session (not yet wired)")
-    ap.add_argument("--attach-b", metavar = "URL", dest = "attach_b",
-                    help = "the treatment side's already-running Studio, when --ab is used "
-                           "together with --attach")
-    ap.add_argument("--report", metavar = "PAYLOAD",
-                    help = "score and render an existing payload.jsonl, then exit. Runs offline, "
-                           "so a payload mailed in from another machine reports here")
-    ap.add_argument("--assert-liveness", metavar = "PAYLOAD", dest = "assert_liveness",
-                    help = "exit non-zero unless every scheduled action in an existing "
-                           "payload.jsonl actually ran. Offline. This is the gate that catches an "
-                           "action which never fired reporting as 'no effect'")
-    ap.add_argument("--allow-not-run", metavar = "ACTIONS", dest = "allow_not_run",
-                    help = "comma-separated action names --assert-liveness may excuse. Use only "
-                           "for an action a platform genuinely cannot perform, and say which in "
-                           "the pull request: every name here is a hole in the gate")
+        prog = "studiobench", description = "A real-path performance benchmark for Unsloth Studio."
+    )
+    ap.add_argument(
+        "--tier",
+        choices = TIERS,
+        default = "quick",
+        help = "quick ~5min (1K,10K), standard ~20min (+100K), full ~60min (+500K,1M)",
+    )
+    ap.add_argument(
+        "--doctor",
+        action = "store_true",
+        help = "report what is installed and what each missing piece costs",
+    )
+    ap.add_argument(
+        "--attach",
+        metavar = "URL",
+        help = "drive a Studio that is already running instead of installing one",
+    )
+    ap.add_argument(
+        "--resume", action = "store_true", help = "skip cells already completed in the output payload"
+    )
+    ap.add_argument(
+        "--ab",
+        metavar = "REF",
+        help = "A/B a second ref, interleaved within one session (not yet wired)",
+    )
+    ap.add_argument(
+        "--attach-b",
+        metavar = "URL",
+        dest = "attach_b",
+        help = "the treatment side's already-running Studio, when --ab is used "
+        "together with --attach",
+    )
+    ap.add_argument(
+        "--report",
+        metavar = "PAYLOAD",
+        help = "score and render an existing payload.jsonl, then exit. Runs offline, "
+        "so a payload mailed in from another machine reports here",
+    )
+    ap.add_argument(
+        "--assert-liveness",
+        metavar = "PAYLOAD",
+        dest = "assert_liveness",
+        help = "exit non-zero unless every scheduled action in an existing "
+        "payload.jsonl actually ran. Offline. This is the gate that catches an "
+        "action which never fired reporting as 'no effect'",
+    )
+    ap.add_argument(
+        "--allow-not-run",
+        metavar = "ACTIONS",
+        dest = "allow_not_run",
+        help = "comma-separated action names --assert-liveness may excuse. Use only "
+        "for an action a platform genuinely cannot perform, and say which in "
+        "the pull request: every name here is a hole in the gate",
+    )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
-    ap.add_argument("--instrument-level", type = int, default = 0, choices = [0, 1, 2, 3],
-                    help = "0 is the only level headline numbers may come from")
-    ap.add_argument("--cadence", default = "field", choices = ["field", "fast"],
-                    help = "field is 24 chars every 73ms, the rate of the captured reply")
-    ap.add_argument("--engine", choices = ["chromium", "webkit", "firefox"],
-                    help = "default matches the platform's desktop webview family")
+    ap.add_argument(
+        "--instrument-level",
+        type = int,
+        default = 0,
+        choices = [0, 1, 2, 3],
+        help = "0 is the only level headline numbers may come from",
+    )
+    ap.add_argument(
+        "--cadence",
+        default = "field",
+        choices = ["field", "fast"],
+        help = "field is 24 chars every 73ms, the rate of the captured reply",
+    )
+    ap.add_argument(
+        "--engine",
+        choices = ["chromium", "webkit", "firefox"],
+        help = "default matches the platform's desktop webview family",
+    )
     ap.add_argument("--branch", default = "main", help = "Studio ref to install when not attaching")
     ap.add_argument("--home", help = "UNSLOTH_STUDIO_HOME for an install")
     ap.add_argument("--port", type = int, default = 5399)
@@ -683,18 +840,24 @@ def main(argv: list) -> int:
     ap.add_argument("--username", default = "unsloth")
     ap.add_argument("--password", default = "")
     ap.add_argument("--out", help = "output directory")
-    ap.add_argument("--surfaces", action = "store_true",
-                    help = "additionally sweep every registered UI surface -- the other routes, "
-                           "the settings tabs, the sidebar menus, the model picker -- and take a "
-                           "parity digest of each. The film covers the chat thread; this covers "
-                           "the rest of the app. Off by default: it costs about a minute per arm "
-                           "and it does not measure performance")
+    ap.add_argument(
+        "--surfaces",
+        action = "store_true",
+        help = "additionally sweep every registered UI surface -- the other routes, "
+        "the settings tabs, the sidebar menus, the model picker -- and take a "
+        "parity digest of each. The film covers the chat thread; this covers "
+        "the rest of the app. Off by default: it costs about a minute per arm "
+        "and it does not measure performance",
+    )
     ap.add_argument("--headed", action = "store_true")
     ap.add_argument("--keep-studio", action = "store_true")
-    ap.add_argument("--allow-dev-server", action = "store_true",
-                    help = "run against a development build anyway. ONLY to demonstrate that the "
-                           "production gate matters: React's dev build inflates the axis under "
-                           "investigation by about 3.2x")
+    ap.add_argument(
+        "--allow-dev-server",
+        action = "store_true",
+        help = "run against a development build anyway. ONLY to demonstrate that the "
+        "production gate matters: React's dev build inflates the axis under "
+        "investigation by about 3.2x",
+    )
     args = ap.parse_args(argv)
 
     if args.doctor:

@@ -66,8 +66,16 @@ AGENT_IPC = "agent_ipc"
 UNCLASSIFIED = "unclassified"
 
 ORIGINS = (
-    INPUT, TIMER, MESSAGE_CHANNEL, NETWORK, RAF, IDLE, GC,
-    BROWSER_INTERNAL, AGENT_IPC, UNCLASSIFIED,
+    INPUT,
+    TIMER,
+    MESSAGE_CHANNEL,
+    NETWORK,
+    RAF,
+    IDLE,
+    GC,
+    BROWSER_INTERNAL,
+    AGENT_IPC,
+    UNCLASSIFIED,
 )
 
 # Origins that are the harness observing, not the app working. Reported, never
@@ -78,39 +86,66 @@ HARNESS_ORIGINS = (AGENT_IPC,)
 # is not quotable. The point of the tool is that we can name things.
 UNCLASSIFIED_FAIL_PCT = 2.0
 
-_JS_EVENTS = frozenset({
-    "FunctionCall",
-    "v8.callFunction",
-    "EvaluateScript",
-    "v8.run",
-    "v8.compile",
-    "V8.Execute",
-})
+_JS_EVENTS = frozenset(
+    {
+        "FunctionCall",
+        "v8.callFunction",
+        "EvaluateScript",
+        "v8.run",
+        "v8.compile",
+        "V8.Execute",
+    }
+)
 
-_RESOURCE_EVENTS = frozenset({
-    "ResourceSendRequest",
-    "ResourceReceiveResponse",
-    "ResourceReceivedData",
-    "ResourceFinish",
-    "ResourceMarkAsCached",
-    "XHRReadyStateChange",
-    "XHRLoad",
-})
+_RESOURCE_EVENTS = frozenset(
+    {
+        "ResourceSendRequest",
+        "ResourceReceiveResponse",
+        "ResourceReceivedData",
+        "ResourceFinish",
+        "ResourceMarkAsCached",
+        "XHRReadyStateChange",
+        "XHRLoad",
+    }
+)
 
-_RAF_EVENTS = frozenset({
-    "FireAnimationFrame",
-    "AnimationFrame::Render",
-    "AnimationFrame::StyleAndLayout",
-    "BeginMainThreadFrame",
-})
+_RAF_EVENTS = frozenset(
+    {
+        "FireAnimationFrame",
+        "AnimationFrame::Render",
+        "AnimationFrame::StyleAndLayout",
+        "BeginMainThreadFrame",
+    }
+)
 
-_INPUT_EVENT_TYPES = frozenset({
-    "keydown", "keyup", "keypress", "beforeinput", "input", "compositionstart",
-    "compositionupdate", "compositionend", "textInput",
-    "mousedown", "mouseup", "mousemove", "click", "dblclick", "wheel",
-    "pointerdown", "pointerup", "pointermove", "pointercancel",
-    "touchstart", "touchend", "touchmove", "gesturescrollbegin", "gesturescrollupdate",
-})
+_INPUT_EVENT_TYPES = frozenset(
+    {
+        "keydown",
+        "keyup",
+        "keypress",
+        "beforeinput",
+        "input",
+        "compositionstart",
+        "compositionupdate",
+        "compositionend",
+        "textInput",
+        "mousedown",
+        "mouseup",
+        "mousemove",
+        "click",
+        "dblclick",
+        "wheel",
+        "pointerdown",
+        "pointerup",
+        "pointermove",
+        "pointercancel",
+        "touchstart",
+        "touchend",
+        "touchmove",
+        "gesturescrollbegin",
+        "gesturescrollupdate",
+    }
+)
 
 # Network-ish streaming: an SSE frame arrives as a `message` event on an
 # EventSource, and a fetch-based stream as a resource event.
@@ -322,9 +357,14 @@ def classify_task(task: Task) -> ClassifiedTask:
 
     def done(origin: str, evidence: str) -> ClassifiedTask:
         return ClassifiedTask(
-            task = task, origin = origin, evidence = evidence,
-            src_file = src_file, src_func = src_func, ran_js = ran_js,
-            task_type = task_type, queue_name = queue_name,
+            task = task,
+            origin = origin,
+            evidence = evidence,
+            src_file = src_file,
+            src_func = src_func,
+            ran_js = ran_js,
+            task_type = task_type,
+            queue_name = queue_name,
         )
 
     # 0. Blink's own label, when the `scheduler` category recorded one. This
@@ -338,7 +378,10 @@ def classify_task(task: Task) -> ClassifiedTask:
     #      - a compositor-queue task with a nested input dispatch is input.
     if task_type:
         if types & _INPUT_EVENT_TYPES:
-            return done(INPUT, f"task_type:{task_type}+EventDispatch:{sorted(types & _INPUT_EVENT_TYPES)[0]}")
+            return done(
+                INPUT,
+                f"task_type:{task_type}+EventDispatch:{sorted(types & _INPUT_EVENT_TYPES)[0]}",
+            )
         for needle, origin in _TASK_TYPE_RULES:
             if needle in task_type:
                 if origin == GC and ran_js:
@@ -355,7 +398,11 @@ def classify_task(task: Task) -> ClassifiedTask:
     # 2. GC before everything else that could contain it, because a major GC
     #    posted from the incremental marking job is not a timer task even when
     #    it happens to run inside one.
-    gc_names = {n for n in names if n.startswith("V8.GC") or n in ("MajorGC", "MinorGC", "BlinkGC.AtomicPhase")}
+    gc_names = {
+        n
+        for n in names
+        if n.startswith("V8.GC") or n in ("MajorGC", "MinorGC", "BlinkGC.AtomicPhase")
+    }
     if any(marker in src_file for marker in ("v8/src/heap/", "platform/heap/")):
         return done(GC, f"posted_from:{src_file.rsplit('/', 1)[-1]}")
     if gc_names and not ran_js:
@@ -385,14 +432,20 @@ def classify_task(task: Task) -> ClassifiedTask:
     # 7. Message channel, that is, the React scheduler. Blink dispatches a
     #    `MessagePort` message as a mojo connector task, so the discriminator is
     #    that page script ran and nothing network-shaped happened.
-    if ran_js and ("connector.cc" in src_file or "message_port" in src_file or "interface_endpoint_client.cc" in src_file):
+    if ran_js and (
+        "connector.cc" in src_file
+        or "message_port" in src_file
+        or "interface_endpoint_client.cc" in src_file
+    ):
         return done(MESSAGE_CHANNEL, "mojo_pipe_running_page_script")
 
     # 8. The devtools / browser IPC channel running page script. This is what
     #    `Runtime.evaluate` and `Page.*` look like from inside the renderer, so
     #    it is measurement cost. Named, so it can be watched for correlation
     #    with the treatment; never subtracted.
-    if ran_js and any(f in src_file for f in ("ipc_mojo_bootstrap.cc", "simple_watcher.cc", "mojo_bootstrap")):
+    if ran_js and any(
+        f in src_file for f in ("ipc_mojo_bootstrap.cc", "simple_watcher.cc", "mojo_bootstrap")
+    ):
         return done(AGENT_IPC, f"posted_from:{src_file.rsplit('/', 1)[-1]}")
 
     # 9. Browser bookkeeping, and ONLY when no page script ran inside. This
@@ -413,8 +466,11 @@ def classify_task(task: Task) -> ClassifiedTask:
                 continue
             return done(origin, f"queue_name:{queue_name}")
 
-    return done(UNCLASSIFIED, f"no rule for {src_file or 'unknown'}::{src_func or 'unknown'}"
-                              + (" (ran JS)" if ran_js else ""))
+    return done(
+        UNCLASSIFIED,
+        f"no rule for {src_file or 'unknown'}::{src_func or 'unknown'}"
+        + (" (ran JS)" if ran_js else ""),
+    )
 
 
 def classify_thread(trace: Trace, thread: Thread | None = None) -> Classification:

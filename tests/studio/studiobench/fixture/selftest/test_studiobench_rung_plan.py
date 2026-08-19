@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.fixture.corpus import (            # noqa: E402
+from studiobench.fixture.corpus import (  # noqa: E402
     RUNGS,
     STREAM_TAIL_CHARS,
     Corpus,
@@ -86,9 +86,7 @@ def test_during_generation_slots_actually_fall_during_generation():
     # stream to deserve the name.
     # The OPENING turn only: the follow-ups are sent later by `send_turn`, so a slot that has to
     # fall during generation has to fall inside the first stream, not inside their sum.
-    shortest = min(
-        p.streamed_chars for r, p in _plans().items() if r != "1K"
-    ) / FIELD_CHARS_PER_SEC
+    shortest = min(p.streamed_chars for r, p in _plans().items() if r != "1K") / FIELD_CHARS_PER_SEC
     for name, scene in SCENES.items():
         during = [s for s in scene.slots if s.action == "scroll_during_generation"]
         assert during, name
@@ -150,8 +148,9 @@ def test_settled_actions_open_after_the_follow_up_drains():
     plans = _plans()
     for name, scene in SCENES.items():
         rungs = TIER_RUNGS.get(name) or []
-        if not any((plans[r].total_chars if r in plans else 0) >= MULTI_TURN_MIN_CHARS
-                   for r in rungs):
+        if not any(
+            (plans[r].total_chars if r in plans else 0) >= MULTI_TURN_MIN_CHARS for r in rungs
+        ):
             continue
         last_send = None
         for slot in sorted(scene.slots, key = lambda s: s.t_start_ms):

@@ -43,16 +43,16 @@ from . import CellFailure
 class Point:
     """One rung of one series, tagged with the session that produced it."""
 
-    length: float     # the treatment axis, e.g. thread tokens or characters
-    value: float      # the measured quantity, e.g. self ms
-    session: str      # opaque session identity; fits refuse to mix these
+    length: float  # the treatment axis, e.g. thread tokens or characters
+    value: float  # the measured quantity, e.g. self ms
+    session: str  # opaque session identity; fits refuse to mix these
     rung: str = ""
 
 
 @dataclass(frozen = True)
 class Fit:
-    a: float          # intercept in log space
-    b: float          # exponent
+    a: float  # intercept in log space
+    b: float  # exponent
     r2: float
     n: int
     session: str
@@ -146,7 +146,10 @@ def fit_loglog(
             ci = (lo, hi)
 
     return Fit(
-        a = a, b = b, r2 = r2, n = len(usable),
+        a = a,
+        b = b,
+        r2 = r2,
+        n = len(usable),
         session = next(iter(sessions)) if sessions else "",
         b_ci = ci,
         x_min = min(p.length for p in usable),
@@ -251,8 +254,7 @@ def growth_is_superlinear(fit: Fit, *, margin: float = 0.15) -> bool:
 
 
 def collect_series(
-    per_rung: Iterable[tuple[str, float, dict[tuple[str, str, int, int], float]]],
-    session: str,
+    per_rung: Iterable[tuple[str, float, dict[tuple[str, str, int, int], float]]], session: str
 ) -> dict[tuple[str, str, int, int], list[Point]]:
     """Reshape per-rung frame tables into per-frame ladders.
 

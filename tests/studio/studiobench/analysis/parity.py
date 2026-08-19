@@ -39,41 +39,32 @@ NOT_EXERCISED = "not_exercised"
 # punched in the instrument and nobody can audit afterwards; the null control's empirically
 # derived set (`derive_unstable`) is the cross-check that each of these earns its place.
 UNSTABLE_ACTIONS: dict[str, str] = {
-    "stop_generation":
-        "stops a live stream, so how many characters arrived before the stop is a race with the "
-        "network and differs run to run on one build. NOT reproduced by the 100K fast-tier null "
-        "control (0 of 4), so this entry rests on the mechanism rather than on a measurement",
-    "send_turn":
-        "starts a new turn, so how far it has streamed when the digest is taken is wall clock. "
-        "Measured differing on 2 of 4 base-vs-base pairs, with assistant_chars differing too",
-    "scroll_during_generation":
-        "the digest is taken after a scroll gesture against a growing thread; where it comes to "
-        "rest depends on the autoscroll observer, which is the mechanism under study. Measured "
-        "differing on 3 of 4 base-vs-base pairs",
-    "scroll_after":
-        "same gesture against a settled thread; the resting offset still depends on the observer. "
-        "NOT reproduced by the 100K fast-tier null control (0 of 4); kept on the mechanism alone",
+    "stop_generation": "stops a live stream, so how many characters arrived before the stop is a race with the "
+    "network and differs run to run on one build. NOT reproduced by the 100K fast-tier null "
+    "control (0 of 4), so this entry rests on the mechanism rather than on a measurement",
+    "send_turn": "starts a new turn, so how far it has streamed when the digest is taken is wall clock. "
+    "Measured differing on 2 of 4 base-vs-base pairs, with assistant_chars differing too",
+    "scroll_during_generation": "the digest is taken after a scroll gesture against a growing thread; where it comes to "
+    "rest depends on the autoscroll observer, which is the mechanism under study. Measured "
+    "differing on 3 of 4 base-vs-base pairs",
+    "scroll_after": "same gesture against a settled thread; the resting offset still depends on the observer. "
+    "NOT reproduced by the 100K fast-tier null control (0 of 4); kept on the mechanism alone",
     # The four below were NOT in the hand-written set and were found by the null control, each
     # scoring as a hard UI-change signal on a build compared with itself. The mechanism for each
     # was read out of the payload, not guessed.
-    "keystroke":
-        "types characters into the composer over wall clock, and the composer's text is in the "
-        "DOM, so how many keystrokes had landed by the capture deadline is a race. Measured 4 of "
-        "4 differing, by 8 signature characters, with assistant_chars identical",
-    "composer_fill":
-        "fills the composer with a fixed string, but whether the send button has re-enabled by "
-        "capture time is a race. A bare `disabled` serialises as exactly ten characters and the "
-        "observed delta was exactly ten, in both directions across repetitions",
-    "copy_markdown":
-        "on the packed films this slot opens while the turn started by the preceding send_turn is "
-        "still streaming, so the last assistant message is mid-tail. Measured 3 of 4 differing, "
-        "with assistant_chars differing on every one",
-    "message_menu":
-        "same cause as copy_markdown: the slot lands inside the previous send_turn's stream. "
-        "Measured 3 of 4 differing, with assistant_chars differing",
-    "select_text":
-        "same cause again, and the worst of the three at 4 of 4 differing; the selection is taken "
-        "over a message whose tail is still arriving",
+    "keystroke": "types characters into the composer over wall clock, and the composer's text is in the "
+    "DOM, so how many keystrokes had landed by the capture deadline is a race. Measured 4 of "
+    "4 differing, by 8 signature characters, with assistant_chars identical",
+    "composer_fill": "fills the composer with a fixed string, but whether the send button has re-enabled by "
+    "capture time is a race. A bare `disabled` serialises as exactly ten characters and the "
+    "observed delta was exactly ten, in both directions across repetitions",
+    "copy_markdown": "on the packed films this slot opens while the turn started by the preceding send_turn is "
+    "still streaming, so the last assistant message is mid-tail. Measured 3 of 4 differing, "
+    "with assistant_chars differing on every one",
+    "message_menu": "same cause as copy_markdown: the slot lands inside the previous send_turn's stream. "
+    "Measured 3 of 4 differing, with assistant_chars differing",
+    "select_text": "same cause again, and the worst of the three at 4 of 4 differing; the selection is taken "
+    "over a message whose tail is still arriving",
 }
 
 
@@ -91,19 +82,24 @@ def comparability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
         if not isinstance(side, dict):
             return f"{label} recorded no parity capture at all"
         if not side.get("parity_attempted"):
-            return (f"{label} could not be captured: "
-                    f"{side.get('reason') or 'no reason recorded'}")
+            return (
+                f"{label} could not be captured: " f"{side.get('reason') or 'no reason recorded'}"
+            )
     assert base is not None and treat is not None
     # `root_kind` is absent in captures taken before it was recorded. Missing on BOTH sides is an
     # old payload and is allowed through; missing on one side means the two runs were produced by
     # two different versions of the instrument, which is not a comparison of two builds.
     bk, tk = base.get("root_kind"), treat.get("root_kind")
     if (bk is None) != (tk is None):
-        return ("the two arms were captured by different versions of the parity instrument "
-                f"(root_kind base={bk!r} treatment={tk!r})")
+        return (
+            "the two arms were captured by different versions of the parity instrument "
+            f"(root_kind base={bk!r} treatment={tk!r})"
+        )
     if bk is not None and bk != tk:
-        return (f"the arms digested different roots (base={bk}, treatment={tk}); a body-root "
-                "capture includes the sidebar and header and is not comparable with a thread one")
+        return (
+            f"the arms digested different roots (base={bk}, treatment={tk}); a body-root "
+            "capture includes the sidebar and header and is not comparable with a thread one"
+        )
     return None
 
 
@@ -122,8 +118,9 @@ def localise(base: dict, treat: dict) -> list[str]:
         elif i not in tm:
             moved.append(f"msg{i}({bm[i].get('role', '?')}):only base")
         elif bm[i].get("digest") != tm[i].get("digest"):
-            moved.append(f"msg{i}({bm[i].get('role', '?')}):"
-                         f"{bm[i].get('chars')}->{tm[i].get('chars')}c")
+            moved.append(
+                f"msg{i}({bm[i].get('role', '?')}):" f"{bm[i].get('chars')}->{tm[i].get('chars')}c"
+            )
 
     bo, to = _overlays(base), _overlays(treat)
     if len(bo) != len(to):
@@ -137,8 +134,10 @@ def localise(base: dict, treat: dict) -> list[str]:
         # The whole-thread digest moved but no message and no overlay did. That is the thread
         # scaffolding itself -- the viewport, the composer, the empty-state -- and saying so is
         # more useful than an empty list, which reads as "nothing differs".
-        moved.append(f"thread scaffolding outside any message "
-                     f"({base.get('chars')}->{treat.get('chars')}c)")
+        moved.append(
+            f"thread scaffolding outside any message "
+            f"({base.get('chars')}->{treat.get('chars')}c)"
+        )
     return moved
 
 
@@ -152,11 +151,15 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     if not isinstance(bs, dict) or not isinstance(ts, dict):
         return NOT_COMPARABLE, "one or both arms carry no style probe"
     if bs.get("capped") or ts.get("capped"):
-        return NOT_COMPARABLE, (f"the probe hit its element cap "
-                                f"(base={bs.get('elements')}, treatment={ts.get('elements')})")
+        return NOT_COMPARABLE, (
+            f"the probe hit its element cap "
+            f"(base={bs.get('elements')}, treatment={ts.get('elements')})"
+        )
     if bs.get("elements") != ts.get("elements"):
-        return DIFFER, (f"the probe matched a different number of elements "
-                        f"({bs.get('elements')} vs {ts.get('elements')})")
+        return DIFFER, (
+            f"the probe matched a different number of elements "
+            f"({bs.get('elements')} vs {ts.get('elements')})"
+        )
     if bs.get("digest") == ts.get("digest"):
         return MATCH, ""
     return DIFFER, f"display/visibility/pointer-events differ over {bs.get('elements')} elements"
@@ -177,7 +180,9 @@ def _any_moved(base: dict, treat: dict) -> bool:
     if base.get("digest") != treat.get("digest"):
         return True
     bo, to = _overlays(base), _overlays(treat)
-    if [(o.get("sel"), o.get("digest")) for o in bo] != [(o.get("sel"), o.get("digest")) for o in to]:
+    if [(o.get("sel"), o.get("digest")) for o in bo] != [
+        (o.get("sel"), o.get("digest")) for o in to
+    ]:
         return True
     bm, tm = _messages(base), _messages(treat)
     if set(bm) != set(tm):
@@ -189,15 +194,30 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     """One base/treatment pair -> {verdict, reason, moved, style_verdict, style_reason}."""
     why = comparability(base, treat)
     if why is not None:
-        return {"verdict": NOT_COMPARABLE, "reason": why, "moved": [],
-                "style_verdict": NOT_COMPARABLE, "style_reason": why}
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": why,
+            "moved": [],
+            "style_verdict": NOT_COMPARABLE,
+            "style_reason": why,
+        }
     assert base is not None and treat is not None
     style_verdict, style_reason = compare_styles(base, treat)
     if not _any_moved(base, treat):
-        return {"verdict": MATCH, "reason": "", "moved": [],
-                "style_verdict": style_verdict, "style_reason": style_reason}
-    return {"verdict": DIFFER, "reason": "", "moved": localise(base, treat),
-            "style_verdict": style_verdict, "style_reason": style_reason}
+        return {
+            "verdict": MATCH,
+            "reason": "",
+            "moved": [],
+            "style_verdict": style_verdict,
+            "style_reason": style_reason,
+        }
+    return {
+        "verdict": DIFFER,
+        "reason": "",
+        "moved": localise(base, treat),
+        "style_verdict": style_verdict,
+        "style_reason": style_reason,
+    }
 
 
 def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
@@ -218,21 +238,30 @@ def compare_rows(base_row: Optional[dict], treat_row: Optional[dict]) -> dict:
     """
     for label, row in (("base", base_row), ("treatment", treat_row)):
         if not isinstance(row, dict):
-            return {"verdict": NOT_COMPARABLE, "reason": f"the {label} arm has no row for this "
-                                                         "action", "moved": [],
-                    "style_verdict": NOT_COMPARABLE, "style_reason": ""}
+            return {
+                "verdict": NOT_COMPARABLE,
+                "reason": f"the {label} arm has no row for this action",
+                "moved": [],
+                "style_verdict": NOT_COMPARABLE,
+                "style_reason": "",
+            }
         if not row.get("ran"):
             reason = row.get("reason") or "no reason recorded"
-            return {"verdict": NOT_EXERCISED, "moved": [],
-                    "reason": f"the action did not run on the {label} arm ({reason}), so any "
-                              "agreement here is about a surface nothing touched",
-                    "style_verdict": NOT_EXERCISED, "style_reason": ""}
+            return {
+                "verdict": NOT_EXERCISED,
+                "moved": [],
+                "reason": f"the action did not run on the {label} arm ({reason}), so any "
+                "agreement here is about a surface nothing touched",
+                "style_verdict": NOT_EXERCISED,
+                "style_reason": "",
+            }
     assert base_row is not None and treat_row is not None
     return compare(base_row.get("parity"), treat_row.get("parity"))
 
 
-def derive_unstable(pairs: Iterable[tuple[str, dict]], *,
-                    min_observations: int = 2) -> dict[str, dict]:
+def derive_unstable(
+    pairs: Iterable[tuple[str, dict]], *, min_observations: int = 2
+) -> dict[str, dict]:
     """Which actions differ against THEMSELVES, measured from a base-vs-base null control.
 
     `pairs` is (action, compare() result) over a run whose two arms are the same build. Anything
@@ -286,7 +315,8 @@ def cross_check(derived: dict[str, dict], declared: Iterable[str]) -> dict[str, 
     undetermined = {a for a, r in derived.items() if r["undetermined"]}
     return {
         "declared_stable_in_practice": sorted(
-            a for a in declared if a in derived and a not in unstable and a not in undetermined),
+            a for a in declared if a in derived and a not in unstable and a not in undetermined
+        ),
         "unstable_but_not_declared": sorted(unstable - declared),
         "declared_but_never_observed": sorted(a for a in declared if a not in derived),
         "undetermined": sorted(undetermined),

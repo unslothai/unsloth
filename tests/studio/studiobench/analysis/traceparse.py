@@ -121,7 +121,11 @@ class Thread:
 class Trace:
     """A loaded Chrome trace, indexed by thread."""
 
-    def __init__(self, events: Sequence[dict[str, Any]], metadata: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        events: Sequence[dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.events: list[dict[str, Any]] = list(events)
         self.metadata: dict[str, Any] = dict(metadata or {})
         self._thread_names: dict[tuple[int, int], str] = {}
@@ -160,7 +164,10 @@ class Trace:
             return cls(doc, {})
         if isinstance(doc, dict) and isinstance(doc.get("traceEvents"), list):
             return cls(doc["traceEvents"], doc.get("metadata") or {})
-        raise CellFailure("trace_shape", f"unrecognised trace document keys: {sorted(doc)[:8] if isinstance(doc, dict) else type(doc)}")
+        raise CellFailure(
+            "trace_shape",
+            f"unrecognised trace document keys: {sorted(doc)[:8] if isinstance(doc, dict) else type(doc)}",
+        )
 
     @classmethod
     def from_path(cls, path: str | os.PathLike[str]) -> "Trace":

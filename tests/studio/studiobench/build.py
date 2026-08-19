@@ -43,9 +43,7 @@ MAIN = "tests.studio.studiobench.__main__:main_argv"
 def _copy_package(staging: Path) -> None:
     target = staging / "tests" / "studio" / "studiobench"
     target.parent.mkdir(parents = True, exist_ok = True)
-    shutil.copytree(
-        PKG, target,
-        ignore = shutil.ignore_patterns(*EXCLUDE_DIRS, "*.pyc", "*.pyo"))
+    shutil.copytree(PKG, target, ignore = shutil.ignore_patterns(*EXCLUDE_DIRS, "*.pyc", "*.pyo"))
     # `tests` and `tests/studio` must be importable packages inside the archive, and they are not
     # packages in the repository -- the harnesses there are standalone scripts.
     for pkg_dir in (staging / "tests", staging / "tests" / "studio"):
@@ -85,29 +83,36 @@ def build(out: Path = DEFAULT_OUT, compressed: bool = True) -> Path:
         raise FileNotFoundError(
             "the frozen corpus is not in the tree. Run "
             "`python -m tests.studio.studiobench.fixture.corpus --freeze` before building, or the "
-            "artifact ships a benchmark with no content.")
+            "artifact ships a benchmark with no content."
+        )
 
     # A __main__.py at the archive root is what `python foo.pyz` executes. It re-exports the
     # package's CLI rather than duplicating it.
     (staging / "__main__.py").write_text(
         "import sys\n"
         "from tests.studio.studiobench.__main__ import main\n"
-        "raise SystemExit(main(sys.argv[1:]))\n", encoding = "utf-8")
+        "raise SystemExit(main(sys.argv[1:]))\n",
+        encoding = "utf-8",
+    )
 
-    zipapp.create_archive(staging, target = out, interpreter = "/usr/bin/env python3",
-                          compressed = compressed)
+    zipapp.create_archive(
+        staging, target = out, interpreter = "/usr/bin/env python3", compressed = compressed
+    )
     shutil.rmtree(staging)
     size_mb = out.stat().st_size / 1048576
     print(f"built {out} ({size_mb:.1f} MB)")
     if not had_robust:
-        print("  NOTE: _playwright_robust.py was not found, so the artifact falls back to its own "
-              "Chromium flags and diagnostics")
+        print(
+            "  NOTE: _playwright_robust.py was not found, so the artifact falls back to its own "
+            "Chromium flags and diagnostics"
+        )
     print(f"  run it with: python {out.name} --doctor")
     return out
 
 
 def _main(argv: list) -> int:
     import argparse
+
     ap = argparse.ArgumentParser(description = "Build the studiobench zipapp.")
     ap.add_argument("--out", default = str(DEFAULT_OUT))
     ap.add_argument("--no-compress", action = "store_true")

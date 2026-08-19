@@ -53,7 +53,7 @@ class _PageInstrument(Instrument):
         self.ctx = ctx
         try:
             ctx.context.add_init_script(_js(self.script_name))
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self.unavailable = f"could not install {self.script_name}: {exc}"
 
     def start_cell(self, cell: Cell) -> None:
@@ -62,12 +62,16 @@ class _PageInstrument(Instrument):
         # against a closed one.
         self.page = self.ctx.page if self.ctx else None
 
-    def _eval(self, expr: str, arg: Any = None) -> Any:
+    def _eval(
+        self,
+        expr: str,
+        arg: Any = None,
+    ) -> Any:
         if self.page is None:
             return None
         try:
             return self.page.evaluate(expr, arg) if arg is not None else self.page.evaluate(expr)
-        except Exception as exc:                                    # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self.unavailable = f"{type(exc).__name__}: {exc}"
             return None
 
@@ -101,23 +105,32 @@ class FramesInstrument(_PageInstrument):
         if ctx is None or ctx.cdp is None:
             return
         try:
+
             def on_frame(params):
                 with self._lock:
                     self._screencast_frames += 1
                 try:
-                    ctx.cdp.send("Page.screencastFrameAck",
-                                 {"sessionId": params.get("sessionId", 0)})
-                except Exception:                                   # noqa: BLE001
+                    ctx.cdp.send(
+                        "Page.screencastFrameAck", {"sessionId": params.get("sessionId", 0)}
+                    )
+                except Exception:  # noqa: BLE001
                     pass
 
             ctx.cdp.on("Page.screencastFrame", on_frame)
             # Tiny frames: the point is the COUNT and its timing, and a full-size capture would
             # cost the renderer real encode time inside the window being measured.
-            ctx.cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 1,
-                                                  "maxWidth": 32, "maxHeight": 32,
-                                                  "everyNthFrame": 1})
+            ctx.cdp.send(
+                "Page.startScreencast",
+                {
+                    "format": "jpeg",
+                    "quality": 1,
+                    "maxWidth": 32,
+                    "maxHeight": 32,
+                    "everyNthFrame": 1,
+                },
+            )
             self._screencast_on = True
-        except Exception:                                           # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._screencast_on = False
 
     def calibrate(self, idle_ms: int = 1200) -> dict:
@@ -134,7 +147,9 @@ class FramesInstrument(_PageInstrument):
         self._eval("() => window.__sb.frames.beginCalibration()")
         time.sleep(idle_ms / 1000)
         self.clamp = self._eval("() => window.__sb.frames.endCalibration()") or {
-            "clampMs": None, "reason": "calibration did not return"}
+            "clampMs": None,
+            "reason": "calibration did not return",
+        }
         return self.clamp
 
     def open(self, window: Window) -> None:
@@ -149,8 +164,10 @@ class FramesInstrument(_PageInstrument):
         elapsed_ms = (time.monotonic() - (self._open_at or time.monotonic())) * 1000
         out = self._eval("(ms) => window.__sb.frames.read(ms)", elapsed_ms)
         if out is None:
-            return {"unavailable": self.unavailable or "the page did not answer",
-                    "frames_attempted": False}
+            return {
+                "unavailable": self.unavailable or "the page did not answer",
+                "frames_attempted": False,
+            }
         with self._lock:
             presented = self._screencast_frames
         out["driver_elapsed_ms"] = round(elapsed_ms, 2)
@@ -183,15 +200,18 @@ class FramesInstrument(_PageInstrument):
             "compositor_presented_frames": presented if self._screencast_on else None,
             "compositor_presented": (presented > 0) if self._screencast_on else None,
             "compositor_attempted": self._screencast_on,
-            "compositor_note": ("a liveness signal, NOT a frame rate: Chromium's screencast "
-                                "emits on visual change and is rate-limited"),
+            "compositor_note": (
+                "a liveness signal, NOT a frame rate: Chromium's screencast "
+                "emits on visual change and is rate-limited"
+            ),
             "timer_ticks_expected": None if expected_ticks is None else round(expected_ticks, 1),
         }
         if raf is None or not expected_ticks or lag_ticks is None:
             result["clocks_agree"] = None
             result["clocks_reason"] = (
                 "the timer clamp was not established, so the rAF loop has nothing to be checked "
-                "against and frame counts rest on the page's own report alone")
+                "against and frame counts rest on the page's own report alone"
+            )
             return result
         # THE THIRD CLOCK IS NOT RESOLVED, AND THIS SAYS SO RATHER THAN INVENTING IT.
         #
@@ -220,7 +240,8 @@ class FramesInstrument(_PageInstrument):
             "the tri-clock check is not implementable on a headless engine as designed: rAF has "
             "no vsync to be checked against and the compositor screencast is rate-limited to "
             "visual change. timer_clock_ratio is the sound availability signal; the frame columns "
-            "are the page's own report")
+            "are the page's own report"
+        )
         return result
 
     def end_cell(self, cell: Cell) -> Optional[dict]:
@@ -230,7 +251,7 @@ class FramesInstrument(_PageInstrument):
         if self._screencast_on and self.ctx and self.ctx.cdp:
             try:
                 self.ctx.cdp.send("Page.stopScreencast")
-            except Exception:                                       # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 pass
 
 
@@ -249,12 +270,16 @@ class InputInstrument(_PageInstrument):
 
     def arm(self, selector: str) -> dict:
         return self._eval("(s) => window.__sb.input.arm(s)", selector) or {
-            "armed": False, "reason": self.unavailable or "the page did not answer"}
+            "armed": False,
+            "reason": self.unavailable or "the page did not answer",
+        }
 
     def collect(self, expected: int) -> dict:
         return self._eval("(n) => window.__sb.input.collect(n)", expected) or {
-            "samples": 0, "samples_attempted": False,
-            "reason": self.unavailable or "the page did not answer"}
+            "samples": 0,
+            "samples_attempted": False,
+            "reason": self.unavailable or "the page did not answer",
+        }
 
     def close(self, window: Window) -> Optional[dict]:
         return None
@@ -279,6 +304,8 @@ class GlassInstrument(_PageInstrument):
     def close(self, window: Window) -> Optional[dict]:
         out = self._eval("() => window.__sb.glass && window.__sb.glass.read()")
         if out is None:
-            return {"glass_attempted": False,
-                    "unavailable": self.unavailable or "glass.js is not installed"}
+            return {
+                "glass_attempted": False,
+                "unavailable": self.unavailable or "glass.js is not installed",
+            }
         return out

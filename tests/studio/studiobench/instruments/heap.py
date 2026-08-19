@@ -207,9 +207,7 @@ class SamplingHeapProfiler:
 
 
 def survival_ratio(
-    allocated: HeapProfile,
-    survivors: HeapProfile,
-    needles: Iterable[str],
+    allocated: HeapProfile, survivors: HeapProfile, needles: Iterable[str]
 ) -> dict[str, Any]:
     """How much of what a site allocated is still alive after a major GC.
 
@@ -268,10 +266,10 @@ def survival_ratio(
 # What this instrument emits is the allocation side plus the site breakdown, so
 # `analysis.heap.survival_ratio` can be applied across two arms afterwards.
 
-import time                                                              # noqa: E402
+import time  # noqa: E402
 
-from ..analysis import assert_no_bare_zero, measured, merge, unmeasured   # noqa: E402
-from . import register_instrument                                        # noqa: E402
+from ..analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
+from . import register_instrument  # noqa: E402
 
 
 class HeapInstrument:
@@ -280,7 +278,11 @@ class HeapInstrument:
     name = "heap"
     level = 3
 
-    def __init__(self, top_n: int = 20, include_major_gc: bool = True) -> None:
+    def __init__(
+        self,
+        top_n: int = 20,
+        include_major_gc: bool = True,
+    ) -> None:
         self.ctx: Any = None
         self.cdp: Any = None
         self.top_n = top_n
@@ -297,7 +299,9 @@ class HeapInstrument:
         self.cdp = getattr(self.ctx, "cdp", None)
         self._overhead_ms = 0.0
         self._windows = 0
-        self._reason = "" if self.cdp is not None else "no CDP session; HeapProfiler is Chromium only"
+        self._reason = (
+            "" if self.cdp is not None else "no CDP session; HeapProfiler is Chromium only"
+        )
 
     def open(self, window: Any) -> None:
         if self.cdp is None:
@@ -312,7 +316,7 @@ class HeapInstrument:
             # transient-allocation hypothesis reads as "no allocation here".
             self._reason = f"{exc.gate}: {exc.detail}"
             self.profiler = None
-        except Exception as exc:                                   # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self._reason = f"{type(exc).__name__}: {exc}"
             self.profiler = None
         self._overhead_ms += (time.perf_counter() - t0) * 1000.0
@@ -329,9 +333,10 @@ class HeapInstrument:
             payload = merge(
                 measured("allocated_bytes", int(prof.total_bytes)),
                 measured("allocation_sites", len(prof.self_bytes)),
-                measured("top_sites", [
-                    {"site": f.label(), "bytes": int(n)} for f, n in prof.top(self.top_n)
-                ]),
+                measured(
+                    "top_sites",
+                    [{"site": f.label(), "bytes": int(n)} for f, n in prof.top(self.top_n)],
+                ),
                 {
                     "active": True,
                     "included_objects_collected_by_major_gc": bool(prof.included_major_gc),
@@ -342,7 +347,7 @@ class HeapInstrument:
                     ),
                 },
             )
-        except Exception as exc:                                   # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             payload = merge(
                 unmeasured("allocated_bytes", f"{type(exc).__name__}: {exc}"),
                 {"active": True, "included_objects_collected_by_major_gc": self.include_major_gc},

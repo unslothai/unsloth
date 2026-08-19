@@ -33,10 +33,16 @@ _STUDIO_TESTS = os.path.dirname(os.path.dirname(_HERE))
 if _STUDIO_TESTS not in sys.path:
     sys.path.insert(0, _STUDIO_TESTS)
 
-from studiobench.analysis import assert_no_bare_zero          # noqa: E402
-from studiobench.instruments import available, build, import_errors   # noqa: E402
-from studiobench.runtime.types import (                       # noqa: E402
-    BenchContext, Cell, Paths, Recorder, Window, make_cell_id, new_session_id,
+from studiobench.analysis import assert_no_bare_zero  # noqa: E402
+from studiobench.instruments import available, build, import_errors  # noqa: E402
+from studiobench.runtime.types import (  # noqa: E402
+    BenchContext,
+    Cell,
+    Paths,
+    Recorder,
+    Window,
+    make_cell_id,
+    new_session_id,
 )
 
 # A page with a known shape: a message-channel loop (the React scheduler's
@@ -56,7 +62,7 @@ window.__runTimer = function(){ var id = setInterval(function(){ middleFrame(1);
 </script></body>"""
 
 MESSAGE_ITERATIONS = 150
-CALLS_PER_MESSAGE = 20            # middleFrame calls hotLeafFrame 20 times
+CALLS_PER_MESSAGE = 20  # middleFrame calls hotLeafFrame 20 times
 
 
 def _skip(reason: str) -> int:
@@ -140,14 +146,23 @@ def main() -> int:
                     cdp = context.new_cdp_session(page)
 
                     ctx = BenchContext(
-                        browser = browser, context = context, page = page, cdp = cdp,
-                        base_url = "about:blank", session_id = session_id,
-                        tier = "quick", instrument_level = level,
-                        paths = paths, recorder = recorder, log = lambda m: None,
+                        browser = browser,
+                        context = context,
+                        page = page,
+                        cdp = cdp,
+                        base_url = "about:blank",
+                        session_id = session_id,
+                        tier = "quick",
+                        instrument_level = level,
+                        paths = paths,
+                        recorder = recorder,
+                        log = lambda m: None,
                     )
                     cell = Cell(
-                        cell_id = make_cell_id("10K", "A0", 0), rung = "10K",
-                        rung_tokens = 10_000, instrument_level = level,
+                        cell_id = make_cell_id("10K", "A0", 0),
+                        rung = "10K",
+                        rung_tokens = 10_000,
+                        instrument_level = level,
                         session_id = session_id,
                     )
                     insts = build(level)
@@ -179,14 +194,15 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
     for name, payload in list(w.instruments.items()) + list(crows.items()):
         try:
             assert_no_bare_zero(payload, f"{tag}.{name}")
-        except Exception as exc:                                  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             fail(f"{name} violates the no-bare-zero rule: {exc}")
 
     # The window row must be JSON-serialisable, since Recorder writes it.
     import json
+
     try:
         json.dumps(w.row())
-    except Exception as exc:                                      # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         fail(f"window row is not JSON-safe: {exc}")
 
     # Overhead is mandatory from every instrument at level >= 1, and it is what
@@ -202,8 +218,10 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
         fail("tracing reported no unclassified_task_pct")
     else:
         by_origin = tracing.get("task_count_by_origin") or {}
-        print(f"ok   [{tag}] tracing task_ms={tracing['task_ms']} "
-              f"unclassified={tracing['unclassified_task_pct']}% origins={by_origin}")
+        print(
+            f"ok   [{tag}] tracing task_ms={tracing['task_ms']} "
+            f"unclassified={tracing['unclassified_task_pct']}% origins={by_origin}"
+        )
         if by_origin.get("message_channel", 0) < MESSAGE_ITERATIONS * 0.8:
             fail(f"expected ~{MESSAGE_ITERATIONS} message-channel tasks, got {by_origin}")
 
@@ -237,8 +255,10 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
         elif not (crows.get("cpu_profile", {}).get("stand_down_reason")):
             fail("cpu_profile stood down without saying why")
         else:
-            print(f"ok   [{tag}] cpu_profile stood down: "
-                  f"{crows['cpu_profile']['stand_down_reason'][:60]}...")
+            print(
+                f"ok   [{tag}] cpu_profile stood down: "
+                f"{crows['cpu_profile']['stand_down_reason'][:60]}..."
+            )
 
     if level == 3:
         cov = w.instruments.get("coverage", {})
@@ -253,9 +273,11 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
             else:
                 mids = [f for f in cov["top_functions"] if f["function"] == "middleFrame"]
                 exact_oracle = mids and hits[0]["count"] == CALLS_PER_MESSAGE * mids[0]["count"]
-                print(f"ok   [{tag}] coverage counted hotLeafFrame exactly "
-                      f"{hits[0]['count']} == page counter; structural oracle "
-                      f"(hot == {CALLS_PER_MESSAGE} x middle) {'holds' if exact_oracle else 'MISSED'}")
+                print(
+                    f"ok   [{tag}] coverage counted hotLeafFrame exactly "
+                    f"{hits[0]['count']} == page counter; structural oracle "
+                    f"(hot == {CALLS_PER_MESSAGE} x middle) {'holds' if exact_oracle else 'MISSED'}"
+                )
                 if not exact_oracle:
                     fail("the structural count oracle did not hold")
             if not cov.get("timings_void"):

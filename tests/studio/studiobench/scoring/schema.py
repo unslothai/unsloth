@@ -69,13 +69,13 @@ ZERO_OK_KEYS = frozenset(
         # -- harness-row counters whose zero is the GOOD result, not a missing reading. Each of
         # these is written unconditionally by the session layer for every cell, so "absent" and
         # "zero" are already distinguishable: absent means the row was never written at all.
-        "slots_missed",      # 0 means the film kept time, which is exactly what we want to read
-        "expect_failures",   # 0 means every action's expectation held
-        "over_budget_ms",    # 0 means the action fitted inside its slot
-        "seeded_chars",      # the small rungs seed nothing; 0 is the truth about the cell
+        "slots_missed",  # 0 means the film kept time, which is exactly what we want to read
+        "expect_failures",  # 0 means every action's expectation held
+        "over_budget_ms",  # 0 means the action fitted inside its slot
+        "seeded_chars",  # the small rungs seed nothing; 0 is the truth about the cell
         "seeded_messages",
         "seed_seconds",
-        "bursts",            # a pacer that never had to burst is a pacer that was never jammed
+        "bursts",  # a pacer that never had to burst is a pacer that was never jammed
         # Seeded-vs-streamed equivalence: 0 drift on a field is the PASSING result, and it is the
         # single most load-bearing zero in the payload, because it is what licenses every rung
         # above 10K to be seeded rather than streamed.
@@ -127,7 +127,7 @@ class PayloadSchemaError(AssertionError):
     """Raised when a payload contains a number that cannot be interpreted."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Measure:
     """One number, plus everything needed to know whether it means anything.
 
@@ -160,12 +160,12 @@ class Measure:
 
     @classmethod
     def not_attempted(cls, unit: str, reason: str) -> "Measure":
-        return cls(value=None, attempted=False, unit=unit, note=reason)
+        return cls(value = None, attempted = False, unit = unit, note = reason)
 
     @classmethod
     def failed(cls, unit: str, reason: str) -> "Measure":
         """Attempted, but produced no usable reading. Distinct from both zero and skipped."""
-        return cls(value=None, attempted=True, unit=unit, note=reason)
+        return cls(value = None, attempted = True, unit = unit, note = reason)
 
     @classmethod
     def read(
@@ -175,7 +175,7 @@ class Measure:
         floor: float | None = None,
         note: str | None = None,
     ) -> "Measure":
-        return cls(value=float(value), attempted=True, unit=unit, floor=floor, note=note)
+        return cls(value = float(value), attempted = True, unit = unit, floor = floor, note = note)
 
     # -- predicates ---------------------------------------------------------------------
 
@@ -250,18 +250,18 @@ class Measure:
                 f"{key} carries a value but {attempted_key} is false; a row cannot both have a "
                 "reading and claim it was never attempted"
             )
-        return cls.read(float(value), unit, floor=floor, note=reason)
+        return cls.read(float(value), unit, floor = floor, note = reason)
 
     @classmethod
     def from_json(cls, blob: Mapping[str, Any]) -> "Measure":
         if blob.get("kind") != MEASURE_KIND:
             raise PayloadSchemaError(f"not a measure object: {blob!r}")
         return cls(
-            value=blob.get("value"),
-            attempted=bool(blob.get("attempted")),
-            unit=blob.get("unit", ""),
-            floor=blob.get("floor"),
-            note=blob.get("note"),
+            value = blob.get("value"),
+            attempted = bool(blob.get("attempted")),
+            unit = blob.get("unit", ""),
+            floor = blob.get("floor"),
+            note = blob.get("note"),
         )
 
 
@@ -353,14 +353,12 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
     if "excluded_cells" not in payload:
         raise PayloadSchemaError("payload is missing the mandatory `excluded_cells` key")
     if payload["excluded_cells"] is None:
-        raise PayloadSchemaError(
-            "`excluded_cells` is null; use [] to claim nothing was excluded"
-        )
+        raise PayloadSchemaError("`excluded_cells` is null; use [] to claim nothing was excluded")
     if not isinstance(payload["excluded_cells"], Sequence):
         raise PayloadSchemaError("`excluded_cells` must be a list")
 
     problems: list[str] = []
-    _walk_for_bare_zeros(payload, path="$", problems=problems)
+    _walk_for_bare_zeros(payload, path = "$", problems = problems)
     if problems:
         joined = "\n  ".join(problems)
         raise PayloadSchemaError(
@@ -387,9 +385,7 @@ def _walk_for_bare_zeros(node: Any, path: str, problems: list[str]) -> None:
         # So a mapping that positively attests (any `*_attempted` key that is True) covers the
         # numeric zeros DIRECTLY inside it. It does not cover nested mappings, which carry their
         # own attestation or none.
-        attested = any(
-            k.endswith("_attempted") and v is True for k, v in node.items()
-        )
+        attested = any(k.endswith("_attempted") and v is True for k, v in node.items())
         for key, child in node.items():
             if key in EXEMPT_SUBTREE_KEYS:
                 continue

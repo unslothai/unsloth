@@ -28,7 +28,7 @@ from .render import render_summary
 
 def _records(path: str | Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    with Path(path).open(encoding="utf-8") as fh:
+    with Path(path).open(encoding = "utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -64,10 +64,7 @@ def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple
     return out
 
 
-def score_payload(
-    path: str | Path,
-    declared_rungs: Sequence[int] | None = None,
-) -> LadderScore:
+def score_payload(path: str | Path, declared_rungs: Sequence[int] | None = None) -> LadderScore:
     """Score one run. `declared_rungs` is the ladder the tier promised, in tokens."""
 
     records = _records(path)
@@ -83,15 +80,13 @@ def score_payload(
                 score_rung(
                     tokens,
                     {},
-                    completed=False,
-                    failure_mode="declared for this tier but no cell was recorded for it",
+                    completed = False,
+                    failure_mode = "declared for this tier but no cell was recorded for it",
                 )
             )
             continue
         complete, reason = completion.get(tokens, (True, None))
-        scored.append(
-            score_rung(tokens, measures[tokens], completed=complete, failure_mode=reason)
-        )
+        scored.append(score_rung(tokens, measures[tokens], completed = complete, failure_mode = reason))
     return score_ladder(scored)
 
 
@@ -105,5 +100,5 @@ def build_report(
 
     payload = assemble_rows(path)
     ladder = score_payload(path, declared_rungs)
-    text = render_summary(payload, ladder, extra_sections=extra_sections)
+    text = render_summary(payload, ladder, extra_sections = extra_sections)
     return text, ladder, payload

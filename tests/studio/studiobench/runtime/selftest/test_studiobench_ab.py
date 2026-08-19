@@ -15,26 +15,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.runtime.ab import (                     # noqa: E402
+from studiobench.runtime.ab import (  # noqa: E402
     Target,
     interleave,
     order_is_balanced,
     origin_scoped,
 )
-from studiobench.runtime.types import Cell               # noqa: E402
+from studiobench.runtime.types import Cell  # noqa: E402
 
 
 def _cells(reps: int, rung: str = "1K"):
     return [
-        (Cell(cell_id=f"r{rung}.A0.rep{rep}", rung=rung, rung_tokens=1000, rep=rep), object())
+        (Cell(cell_id = f"r{rung}.A0.rep{rep}", rung = rung, rung_tokens = 1000, rep = rep), object())
         for rep in range(reps)
     ]
 
 
 def _targets():
     return [
-        Target(label="base", ref="main", base_url="http://a", seeder=None, runner=None),
-        Target(label="treatment", ref="pr", base_url="http://b", seeder=None, runner=None),
+        Target(label = "base", ref = "main", base_url = "http://a", seeder = None, runner = None),
+        Target(label = "treatment", ref = "pr", base_url = "http://b", seeder = None, runner = None),
     ]
 
 
@@ -72,7 +72,7 @@ def test_three_reps_are_not_balanced():
 
 
 def test_a_single_target_is_never_balanced():
-    one = [Target(label="base", ref="main", base_url="http://a", seeder=None, runner=None)]
+    one = [Target(label = "base", ref = "main", base_url = "http://a", seeder = None, runner = None)]
     assert order_is_balanced(interleave(_cells(2), one)) is False
 
 

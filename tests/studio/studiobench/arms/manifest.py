@@ -61,7 +61,7 @@ class ArmStatus(enum.Enum):
     UNAVAILABLE = "UNAVAILABLE"  # the arm needs a build that this install is not
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class PotencyCounter:
     """The proof that the arm fired, and the minimum movement that counts.
 
@@ -94,7 +94,7 @@ class PotencyCounter:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class DeclaredDiff:
     """For EQUIVALENT arms: exactly what is allowed to differ, and nothing else.
 
@@ -115,7 +115,7 @@ class DeclaredDiff:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Arm:
     """One ablation arm: what it does, what it claims, and how it proves it fired."""
 
@@ -173,7 +173,7 @@ class ArmOutcome:
     observed_diff_keys: tuple[str, ...] = ()
     potency_before: float | None = None
     potency_after: float | None = None
-    potency_counters: dict[str, Any] = field(default_factory=dict)
+    potency_counters: dict[str, Any] = field(default_factory = dict)
 
     @property
     def quotable(self) -> bool:
@@ -252,26 +252,26 @@ def judge(
 
     if not available:
         return ArmOutcome(
-            arm=arm,
-            cost=Measure.not_attempted(cost.unit, unavailable_reason or "arm unavailable"),
-            status=ArmStatus.UNAVAILABLE,
-            reason=unavailable_reason or "arm unavailable for this build",
-            potency_counters=counters,
+            arm = arm,
+            cost = Measure.not_attempted(cost.unit, unavailable_reason or "arm unavailable"),
+            status = ArmStatus.UNAVAILABLE,
+            reason = unavailable_reason or "arm unavailable for this build",
+            potency_counters = counters,
         )
 
     outcome = ArmOutcome(
-        arm=arm,
-        cost=cost,
-        status=ArmStatus.QUOTED,
-        reason="",
-        digest_before=digest_before,
-        digest_after=digest_after,
-        normalised_before=normalised_before,
-        normalised_after=normalised_after,
-        observed_diff_keys=tuple(observed_diff_keys),
-        potency_before=potency_before,
-        potency_after=potency_after,
-        potency_counters=counters,
+        arm = arm,
+        cost = cost,
+        status = ArmStatus.QUOTED,
+        reason = "",
+        digest_before = digest_before,
+        digest_after = digest_after,
+        normalised_before = normalised_before,
+        normalised_after = normalised_after,
+        observed_diff_keys = tuple(observed_diff_keys),
+        potency_before = potency_before,
+        potency_after = potency_after,
+        potency_counters = counters,
     )
 
     if arm.invariance is Invariance.EXACT:

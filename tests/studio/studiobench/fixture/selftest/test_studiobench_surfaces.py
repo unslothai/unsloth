@@ -25,13 +25,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.report.payload import ROW_TYPE_SECTIONS           # noqa: E402
-from studiobench.runtime.types import ROW_REQUIRED, ROW_TYPES      # noqa: E402
-from studiobench.scene import surface_sweep, surfaces              # noqa: E402
-from studiobench.scoring.schema import validate_payload            # noqa: E402
+from studiobench.report.payload import ROW_TYPE_SECTIONS  # noqa: E402
+from studiobench.runtime.types import ROW_REQUIRED, ROW_TYPES  # noqa: E402
+from studiobench.scene import surface_sweep, surfaces  # noqa: E402
+from studiobench.scoring.schema import validate_payload  # noqa: E402
 
 
 # ── the registry is well formed ─────────────────────────────────────
+
 
 def test_the_shipped_registry_validates():
     surfaces.validate_registry()
@@ -47,7 +48,8 @@ def test_every_surface_declares_a_reach_a_restore_and_a_root():
         assert surface.root, surface.id
         assert surface.reach or surface.restore == (), (
             f"{surface.id} declares no reach, so it must also declare no restore: a surface that "
-            f"is reached by doing nothing cannot need undoing")
+            f"is reached by doing nothing cannot need undoing"
+        )
         # Anything that navigates or opens an overlay has to say how to get back, or the next
         # surface is reached from a state nobody declared.
         opens = any(step[0] in {"goto", "click", "fill", "press"} for step in surface.reach)
@@ -60,15 +62,21 @@ def test_every_surface_declares_a_settle_condition():
     for surface in surfaces.surfaces():
         assert surface.settle is not None, surface.id
         assert isinstance(surface.settle, dict)
-        assert set(surface.settle) & {"visible", "hidden", "count_at_least", "text", "js"}, (
-            f"{surface.id} has a settle condition surfaces.js cannot evaluate")
+        assert set(surface.settle) & {
+            "visible",
+            "hidden",
+            "count_at_least",
+            "text",
+            "js",
+        }, f"{surface.id} has a settle condition surfaces.js cannot evaluate"
 
 
 def test_no_surface_settles_on_a_timer():
     for surface in surfaces.surfaces():
         assert "wait" not in surface.settle, (
             f"{surface.id} settles on a wait. A wait cannot tell a surface that rendered from one "
-            f"that never did")
+            f"that never did"
+        )
 
 
 def test_every_step_uses_a_known_verb_with_the_right_arity():
@@ -83,11 +91,19 @@ def test_the_sweep_can_execute_every_verb_the_registry_uses():
     # The registry and the interpreter are in different files, and a verb added to one and not the
     # other fails only at run time, on the surface that uses it, as a reach failure that reads
     # like a broken selector.
-    used = {step[0] for s in surfaces.surfaces() for steps in (s.reach, s.restore)
-            for step in steps}
+    used = {
+        step[0] for s in surfaces.surfaces() for steps in (s.reach, s.restore) for step in steps
+    }
     driver = surface_sweep._Driver(page = _FakePage(), base_url = "http://x", log = lambda _m: None)
-    sample = {"goto": ("/chat",), "click": ("sel",), "click_if": ("sel",), "hover": ("sel",),
-              "press": ("Escape",), "fill": ("sel", "text"), "wait": (10,)}
+    sample = {
+        "goto": ("/chat",),
+        "click": ("sel",),
+        "click_if": ("sel",),
+        "hover": ("sel",),
+        "press": ("Escape",),
+        "fill": ("sel", "text"),
+        "wait": (10,),
+    }
     for verb in used:
         driver._step(verb, sample[verb])
 
@@ -112,8 +128,20 @@ def test_the_settings_dialog_covers_every_shipped_tab():
     # The twelve panels are lazily imported chunks, so a tab that stopped rendering fails only
     # for the tab. Pinned here so a panel added to the app without a surface is visible as a
     # missing id rather than as a coverage figure that quietly stayed at 100%.
-    shipped = {"general", "profile", "appearance", "resources", "chat", "voice", "connections",
-               "data", "api-keys", "agents", "debugging", "about"}
+    shipped = {
+        "general",
+        "profile",
+        "appearance",
+        "resources",
+        "chat",
+        "voice",
+        "connections",
+        "data",
+        "api-keys",
+        "agents",
+        "debugging",
+        "about",
+    }
     registered = {s.id.split(":", 1)[1] for s in surfaces.surfaces() if s.group == "settings"}
     assert shipped - registered == set()
 
@@ -122,8 +150,18 @@ def test_the_registry_covers_every_routed_path():
     # From app/router.tsx. `/` and `/settings` are not page surfaces -- both redirect on
     # beforeLoad -- and the two auth-flow routes are in KNOWN_UNCOVERED with the guard that
     # redirects them.
-    routed = {"/chat", "/projects", "/hub", "/studio", "/images", "/video", "/audio", "/export",
-              "/data-recipes", "/api-monitor"}
+    routed = {
+        "/chat",
+        "/projects",
+        "/hub",
+        "/studio",
+        "/images",
+        "/video",
+        "/audio",
+        "/export",
+        "/data-recipes",
+        "/api-monitor",
+    }
     reached = set()
     for surface in surfaces.surfaces():
         for step in surface.reach:
@@ -134,9 +172,17 @@ def test_the_registry_covers_every_routed_path():
 
 # ── validate_registry rejects what it must ──────────────────────────
 
+
 def _one(**overrides):
-    base = dict(id = "x:one", group = "g", title = "t", reach = (("goto", "/chat"),),
-                restore = (("goto", "/chat"),), root = ("body",), settle = {"visible": "body"})
+    base = dict(
+        id = "x:one",
+        group = "g",
+        title = "t",
+        reach = (("goto", "/chat"),),
+        restore = (("goto", "/chat"),),
+        root = ("body",),
+        settle = {"visible": "body"},
+    )
     base.update(overrides)
     return surfaces.Surface(**base)
 
@@ -163,6 +209,7 @@ def test_validate_rejects_a_surface_with_no_digest_root():
 
 # ── the row type is registered, not smuggled ────────────────────────
 
+
 def test_the_surface_row_type_is_registered():
     assert "surface" in ROW_TYPES
     assert ROW_TYPE_SECTIONS["surface"] == "surfaces"
@@ -180,11 +227,24 @@ def test_the_recorder_accepts_a_surface_row_and_rejects_one_missing_its_reason(t
     from studiobench.runtime.types import Recorder
 
     rec = Recorder(tmp_path / "payload.jsonl", "session")
-    rec.emit({"row_type": "surface", "surface": "route:chat", "reached": True, "reason": None,
-              "parity": {"parity_attempted": True, "digest": "abcd1234"}})
+    rec.emit(
+        {
+            "row_type": "surface",
+            "surface": "route:chat",
+            "reached": True,
+            "reason": None,
+            "parity": {"parity_attempted": True, "digest": "abcd1234"},
+        }
+    )
     with pytest.raises(ValueError, match = "reason"):
-        rec.emit({"row_type": "surface", "surface": "route:hub", "reached": False,
-                  "parity": {"parity_attempted": False}})
+        rec.emit(
+            {
+                "row_type": "surface",
+                "surface": "route:hub",
+                "reached": False,
+                "parity": {"parity_attempted": False},
+            }
+        )
     rec.close()
 
 
@@ -197,7 +257,8 @@ def test_surface_rows_land_in_their_own_payload_section(tmp_path):
         '{"row_type":"cell","cell_id":"r1K.A0.rep0","completed":true}\n'
         '{"row_type":"surface","surface":"route:chat","reached":true,"reason":null,'
         '"parity":{"parity_attempted":true,"digest":"abcd1234"}}\n',
-        encoding = "utf-8")
+        encoding = "utf-8",
+    )
     payload = assemble_rows(path)
     assert len(payload["surfaces"]) == 1
     # NOT in unknown_rows. A new row type that lands there is carried through the whole report
@@ -213,6 +274,7 @@ def test_a_payload_carrying_surface_rows_has_no_bare_zeros():
 
 
 # ── the manifest ────────────────────────────────────────────────────
+
 
 def _rows_for(entries, reached_ids):
     out = []
@@ -280,25 +342,37 @@ def test_the_measured_volatile_surfaces_are_declared():
     # a settle condition that is tightened later shows up as a flag that can now be dropped,
     # rather than as a flag nobody revisits.
     declared = {s.id for s in surfaces.surfaces() if s.volatile}
-    assert {"route:chat", "chat:composer-filled", "settings:resources", "settings:debugging",
-            "route:hub", "hub:datasets", "hub:compact-layout",
-            # Measured to move, mechanism not established. Pinned so the admission stays visible.
-            "route:train", "settings:agents", "train:image-training"} <= declared
+    assert {
+        "route:chat",
+        "chat:composer-filled",
+        "settings:resources",
+        "settings:debugging",
+        "route:hub",
+        "hub:datasets",
+        "hub:compact-layout",
+        # Measured to move, mechanism not established. Pinned so the admission stays visible.
+        "route:train",
+        "settings:agents",
+        "train:image-training",
+    } <= declared
 
 
 def test_the_unexplained_movers_say_so_rather_than_offering_a_cause():
     # A plausible-sounding mechanism that has not been established is worse than an admitted gap:
     # it is the sentence somebody uses to wave away a real difference.
-    unexplained = [s for s in surfaces.surfaces()
-                   if s.volatile and "NOT" in s.volatile and "established" in s.volatile]
-    assert {s.id for s in unexplained} == {"route:train", "settings:agents",
-                                           "train:image-training"}
+    unexplained = [
+        s
+        for s in surfaces.surfaces()
+        if s.volatile and "NOT" in s.volatile and "established" in s.volatile
+    ]
+    assert {s.id for s in unexplained} == {"route:train", "settings:agents", "train:image-training"}
 
 
 def test_the_rendered_manifest_names_the_volatile_surfaces():
     entries = [_one(id = "b", volatile = "shows a live memory gauge that moves on its own")]
     text = surface_sweep.render_manifest(
-        surface_sweep.build_manifest(_rows_for(entries, {"b"}), entries, {"scoped": True}))
+        surface_sweep.build_manifest(_rows_for(entries, {"b"}), entries, {"scoped": True})
+    )
     assert "NOT COMPARABLE" in text
     assert "live memory gauge" in text
 
@@ -308,7 +382,8 @@ def test_the_manifest_carries_the_known_uncovered_list():
     manifest = surface_sweep.build_manifest(_rows_for(entries, set()), entries, {"scoped": True})
     assert manifest["known_uncovered_count"] == len(surfaces.KNOWN_UNCOVERED)
     assert {u["id"] for u in manifest["known_uncovered"]} == {
-        u["id"] for u in surfaces.KNOWN_UNCOVERED}
+        u["id"] for u in surfaces.KNOWN_UNCOVERED
+    }
 
 
 def test_the_rendered_manifest_names_every_failure_and_every_known_gap():
@@ -327,14 +402,17 @@ def test_an_unscoped_sweep_says_so_in_the_rendered_manifest():
     # the top of the artefact, not inferable from a field somebody might read.
     entries = surfaces.surfaces()[:1]
     manifest = surface_sweep.build_manifest(
-        _rows_for(entries, {entries[0].id}), entries,
-        {"scoped": False, "reason": "parity.capture() ignored the moved root"})
+        _rows_for(entries, {entries[0].id}),
+        entries,
+        {"scoped": False, "reason": "parity.capture() ignored the moved root"},
+    )
     text = surface_sweep.render_manifest(manifest)
     assert "WARNING" in text
     assert "ignored the moved root" in text
 
 
 # ── the sweep's own bookkeeping ─────────────────────────────────────
+
 
 class _FakePage:
     """A scripted stand-in for a Playwright page.
@@ -344,7 +422,11 @@ class _FakePage:
     one row per surface, each carrying a reason, rather than emitting nothing.
     """
 
-    def __init__(self, reach_ok: bool = True, settles: bool = True) -> None:
+    def __init__(
+        self,
+        reach_ok: bool = True,
+        settles: bool = True,
+    ) -> None:
         self.reach_ok = reach_ok
         self.settles = settles
         self.clicks: list = []
@@ -378,29 +460,53 @@ class _FakePage:
     def press(self, _key) -> None:
         pass
 
-    def evaluate(self, script, arg = None):
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):
         if "probeScoping" in script:
             return {"scoped": True, "scoping_attempted": True, "probe_chars": 44}
         if "settled" in script:
             return {"ok": self.settles, "detail": "scripted"}
         if "capture" in script:
-            return {"parity_attempted": True, "digest": "abcd1234", "chars": 100,
-                    "messages": [], "overlays": [], "root_selector": (arg or ["?"])[0]}
+            return {
+                "parity_attempted": True,
+                "digest": "abcd1234",
+                "chars": 100,
+                "messages": [],
+                "overlays": [],
+                "root_selector": (arg or ["?"])[0],
+            }
         if "facts" in script:
-            return {"facts_attempted": True, "root_elements": 10, "pathname": "/chat",
-                    "open_dialogs": 0, "open_menus": 0}
+            return {
+                "facts_attempted": True,
+                "root_elements": 10,
+                "pathname": "/chat",
+                "open_dialogs": 0,
+                "open_menus": 0,
+            }
         if "isClean" in script:
-            return {"clean_attempted": True, "open_dialogs": 0, "open_menus": 0,
-                    "pathname": "/chat"}
+            return {
+                "clean_attempted": True,
+                "open_dialogs": 0,
+                "open_menus": 0,
+                "pathname": "/chat",
+            }
         raise AssertionError(f"unscripted evaluate: {script[:60]}")
 
 
 def test_a_reach_that_fails_records_a_reason_and_never_a_digest():
     rows, _manifest = surface_sweep.sweep(_FakePage(reach_ok = False), "http://x")
     assert len(rows) == len(surfaces.surfaces())
-    interactive = [r for r in rows
-                   if any(step[0] in {"click", "hover", "fill"}
-                          for step in surfaces.get_surface(r["surface"]).reach)]
+    interactive = [
+        r
+        for r in rows
+        if any(
+            step[0] in {"click", "hover", "fill"}
+            for step in surfaces.get_surface(r["surface"]).reach
+        )
+    ]
     assert interactive, "the registry has no interactive surface left to check"
     for row in interactive:
         assert row["reached"] is False
@@ -412,8 +518,11 @@ def test_a_reach_that_fails_records_a_reason_and_never_a_digest():
 
 def test_a_surface_that_never_settles_is_not_recorded_as_reached():
     rows, manifest = surface_sweep.sweep(
-        _FakePage(reach_ok = True, settles = False), "http://x",
-        settle_timeout_ms = 1, surface_budget_ms = 50)
+        _FakePage(reach_ok = True, settles = False),
+        "http://x",
+        settle_timeout_ms = 1,
+        surface_budget_ms = 50,
+    )
     assert manifest["reached"] == 0
     assert len(rows) == len(surfaces.surfaces())
     for row in rows:
@@ -459,12 +568,14 @@ def test_the_sweep_returns_to_the_known_state_before_every_surface():
 
 # ── the digest is the film's digest, not a second one ───────────────
 
+
 def test_the_sweep_takes_its_digest_through_parity_capture():
     # If surfaces.js ever grew its own DOM walk, surface digests and action digests would stop
     # being comparable -- and nothing downstream would notice, because both would still be hex
     # strings of the same length.
     text = (Path(__file__).resolve().parents[2] / "scene" / "surfaces.js").read_text(
-        encoding = "utf-8")
+        encoding = "utf-8"
+    )
     assert "parity.capture()" in text
     assert "window.__sb.parity" in text
 
@@ -473,7 +584,8 @@ def test_surfaces_js_does_not_edit_the_shared_chat_adapter():
     # dom.js is the film's adapter and every action reads it. The surface layer restores the root
     # it moved, so a sweep cannot leave the film digesting the wrong element.
     text = (Path(__file__).resolve().parents[2] / "scene" / "surfaces.js").read_text(
-        encoding = "utf-8")
+        encoding = "utf-8"
+    )
     assert "dom.threadRoot = original" in text
 
 

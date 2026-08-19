@@ -30,14 +30,14 @@ _STUDIO_TESTS = os.path.dirname(os.path.dirname(_HERE))
 if _STUDIO_TESTS not in sys.path:
     sys.path.insert(0, _STUDIO_TESTS)
 
-from studiobench.analysis import CellFailure                      # noqa: E402
+from studiobench.analysis import CellFailure  # noqa: E402
 from studiobench.analysis import assert_no_bare_zero, measured, merge, unmeasured  # noqa: E402
-from studiobench.analysis import classify as K                    # noqa: E402
-from studiobench.analysis import cpuprofile as C                  # noqa: E402
-from studiobench.analysis import fit as F                         # noqa: E402
-from studiobench.analysis import oracles as O                     # noqa: E402
-from studiobench.analysis import symbols as S                     # noqa: E402
-from studiobench.analysis.traceparse import Trace, build_tree     # noqa: E402
+from studiobench.analysis import classify as K  # noqa: E402
+from studiobench.analysis import cpuprofile as C  # noqa: E402
+from studiobench.analysis import fit as F  # noqa: E402
+from studiobench.analysis import oracles as O  # noqa: E402
+from studiobench.analysis import symbols as S  # noqa: E402
+from studiobench.analysis.traceparse import Trace, build_tree  # noqa: E402
 
 TRACE = os.path.join(_HERE, "testdata", "probe_msgchan_timer_raf.json.gz")
 
@@ -75,9 +75,7 @@ def test_profiled_thread_is_the_renderer_main_not_the_profiler_thread() -> None:
     pid, tid = tr.profiled_thread()
     assert tr.thread_name(pid, tid) == "CrRendererMain"
     # The chunks themselves live on a different thread; that is the trap.
-    chunk_tids = {
-        e.get("tid") for e in tr.events if e.get("name") == "ProfileChunk"
-    }
+    chunk_tids = {e.get("tid") for e in tr.events if e.get("name") == "ProfileChunk"}
     assert chunk_tids and chunk_tids != {tid}, (
         "fixture should exercise the case where ProfileChunk is emitted on the "
         "V8 profiler thread rather than the profiled thread"
@@ -133,7 +131,8 @@ def test_nodes_accumulate_across_chunks() -> None:
     # per chunk and forgets them resolves almost nothing.
     tr = _trace()
     chunks_with_nodes = sum(
-        1 for e in tr.events
+        1
+        for e in tr.events
         if e.get("name") == "ProfileChunk"
         and ((e.get("args") or {}).get("data") or {}).get("cpuProfile", {}).get("nodes")
     )
@@ -200,7 +199,7 @@ def test_underpowered_windows_are_declared_not_hidden() -> None:
 def test_every_task_gets_an_origin() -> None:
     cls = K.classify_thread(_trace())
     assert cls.total_us > 0
-    cls.assert_named()          # raises if unclassified time exceeds the limit
+    cls.assert_named()  # raises if unclassified time exceeds the limit
     assert cls.unclassified_pct == 0.0
 
 
@@ -251,7 +250,7 @@ def test_unclassified_threshold_actually_fails() -> None:
 def test_task_duration_cross_check_fails_on_disagreement() -> None:
     cls = K.classify_thread(_trace())
     good = cls.total_us / 1e6
-    K.cross_check_task_duration(cls, good * 1.02)          # inside 5%
+    K.cross_check_task_duration(cls, good * 1.02)  # inside 5%
     try:
         K.cross_check_task_duration(cls, good * 1.5)
     except CellFailure as exc:
@@ -387,17 +386,29 @@ def _arms(dev_counts, prod_counts, anchor_dev, anchor_prod):
     the same-build guard now correctly refuses it.
     """
     dev = [
-        _Snap([_Fn("/deps/react-dom_client.js", n, i * 37 + 3, i * 37 + 21, c[r])
-               for i, (n, c) in enumerate(dev_counts.items())]
-              + [_Fn("/src/app.jsx", n, 900 + i * 11, 930 + i * 11, c[r])
-                 for i, (n, c) in enumerate(anchor_dev.items())])
+        _Snap(
+            [
+                _Fn("/deps/react-dom_client.js", n, i * 37 + 3, i * 37 + 21, c[r])
+                for i, (n, c) in enumerate(dev_counts.items())
+            ]
+            + [
+                _Fn("/src/app.jsx", n, 900 + i * 11, 930 + i * 11, c[r])
+                for i, (n, c) in enumerate(anchor_dev.items())
+            ]
+        )
         for r in range(2)
     ]
     prod = [
-        _Snap([_Fn("/assets/index-abc123.js", n, i * 10, i * 10 + 5, c[r])
-               for i, (n, c) in enumerate(prod_counts.items())]
-              + [_Fn("/assets/index-abc123.js", n, 500 + i, 505 + i, c[r])
-                 for i, (n, c) in enumerate(anchor_prod.items())])
+        _Snap(
+            [
+                _Fn("/assets/index-abc123.js", n, i * 10, i * 10 + 5, c[r])
+                for i, (n, c) in enumerate(prod_counts.items())
+            ]
+            + [
+                _Fn("/assets/index-abc123.js", n, 500 + i, 505 + i, c[r])
+                for i, (n, c) in enumerate(anchor_prod.items())
+            ]
+        )
         for r in range(2)
     ]
     return dev, prod
@@ -411,9 +422,14 @@ def test_bridge_resolves_a_minified_name_by_count_vector() -> None:
         {"ThreadMessage": [50, 500]},
     )
     b = S.build_bridge(
-        dev, prod, rungs = ("s", "m"), react_version = "19.2.4",
-        bundle_source = "x", anchor_names = ["ThreadMessage"],
-        react_url_filter = None, anchor_url_filter = None,
+        dev,
+        prod,
+        rungs = ("s", "m"),
+        react_version = "19.2.4",
+        bundle_source = "x",
+        anchor_names = ["ThreadMessage"],
+        react_url_filter = None,
+        anchor_url_filter = None,
     )
     assert b.status == S.OK
     assert b.resolve("/assets/index-abc123.js", 0, 5) == "cloneChildFibers"
@@ -432,9 +448,14 @@ def test_bridge_refuses_to_guess_an_ambiguous_vector() -> None:
         {"ThreadMessage": [50, 500]},
     )
     b = S.build_bridge(
-        dev, prod, rungs = ("s", "m"), react_version = "19.2.4",
-        bundle_source = "x", anchor_names = ["ThreadMessage"],
-        react_url_filter = None, anchor_url_filter = None,
+        dev,
+        prod,
+        rungs = ("s", "m"),
+        react_version = "19.2.4",
+        bundle_source = "x",
+        anchor_names = ["ThreadMessage"],
+        react_url_filter = None,
+        anchor_url_filter = None,
     )
     assert b.mapping == {}
     assert b.ambiguous_prod and b.ambiguous_dev
@@ -445,12 +466,17 @@ def test_anchor_mismatch_discards_the_whole_bridge() -> None:
         {"cloneChildFibers": [340, 3400]},
         {"Zk": [340, 3400]},
         {"ThreadMessage": [50, 500]},
-        {"ThreadMessage": [51, 500]},          # counts are NOT invariant here
+        {"ThreadMessage": [51, 500]},  # counts are NOT invariant here
     )
     b = S.build_bridge(
-        dev, prod, rungs = ("s", "m"), react_version = "19.2.4",
-        bundle_source = "x", anchor_names = ["ThreadMessage"],
-        react_url_filter = None, anchor_url_filter = None,
+        dev,
+        prod,
+        rungs = ("s", "m"),
+        react_version = "19.2.4",
+        bundle_source = "x",
+        anchor_names = ["ThreadMessage"],
+        react_url_filter = None,
+        anchor_url_filter = None,
     )
     assert b.status == S.FAILED
     assert b.mapping == {}, "one bad anchor must discard every mapping, not just its own"
@@ -463,12 +489,21 @@ def test_same_build_on_both_arms_is_refused() -> None:
     # passes and the bridge reports ok while mapping minified names to
     # themselves. Verified against the real implementation before this guard
     # existed: it returned status ok with {"Zk": "Zk"}.
-    _, prod = _arms({"a": [1, 1]}, {"Zk": [340, 3400], "qi": [17, 170]},
-                    {"x": [1, 1]}, {"ThreadMessage": [50, 500]})
+    _, prod = _arms(
+        {"a": [1, 1]},
+        {"Zk": [340, 3400], "qi": [17, 170]},
+        {"x": [1, 1]},
+        {"ThreadMessage": [50, 500]},
+    )
     b = S.build_bridge(
-        prod, prod, rungs = ("s", "m"), react_version = "19.2.4",
-        bundle_source = "x", anchor_names = ["ThreadMessage"],
-        react_url_filter = None, anchor_url_filter = None,
+        prod,
+        prod,
+        rungs = ("s", "m"),
+        react_version = "19.2.4",
+        bundle_source = "x",
+        anchor_names = ["ThreadMessage"],
+        react_url_filter = None,
+        anchor_url_filter = None,
     )
     assert b.status == S.FAILED
     assert b.mapping == {}
@@ -479,13 +514,21 @@ def test_same_build_on_both_arms_is_refused() -> None:
 def test_an_all_identity_mapping_is_refused() -> None:
     # Different scripts and offsets, but no minification was undone: every
     # resolved name is its own name, so the bridge is doing nothing.
-    dev, prod = _arms({"Zk": [340, 3400], "qi": [17, 170]},
-                      {"Zk": [340, 3400], "qi": [17, 170]},
-                      {"ThreadMessage": [50, 500]}, {"ThreadMessage": [50, 500]})
+    dev, prod = _arms(
+        {"Zk": [340, 3400], "qi": [17, 170]},
+        {"Zk": [340, 3400], "qi": [17, 170]},
+        {"ThreadMessage": [50, 500]},
+        {"ThreadMessage": [50, 500]},
+    )
     b = S.build_bridge(
-        dev, prod, rungs = ("s", "m"), react_version = "19.2.4",
-        bundle_source = "x", anchor_names = ["ThreadMessage"],
-        react_url_filter = None, anchor_url_filter = None,
+        dev,
+        prod,
+        rungs = ("s", "m"),
+        react_version = "19.2.4",
+        bundle_source = "x",
+        anchor_names = ["ThreadMessage"],
+        react_url_filter = None,
+        anchor_url_filter = None,
     )
     assert b.status == S.FAILED
     assert "map to their own name" in b.failure_reason
@@ -493,8 +536,12 @@ def test_an_all_identity_mapping_is_refused() -> None:
 
 def test_single_rung_bridge_is_refused() -> None:
     b = S.build_bridge(
-        [_Snap([])], [_Snap([])], rungs = ("s",), react_version = "19.2.4",
-        bundle_source = "x", anchor_names = ["A"],
+        [_Snap([])],
+        [_Snap([])],
+        rungs = ("s",),
+        react_version = "19.2.4",
+        bundle_source = "x",
+        anchor_names = ["A"],
     )
     assert b.status == S.FAILED
     assert "single-rung" in b.failure_reason or "rung" in b.failure_reason
@@ -502,7 +549,7 @@ def test_single_rung_bridge_is_refused() -> None:
 
 def test_no_dev_millisecond_can_enter_the_artefact() -> None:
     b = S.Bridge(status = S.OK, react_version = "19.2.4", bundle_sha = "abc")
-    b.to_json()                                   # integers only: fine
+    b.to_json()  # integers only: fine
     try:
         S.assert_no_measurements({"mapping": {"a": "b"}, "dev_render_ms": 12.5})
     except CellFailure as exc:
@@ -513,6 +560,7 @@ def test_no_dev_millisecond_can_enter_the_artefact() -> None:
 
 def test_bridge_round_trips_through_disk(tmpdir: str = "") -> None:
     import tempfile
+
     b = S.Bridge(status = S.OK, react_version = "19.2.4", bundle_sha = "deadbeefcafe0000")
     b.mapping["react-dom.js:0:5"] = "cloneChildFibers"
     b.evidence["react-dom.js:0:5"] = [340, 3400]
@@ -611,7 +659,7 @@ def _run_all() -> int:
             continue
         try:
             fn()
-        except Exception as exc:                            # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             failures += 1
             print(f"FAIL {name}: {type(exc).__name__}: {exc}")
         else:

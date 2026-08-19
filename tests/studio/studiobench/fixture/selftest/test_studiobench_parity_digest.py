@@ -33,7 +33,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.analysis import parity as P                                    # noqa: E402
+from studiobench.analysis import parity as P  # noqa: E402
 
 PARITY_JS = Path(__file__).resolve().parents[2] / "scene" / "parity.js"
 
@@ -78,8 +78,10 @@ console.log(JSON.stringify({
 def _node() -> str:
     exe = shutil.which("node") or shutil.which("nodejs")
     if exe is None:
-        pytest.skip("node is not installed, so the shipped parity.js could not be evaluated; "
-                    "this is NOT MEASURED rather than passing")
+        pytest.skip(
+            "node is not installed, so the shipped parity.js could not be evaluated; "
+            "this is NOT MEASURED rather than passing"
+        )
     return exe
 
 
@@ -90,8 +92,12 @@ def run_js(spec: dict) -> dict:
         harness.write_text(HARNESS_JS, encoding = "utf-8")
         payload = Path(tmp) / "spec.json"
         payload.write_text(json.dumps(spec), encoding = "utf-8")
-        got = subprocess.run([exe, str(harness), str(PARITY_JS), str(payload)],
-                             capture_output = True, text = True, timeout = 120)
+        got = subprocess.run(
+            [exe, str(harness), str(PARITY_JS), str(payload)],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
     if got.returncode != 0:
         raise AssertionError(f"the parity.js harness failed: {got.stderr.strip()[-800:]}")
     return json.loads(got.stdout)
@@ -111,6 +117,7 @@ def sigs(*trees: dict) -> list[str]:
 
 # ── the normaliser: things that MUST be erased ──────────────────────
 
+
 def test_rendered_durations_collapse():
     # unslothai/unsloth#9054: a 295 vs 310 ms difference in the action bar, which is wall clock.
     got = norm_text("copied in 295ms", "copied in 310ms", "took 1.2 s", "ran for 3 min")
@@ -126,8 +133,9 @@ def test_relative_and_absolute_times_collapse():
 def test_backend_minted_uuids_collapse():
     # The volatile that made the FIRST null control fail on all eighteen actions: every message
     # root carries `data-message-id`, and the two arms are two installs with two databases.
-    a, b = norm_text("id 71ad5735-ede4-464d-a36b-44309ef67624",
-                     "id f44017dd-f5f7-45dd-9f53-475c115e61ac")
+    a, b = norm_text(
+        "id 71ad5735-ede4-464d-a36b-44309ef67624", "id f44017dd-f5f7-45dd-9f53-475c115e61ac"
+    )
     assert a == b == "id #ID", (a, b)
 
 
@@ -137,10 +145,17 @@ def test_long_hex_ids_collapse():
 
 
 def test_urls_lose_their_origin_but_keep_their_path():
-    got = run_js({"urls": ["http://127.0.0.1:5830/assets/index.js",
-                           "http://127.0.0.1:5831/assets/index.js",
-                           "http://127.0.0.1:5830/assets/other.js",
-                           "blob:http://127.0.0.1:5830/8f2c-11", "data:image/png;base64,AAAA"]})
+    got = run_js(
+        {
+            "urls": [
+                "http://127.0.0.1:5830/assets/index.js",
+                "http://127.0.0.1:5831/assets/index.js",
+                "http://127.0.0.1:5830/assets/other.js",
+                "blob:http://127.0.0.1:5830/8f2c-11",
+                "data:image/png;base64,AAAA",
+            ]
+        }
+    )
     urls = got["urls"]
     # The two arms of an A/B are two ports by construction, so the origin cannot be signal.
     assert urls[0] == urls[1], urls
@@ -153,6 +168,7 @@ def test_urls_lose_their_origin_but_keep_their_path():
 #
 # Every test above widens the set of things the digest cannot see. These are the counterweight:
 # a normaliser that erased them would pass a null control perfectly and detect nothing.
+
 
 def test_a_bare_number_is_not_a_duration():
     a, b = norm_text("3 files changed", "4 files changed")
@@ -171,50 +187,58 @@ def test_a_short_hex_string_is_not_an_id():
 
 
 def test_text_content_moves_the_signature():
-    one, two = sigs({"tag": "p", "children": ["hello world"]},
-                    {"tag": "p", "children": ["hello worlds"]})
+    one, two = sigs(
+        {"tag": "p", "children": ["hello world"]}, {"tag": "p", "children": ["hello worlds"]}
+    )
     assert one != two
 
 
 # ── the signature: every KEPT property, tested as kept ──────────────
 
-@pytest.mark.parametrize("attr,before,after", [
-    ("data-state", "open", "closed"),            # a reasoning pane that silently collapses
-    ("data-slot", "reasoning-root", "tool-root"),
-    ("data-role", "assistant", "user"),
-    ("aria-hidden", "false", "true"),            # content gone from the accessibility tree
-    ("class", "flex gap-2", "flex-col gap-8"),   # a layout class swap
-    ("title", "Copy code", "Copy"),
-    ("role", "menu", "listbox"),
-])
+
+@pytest.mark.parametrize(
+    "attr,before,after",
+    [
+        ("data-state", "open", "closed"),  # a reasoning pane that silently collapses
+        ("data-slot", "reasoning-root", "tool-root"),
+        ("data-role", "assistant", "user"),
+        ("aria-hidden", "false", "true"),  # content gone from the accessibility tree
+        ("class", "flex gap-2", "flex-col gap-8"),  # a layout class swap
+        ("title", "Copy code", "Copy"),
+        ("role", "menu", "listbox"),
+    ],
+)
 def test_a_changed_attribute_value_moves_the_signature(attr, before, after):
-    one, two = sigs({"tag": "div", "attrs": {attr: before}},
-                    {"tag": "div", "attrs": {attr: after}})
+    one, two = sigs({"tag": "div", "attrs": {attr: before}}, {"tag": "div", "attrs": {attr: after}})
     assert one != two, attr
 
 
 def test_adding_or_removing_a_boolean_attribute_moves_the_signature():
     # `disabled` has no value to compare, so only its PRESENCE can carry it.
-    one, two = sigs({"tag": "button", "attrs": {}},
-                    {"tag": "button", "attrs": {"disabled": ""}})
+    one, two = sigs({"tag": "button", "attrs": {}}, {"tag": "button", "attrs": {"disabled": ""}})
     assert one != two
 
 
 def test_a_volatile_attribute_keeps_its_presence_even_though_its_value_is_dropped():
     # Dropping the value must not drop the fact that the attribute is there: an element that
     # gains an `id` has changed, even though which id it gained is noise.
-    plain, with_id = sigs({"tag": "div", "attrs": {}},
-                          {"tag": "div", "attrs": {"id": "radix-:r1a:"}})
+    plain, with_id = sigs(
+        {"tag": "div", "attrs": {}}, {"tag": "div", "attrs": {"id": "radix-:r1a:"}}
+    )
     assert plain != with_id
     # Two different generated ids, however, must read the same.
-    a, b = sigs({"tag": "div", "attrs": {"id": "radix-:r1a:"}},
-                {"tag": "div", "attrs": {"id": "radix-:r9z:"}})
+    a, b = sigs(
+        {"tag": "div", "attrs": {"id": "radix-:r1a:"}},
+        {"tag": "div", "attrs": {"id": "radix-:r9z:"}},
+    )
     assert a == b
 
 
 def test_added_and_removed_elements_move_the_signature():
-    small, large = sigs({"tag": "div", "children": [{"tag": "span"}]},
-                        {"tag": "div", "children": [{"tag": "span"}, {"tag": "b"}]})
+    small, large = sigs(
+        {"tag": "div", "children": [{"tag": "span"}]},
+        {"tag": "div", "children": [{"tag": "span"}, {"tag": "b"}]},
+    )
     assert small != large
 
 
@@ -222,10 +246,15 @@ def test_reordered_siblings_move_the_signature():
     # Two elements with identical content in the other order. A digest built from a SET rather
     # than a sequence would read these as equal, and a list that renders backwards is a real bug.
     one, two = sigs(
-        {"tag": "ul", "children": [{"tag": "li", "children": ["a"]},
-                                   {"tag": "li", "children": ["b"]}]},
-        {"tag": "ul", "children": [{"tag": "li", "children": ["b"]},
-                                   {"tag": "li", "children": ["a"]}]})
+        {
+            "tag": "ul",
+            "children": [{"tag": "li", "children": ["a"]}, {"tag": "li", "children": ["b"]}],
+        },
+        {
+            "tag": "ul",
+            "children": [{"tag": "li", "children": ["b"]}, {"tag": "li", "children": ["a"]}],
+        },
+    )
     assert one != two
 
 
@@ -233,21 +262,25 @@ def test_nesting_moves_the_signature():
     # Same tags, same text, different tree. Closing tags are what make this detectable.
     flat, nested = sigs(
         {"tag": "div", "children": [{"tag": "span", "children": ["x"]}, {"tag": "b"}]},
-        {"tag": "div", "children": [{"tag": "span", "children": ["x", {"tag": "b"}]}]})
+        {"tag": "div", "children": [{"tag": "span", "children": ["x", {"tag": "b"}]}]},
+    )
     assert flat != nested
 
 
 def test_attribute_order_does_not_move_the_signature():
     # React can emit attributes in either order for the same render. Sorting them is what makes
     # the digest a property of the DOM rather than of the serialiser.
-    one, two = sigs({"tag": "div", "attrs": {"class": "a", "data-state": "open"}},
-                    {"tag": "div", "attrs": {"data-state": "open", "class": "a"}})
+    one, two = sigs(
+        {"tag": "div", "attrs": {"class": "a", "data-state": "open"}},
+        {"tag": "div", "attrs": {"data-state": "open", "class": "a"}},
+    )
     assert one == two
 
 
 def test_whitespace_only_text_nodes_do_not_move_the_signature():
-    one, two = sigs({"tag": "p", "children": ["hello"]},
-                    {"tag": "p", "children": ["hello", "   ", "\n\t"]})
+    one, two = sigs(
+        {"tag": "p", "children": ["hello"]}, {"tag": "p", "children": ["hello", "   ", "\n\t"]}
+    )
     assert one == two
 
 
@@ -267,23 +300,40 @@ def test_content_below_the_depth_cap_is_not_compared():
         for _ in range(n):
             inner = {"tag": "div", "children": [inner]}
         return inner
-    one, two = sigs(wrap({"tag": "p", "children": ["alpha"]}, 60),
-                    wrap({"tag": "p", "children": ["omega"]}, 60))
+
+    one, two = sigs(
+        wrap({"tag": "p", "children": ["alpha"]}, 60), wrap({"tag": "p", "children": ["omega"]}, 60)
+    )
     assert one == two, "if this now fails the cap moved and the docstring must be updated"
 
 
 # ── the comparison layer, in pure Python ────────────────────────────
 
-def capture(digest = "aaaa", *, messages = None, overlays = None, root = "thread",
-            styles = None, chars = 100) -> dict:
+
+def capture(
+    digest = "aaaa",
+    *,
+    messages = None,
+    overlays = None,
+    root = "thread",
+    styles = None,
+    chars = 100,
+) -> dict:
     return {
-        "parity_attempted": True, "root_kind": root, "digest": digest, "chars": chars,
-        "messages": messages if messages is not None else [
+        "parity_attempted": True,
+        "root_kind": root,
+        "digest": digest,
+        "chars": chars,
+        "messages": messages
+        if messages is not None
+        else [
             {"i": 0, "role": "user", "digest": "m0", "chars": 10},
-            {"i": 1, "role": "assistant", "digest": "m1", "chars": 20}],
+            {"i": 1, "role": "assistant", "digest": "m1", "chars": 20},
+        ],
         "overlays": overlays if overlays is not None else [],
-        "styles": styles if styles is not None else {
-            "digest": "s0", "chars": 5, "elements": 4, "capped": False},
+        "styles": styles
+        if styles is not None
+        else {"digest": "s0", "chars": 5, "elements": 4, "capped": False},
     }
 
 
@@ -320,19 +370,27 @@ def test_a_capture_from_an_older_instrument_is_not_silently_compared():
 
 
 def test_a_difference_is_localised_to_the_message_that_moved():
-    moved = capture("zzzz", messages = [
-        {"i": 0, "role": "user", "digest": "m0", "chars": 10},
-        {"i": 1, "role": "assistant", "digest": "CHANGED", "chars": 33}])
+    moved = capture(
+        "zzzz",
+        messages = [
+            {"i": 0, "role": "user", "digest": "m0", "chars": 10},
+            {"i": 1, "role": "assistant", "digest": "CHANGED", "chars": 33},
+        ],
+    )
     got = P.compare(capture(), moved)
     assert got["verdict"] == P.DIFFER
     assert got["moved"] == ["msg1(assistant):20->33c"], got["moved"]
 
 
 def test_an_added_message_is_localised_as_one_sided():
-    extra = capture("zzzz", messages = [
-        {"i": 0, "role": "user", "digest": "m0", "chars": 10},
-        {"i": 1, "role": "assistant", "digest": "m1", "chars": 20},
-        {"i": 2, "role": "assistant", "digest": "m2", "chars": 5}])
+    extra = capture(
+        "zzzz",
+        messages = [
+            {"i": 0, "role": "user", "digest": "m0", "chars": 10},
+            {"i": 1, "role": "assistant", "digest": "m1", "chars": 20},
+            {"i": 2, "role": "assistant", "digest": "m2", "chars": 5},
+        ],
+    )
     assert P.compare(capture(), extra)["moved"] == ["msg2(assistant):only treatment"]
 
 
@@ -359,9 +417,13 @@ def test_an_overlay_change_alone_is_a_difference():
 def test_a_message_change_alone_is_a_difference():
     # The same shape one level down: if a per-message digest moves while the whole-thread digest
     # somehow does not, the pair still differs. Belt and braces on the aggregate hash.
-    moved = capture("aaaa", messages = [
-        {"i": 0, "role": "user", "digest": "m0", "chars": 10},
-        {"i": 1, "role": "assistant", "digest": "CHANGED", "chars": 20}])
+    moved = capture(
+        "aaaa",
+        messages = [
+            {"i": 0, "role": "user", "digest": "m0", "chars": 10},
+            {"i": 1, "role": "assistant", "digest": "CHANGED", "chars": 20},
+        ],
+    )
     assert P.compare(capture(), moved)["verdict"] == P.DIFFER
 
 
@@ -389,6 +451,7 @@ def test_a_capped_style_probe_is_not_comparable_rather_than_equal():
 
 # ── mutation detection and the derived unstable set ─────────────────
 
+
 def test_mutation_detected_reports_a_real_change():
     got = P.mutation_detected(capture(), capture("zzzz"))
     assert got["detected"] is True
@@ -413,14 +476,19 @@ def test_an_action_that_never_ran_is_not_a_matching_surface():
 
 
 def test_a_pair_that_ran_on_both_arms_is_compared_normally():
-    got = P.compare_rows({"ran": True, "parity": capture()},
-                         {"ran": True, "parity": capture("zzzz")})
+    got = P.compare_rows(
+        {"ran": True, "parity": capture()}, {"ran": True, "parity": capture("zzzz")}
+    )
     assert got["verdict"] == P.DIFFER
 
 
 def test_an_unexercised_action_contributes_no_evidence_of_stability():
-    got = P.derive_unstable([("image_upload", {"verdict": P.NOT_EXERCISED}),
-                             ("image_upload", {"verdict": P.NOT_EXERCISED})])
+    got = P.derive_unstable(
+        [
+            ("image_upload", {"verdict": P.NOT_EXERCISED}),
+            ("image_upload", {"verdict": P.NOT_EXERCISED}),
+        ]
+    )
     assert got["image_upload"]["observations"] == 0
     assert got["image_upload"]["undetermined"] is True
     assert got["image_upload"]["unstable"] is False
@@ -433,10 +501,14 @@ def test_instability_needs_more_than_one_observation():
 
 
 def test_an_action_that_differs_against_itself_is_derived_as_unstable():
-    got = P.derive_unstable([("stop_generation", {"verdict": P.DIFFER}),
-                             ("stop_generation", {"verdict": P.MATCH}),
-                             ("settings", {"verdict": P.MATCH}),
-                             ("settings", {"verdict": P.MATCH})])
+    got = P.derive_unstable(
+        [
+            ("stop_generation", {"verdict": P.DIFFER}),
+            ("stop_generation", {"verdict": P.MATCH}),
+            ("settings", {"verdict": P.MATCH}),
+            ("settings", {"verdict": P.MATCH}),
+        ]
+    )
     assert got["stop_generation"]["unstable"] is True
     assert got["settings"]["unstable"] is False
 
@@ -444,8 +516,12 @@ def test_an_action_that_differs_against_itself_is_derived_as_unstable():
 def test_a_blind_action_is_counted_as_blind_and_not_as_stable():
     # An action whose digest could never be captured has an observation count of zero. Reporting
     # it as "stable" would be the instrument certifying a surface it never looked at.
-    got = P.derive_unstable([("image_upload", {"verdict": P.NOT_COMPARABLE}),
-                             ("image_upload", {"verdict": P.NOT_COMPARABLE})])
+    got = P.derive_unstable(
+        [
+            ("image_upload", {"verdict": P.NOT_COMPARABLE}),
+            ("image_upload", {"verdict": P.NOT_COMPARABLE}),
+        ]
+    )
     assert got["image_upload"]["observations"] == 0
     assert got["image_upload"]["not_comparable"] == 2
     assert got["image_upload"]["unstable"] is False
@@ -472,6 +548,7 @@ def test_every_declared_unstable_action_carries_a_mechanism():
 
 
 def test_the_verdict_tally_counts_not_comparable_as_its_own_outcome():
-    got = P.summarise([{"verdict": P.MATCH}, {"verdict": P.DIFFER},
-                       {"verdict": P.NOT_COMPARABLE}, {}])
+    got = P.summarise(
+        [{"verdict": P.MATCH}, {"verdict": P.DIFFER}, {"verdict": P.NOT_COMPARABLE}, {}]
+    )
     assert got == {P.MATCH: 1, P.DIFFER: 1, P.NOT_COMPARABLE: 2}

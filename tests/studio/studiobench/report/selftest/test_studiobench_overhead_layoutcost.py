@@ -99,13 +99,13 @@ def test_the_browser_half_exists_and_exposes_what_the_adapter_calls():
         assert symbol in source
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.skipif(shutil.which("node") is None, reason = "node is not installed")
 def test_layoutcost_js_parses():
     result = subprocess.run(
         ["node", "--check", str(LAYOUTCOST_JS_PATH)],
-        capture_output=True,
-        text=True,
-        check=False,
+        capture_output = True,
+        text = True,
+        check = False,
     )
     assert result.returncode == 0, result.stderr
 
