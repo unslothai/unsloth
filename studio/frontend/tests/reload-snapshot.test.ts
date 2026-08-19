@@ -28,6 +28,8 @@ interface ElementSpec {
   value?: string;
   checked?: boolean;
   type?: string;
+  autocomplete?: string;
+  attributes?: Record<string, string>;
   display?: string;
   visibility?: string;
   /** [top, right, bottom, left]. Ignored for a `display: contents` box. */
@@ -48,8 +50,10 @@ interface StubElement {
   value: string;
   checked: boolean;
   type: string;
+  autocomplete: string;
   textContent: string;
   attributeOverrides: Record<string, string>;
+  hasAttribute(name: string): boolean;
   setAttribute(name: string, value: string): void;
   children: StubElement[];
   parent: StubElement | null;
@@ -77,10 +81,20 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
     value: spec.value ?? "",
     checked: spec.checked ?? false,
     type: spec.type ?? "text",
+    autocomplete: spec.autocomplete ?? "",
     textContent: "",
     children: [] as StubElement[],
     parent,
-    attributes: [] as Array<{ name: string }>,
+    attributeOverrides: {
+      ...(spec.attributes ?? {}),
+      ...(spec.autocomplete ? { autocomplete: spec.autocomplete } : {}),
+    } as Record<string, string>,
+    get attributes() {
+      return Object.keys(element.attributeOverrides).map((name) => ({ name }));
+    },
+    hasAttribute(name: string) {
+      return Object.hasOwn(element.attributeOverrides, name);
+    },
     closest(selector: string) {
       let node: StubElement | null = element;
       while (node) {
@@ -105,7 +119,6 @@ function createElement(spec: ElementSpec, parent: StubElement | null = null) {
       );
       element.parent = null;
     },
-    attributeOverrides: {} as Record<string, string>,
     setAttribute(name: string, value: string) {
       element.attributeOverrides[name] = value;
     },
@@ -257,6 +270,7 @@ function createEnvironment(options: {
         href: "",
         inert: false,
         innerHTML: "",
+        children: [] as Record<string, unknown>[],
         removed: false,
         shadow: null as ShadowStub | null,
         attachShadow(init: { mode: string }) {
@@ -273,6 +287,10 @@ function createEnvironment(options: {
         },
         setAttribute(name: string, value: string) {
           element.attributes[name] = value;
+        },
+        appendChild(child: Record<string, unknown>) {
+          element.children.push(child);
+          return child;
         },
         remove() {
           element.removed = true;
@@ -330,19 +348,23 @@ function createEnvironment(options: {
         | undefined;
       if (!host?.shadow) return null;
       const children = host.shadow.children;
+      const root = children[children.length - 1];
+      const body = (
+        root?.children as Record<string, unknown>[] | undefined
+      )?.find((child) => child.tagName === "BODY");
       return {
         host,
         mode: host.shadow.mode,
         stylesheets: children
           .filter((child) => child.rel === "stylesheet")
           .map((child) => child.href as string),
-        html: (children[children.length - 1]?.innerHTML ?? "") as string,
-        rootClass: (children[children.length - 1]?.className ?? "") as string,
-        rootTag: (children[children.length - 1]?.tagName ?? "") as string,
-        rootAttributes: (children[children.length - 1]?.attributes ??
-          {}) as Record<string, string>,
+        html: (body?.innerHTML ?? root?.innerHTML ?? "") as string,
+        bodyTag: (body?.tagName ?? "") as string,
+        rootClass: (root?.className ?? "") as string,
+        rootTag: (root?.tagName ?? "") as string,
+        rootAttributes: (root?.attributes ?? {}) as Record<string, string>,
         rootTokens: ((
-          children[children.length - 1]?.style as
+          root?.style as
             | { values?: Record<string, string> }
             | undefined
         )?.values ?? {}) as Record<string, string>,
@@ -559,6 +581,7 @@ test("roots the copy in an html element so html-anchored rules still match", () 
     storage: outgoing.storage,
   });
   assert.equal(incoming.shell?.rootTag, "HTML");
+  assert.equal(incoming.shell?.bodyTag, "BODY");
   assert.deepEqual(incoming.shell?.rootAttributes, {
     "data-palette": "classic",
     "data-contrast-adjust": "",
@@ -590,10 +613,10 @@ test("freezes the design tokens onto the copy's own root", () => {
   assert.equal(incoming.shell?.rootTokens["--tracking-normal"], "0em");
 });
 
-test("carries live form state, except what a password field hides", () => {
+test("carries live form state, except what sensitive fields hide", () => {
   // React writes value/checked as DOM properties; cloneNode copies attributes,
-  // so a typed composer would come back empty. A password field renders dots
-  // rather than its value, so its value is the one thing that stays behind.
+  // so a typed composer would come back empty. Secret fields can be revealed as
+  // plain text, but their values must stay behind regardless of presentation.
   const environment = createEnvironment({
     navigationType: "navigate",
     styleSheets: ["/assets/index-abc123.css"],
@@ -623,6 +646,25 @@ test("carries live form state, except what a password field hides", () => {
           rect: [0, 1440, 320, 0],
           type: "password",
           value: "hunter2",
+          attributes: { value: "hunter2" },
+        },
+        {
+          tag: "input",
+          rect: [0, 1440, 360, 0],
+          type: "text",
+          autocomplete: "current-password",
+          value: "revealed-password",
+          attributes: { value: "revealed-password" },
+        },
+        {
+          tag: "input",
+          rect: [0, 1440, 400, 0],
+          type: "text",
+          value: "revealed-api-key",
+          attributes: {
+            value: "revealed-api-key",
+            "data-reload-snapshot-sensitive": "",
+          },
         },
       ],
     },
@@ -636,6 +678,40 @@ test("carries live form state, except what a password field hides", () => {
   assert.match(html, /value="gemma"/);
   assert.match(html, /checked=""/);
   assert.doesNotMatch(html, /hunter2/);
+  assert.doesNotMatch(html, /revealed-password/);
+  assert.doesNotMatch(html, /revealed-api-key/);
+});
+
+test("preserves IDs that the isolated copy references internally", () => {
+  const environment = createEnvironment({
+    navigationType: "navigate",
+    styleSheets: ["/assets/index-abc123.css"],
+    rootTree: {
+      tag: "div",
+      children: [
+        {
+          tag: "svg",
+          children: [
+            {
+              tag: "linearGradient",
+              attributes: { id: "history-fill" },
+            },
+            {
+              tag: "path",
+              attributes: { fill: "url(#history-fill)" },
+            },
+          ],
+        },
+      ],
+    },
+  });
+  environment.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const { html } = storedSnapshot(environment.storage);
+  assert.match(html, /id="history-fill"/);
+  assert.match(html, /fill="url\(#history-fill\)"/);
 });
 
 test("skips the shell when the snapshot carries no stylesheets", () => {

@@ -165,7 +165,12 @@
         shellRoot.style.setProperty(name, tokens[name]);
       }
     });
-    shellRoot.innerHTML = snapshot.html;
+    // Global typography and foreground styles are applied to body, not html.
+    // Recreate that inheritance boundary inside the shadow tree rather than
+    // hanging the app subtree directly off the synthetic html element.
+    var shellBody = document.createElement("body");
+    shellBody.innerHTML = snapshot.html;
+    shellRoot.appendChild(shellBody);
     shell.appendChild(shellRoot);
     document.documentElement.appendChild(overlay);
     removalTimer = setTimeout(removeOverlay, 5000);
@@ -173,14 +178,33 @@
 
   // React drives value/checked/selected as DOM properties and cloneNode copies
   // attributes, so a populated composer or a ticked box would come back empty.
-  // A password field renders dots rather than its value, so it is the one thing
-  // on screen the copy must not carry.
+  // Secret inputs must be identified independently of their presentation type:
+  // password and token fields can temporarily become type=text when revealed.
+  function isSensitiveInput(input) {
+    var autocomplete =
+      typeof input.autocomplete === "string"
+        ? input.autocomplete.toLowerCase()
+        : "";
+    return (
+      input.type === "password" ||
+      input.hasAttribute("data-reload-snapshot-sensitive") ||
+      autocomplete.indexOf("password") !== -1 ||
+      autocomplete.indexOf("one-time-code") !== -1 ||
+      autocomplete.indexOf("cc-csc") !== -1
+    );
+  }
+
   function mirrorFieldState(original, cloned) {
     var tag = original.tagName;
     if (tag === "TEXTAREA") {
       cloned.textContent = original.value;
     } else if (tag === "INPUT") {
-      if (original.type === "password") return;
+      if (isSensitiveInput(original)) {
+        // cloneNode may retain a value attribute from an earlier controlled
+        // render, so remove it as well as declining to mirror the live value.
+        cloned.removeAttribute("value");
+        return;
+      }
       cloned.setAttribute("value", original.value);
       if (original.checked) cloned.setAttribute("checked", "");
       else cloned.removeAttribute("checked");
@@ -225,9 +249,11 @@
         .querySelectorAll("iframe, object, embed, script, style, link, base")
         .forEach(function (element) {
           element.remove();
-        });
+      });
       clone.querySelectorAll("*").forEach(function (element) {
-        element.removeAttribute("id");
+        // IDs are scoped to the closed shadow root, so they cannot collide with
+        // the live document. Keep them for internal references such as
+        // SVG fill="url(#gradient-id)" and aria-labelledby.
         element.removeAttribute("autofocus");
         element.removeAttribute("srcdoc");
         Array.from(element.attributes).forEach(function (attribute) {
