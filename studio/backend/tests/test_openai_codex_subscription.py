@@ -917,6 +917,33 @@ def test_persisting_a_new_account_drops_the_plan_catalog(monkeypatch):
         forget_subscription_models("provider-5")
 
 
+def test_a_forced_reload_skips_the_cached_catalog(monkeypatch):
+    """An explicit reload asks about plan changes, so the 600s cache must not answer it."""
+    first = _models_response({"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: first)
+    forget_subscription_models("provider-6")
+    asyncio.run(list_subscription_models("provider-6", "token", "acct-1"))
+    assert len(first.calls) == 1
+
+    second = _models_response({"models": [{"slug": "gpt-5.8-new", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: second)
+    try:
+        # Unforced, the fresh slug stays invisible for the rest of the TTL.
+        cached = asyncio.run(list_subscription_models("provider-6", "token", "acct-1"))
+        assert [model["id"] for model in cached] == ["gpt-5.4"]
+        assert len(second.calls) == 0
+
+        reloaded = asyncio.run(
+            list_subscription_models("provider-6", "token", "acct-1", force = True)
+        )
+        assert [model["id"] for model in reloaded] == ["gpt-5.8-new"]
+        assert len(second.calls) == 1
+        # The refreshed catalog replaces what the picker and the chat gate read.
+        assert offered_subscription_model_ids("provider-6") == {"gpt-5.8-new"}
+    finally:
+        forget_subscription_models("provider-6")
+
+
 def test_subscription_model_list_rejects_non_200(monkeypatch):
     monkeypatch.setattr(
         codex_client,

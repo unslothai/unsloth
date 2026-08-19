@@ -323,8 +323,11 @@ export interface CodexSubscriptionModels {
 
 export async function fetchCodexSubscriptionModels(
   providerId: string,
+  options?: { refresh?: boolean },
 ): Promise<CodexSubscriptionModels> {
-  const response = await authFetch(`/api/providers/${providerId}/codex/models`);
+  // An explicit reload asks about plan changes, so it must not be served from cache.
+  const query = options?.refresh ? "?refresh=true" : "";
+  const response = await authFetch(`/api/providers/${providerId}/codex/models${query}`);
   return parseJsonOrThrow<CodexSubscriptionModels>(response);
 }
 

@@ -286,16 +286,21 @@ def forget_subscription_models(provider_id: str) -> None:
 
 
 async def list_subscription_models(
-    provider_id: str, access_token: str, account_id: str
+    provider_id: str, access_token: str, account_id: str, force: bool = False
 ) -> list[dict[str, Any]]:
-    """Model slugs this ChatGPT plan can reach; anything else is a 400 upstream."""
+    """Model slugs this ChatGPT plan can reach; anything else is a 400 upstream.
+
+    ``force`` skips the cache for an explicit user reload: a plan change or a slug
+    rolled out since the last fetch is exactly what that click is asking about.
+    """
     if _catalog_accounts.get(provider_id) not in (None, account_id):
         # Reauthorized against a different account: the previous plan's catalog says
         # nothing about this one, and nothing else clears it on the reconnect path.
         forget_subscription_models(provider_id)
-    cached = cached_subscription_models(provider_id)
-    if cached is not None:
-        return cached
+    if not force:
+        cached = cached_subscription_models(provider_id)
+        if cached is not None:
+            return cached
 
     url = _validated_models_url()
     headers = {

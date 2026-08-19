@@ -613,6 +613,7 @@ export function ChatProvidersSettings({
           editingProviderId,
           selectedModelIds,
           provider?.authStatus,
+          true,
         );
       } finally {
         setModelsLoading(false);
@@ -1027,13 +1028,14 @@ export function ChatProvidersSettings({
     providerId: string,
     savedModels: string[],
     authStatus: ProviderAuthStatus | undefined,
+    refresh = false,
   ) {
     const request = ++codexCatalogRequestRef.current;
     const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
       try {
-        listed = await fetchCodexSubscriptionModels(providerId);
+        listed = await fetchCodexSubscriptionModels(providerId, { refresh });
       } catch {
         // Keep the curated seed: the form must still open when upstream is unreachable.
       }

@@ -154,6 +154,7 @@ async def cancel_oauth(
 @router.get("/{provider_id}/codex/models")
 async def list_subscription_models(
     provider_id: str,
+    refresh: bool = False,
     _credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
@@ -168,7 +169,9 @@ async def list_subscription_models(
         return {"models": curated, "source": "curated"}
     try:
         token, account_id = await codex_auth.resolve_access(provider_id)
-        models = await codex_client.list_subscription_models(provider_id, token, account_id)
+        models = await codex_client.list_subscription_models(
+            provider_id, token, account_id, force = refresh
+        )
     except Exception as exc:
         logger.warning(
             "openai_codex.model_list_failed",
