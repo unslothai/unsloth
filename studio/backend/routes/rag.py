@@ -220,6 +220,20 @@ def _is_managed_preview_path(stored_path: str) -> bool:
         return False
 
 
+def _stored_size(stored_path: str | None) -> int | None:
+    """Size of a document's stored bytes, or None when it has no readable file.
+
+    A document keeps its row after the upload (or linked-folder snapshot) behind
+    it has gone, so a missing path is expected rather than an error.
+    """
+    if not stored_path:
+        return None
+    try:
+        return os.path.getsize(stored_path)
+    except OSError:
+        return None
+
+
 def _doc_view(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -233,6 +247,7 @@ def _doc_view(row: dict) -> dict:
         "linkedFolderId": row.get("linked_folder_id"),
         "managed": bool(row.get("linked_folder_id")),
         "createdAt": row.get("created_at"),
+        "sizeBytes": _stored_size(row.get("stored_path")),
     }
 
 
@@ -760,14 +775,6 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
     out = []
     for doc in docs:
         view = _doc_view(doc)
-        stored_path = doc.get("stored_path")
-        size = None
-        if stored_path:
-            try:
-                size = os.path.getsize(stored_path)
-            except OSError:
-                size = None
-        view["sizeBytes"] = size
         view["kbName"] = kb_names.get(doc.get("kb_id"))
         view["projectName"] = project_names.get(doc.get("project_id"))
         out.append(view)

@@ -16,6 +16,7 @@ export function DocumentStatusChip({
   error,
   onRemove,
   shared = false,
+  selected = false,
 }: {
   filename: string;
   status: DocumentStatus;
@@ -25,6 +26,9 @@ export function DocumentStatusChip({
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
+  /** Highlight only. Bulk selection is all-or-nothing via the panel's Select
+   * all, so the chip shows the state but never owns a per-file toggle. */
+  selected?: boolean;
 }) {
   const processing = status === "pending" || status === "running";
   return (
@@ -40,6 +44,8 @@ export function DocumentStatusChip({
       className={cn(
         "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",
         status === "failed" && "border-destructive/40 text-destructive",
+        selected &&
+          "border-primary/60 bg-primary/10 text-foreground ring-1 ring-primary/30",
       )}
     >
       {/* file, or folder when the doc is a project-wide source */}

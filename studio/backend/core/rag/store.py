@@ -187,7 +187,7 @@ def set_document_embedding_model(
 def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
-        "num_chunks, created_at, linked_folder_id "
+        "num_chunks, stored_path, created_at, linked_folder_id "
         "FROM documents d WHERE scope=? AND NOT EXISTS "
         "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
         "ORDER BY created_at DESC",
