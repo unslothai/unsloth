@@ -1100,8 +1100,29 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         # so `_probe_text` offers both JSON spellings for the stored copy and exactly one
         # for the live one. Those two can only ever meet this way. Every other message is
         # compared exactly.
+        #
+        # In two pieces when the whole needle does not fit, because the second spelling is
+        # inserted BETWEEN the arguments and whatever followed them. A tool turn opening
+        # with a preamble -- "Let me check" ahead of the call, which is the ordinary agent
+        # turn -- renders live as name/args/text and stored as name/args/args/text, so the
+        # live string stops being contiguous inside the stored one. Measured: that turn
+        # matched no transcript seat at all while the same turn without a preamble matched
+        # its own, and a seatless turn takes an ordinal past the whole transcript, where
+        # the recall header calls it the conversation's latest word. One split point, so
+        # this tolerates exactly the one insertion `_probe_text` makes and no more.
         if is_call:
-            return bool(live) and live in stored
+            if not live:
+                return False
+            if live in stored:
+                return True
+            words = live.split(" ")
+            for cut in range(1, len(words)):
+                head = " ".join(words[:cut])
+                tail = " ".join(words[cut:])
+                at = stored.find(head)
+                if at >= 0 and stored.find(tail, at + len(head)) >= 0:
+                    return True
+            return False
         return stored == live
 
     return [

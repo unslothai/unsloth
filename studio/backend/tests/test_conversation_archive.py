@@ -3921,3 +3921,48 @@ def test_a_topped_up_copy_keeps_the_transcript_span(conn):
         ).fetchall()
     ]
     assert spans == [4, 4], spans
+
+
+def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
+    """"Let me check" ahead of a tool call is the ordinary agent turn, not an edge case.
+
+    `_probe_text` offers BOTH JSON spellings of the stored arguments, and that second
+    spelling lands between the arguments and whatever followed them, so the live render
+    (name/args/text) is no longer contiguous inside the stored one (name/args/args/text).
+    The turn matched no transcript position and took a fallback ordinal past the whole
+    transcript, where the recall header presents it as superseding genuinely later
+    instructions.
+    """
+    user = {"role": "user", "content": "what files are here"}
+    row = {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Let me check"},
+            {
+                "type": "tool-call",
+                "toolCallId": "c1",
+                "toolName": "terminal",
+                "args": {"command": "ls"},
+                "result": "main.py",
+            },
+        ],
+    }
+    positions = [
+        [
+            conversation_archive._normalise_cased(conversation_archive._probe_text(message))
+            for message in conversation_archive._as_wire([record])
+        ]
+        for record in (user, row)
+    ]
+    live = [
+        {
+            "role": "assistant",
+            "content": "Let me check",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "main.py"},
+    ]
+
+    assert conversation_archive._occurrences(positions, live) == [1]
