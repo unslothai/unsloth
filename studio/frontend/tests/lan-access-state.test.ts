@@ -7,6 +7,7 @@ import test from "node:test";
 // lan-access-section.tsx pulls in hugeicons, so only its pure helpers are tested here
 import {
   type ApiLanAccessStatus,
+  type LanAccessStatus,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
@@ -52,6 +53,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       // biome-ignore lint/style/useNamingConvention: API schema
       bind_host: "0.0.0.0",
       // biome-ignore lint/style/useNamingConvention: API schema
+      wildcard_bind: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
       serves_web_ui: true,
     }),
   );
@@ -66,6 +69,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     canStop: true,
     blockReason: null,
     bindHost: "0.0.0.0",
+    wildcardBind: true,
     servesWebUi: true,
   });
 });
@@ -78,6 +82,7 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.bindHost, null);
+  assert.equal(s.wildcardBind, false);
   assert.equal(s.servesWebUi, true);
 });
 
@@ -190,6 +195,17 @@ test("stop-disconnects does not treat a different port as the same origin", () =
 
 // ── lanAccessBlockMessage ──
 
+function blocked(
+  reason: string,
+  over: Partial<LanAccessStatus> = {},
+): LanAccessStatus {
+  return {
+    ...normalizeLanAccessStatus(apiStatus()),
+    blockReason: reason,
+    ...over,
+  };
+}
+
 test("every block reason the backend can emit has a message", () => {
   // mirrors the block_reason chain in utils/lan_access_settings.py
   const reasons = [
@@ -201,7 +217,10 @@ test("every block reason the backend can emit has a message", () => {
   ];
   for (const reason of reasons) {
     for (const isDesktop of [true, false]) {
-      const msg = lanAccessBlockMessage(reason, isDesktop, "0.0.0.0");
+      const msg = lanAccessBlockMessage(
+        blocked(reason, { bindHost: "0.0.0.0", wildcardBind: true }),
+        isDesktop,
+      );
       assert.ok(
         msg && msg.length > 0,
         `no message for ${reason} (desktop=${isDesktop})`,
@@ -213,50 +232,50 @@ test("every block reason the backend can emit has a message", () => {
 test("a launch bound to one host names that host, not the wildcard", () => {
   // any host but the three loopback aliases is launch-managed, hostnames included
   for (const host of ["10.1.1.144", "fd00::5", "studio.local"]) {
-    const msg = lanAccessBlockMessage("launch_managed", false, host);
+    const msg = lanAccessBlockMessage(
+      blocked("launch_managed", { bindHost: host }),
+      false,
+    );
     assert.ok(msg?.includes(`binds ${host}`), host);
     assert.ok(msg?.includes(`--host ${host}`), host);
     assert.ok(!msg?.includes("every network interface"), host);
-    assert.ok(!msg?.includes("0.0.0.0"), host);
   }
 });
 
-test("a wildcard launch says so, for either wildcard host", () => {
-  for (const host of ["0.0.0.0", "::"]) {
-    const msg = lanAccessBlockMessage("launch_managed", false, host);
+test("the backend decides what counts as a wildcard, whatever it is spelled", () => {
+  // "::0" is not in the backend's current set; the message must follow the flag
+  for (const host of ["0.0.0.0", "::", "::0"]) {
+    const msg = lanAccessBlockMessage(
+      blocked("launch_managed", { bindHost: host, wildcardBind: true }),
+      false,
+    );
     assert.ok(msg?.includes("every network interface"), host);
     assert.ok(msg?.includes(`--host ${host}`), host);
+    assert.ok(!msg?.includes(`binds ${host} `), host);
   }
 });
 
 test("a backend that omits the bind host still explains the block", () => {
   // fixed text with nothing to interpolate, so the sentence itself is the contract
   assert.equal(
-    lanAccessBlockMessage("launch_managed", false, null),
+    lanAccessBlockMessage(blocked("launch_managed"), false),
     "This launch already puts Unsloth on the network.",
   );
 });
 
 test("the pending-password message is desktop-aware", () => {
-  const desktop = lanAccessBlockMessage(
-    "admin_password_change_required",
-    true,
-    null,
-  );
-  const web = lanAccessBlockMessage(
-    "admin_password_change_required",
-    false,
-    null,
-  );
+  const reason = blocked("admin_password_change_required");
+  const desktop = lanAccessBlockMessage(reason, true);
+  const web = lanAccessBlockMessage(reason, false);
   assert.notEqual(desktop, web);
   assert.ok(!desktop?.includes("reset-password"));
   assert.ok(web?.includes("reset-password"));
 });
 
 test("an unknown or absent reason yields no message", () => {
-  assert.equal(lanAccessBlockMessage(null, false, null), null);
-  assert.equal(lanAccessBlockMessage("something_new", false, null), null);
-  assert.equal(lanAccessBlockMessage("", true, null), null);
+  assert.equal(lanAccessBlockMessage(null, false), null);
+  assert.equal(lanAccessBlockMessage(blocked("something_new"), false), null);
+  assert.equal(lanAccessBlockMessage(blocked(""), true), null);
 });
 
 // ── lanAccessErrorMessage ──

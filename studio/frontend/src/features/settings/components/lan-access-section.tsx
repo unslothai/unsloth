@@ -77,6 +77,7 @@ function AccessStatus({ status }: { status: LanAccessStatus | null }) {
 
 function CopyLanUrlButton({ url, label }: { url: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const text = copied ? "Copied" : label;
   const copyTimer = useRef<number | null>(null);
   useEffect(() => {
     return () => {
@@ -91,7 +92,7 @@ function CopyLanUrlButton({ url, label }: { url: string; label: string }) {
       size="sm"
       variant="outline"
       className="gap-1.5"
-      aria-label={`Copy ${url}`}
+      aria-label={`${text} ${url}`}
       onClick={async () => {
         if (!(await copyToClipboard(url))) {
           return;
@@ -107,7 +108,7 @@ function CopyLanUrlButton({ url, label }: { url: string; label: string }) {
         icon={copied ? Tick02Icon : Copy01Icon}
         className="size-3.5"
       />
-      {copied ? "Copied" : label}
+      {text}
     </Button>
   );
 }
@@ -315,11 +316,7 @@ export function LanAccessSection() {
   const setAutoStart = (enabled: boolean) =>
     perform("auto", () => updateLanAccessAutoStart(enabled));
 
-  const blockMessage = lanAccessBlockMessage(
-    status?.blockReason ?? null,
-    isTauri,
-    status?.bindHost ?? null,
-  );
+  const blockMessage = lanAccessBlockMessage(status, isTauri);
   const errorMessage = lanAccessErrorMessage(status?.error ?? null);
   const stopAction = status?.state === "online";
   const actionDisabled =

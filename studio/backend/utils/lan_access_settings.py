@@ -154,6 +154,7 @@ def lan_access_status(app) -> dict:
         "can_stop": controllable and running,
         "block_reason": block_reason,
         "bind_host": getattr(app_state, "lan_access_bind_host", None),
+        "wildcard_bind": bool(getattr(app_state, "lan_access_wildcard_bind", False)),
         "serves_web_ui": frontend_served,
     }
 

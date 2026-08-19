@@ -15,6 +15,7 @@ export type LanAccessStatus = {
   canStop: boolean;
   blockReason: string | null;
   bindHost: string | null;
+  wildcardBind: boolean;
   servesWebUi: boolean;
 };
 
@@ -37,6 +38,8 @@ export type ApiLanAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   bind_host?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
+  wildcard_bind?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   serves_web_ui?: boolean;
 };
 
@@ -54,6 +57,7 @@ export function normalizeLanAccessStatus(
     canStop: status.can_stop,
     blockReason: status.block_reason ?? null,
     bindHost: status.bind_host ?? null,
+    wildcardBind: status.wildcard_bind === true,
     // absent on a backend that predates the field, where the web UI is served
     servesWebUi: status.serves_web_ui !== false,
   };
@@ -87,25 +91,24 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
-// A launch-managed bind is either a wildcard or the host the launch was given,
-// so the message has to read that host back rather than assume the wildcard.
-function launchManagedMessage(bindHost: string | null): string {
-  if (!bindHost) {
+// A launch-managed bind is either a wildcard or the host the launch was given.
+// Which one is the backend's call, so the message reads its flag rather than
+// keeping a second copy of the set of wildcard spellings.
+function launchManagedMessage(status: LanAccessStatus): string {
+  if (!status.bindHost) {
     return "This launch already puts Unsloth on the network.";
   }
-  const bound =
-    bindHost === "0.0.0.0" || bindHost === "::"
-      ? "every network interface"
-      : bindHost;
-  return `This launch binds ${bound} (--host ${bindHost}), so Unsloth is on the network already.`;
+  const bound = status.wildcardBind
+    ? "every network interface"
+    : status.bindHost;
+  return `This launch binds ${bound} (--host ${status.bindHost}), so Unsloth is on the network already.`;
 }
 
 export function lanAccessBlockMessage(
-  reason: string | null,
+  status: LanAccessStatus | null,
   isDesktop: boolean,
-  bindHost: string | null,
 ): string | null {
-  switch (reason) {
+  switch (status?.blockReason) {
     case "server_starting":
       return "Unsloth is still starting.";
     case "admin_password_change_required":
@@ -113,7 +116,7 @@ export function lanAccessBlockMessage(
         ? "Set a remote password before putting this server on the network."
         : "Change the administrator password before putting this server on the network. In the desktop app, run unsloth studio reset-password.";
     case "launch_managed":
-      return launchManagedMessage(bindHost);
+      return launchManagedMessage(status);
     case "secure_launch":
       return "This launch used --secure, which serves only through the Cloudflare link and keeps the raw port closed. Relaunch without --secure to use LAN access.";
     case "colab":
