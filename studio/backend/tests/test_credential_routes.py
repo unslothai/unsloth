@@ -818,7 +818,9 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
     async def _no_refresh(_provider_id):
         return set()
 
-    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh)
+    monkeypatch.setattr(
+        providers_route.openai_codex_client, "ensure_subscription_models", _no_refresh
+    )
     codex_client.forget_subscription_models(created.id)
     codex_client._offered_models[created.id] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
     try:
