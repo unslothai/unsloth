@@ -1578,9 +1578,9 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
 
 
 def test_edit_family_supports_multiple_images(fake_runtime, tmp_path):
-    """An instruction-editing family accepts extra source images via ``reference_images``
-    (e.g. Qwen-Image-Edit-Plus, FLUX Kontext multi-image editing) and passes the primary
-    image plus every extra as a list to the pipeline's ``image`` kwarg."""
+    """An instruction-editing family whose pipeline treats a list as multiple conditioning
+    sources (Qwen-Image-Edit-Plus) accepts extra source images via ``reference_images`` and
+    passes the primary image plus every extra as a list to the pipeline's ``image`` kwarg."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -1620,6 +1620,28 @@ def test_edit_family_supports_multiple_images(fake_runtime, tmp_path):
             prompt = "combine these into one scene",
             steps = 8,
             reference_images = [_tiny_png_b64()],
+        )
+
+
+def test_edit_family_rejects_multiple_images_for_kontext(fake_runtime, tmp_path):
+    """FLUX Kontext's pipeline treats `image: list[...]` as an image batch, not multiple
+    conditioning sources, so extra reference_images must be rejected rather than combined."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        family_override = "flux.1-kontext",
+    )
+    with pytest.raises(ValueError, match = "does not support multiple reference_images"):
+        backend.generate(
+            prompt = "combine these into one scene",
+            steps = 8,
+            guidance = 4.0,
+            seed = 1,
+            init_image = _tiny_png_b64(),
+            reference_images = [_tiny_png_b64(), _tiny_png_b64()],
         )
 
 

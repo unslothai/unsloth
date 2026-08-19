@@ -54,6 +54,10 @@ class DiffusionFamily:
     # True for instruction-editing families (Qwen-Image-Edit / FLUX Kontext): the pipeline IS the edit pipeline (image +
     # instruction, no plain text-to-image). ``base_repo`` supplies the VAE / text-encoder / processor / scheduler.
     edit: bool = False
+    # True for edit families whose pipeline treats `image: list[...]` as multiple conditioning sources
+    # (QwenImageEditPlusPipeline). False (default) for families like FluxKontextPipeline, where a list is
+    # instead treated as an image batch, so extra reference_images must be rejected rather than combined.
+    edit_multi_image: bool = False
     # True for families whose text-to-image pipeline ALSO accepts reference image(s) (FLUX.2 ``image``): no ``strength``, size from width/height.
     reference: bool = False
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -241,6 +245,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        edit_multi_image = True,
     ),
     DiffusionFamily(
         name = "qwen-image",

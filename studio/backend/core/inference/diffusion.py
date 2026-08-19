@@ -5506,10 +5506,19 @@ class DiffusionBackend:
                         )
                     workflow = "edit"
                     init_pil = decode_b64_image(init_image, mode = "RGB")
-                    # Additional edit-reference images (e.g. Qwen-Image-Edit-Plus, FLUX Kontext multi-image); capped to bound VRAM.
-                    ref_extra = [
-                        decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
-                    ]
+                    # Additional edit-reference images (e.g. Qwen-Image-Edit-Plus): capped to bound VRAM.
+                    # Only for families whose pipeline treats a list as multiple conditioning sources -
+                    # FluxKontextPipeline instead treats `image: list[...]` as an image batch, so extra
+                    # images there would silently misbehave rather than combine into one edit.
+                    if reference_images and not getattr(state.family, "edit_multi_image", False):
+                        raise ValueError(
+                            f"{state.family.name} does not support multiple reference_images "
+                            "for edits; provide a single init_image."
+                        )
+                    if getattr(state.family, "edit_multi_image", False):
+                        ref_extra = [
+                            decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
+                        ]
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
                     pipe = self._workflow_pipe(state, state.family.inpaint_pipeline_class, workflow)

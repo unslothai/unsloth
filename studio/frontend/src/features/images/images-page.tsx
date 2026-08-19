@@ -3202,9 +3202,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (extras.length) condRefImages = extras;
       } else if (isEdit) {
         // Instruction editing: send the source image, plus any extra source images; the prompt IS the instruction. No mask, no strength.
+        // FLUX Kontext only supports one source image (its pipeline treats a list as a batch, not multiple conditioning sources).
         condInit = initImage ?? undefined;
-        const extras = referenceImages.filter(Boolean);
-        if (extras.length) condRefImages = extras;
+        if (status?.family !== "flux.1-kontext") {
+          const extras = referenceImages.filter(Boolean);
+          if (extras.length) condRefImages = extras;
+        }
       }
     } catch {
       toast.error("Could not prepare the source image");
@@ -3984,7 +3987,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 >
                   <ImageDropzone value={initImage} onChange={handleInitChange} />
                 </Field>
-                {referenceImages.map((img, i) => (
+                {/* FLUX Kontext's pipeline treats a list of images as a batch, not multiple
+                    conditioning sources, so it only supports a single source image. */}
+                {status?.family !== "flux.1-kontext" && referenceImages.map((img, i) => (
                   <Field
                     key={i}
                     label={`Source image ${i + 2}`}
@@ -4013,7 +4018,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     </div>
                   </Field>
                 ))}
-                {referenceImages.length < 3 && (
+                {status?.family !== "flux.1-kontext" && referenceImages.length < 3 && (
                   <Button
                     type="button"
                     variant="secondary"
