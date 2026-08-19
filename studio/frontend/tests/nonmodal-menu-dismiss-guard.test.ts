@@ -108,6 +108,10 @@ function element(source: string, at: number): { tag: string; body: string } {
   throw new Error(`unbalanced <${tag}> around the menu at offset ${at}`);
 }
 
+/** Posix separators whatever the host uses, so the UNGUARDED keys match on Windows too. */
+const relativeId = (file: string): string =>
+  path.relative(SRC, file).split(path.sep).join("/");
+
 /** Every `modal={false}` menu in the tree, as `relative/path.tsx <Tag>`, with its own body. */
 function nonModalMenus(): { id: string; body: string }[] {
   const menus: { id: string; body: string }[] = [];
@@ -116,7 +120,7 @@ function nonModalMenus(): { id: string; body: string }[] {
     let at = source.indexOf("modal={false}");
     while (at !== -1) {
       const { tag, body } = element(source, at);
-      menus.push({ id: `${path.relative(SRC, file)} <${tag}>`, body });
+      menus.push({ id: `${relativeId(file)} <${tag}>`, body });
       at = source.indexOf("modal={false}", at + 1);
     }
   }
@@ -165,6 +169,14 @@ test("the element scan does not confuse a tag with one that merely starts the sa
     !GUARD.test(body),
     "the scan ran past the menu's own closing tag and swallowed the next element",
   );
+});
+
+test("menu ids are separator-independent", () => {
+  // `path.relative` yields backslashes on Windows, and an id built from those matches no
+  // UNGUARDED key, so every listed exception reads as an offender on that runner alone.
+  for (const { id } of nonModalMenus()) {
+    assert.ok(!id.includes("\\"), `${id} carries a host separator`);
+  }
 });
 
 test("the guard component is what mounts the watcher", () => {
