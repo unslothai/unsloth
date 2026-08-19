@@ -2515,13 +2515,22 @@ def test_a_second_catalog_401_is_recorded_on_the_connection(monkeypatch):
     marked = []
 
     class AlwaysRejecting:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             return httpx.Response(401, json = {"detail": "expired"})
 
         async def aclose(self):
             return None
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "fresh-token", "acct-1"
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: AlwaysRejecting())
@@ -2548,9 +2557,7 @@ def test_a_catalog_with_nothing_offerable_is_not_committed(monkeypatch):
     Committing it would leave the picker offering seeds while validation and chat read
     the same empty catalog and refuse them.
     """
-    fake = _models_response(
-        {"models": [{"slug": "codex-auto-review", "visibility": "hide"}]}
-    )
+    fake = _models_response({"models": [{"slug": "codex-auto-review", "visibility": "hide"}]})
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
     forget_subscription_models("provider-23")
     try:
