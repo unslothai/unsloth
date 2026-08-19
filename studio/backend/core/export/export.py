@@ -1502,7 +1502,7 @@ class ExportBackend:
             # temporary directory when only pushing to hub (no local save).
             _tmp_ctx = None
             if save_directory:
-                out_dir = str(resolve_export_dir(save_directory))
+                out_dir = str(resolve_export_write_dir(save_directory))
                 ensure_dir(Path(out_dir))
             elif push_to_hub:
                 _tmp_ctx = tempfile.TemporaryDirectory(prefix = "_unsloth_autoround4bit_")
