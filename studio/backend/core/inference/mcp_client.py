@@ -247,7 +247,10 @@ def _stdio_env(headers: Optional[dict]) -> Optional[dict]:
     on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
     env = dict(headers or {})
     base = env.get("PATH")
-    if not isinstance(base, str) or not base:
+    if isinstance(base, str) and not base:
+        # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
+        return env
+    if not isinstance(base, str):
         base = os.environ.get("PATH", "")
     try:
         from utils.node_runtime import path_with_managed_node
@@ -263,7 +266,9 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     """argv with argv[0] resolved against the child's PATH. Windows looks the command
     up in the parent environment before ``env`` applies (and cannot run a bare ``npx``
     that lives only in the managed Node dir), so hand it the full path."""
-    path = (env or {}).get("PATH") or os.environ.get("PATH", "")
+    path = (env or {}).get("PATH")
+    if not isinstance(path, str):
+        path = os.environ.get("PATH", "")
     try:
         resolved = shutil.which(parts[0], path = path)
     except OSError:

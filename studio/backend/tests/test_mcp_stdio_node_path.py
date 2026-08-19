@@ -8,6 +8,7 @@ Run from studio/backend:  python -m pytest tests/test_mcp_stdio_node_path.py -q
 
 import os
 import shutil
+import sys
 
 import pytest
 
@@ -163,3 +164,31 @@ def test_managed_node_check_is_memoized_on_success(managed_node_install, monkeyp
     assert node_runtime.managed_node_usable() is True
     assert node_runtime.managed_node_usable() is True
     assert len(calls) == 1
+
+
+def test_explicit_empty_path_is_preserved(managed_node, monkeypatch):
+    """PATH: "" is a deliberate sandbox; the inherited PATH must not replace it."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mcp_client._stdio_env({"API_KEY": "sk-1", "PATH": ""})
+    assert env["PATH"] == ""
+    assert env["API_KEY"] == "sk-1"
+
+
+def test_explicit_empty_path_blocks_host_lookup(managed_node, monkeypatch, tmp_path):
+    """The host PATH must not resolve argv[0] once the server opted out of PATH."""
+    host = tmp_path / "hostbin"
+    host.mkdir()
+    _make_executable(host, "hostcmd")
+    monkeypatch.setenv("PATH", str(host))
+    assert shutil.which("hostcmd") is not None
+    assert mcp_client._stdio_argv(["hostcmd"], {"PATH": ""}) == ["hostcmd"]
+
+
+def test_explicit_empty_path_still_allows_absolute_command(managed_node):
+    argv = mcp_client._stdio_argv([sys.executable, "-c", "pass"], {"PATH": ""})
+    assert argv == [sys.executable, "-c", "pass"]
+
+
+def test_absent_path_still_inherits(managed_node, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert mcp_client._stdio_env({"API_KEY": "sk-1"})["PATH"] == f"{managed_node}{os.pathsep}/usr/bin"
