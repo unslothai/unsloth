@@ -5455,7 +5455,17 @@ if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
 fi
 # why: -sfn is atomic and -n prevents descent into a symlink-to-directory at
 # the shim path (the directory guard above already rejects a real directory).
-ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
+if ! ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path" 2>/dev/null; then
+    # A reinstall rebuilds the environment at the same path, so an entry already resolving to
+    # this executable is the shim we were about to write: not a failed install.
+    if [ "$_shim_path" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+        substep "kept the existing shim at $_shim_path ($_LOCAL_BIN is not writable)"
+    else
+        echo "ERROR: could not create the shim at $_shim_path." >&2
+        echo "       Make $_LOCAL_BIN writable, or run '$VENV_DIR/bin/unsloth' directly." >&2
+        exit 1
+    fi
+fi
 
 # Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
 # expansion is off for the walk and restored afterwards: a directory holding *, ? or [ would

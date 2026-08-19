@@ -202,27 +202,40 @@ else
     bad "the setup-succeeded gate runs something before the commit ($_gate_first)"
 fi
 
-# install.sh's own tail, so the cases below run its real commit call site.
-TAIL_BLOCK=$(sed -n '/^if \[ "\$_SETUP_EXIT" -eq 0 \]; then$/,/^# end of the PATH persistence block$/p' "$INSTALL_SH")
-if ! printf '%s\n' "$TAIL_BLOCK" | grep -q '^_persist_login_path_dir() {'; then
+# install.sh's own tail, gate to gate, so the cases below run its real commit call site. Both
+# anchors are checked: without the closing one sed would run to EOF and carry unrelated code.
+_tail_ends=$(grep -c '^if \[ "\$_SETUP_EXIT" -ne 0 \]; then$' "$INSTALL_SH")
+TAIL_BLOCK=$(sed -n '/^if \[ "\$_SETUP_EXIT" -eq 0 \]; then$/,/^if \[ "\$_SETUP_EXIT" -ne 0 \]; then$/p' "$INSTALL_SH" \
+    | sed '$d')
+if [ "$_tail_ends" -ne 1 ] \
+   || ! printf '%s\n' "$TAIL_BLOCK" | grep -q '^_persist_login_path_dir() {'; then
     echo "  FAIL: could not extract the post-setup tail from install.sh"
     exit 1
 fi
 
 # The state the tail inherits: a replacement in flight and a new environment on disk.
-write_tail_harness() {  # case dir, login shell
+write_tail_harness() {  # case dir, login shell, "no-exe" to leave the shim's target absent
     {
         printf '%s\n' 'set -e'
-        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'substep() { printf "%s\n" "$1" >> "$STUDIO_HOME/steps.log"; }'
         printf '%s\n' 'rollback_substep() { substep "$@"; }'
         printf '%s\n' 'step() { printf "%s\n" "$2" >> "$STUDIO_HOME/steps.log"; }'
         printf '%s\n' 'tauri_clear_install_error() { :; }'
+        # The tail ends with this call; writing a launcher is not what these cases are about.
+        printf '%s\n' 'create_studio_shortcuts() { return 0; }'
+        printf '%s\n' 'TAURI_MODE=false'
+        printf '%s\n' 'OS=linux'
         printf '%s\n' 'C_WARN=""'
         printf "STUDIO_HOME='%s'\n" "$1"
         printf "VENV_DIR='%s/unsloth_studio'\n" "$1"
         printf '%s\n' "$ROLLBACK_BLOCK"
         printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
         printf '%s\n' 'mkdir -p "$VENV_DIR/bin"'
+        if [ "${3:-}" != no-exe ]; then
+            printf '%s\n' 'printf "#!/bin/sh\\n" > "$VENV_DIR/bin/unsloth"'
+            printf '%s\n' 'chmod +x "$VENV_DIR/bin/unsloth"'
+        fi
+        printf '%s\n' 'VENV_ABS_BIN="$VENV_DIR/bin"'
         printf '%s\n' 'printf "new\n" > "$VENV_DIR/generation"'
         printf '%s\n' '_SETUP_EXIT=0'
         printf "HOME='%s/home'\n" "$1"
@@ -251,7 +264,7 @@ run_readonly_profile_case() {
     printf '# unwritable\n' > "$_case_home/$3"
     chmod 444 "$_case_home/$3"
     if : 2>/dev/null >> "$_case_home/$3"; then
-        echo "  SKIP: unwritable $_case profile (this user can append to it regardless of mode)"
+        bad "unwritable $_case profile could not be set up (this user appends to it regardless)"
         return 0
     fi
     write_tail_harness "$_case_dir" "$2"
@@ -264,11 +277,6 @@ run_readonly_profile_case() {
         ok "an unwritable $_case profile does not fail the install"
     else
         bad "an unwritable $_case profile failed the install (exit $_status)"
-    fi
-    if [ "$(cat "$_case_dir/unsloth_studio/generation" 2>/dev/null)" = "new" ]; then
-        ok "an unwritable $_case profile keeps the environment just installed"
-    else
-        bad "an unwritable $_case profile rolled back the environment just installed"
     fi
     if [ "$(cat "$_case_home/$3")" = "# unwritable" ]; then
         ok "an unwritable $_case profile is left as it was"
@@ -317,6 +325,53 @@ if ! find "$REFUSE_DIR" -maxdepth 1 -name 'unsloth_studio.rollback.*' -print -qu
 else
     bad "a refused shim left a rollback copy"
 fi
+
+# An unwritable bin directory is only a failed install when what it holds is not this run's shim.
+run_readonly_bin_case() {  # name, what the existing entry points at, expected status, [no-exe]
+    _bin_dir="$WORK/readonly-bin-$1"
+    _bin_home="$_bin_dir/home"
+    mkdir -p "$_bin_dir/unsloth_studio" "$_bin_home/.local/bin"
+    printf 'old\n' > "$_bin_dir/unsloth_studio/generation"
+    # The harness writes the executable; the entry already there either resolves to it or not.
+    ln -sfn "$2" "$_bin_home/.local/bin/unsloth"
+    chmod 555 "$_bin_home/.local/bin"
+    if : 2>/dev/null > "$_bin_home/.local/bin/probe"; then
+        rm -f "$_bin_home/.local/bin/probe"
+        chmod 755 "$_bin_home/.local/bin"
+        bad "unwritable bin directory holding $1 could not be set up (this user writes it anyway)"
+        return 0
+    fi
+    write_tail_harness "$_bin_dir" /bin/bash "${4:-}"
+    set +e
+    sh "$_bin_dir/harness.sh" >/dev/null 2>"$_bin_dir/stderr"
+    _bin_status=$?
+    set -e
+    chmod 755 "$_bin_home/.local/bin"
+    if [ "$_bin_status" -eq "$3" ]; then
+        ok "an unwritable bin directory holding $1 exits $3"
+    else
+        bad "an unwritable bin directory holding $1 exits $3 (got $_bin_status)"
+    fi
+    if [ "$3" -eq 0 ]; then
+        if grep -q "kept the existing shim" "$_bin_dir/steps.log" 2>/dev/null; then
+            ok "keeping the existing shim is reported rather than passed over in silence"
+        else
+            bad "keeping the existing shim is not reported"
+        fi
+    elif grep -qF "run '$_bin_dir/unsloth_studio/bin/unsloth' directly" "$_bin_dir/stderr"; then
+        ok "refusing $1 says how to start Unsloth without the shim"
+    else
+        bad "refusing $1 does not say how to start Unsloth without the shim"
+    fi
+}
+
+# Absolute as install.sh writes it, relative as something else might: both resolve to it.
+run_readonly_bin_case absolute-shim "$WORK/readonly-bin-absolute-shim/unsloth_studio/bin/unsloth" 0
+run_readonly_bin_case relative-shim ../../../unsloth_studio/bin/unsloth 0
+# One resolving elsewhere, one naming the exact path install.sh writes but resolving nowhere.
+run_readonly_bin_case another-command /bin/false 1
+run_readonly_bin_case dangling-shim \
+    "$WORK/readonly-bin-dangling-shim/unsloth_studio/bin/unsloth" 1 no-exe
 
 echo "=== install.ps1 rollback wiring ==="
 if grep -q '^    function Remove-StaleStudioVenvRollbacks {' "$INSTALL_PS1" \
