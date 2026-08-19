@@ -133,5 +133,6 @@ jobs:
             tests/studio/test_playwright_suites_run_in_ci.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
+            tests/studio/test_uv_cache_discipline.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
             tests/studio/test_workflow_guards_run_unfiltered.py

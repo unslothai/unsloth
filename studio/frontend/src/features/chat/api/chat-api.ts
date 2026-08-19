@@ -661,6 +661,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {

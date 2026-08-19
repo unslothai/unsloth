@@ -200,6 +200,50 @@ export const ptBR = {
       data: "Dados",
       agents: "Agentes",
       debugging: "Registros",
+      keyboardShortcuts: "Atalhos",
+    },
+    keyboardShortcuts: {
+      title: "Atalhos de teclado",
+      description:
+        "Altere qualquer atalho, ou apague um para liberar a combinação para o navegador ou o sistema.",
+      searchPlaceholder: "Pesquisar atalhos…",
+      noResults: "Nenhum atalho corresponde a essa pesquisa.",
+      unassigned: "Não atribuído",
+      recording: "Pressione as teclas…",
+      recordingHint: "Pressione a nova combinação, ou Esc para cancelar.",
+      needsModifier: "Adicione ⌘, Ctrl ou Alt. Uma tecla sozinha engoliria a digitação.",
+      conflict: "Também usado por outro atalho",
+      conflictShadowed: "Outro atalho tem essa combinação e é executado no lugar dele",
+      edit: "Alterar atalho",
+      clear: "Remover atalho",
+      reset: "Restaurar o padrão",
+      resetAll: "Redefinir tudo para o padrão",
+      groups: {
+        general: "Geral",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Novo chat",
+          description: "Iniciar um novo chat",
+        },
+        searchChats: {
+          label: "Pesquisar chats",
+          description: "Abrir a busca de chats",
+        },
+        toggleSidebar: {
+          label: "Alternar barra lateral",
+          description: "Mostrar ou ocultar a barra lateral",
+        },
+        openSettings: {
+          label: "Abrir configurações",
+          description: "Abrir a janela de configurações",
+        },
+        openKeyboardShortcuts: {
+          label: "Atalhos de teclado",
+          description: "Abrir esta lista de atalhos",
+        },
+      },
     },
     debugging: {
       logSection: "Arquivo de log",
@@ -364,6 +408,7 @@ export const ptBR = {
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carregue um modelo de áudio pelo seletor de modelos (por exemplo, Orpheus TTS)",
+        openAudioAction: "Abrir Áudio",
         voiceLabel: "Voz",
         voiceDescription: "As melhores vozes deste dispositivo",
         speedLabel: "Velocidade",
@@ -372,6 +417,7 @@ export const ptBR = {
         previewLabel: "Ouvir a voz",
         previewDescription: "Reproduz uma amostra curta",
         previewAction: "Ouvir",
+        preparingAction: "Gerando…",
         previewFailed: "Não foi possível reproduzir a prévia de TTS",
         stopAction: "Parar",
         ttsLabel: "Conversão de texto em fala",

@@ -3911,6 +3911,10 @@ class LlamaCppBackend:
         self._audio_probed: bool = False
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
+        # Video INPUT capability, from llama-server's /props modalities. True
+        # only when the mmproj, the build and ffmpeg all line up, none of which
+        # the GGUF alone can tell us.
+        self._has_video_input: bool = False
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.has_vision_encoder, set at load; True keeps an undeclared projector capable.
         self._mmproj_accepts_image: bool = True
@@ -18445,6 +18449,9 @@ class LlamaCppBackend:
                 # reported context_length matches reality. (Querying /props
                 # before the spawn above always failed; the seeded value was the
                 # requested/native length.)
+                # Clear first, or a swap into a model without video inherits
+                # the previous server's answer.
+                self._has_video_input = False
                 self._reconcile_effective_ctx_with_server()
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
@@ -19342,6 +19349,7 @@ class LlamaCppBackend:
             self._audio_type = None
             self._audio_probed = False
             self._has_audio_input = False
+            self._has_video_input = False
             self._mmproj_has_audio = False
             self._mmproj_accepts_image = True
             self._port = None
@@ -20624,22 +20632,42 @@ class LlamaCppBackend:
                 flags.extend(["--fit-target", str(int(_target))])
         return flags
 
+    def _query_server_props(self) -> Optional[dict]:
+        """llama-server's ``/props``, or None when it cannot be read."""
+        url = f"{self.base_url}/props"
+        try:
+            # /props is not one of llama-server's public endpoints, so under
+            # UNSLOTH_DIRECT_STREAM=1 (which launches the child with --api-key)
+            # an unauthenticated read 401s: the context readback silently keeps
+            # the requested -c, and video reads as unsupported on a model that
+            # supports it. None when there is no child key, which is httpx's
+            # default and what every other call site here relies on.
+            resp = httpx.get(url, headers = self._auth_headers, timeout = 5.0, trust_env = False)
+            if resp.status_code != 200:
+                return None
+            props = resp.json()
+            return props if isinstance(props, dict) else None
+        except Exception:
+            return None
+
     def _query_server_n_ctx(self) -> Optional[int]:
         """Per-slot context llama-server actually allocated, from ``/props``.
 
         The memory-fit step or ``--parallel`` slot split can leave this below
         the requested ``-c``; requests are validated against this value.
+
+        Records the declared modalities on the way past: video input depends on
+        build flags and ffmpeg, neither visible from the GGUF.
         """
-        url = f"{self.base_url}/props"
-        try:
-            resp = httpx.get(url, timeout = 5.0, trust_env = False)
-            if resp.status_code != 200:
-                return None
-            settings = resp.json().get("default_generation_settings") or {}
-            n_ctx = settings.get("n_ctx")
-            return int(n_ctx) if n_ctx else None
-        except Exception:
+        props = self._query_server_props()
+        if props is None:
             return None
+        modalities = props.get("modalities")
+        if isinstance(modalities, dict):
+            self._has_video_input = bool(modalities.get("video"))
+        settings = props.get("default_generation_settings") or {}
+        n_ctx = settings.get("n_ctx")
+        return int(n_ctx) if n_ctx else None
 
     def _reconcile_effective_ctx_with_server(self) -> None:
         """Adopt the server's real ``n_ctx`` when it is below Unsloth's value.

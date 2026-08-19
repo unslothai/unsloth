@@ -99,6 +99,7 @@ function ensureActiveModelInStoreList(
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
+    hasVideoInput: status.has_video_input ?? false,
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
