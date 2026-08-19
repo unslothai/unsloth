@@ -44,11 +44,10 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
-# The resolver Get-StudioFinalPath dispatches to. Before issue #9140 that function
-# was self-contained -- it compiled the native helper inline -- so a test could
-# extract it alone. It is a dispatcher now, and extracting it by itself yields a
-# body whose every call is undefined, which reads as "could not resolve" rather
-# than as a missing helper.
+# The chain Get-StudioFinalPath dispatches to. It used to compile the native helper
+# inline, so a test could extract it alone; extracting the dispatcher by itself now
+# yields a body whose calls are all undefined, which reads as "could not resolve"
+# rather than as a missing helper (issue #9140).
 _FINAL_PATH_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
@@ -83,9 +82,8 @@ def _mutex_helpers(source: str) -> str:
             # stub would keep passing if the real call ever went wrong.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
-            # Get-StudioFinalPath is a dispatcher now: it asks the initializer
-            # whether the native helper compiled, and falls back to the pure
-            # PowerShell resolver when it did not (issue #9140).
+            # Get-StudioFinalPath is a dispatcher now: it falls back to the pure
+            # PowerShell resolver when the native helper did not compile (#9140).
             "Test-StudioDirectoryUsable",
             "Remove-StudioStalePrivateTempDirectories",
             "New-StudioPrivateTempDirectory",
@@ -309,11 +307,10 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "$process.Path" not in detector
     assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
 
-    # That helper is where the executable identity now comes from, so the same
-    # contract has to hold on every rung of its fallback: a confirmed image, never
-    # a command line. Its Win32_Process rung exists because a host that cannot
-    # compile the native helper would otherwise find no running processes at all
-    # and overwrite a venv Studio has open (issue #9140).
+    # The same contract has to hold on every rung of that helper's fallback: a
+    # confirmed image, never a command line. Its Win32_Process rung exists because a
+    # host that cannot compile the native helper would otherwise find no running
+    # processes and overwrite a venv Studio has open (issue #9140).
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "ExecutablePath" in image

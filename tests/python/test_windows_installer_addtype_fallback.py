@@ -34,8 +34,8 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-# Every Add-Type call in install.ps1 that compiles C# rather than loading an
-# assembly, so a stub can stand in for the compiler.
+# Stands in for every Add-Type in install.ps1 that compiles C# rather than loading
+# an assembly.
 SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
@@ -95,8 +95,8 @@ def _script(
     return "\n".join(
         [
             '$ErrorActionPreference = "Stop"',
-            # Write-StudioLine picks its sink from this; unset it reaches Write-Host,
-            # which -NonInteractive still writes but the caller cannot capture.
+            # Write-StudioLine picks its sink from this; unset, it reaches Write-Host,
+            # which the caller cannot capture.
             "$script:StudioStdoutRedirected = $true",
             _helpers(*names),
             SABOTAGE if sabotage else "",
@@ -153,8 +153,8 @@ Write-Output "CALLS:$global:AddTypeCalls"
         )
     )
     assert result.returncode == 0, result.stderr
-    # One attempt, then one retry with a private %TEMP%. Never again after that:
-    # the scan below resolves a path per running process.
+    # One attempt, one retry with a private %TEMP%, then cached: the scan below
+    # resolves a path per running process.
     assert _lines(result, "CALLS:") == ["CALLS:2"]
 
 
@@ -217,9 +217,8 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # The helper's P/Invoke targets kernel32, so off Windows the type loads but the
-    # CALL fails. That is a path Windows will not take, and it has to degrade to a
-    # usable answer rather than throw.
+    # The P/Invoke targets kernel32, so off Windows the type loads but the CALL
+    # fails; it has to degrade to a usable answer rather than throw.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
@@ -244,8 +243,8 @@ Write-Output "MISSING:$(Get-StudioFinalPath -Path '{alias / "studio" / "not" / "
         )
     )
     assert result.returncode == 0, result.stderr
-    # A link on a PARENT component is the ordinary Windows shape, and it is the
-    # one GetFullPath alone gets wrong.
+    # A link on a PARENT component is the ordinary Windows shape, and the one
+    # GetFullPath alone gets wrong.
     assert _lines(result, "PATH:") == [f"PATH:{physical}"]
     assert _lines(result, "EQUAL:") == ["EQUAL:True"]
     # Segments that do not exist yet are reattached, as the native resolver does.
@@ -288,16 +287,15 @@ Write-Output "NULL:$($null -eq $answer)"
         )
     )
     assert result.returncode == 0, result.stderr
-    # Without exact resolution two different spellings may still be one directory,
-    # and $null is what makes the caller take BOTH runtime locks instead of
-    # guessing. Returning $false here would silently drop one of them.
+    # Without exact resolution two spellings may still be one directory; $null makes
+    # the caller take BOTH runtime locks, where $false would silently drop one.
     assert _lines(result, "NULL:") == ["NULL:True"]
 
 
 @requires_pwsh
 def test_unusable_temp_is_replaced_and_then_restored(tmp_path: Path):
-    # Under a regular file, so it cannot merely be created: the probe has to fail
-    # the way a system-scoped or ACL-restricted temp directory fails.
+    # Under a regular file so it cannot merely be created: the probe has to fail the
+    # way an ACL-restricted temp directory fails.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")
     env = os.environ.copy()
@@ -331,12 +329,11 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
     # Both, because Windows reads TMP before TEMP.
     assert _lines(result, "MATCHED:") == ["MATCHED:True"]
     assert _lines(result, "TMP:") == [f"TMP:{env['TMP']}"]
-    # TEMP was absent to begin with; restoring it as "" would change how every
-    # later child resolves its own temp directory.
+    # TEMP was absent; restoring it as "" would change how every later child
+    # resolves its own temp directory.
     assert _lines(result, "TEMPSET:") == ["TEMPSET:False"]
-    # The replacement directory survives on purpose: a Studio autostarted by this
-    # install inherited it as its own %TEMP%, and the host's real one is broken.
-    # Stale ones are swept on the next run instead.
+    # It survives on purpose: an autostarted Studio inherited it as its own %TEMP%,
+    # and the host's real one is broken. Stale ones are swept on the next run.
     assert _lines(result, "KEPT:") == ["KEPT:True"]
 
 
@@ -362,13 +359,12 @@ def _same_path(got: str, expected: str) -> bool:
 _NT_DEVICE_PREFIX = "\\??\\"
 _LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 
-# What (Get-Item).Target actually hands back. Windows PowerShell 5.1 returns a
-# COLLECTION, not a string, and not an [array] either -- so a container test that
-# names one type lets the real one fall through and be space-joined into a path
-# that does not exist. Junctions store the NT device form. System junctions and
-# Store AppExecLinks report nothing at all. None of these shapes can be produced
-# on Linux, so Get-Item is stubbed and the paths are written POSIX-style; see
-# _same_path below for why the comparison cannot be a string equality.
+# What (Get-Item).Target actually hands back. 5.1 returns a COLLECTION, not a
+# string and not an [array] either, so a container test naming one type lets the
+# real one fall through and be space-joined. Junctions store the NT device form;
+# system junctions and Store AppExecLinks report nothing. None of these shapes can
+# be produced on Linux, so Get-Item is stubbed and the paths are POSIX-style; see
+# _same_path for why the comparison cannot be a string equality.
 _TARGET_SHAPES = [
     ("generic collection", _LIST.format('$l.Add("/real/target")'), "/real/target"),
     (
@@ -563,8 +559,8 @@ def test_final_normalization_keeps_a_volume_guid_rooted():
     body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
     guid = body.index("\\\\?\\Volume{")
     dos = body.index("$resolved.Substring(4)")
-    # The volume-GUID branch has to be tested BEFORE the general one, or the
-    # general branch swallows it and strips the prefix anyway.
+    # The volume-GUID branch has to come BEFORE the general one, which would
+    # otherwise swallow it and strip the prefix anyway.
     assert guid < dos
     branch = body[guid : dos]
     assert "Substring" not in branch
@@ -683,9 +679,8 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     precious = tmp_path / "precious"
     precious.mkdir()
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
-    # A dead owner PID, or the sweep keeps the directory for the live process that
-    # its name says still owns it -- which is what _DEAD_PID exists to avoid and
-    # what the test below this one measures on purpose.
+    # A dead owner PID, or the sweep keeps the directory for the live process its
+    # name says owns it; that case is the test below.
     stale = root / f"ust-{_DEAD_PID}-old"
     stale.mkdir()
     (stale / "junk").write_text("x", encoding = "utf-8")
@@ -703,10 +698,9 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
         os.utime(link, (aged, aged), follow_symlinks = False)
     except (NotImplementedError, OSError):
         # Windows has no follow_symlinks=False for utime, and aging the link any
-        # other way writes THROUGH it onto the target, leaving the link looking
-        # fresh so the sweep skips it before the guard is ever reached. The real
-        # behaviour is covered on Windows PowerShell 5.1 by the staging probe,
-        # which ages the reparse point via a FILE_FLAG_OPEN_REPARSE_POINT handle.
+        # other way writes THROUGH it, leaving the link fresh so the sweep skips it.
+        # The 5.1 staging probe ages the reparse point via a
+        # FILE_FLAG_OPEN_REPARSE_POINT handle instead.
         pytest.skip("this host cannot age a link without writing through it")
 
     result = _run_powershell(
@@ -720,9 +714,8 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     assert not stale.exists()
     assert fresh.exists()
     assert not link.is_symlink()
-    # Windows PowerShell 5.1's Remove-Item -Recurse follows a junction and empties
-    # what it points at. Nothing the installer creates under this root is a
-    # reparse point, so one appearing there must cost only the link.
+    # 5.1's Remove-Item -Recurse follows a junction and empties what it points at.
+    # Nothing the installer creates here is a reparse point, so one costs only the link.
     assert (precious / "keepme.txt").exists()
 
 
@@ -774,8 +767,7 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     assert 'Join-Path $env:LOCALAPPDATA "Unsloth Studio\\temp"' in roots
     assert '"Unsloth Studio"' in uninstall
     # ~\.unsloth\.cache is on its explicit sibling list. Directly under ~\.unsloth
-    # would be worse than litter: that directory is removed only when it is empty,
-    # so anything left there stops the uninstaller clearing it at all.
+    # would be worse: that directory is removed only when it is empty.
     assert 'Join-Path $env:USERPROFILE ".unsloth\\.cache\\temp"' in roots
     assert (
         '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }'
@@ -794,18 +786,16 @@ def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
     )
     assert "Add-Type" not in _extract(r"    function Get-StudioLexicalPath \{.*?\n    \}\n", source)
 
-    # The process scan must keep its "confirmed executable image only" contract on
-    # every rung of the fallback, or a degraded host would block on a name match.
+    # Every rung of the fallback must keep the "confirmed executable image only"
+    # contract, or a degraded host would block on a name match.
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "Win32_Process" in image
     assert "QueryFullProcessImageNameW" not in image
 
-    # Asserted as source rather than behaviour on purpose: PowerShell 7 does not
-    # follow a link on -Recurse, so the test above passes with or without this
-    # guard. Windows PowerShell 5.1 -- the shell the desktop app actually spawns
-    # -- does follow it, and there this is the difference between deleting a
-    # stale scratch directory and emptying whatever it points at.
+    # Source rather than behaviour on purpose: PowerShell 7 does not follow a link
+    # on -Recurse, so the test above passes with or without this guard. Windows
+    # PowerShell 5.1, the shell the desktop app spawns, does follow it.
     sweep = _extract(
         r"    function Remove-StudioStalePrivateTempDirectories \{.*?\n    \}\n", source
     )
@@ -813,9 +803,9 @@ def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
     reparse_branch = sweep.index("ReparsePoint")
     branch = sweep[reparse_branch : sweep.index("continue", reparse_branch)]
     assert "-Recurse" not in branch
-    # Remove-Item without -Recurse is not the answer either: on 5.1 it reports the
-    # junction target's contents and refuses as "directory not empty", so the link
-    # is never reclaimed. Observed on windows-latest, hence pinned here.
+    # Remove-Item without -Recurse is no answer either: on 5.1 it reports the
+    # junction target's contents and refuses as "directory not empty", so the link is
+    # never reclaimed (observed on windows-latest).
     assert "Remove-Item" not in branch
     assert "[System.IO.Directory]::Delete(" in branch
     assert ", $false)" in branch
