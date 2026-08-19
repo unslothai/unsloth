@@ -138,19 +138,25 @@ def _path_has_usable_node(
                     node = sibling
             except OSError:
                 return False
-    if not _probe_ok(node, _node_version_ok):
+    if not _probe_ok(node, _node_version_ok, path):
         return False
-    return _probe_ok(npm, _npm_version_ok) if require_npm else True
+    return _probe_ok(npm, _npm_version_ok, path) if require_npm else True
 
 
-def _probe_ok(executable: str, check) -> bool:
+def _probe_ok(executable: str, check, path: str | None = None) -> bool:
     """Version check for one executable, memoized on success (see _usable_node_cache)."""
     if _usable_node_cache.get(executable):
         return True
-    ok = check(executable)
+    ok = check(executable, path)
     if ok:
         _usable_node_cache[executable] = True
     return ok
+
+
+def _managed_probe_path() -> str | None:
+    """The managed bin dir itself: its npm shim needs the node sitting beside it."""
+    bin_dir = managed_node_bin_dir()
+    return str(bin_dir) if bin_dir is not None else None
 
 
 def managed_node_usable() -> bool:
@@ -165,7 +171,7 @@ def managed_node_usable() -> bool:
         present = binary.is_file()
     except OSError:
         return False
-    _managed_node_ok = present and _node_version_ok(str(binary))
+    _managed_node_ok = present and _node_version_ok(str(binary), _managed_probe_path())
     return _managed_node_ok
 
 
@@ -200,18 +206,20 @@ def path_with_managed_node(
     return os.pathsep.join([bin_str, *kept])
 
 
-def _npm_version_ok(executable: str) -> bool:
+def _npm_version_ok(executable: str, path: str | None = None) -> bool:
     """Run ``<executable> -v`` and check npm clears the installer floor."""
-    return _probe_version(executable, _npm_meets_floor)
+    return _probe_version(executable, _npm_meets_floor, path)
 
 
-def _node_version_ok(executable: str) -> bool:
+def _node_version_ok(executable: str, path: str | None = None) -> bool:
     """Run ``<executable> -v`` and check it clears the floor; False on any error."""
-    return _probe_version(executable, _version_meets_floor)
+    return _probe_version(executable, _version_meets_floor, path)
 
 
-def _probe_version(executable: str, meets_floor) -> bool:
-    """Run ``<executable> -v`` and apply ``meets_floor``; False on any error."""
+def _probe_version(executable: str, meets_floor, path: str | None = None) -> bool:
+    """Run ``<executable> -v`` and apply ``meets_floor``; False on any error. ``path`` is
+    the PATH the server would run with: npm and npx are ``#!/usr/bin/env node`` scripts,
+    so probing them under the backend's own PATH can fail to find the candidate's node."""
     try:
         result = subprocess.run(
             [executable, "-v"],
@@ -220,6 +228,7 @@ def _probe_version(executable: str, meets_floor) -> bool:
             encoding = "utf-8",
             errors = "replace",
             timeout = _NODE_VERSION_PROBE_TIMEOUT_SECONDS,
+            env = {**os.environ, "PATH": path} if path is not None else None,
             **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, ValueError, subprocess.SubprocessError):
