@@ -678,6 +678,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onTrain={onTrain}
@@ -744,6 +745,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
               canRun={canRunModel}
               isActive={isActive}
