@@ -2927,30 +2927,20 @@ exit 0
             [switch]$Exact
         )
         try {
-            $venvInfo = Resolve-StudioFinalPathInfo -Path $VenvPath
-            $resolvedPath = $venvInfo.Path.TrimEnd('\', '/')
+            $resolvedPath = (Get-StudioFinalPath -Path $VenvPath).TrimEnd('\', '/')
         } catch {
             throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
         }
-        # Without the native resolver an alias the lexical walk cannot canonicalize
-        # -- a SUBST drive, an 8.3 short name -- keeps its own spelling, while a
-        # running process reports its image under the physical one. The prefix test
-        # below would then find nothing and let the install overwrite a venv Studio
-        # has open. So when the identity is inexact, compare the paths below their
-        # roots as well: fail closed, the way an unresolved identity does elsewhere.
-        # Note the two senses of "exact" here: the -Exact PARAMETER is the caller's
-        # match mode (this path is one executable, no prefix match), while
-        # $venvInfo.Exact is how much the resolver trusts its own answer.
-        $rootRelaxed = -not $venvInfo.Exact
-        $resolvedBelowRoot = $null
-        if ($rootRelaxed) {
-            try {
-                $venvRoot = [System.IO.Path]::GetPathRoot($resolvedPath)
-                if ($venvRoot -and $resolvedPath.Length -gt $venvRoot.Length) {
-                    $resolvedBelowRoot = $resolvedPath.Substring($venvRoot.Length).TrimStart('\', '/')
-                }
-            } catch { $resolvedBelowRoot = $null }
-        }
+        # A root-relative fallback used to sit here, to catch an aliased root whose
+        # spelling the lexical resolver could not canonicalize. It is gone: without
+        # the native helper EVERY path is inexact, so it compared path tails across
+        # unrelated drives and an ordinary D:\env\python.exe matched a protected
+        # C:\env, aborting a legitimate install as "still in use". The alias it was
+        # written for was SUBST, and that is now folded in Get-StudioLexicalPath
+        # instead, which is the correct place and costs no false positives. A
+        # volume reached by GUID and the same volume reached by drive letter still
+        # cannot be matched without the compiler; a tail match is not a safe price
+        # to pay for it.
 
         # Block only confirmed executable identities: a command line or working
         # directory that merely mentions the path is not proof of an open file.
@@ -2959,18 +2949,7 @@ exit 0
             try { $executable = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
-            $matched = Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact
-            if (-not $matched -and $resolvedBelowRoot) {
-                try {
-                    $candidateRoot = [System.IO.Path]::GetPathRoot($executable)
-                    if ($candidateRoot -and $executable.Length -gt $candidateRoot.Length) {
-                        $candidateBelowRoot = $executable.Substring($candidateRoot.Length).TrimStart('\', '/')
-                        $matched = Test-StudioProtectedPathMatch `
-                            -Candidate $candidateBelowRoot -ProtectedPath $resolvedBelowRoot -Exact:$Exact
-                    }
-                } catch {}
-            }
-            if ($matched) {
+            if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
                 [pscustomobject]@{
                     ProcessName = $process.ProcessName
                     Id = $process.Id
