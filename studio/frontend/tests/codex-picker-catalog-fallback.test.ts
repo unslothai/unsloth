@@ -81,6 +81,7 @@ interface RegistryEntry {
 type Capabilities = (
   entry: RegistryEntry | undefined,
   listed: (SubscriptionModels & { models: { id: string; vision?: boolean | null }[] }) | null,
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
 ) => Record<string, { vision?: boolean; studio_tools?: boolean }> | null;
 
 const ENTRY: RegistryEntry = {
@@ -91,10 +92,14 @@ const ENTRY: RegistryEntry = {
 test("a plan-listed slug carries its own vision flag into the capability map", async () => {
   const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
   const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
-  const capabilities = codexCapabilitiesWithPlanModels(ENTRY, {
-    source: "subscription",
-    models: [{ id: "gpt-5.7-nova", vision: false }, { id: "gpt-5.7-eos", vision: true }],
-  });
+  const capabilities = codexCapabilitiesWithPlanModels(
+    ENTRY,
+    {
+      source: "subscription",
+      models: [{ id: "gpt-5.7-nova", vision: false }, { id: "gpt-5.7-eos", vision: true }],
+    },
+    undefined,
+  );
   // Without this the composer reads "unknown" as allowed and offers attachments the
   // backend refuses on every send.
   assert.equal(capabilities?.["gpt-5.7-nova"].vision, false);
@@ -107,23 +112,39 @@ test("a curated fallback never rewrites the capability map", async () => {
   const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
   const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
   assert.equal(
-    codexCapabilitiesWithPlanModels(ENTRY, {
-      source: "curated",
-      models: [{ id: "gpt-5.7-nova", vision: true }],
-    }),
+    codexCapabilitiesWithPlanModels(
+      ENTRY,
+      { source: "curated", models: [{ id: "gpt-5.7-nova", vision: true }] },
+      undefined,
+    ),
     null,
   );
-  assert.equal(codexCapabilitiesWithPlanModels(ENTRY, null), null);
+  assert.equal(codexCapabilitiesWithPlanModels(ENTRY, null, undefined), null);
 });
 
-test("a plan that describes nothing new leaves the map alone", async () => {
+test("a plan that describes nothing new never overrides the registry", async () => {
   const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
   const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
-  assert.equal(
-    codexCapabilitiesWithPlanModels(ENTRY, {
-      source: "subscription",
-      models: [{ id: "gpt-5.4", vision: false }, { id: "gpt-5.7-nova" }],
-    }),
-    null,
+  const capabilities = codexCapabilitiesWithPlanModels(
+    ENTRY,
+    { source: "subscription", models: [{ id: "gpt-5.4", vision: false }, { id: "gpt-5.7-nova" }] },
+    undefined,
   );
+  assert.deepEqual(capabilities?.["gpt-5.4"], { vision: true, studio_tools: true });
+  assert.equal("gpt-5.7-nova" in (capabilities ?? {}), false);
+});
+
+
+test("another connection's learned slug survives this one's catalog", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  // The map is keyed by provider type, so a second ChatGPT connection's catalog must
+  // not erase what the first one taught it.
+  const capabilities = codexCapabilitiesWithPlanModels(
+    ENTRY,
+    { source: "subscription", models: [{ id: "gpt-5.7-eos", vision: true }] },
+    { "gpt-5.7-nova": { vision: false } },
+  );
+  assert.deepEqual(capabilities?.["gpt-5.7-nova"], { vision: false });
+  assert.deepEqual(capabilities?.["gpt-5.7-eos"], { vision: true });
 });

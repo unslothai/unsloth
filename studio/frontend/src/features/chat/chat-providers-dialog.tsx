@@ -67,7 +67,7 @@ import {
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
-  PROVIDER_CAPABILITY_WILDCARD,
+  getProviderModelCapabilities,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
@@ -78,6 +78,7 @@ import {
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
+  mergeLearnedModelCapabilities,
   pruneProviderModelIds,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
@@ -161,29 +162,27 @@ interface ChatProvidersSettingsProps {
 export function codexCapabilitiesWithPlanModels(
   entry: ProviderRegistryEntry | undefined,
   listed: CodexSubscriptionModels | null,
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
 ): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
   if (!listed || listed.source !== "subscription") return null;
   const registryCapabilities = entry?.model_capabilities ?? {};
-  const capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> = {
-    ...registryCapabilities,
-  };
-  if (typeof entry?.supports_studio_tools === "boolean") {
-    capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
-      ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
-      studio_tools: entry.supports_studio_tools,
-    };
-  }
-  let added = false;
+  // The map is keyed by provider type, not by connection, so it must start from what
+  // is already learned: a second ChatGPT connection lists its own slugs, and rebuilding
+  // from the registry alone would drop the first one's.
+  const capabilities = mergeLearnedModelCapabilities(
+    stored,
+    registryCapabilities,
+    entry?.supports_studio_tools,
+  );
   for (const model of listed.models) {
     // Only the plan describes a slug the registry never listed. Without it the
     // composer reads "unknown" as "allowed" and offers image attachments that the
     // backend then refuses on every send.
     if (typeof model.vision === "boolean" && !(model.id in registryCapabilities)) {
       capabilities[model.id] = { ...capabilities[model.id], vision: model.vision };
-      added = true;
     }
   }
-  return added ? capabilities : null;
+  return capabilities;
 }
 
 
@@ -1020,6 +1019,7 @@ export function ChatProvidersSettings({
     const capabilities = codexCapabilitiesWithPlanModels(
       registryByType.get("openai_codex"),
       listed,
+      getProviderModelCapabilities("openai_codex"),
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
     const picker = resolveCodexPickerModels(curated, savedModels, listed);
