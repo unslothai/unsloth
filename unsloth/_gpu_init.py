@@ -145,6 +145,55 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
+
+def _reraise_device_type_error_with_gpu_hint(exception):
+    """Re-raise a device-detection failure with the actual remedy when nvidia-smi
+    can see a GPU that this torch build cannot.
+
+    unsloth_zoo raises NotImplementedError("... only works on NVIDIA/AMD/Intel GPUs")
+    whenever torch reports no accelerator. On DGX Spark GB10 and other aarch64 hosts
+    that is routinely a torch built for the wrong CUDA -- the GPU is present and
+    nvidia-smi lists it, but torch.cuda.is_available() is False -- so the bare "you
+    need a GPU" message sends users looking for the wrong problem (#4446, #3553).
+
+    Only the message changes. The exception type is preserved so callers that catch
+    NotImplementedError keep working, and zoo's own vendor-specific advice (the AMD
+    ROCm repair hint) is left untouched.
+    """
+    # `raise exception`, never a bare `raise`: inside the nvidia-smi except handler a
+    # bare raise would re-raise the OSError from the probe instead of the original.
+    message = str(exception)
+    if "ROCm" in message or "AMD" in message:
+        raise exception
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise exception
+    if smi.returncode != 0 or not smi.stdout.strip():
+        raise exception
+    gpu_name = smi.stdout.strip().splitlines()[0].strip()
+    try:
+        import torch as _torch
+        torch_cuda_build = getattr(getattr(_torch, "version", None), "cuda", None) or "unknown"
+    except Exception:
+        torch_cuda_build = "unknown"
+    raise NotImplementedError(
+        f"Unsloth: an NVIDIA GPU ({gpu_name}) is present -- nvidia-smi sees it -- but this "
+        f"PyTorch build cannot use it (torch.cuda.is_available() is False).\n"
+        f"This usually means the installed PyTorch does not match the system's CUDA driver "
+        f"or platform, which is common on DGX Spark GB10 and other aarch64 hosts.\n"
+        f"PyTorch was compiled with CUDA: {torch_cuda_build}.\n"
+        f"Fix: reinstall a matching torch, for example\n"
+        f"    pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130\n"
+        f"picking the cuXXX index that matches the CUDA version nvidia-smi reports."
+    ) from exception
+
+
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
@@ -166,6 +215,8 @@ except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
     )
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
 except:
     raise
 del PackageNotFoundError, importlib_version
@@ -181,14 +232,18 @@ except ModuleNotFoundError:
 except:
     raise
 
-from unsloth_zoo.device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
-)
+try:
+    from unsloth_zoo.device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
+del _reraise_device_type_error_with_gpu_hint
 
 # Fix other issues
 from .import_fixes import (
