@@ -876,6 +876,47 @@ def test_subscription_catalog_is_dropped_when_the_account_changes(monkeypatch):
     forget_subscription_models("provider-4")
 
 
+def test_persisting_a_new_account_drops_the_plan_catalog(monkeypatch):
+    """Rebinding a connection to another ChatGPT account retires its catalog at once.
+
+    The user can leave the form before the browser callback lands, so the post-connect
+    picker refresh never runs, and the chat gate only refetches a catalog it does not
+    already have. Nothing else would notice the account changed.
+    """
+    stored = {}
+
+    monkeypatch.setattr(
+        codex_auth.credential_secrets,
+        "upsert_secret",
+        lambda _kind, provider_id, raw: stored.__setitem__(provider_id, raw),
+    )
+    monkeypatch.setattr(
+        codex_auth.credential_secrets,
+        "get_secret",
+        lambda _kind, provider_id: stored.get(provider_id),
+    )
+
+    def _bundle(account_id):
+        return {
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "expires_at": 1,
+            "account_id": account_id,
+        }
+
+    codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
+    codex_client._offered_models["provider-5"] = {"gpt-5.7-nova": {"id": "gpt-5.7-nova"}}
+    try:
+        # A refresh for the same account keeps it: only the account identity matters.
+        codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
+        assert offered_subscription_model_ids("provider-5") == {"gpt-5.7-nova"}
+
+        codex_auth.save_oauth_bundle("provider-5", _bundle("acct-b"))
+        assert offered_subscription_model_ids("provider-5") == set()
+    finally:
+        forget_subscription_models("provider-5")
+
+
 def test_subscription_model_list_rejects_non_200(monkeypatch):
     monkeypatch.setattr(
         codex_client,

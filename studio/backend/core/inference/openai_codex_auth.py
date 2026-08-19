@@ -230,11 +230,20 @@ def _validate_token_payload(body: Any, previous_refresh_token: str = "") -> dict
 
 
 def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
+    previous = load_oauth_bundle(provider_id)
     credential_secrets.upsert_secret(
         credential_secrets.OPENAI_CODEX_OAUTH_KIND,
         provider_id,
         json.dumps(bundle, separators = (",", ":")),
     )
+    if previous and previous.get("account_id") != bundle.get("account_id"):
+        # Rebound to a different ChatGPT account, whose plan lists different slugs. No
+        # later request is guaranteed to notice: the picker only refreshes while its form
+        # is open, and the chat gate only refetches a catalog it does not already have.
+        # Imported here because the client module imports this one at load time.
+        from core.inference.openai_codex_client import forget_subscription_models
+
+        forget_subscription_models(provider_id)
 
 
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:
