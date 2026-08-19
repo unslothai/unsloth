@@ -4177,6 +4177,7 @@ exit 0
 
     if ($null -ne $fallbackVenvExit -and $fallbackVenvExit -ne 0) {
         Write-StudioLine "[ERROR] Failed to repair virtual environment (exit code $fallbackVenvExit)" -ForegroundColor Red
+        Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Failed to repair virtual environment (exit code $fallbackVenvExit)" $fallbackVenvExit)
     }
 

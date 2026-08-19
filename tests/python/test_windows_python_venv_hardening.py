@@ -434,6 +434,7 @@ def _run_uv_venv_creation_result(
     uv_stub = script_root / "uv stub.ps1"
     detected_python = script_root / "selected detected Python.ps1"
     fallback_log = tmp_path / "fallback args.log"
+    uv_log = tmp_path / "uv args.log"
     venv_dir = tmp_path / "managed venv with spaces"
     uv_stub.write_text(
         """
@@ -443,11 +444,12 @@ if ($env:TEST_UV_MODE -eq "ready") {
     New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
     Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination (Join-Path $target "Scripts\\python.exe") -Force
 } elseif ($env:TEST_UV_MODE -eq "unlaunchable") {
-    New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
-    Set-Content -LiteralPath (Join-Path $target "Scripts\\python.exe") -Value "not an executable"
+    New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts\\python.exe") | Out-Null
 } elseif ($env:TEST_UV_MODE -eq "nonzero") {
+    [System.IO.File]::WriteAllText($env:TEST_UV_LOG, ($args -join "|"))
     exit 17
 }
+[System.IO.File]::WriteAllText($env:TEST_UV_LOG, ($args -join "|"))
 exit 0
 """.strip(),
         encoding = "utf-8",
@@ -457,12 +459,15 @@ exit 0
 [System.IO.File]::WriteAllText($env:TEST_FALLBACK_LOG, ($args -join "|"))
 $target = $args[2]
 New-Item -ItemType Directory -Force -Path $target | Out-Null
+$pythonPath = Join-Path $target "Scripts\\python.exe"
+if (Test-Path -LiteralPath $pythonPath) {
+    Remove-Item -LiteralPath $pythonPath -Force -Recurse
+}
 if ($env:TEST_FALLBACK_MODE -eq "ready") {
     New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
     Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination (Join-Path $target "Scripts\\python.exe") -Force
 } elseif ($env:TEST_FALLBACK_MODE -eq "unusable") {
-    New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
-    Set-Content -LiteralPath (Join-Path $target "Scripts\\python.exe") -Value "not an executable"
+    New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts\\python.exe") | Out-Null
 }
 if ($env:TEST_FALLBACK_MODE -eq "nonzero") { exit 23 }
 exit 0
@@ -515,10 +520,15 @@ Invoke-TestCreation | Out-Null
 Write-Output ("calls=" + ($script:TestCallLabels -join ","))
 if (Test-Path -LiteralPath $env:TEST_FALLBACK_LOG -PathType Leaf) {{
     Write-Output ("fallback_args=" + [System.IO.File]::ReadAllText($env:TEST_FALLBACK_LOG))
-}} else {{
-    Write-Output "fallback_args="
-}}
-Write-Output ("marker=" + (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf))
+    }} else {{
+        Write-Output "fallback_args="
+    }}
+    if (Test-Path -LiteralPath $env:TEST_UV_LOG -PathType Leaf) {{
+        Write-Output ("uv_args=" + [System.IO.File]::ReadAllText($env:TEST_UV_LOG))
+    }} else {{
+        Write-Output "uv_args="
+    }}
+    Write-Output ("marker=" + (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf))
 Write-Output ("failure=" + ($null -ne $script:FailureMessage))
 Write-Output ("package=" + $script:PackageInstallReached)
 """
@@ -529,6 +539,7 @@ Write-Output ("package=" + $script:PackageInstallReached)
     env["TEST_UV_MODE"] = uv_mode
     env["TEST_FALLBACK_MODE"] = fallback_mode
     env["TEST_FALLBACK_LOG"] = str(fallback_log)
+    env["TEST_UV_LOG"] = str(uv_log)
     env["TEST_VENV_DIR"] = str(venv_dir)
     env["TEST_STUDIO_HOME"] = str(tmp_path / "studio home")
     env["TEST_MIGRATED"] = "1" if migrated else "0"
@@ -537,11 +548,20 @@ Write-Output ("package=" + $script:PackageInstallReached)
     return dict(line.split("=", 1) for line in output.splitlines())
 
 
+def _assert_uv_invocation(state: dict[str, str], tmp_path: Path):
+    args = state["uv_args"].split("|")
+    assert args[0] == "venv", state
+    assert Path(args[1]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
+    assert args[2] == "--python", state
+    assert Path(args[3]).name == "selected detected Python.ps1", state
+
+
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_uv_venv_creation_result_ready_uv_skips_fallback(tmp_path: Path, shell: str):
     state = _run_uv_venv_creation_result(tmp_path, shell, "ready", "ready")
     assert state["calls"] == "create virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
     assert state["fallback_args"] == "", state
     assert state["marker"] == "True", state
     assert state["failure"] == "False", state
@@ -556,6 +576,7 @@ def test_uv_venv_creation_result_zero_exit_unusable_uv_uses_fallback(
 ):
     state = _run_uv_venv_creation_result(tmp_path, shell, uv_mode, "ready")
     assert state["calls"] == "create virtual environment,repair virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
     args = state["fallback_args"].split("|")
     assert args[:2] == ["-m", "venv"], state
     assert Path(args[2]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
@@ -571,6 +592,7 @@ def test_uv_venv_creation_result_nonzero_uv_uses_selected_python_fallback(
 ):
     state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "ready")
     assert state["calls"] == "create virtual environment,repair virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
     args = state["fallback_args"].split("|")
     assert args[:2] == ["-m", "venv"], state
     assert Path(args[2]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
@@ -586,6 +608,7 @@ def test_uv_venv_creation_result_nonzero_fallback_stops_before_packages(
 ):
     state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "nonzero")
     assert state["calls"] == "create virtual environment,repair virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
     assert state["marker"] == "True", state
     assert state["failure"] == "True", state
     assert state["package"] == "False", state
@@ -598,6 +621,7 @@ def test_uv_venv_creation_result_unusable_fallback_stops_before_packages(
 ):
     state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "unusable")
     assert state["calls"] == "create virtual environment,repair virtual environment", state
+    _assert_uv_invocation(state, tmp_path)
     assert state["marker"] == "True", state
     assert state["failure"] == "True", state
     assert state["package"] == "False", state
@@ -611,6 +635,7 @@ def test_uv_venv_creation_result_migrated_environment_skips_creator_fallback(
     state = _run_uv_venv_creation_result(tmp_path, shell, "nonzero", "ready", migrated = True)
     assert state["calls"] == "", state
     assert state["fallback_args"] == "", state
+    assert state["uv_args"] == "", state
     assert state["marker"] == "True", state
     assert state["failure"] == "False", state
     assert state["package"] == "True", state
