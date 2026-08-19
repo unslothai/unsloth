@@ -522,6 +522,31 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_the_tool_call_exemption_ends_where_the_call_does():
+    """The exemption belongs to the CALL, not to the rest of the message.
+
+    A stored tool call cannot line up character for character with the live text, because
+    the store keeps arguments as an object and offers both JSON spellings, so the cursor
+    after one is not exact and the anchors have to be relaxed. Left set for the remainder
+    of the message, an assistant turn carrying both a call and text stayed matched after a
+    correction was appended to that text, and the pre-edit turn was still recallable.
+    Once an ordinary text probe has matched, the cursor is exact again.
+    """
+    from core.rag import conversation_archive as archive
+
+    probes = [("search_conversation", True), ("old answer", False)]
+
+    def _eligible(message):
+        found = archive._scan_probes(probes, [message], 0, 1)
+        if found is None:
+            return False
+        position, cursor, opened_at, partial = found
+        return not opened_at and (partial or cursor >= len([message][position]))
+
+    assert _eligible('{"tool":"search_conversation"}\nold answer') is True
+    assert _eligible('{"tool":"search_conversation"}\nold answer, correction: new answer') is False
+
+
 def test_a_line_inserted_INTO_an_archived_turn_retires_it():
     """An edit that adds a line BETWEEN two archived lines is still an edit.
 
@@ -2153,6 +2178,42 @@ def test_the_newest_revision_survives_a_tied_run_LONGER_than_the_cap(conn):
     assert "note 000" in oldest[0]
 
 
+def test_a_re_embedded_oldest_turn_is_still_reachable_past_the_cap(conn, monkeypatch):
+    """Both halves have to be ordered by the ordinal, not just the newest one.
+
+    A re-embed deletes and reinserts a chunk while keeping its ordinal, so rowid and
+    conversation order diverge. Fetched by rowid, the oldest turn moved to the BACK of the
+    front window while the newest-first leg deliberately skips it, and it was in neither
+    half: measured, the ordinal-0 chunk's rowid went from 1 to 297 and "note 000" stopped
+    being recallable at all.
+    """
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    oldest_turn = _turn("note 000 about ZQXVARA123", "noted")
+    _archive([dict(message) for message in oldest_turn])
+    count = conversation_archive._BRANCH_FILTER_MAX_CANDIDATES + 40
+    for index in range(1, count - 1):
+        _archive(_turn(f"note {index:03d} about ZQXVARA123", "noted"))
+    _archive(_turn("set ZQXVARA123 to 9999", "done"))
+
+    # Only the oldest turn is re-embedded, which reinserts its chunk at the newest rowid.
+    identity["name"] = "st:model-b"
+    _archive([dict(message) for message in oldest_turn])
+
+    oldest = conversation_archive.recall(THREAD, "what was ZQXVARA123 originally", top_k = 4)
+    assert oldest is not None
+    assert "note 000" in oldest[0]
+
+
 def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
     """A tie in the score is not an order, and truncating it silently picked the past.
 
@@ -2416,16 +2477,89 @@ def test_a_re_embed_does_not_swallow_a_repeat_evicted_later(conn, monkeypatch):
     assert "set ZQXVARA123 to 1" in found[1][-1]["text"]
 
 
+def test_two_evicted_copies_of_a_thrice_said_turn_are_both_archived(conn):
+    """A set of live texts cannot count. Three identical turns with two evicted and one
+    still in the prompt looked entirely live, so only one copy was ever written and the
+    archive was a turn short of what was actually said."""
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    mid = _turn("set ZQXVARA123 to 2", "ok")
+    other = _turn("something else about ZQXVARA123", "fine")
+    conversation = repeat + mid + list(repeat) + other + list(repeat)
+    _save_thread(THREAD, conversation)
+
+    # The last occurrence and `other` are still in the prompt; the first two are not.
+    live = other + list(repeat)
+    conversation_archive.archive_turns(THREAD, repeat + mid + list(repeat), live = live)
+
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+            (scope,),
+        ).fetchall()
+    ]
+    assert ordinals == [0, 1, 2]
+
+
+def test_a_rewound_repeat_moves_the_survivor_to_the_seat_it_still_has(conn, monkeypatch):
+    """Retiring a copy without restamping leaves the survivor on a seat that is gone.
+
+    Identical turns at ordinals 0 and 2 with the FIRST rewound away left the survivor on
+    0, so a contradiction at 1 rendered after it and the header, which says the higher
+    turn number was said later and supersedes, handed the model the superseded value.
+    """
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    repeat = _turn("set ZQXVARA123 to 1", "ok")
+    mid = _turn("set ZQXVARA123 to 2", "ok")
+    whole = repeat + mid + list(repeat)
+    _save_thread(THREAD, whole)
+    conversation_archive.archive_turns(THREAD, whole, live = [])
+
+    # The user rewinds away the FIRST occurrence, and the embedder changes.
+    _save_thread(THREAD, mid + list(repeat))
+    identity["name"] = "st:model-b"
+    conversation_archive.archive_turns(THREAD, mid + list(repeat), live = [])
+
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    # Rendered oldest first, so the conversation's last word has to come last.
+    assert found[0].index("set ZQXVARA123 to 2") < found[0].rindex("set ZQXVARA123 to 1")
+
+
 def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
     """`live` is optional, and without it the budget is the old count. Direct callers
     (every other test here, and any caller outside the fit) must not change behaviour."""
     from core.rag import conversation_archive as archive
 
-    assert archive._write_budget([["a"], ["a"]], [0, 1], None) == 2
-    assert archive._write_budget([["a"], ["a"]], [0, 1], {"a"}) == 1
-    assert archive._write_budget([["a"], ["a"]], [], {"a"}) == 1
-    # A seat whose turn is only PARTLY in the prompt has been evicted.
-    assert archive._write_budget([["q", "a"], ["q", "a"]], [0, 1], {"q"}) == 2
+    group = [{"role": "user", "content": "a"}]
+    one_live = [{"role": "user", "content": "a"}]
+
+    assert archive._write_budget([["a"], ["a"]], [0, 1], None, group) == 2
+    assert (
+        archive._write_budget([["a"], ["a"]], [0, 1], archive._live_positions(one_live), group) == 1
+    )
+    assert (
+        archive._write_budget([["a"], ["a"]], [], archive._live_positions(one_live), group) == 1
+    )
+    # Live occurrences are COUNTED, not tested for membership: three seats with one copy
+    # still in the prompt owes two writes, not one.
+    assert (
+        archive._write_budget(
+            [["a"], ["a"], ["a"]], [0, 1, 2], archive._live_positions(one_live), group
+        )
+        == 2
+    )
 
 
 def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn):

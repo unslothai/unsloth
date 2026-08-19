@@ -555,6 +555,7 @@ def search_lexical(
     *,
     match_query: str | None = None,
     newest_first: bool = False,
+    oldest_first: bool = False,
 ):
     """BM25 lexical search over one scope or several. Returns
     [(chunk_id, score)], higher = better.
@@ -587,7 +588,20 @@ def search_lexical(
         # The filtered form joins chunks and documents and runs both subqueries for every
         # matched row BEFORE the LIMIT, so it costs more the commoner the query terms are.
         # With nothing linked that work is provably wasted (linked_folder_rows_exist).
-        if newest_first:
+        if oldest_first:
+            # The mirror of `newest_first`, and needed for the same reason: the default
+            # ordering is rowid, a re-embed deletes and reinserts a chunk while keeping
+            # its ordinal, and the oldest turn can therefore be pushed out of the front
+            # window while the newest-first leg deliberately skips it. NULLs first here,
+            # since a row archived before the column existed is the oldest there is.
+            sql = (
+                f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
+                f"JOIN documents d ON d.id=c.document_id "
+                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC LIMIT ?"
+            )
+        elif newest_first:
             # Ordered by the archive ordinal, not by rowid. Rowid is insertion order, and
             # a re-embed deletes and reinserts a chunk while keeping its ordinal, so rowid
             # scrambles exactly the rows this leg exists to reach: measured, a rowid DESC
