@@ -10,10 +10,10 @@ nowhere to spill, so the same over-commit takes the machine down. Wording both f
 `device_type === "mac"` told Intel Mac users the opposite of what happens to them.
 
 So the payload carries `apple_silicon` alongside `device_type`, gated on the same
-`is_apple_silicon()` the Metal context budget uses, and the UI words the warning from
-it. It rides with `device_type` because the frontend treats that field as the marker of
-an authoritative reply: a provisional or unauthenticated response carries neither, and
-absent reads as false, which is the PC wording that was already correct there.
+`is_apple_silicon()` the Metal context budget uses. It rides with `device_type` because
+the frontend treats that field as the marker of an authoritative reply: a provisional or
+unauthenticated response carries neither, and absent reads as false, the PC wording that
+was already correct there.
 
 CPU-only, no network, no GPU, no weights.
 """
@@ -35,18 +35,18 @@ import utils.hardware as hardware_pkg  # noqa: E402
 def _restore_real_logging_modules() -> dict:
     """Undo the stubs other test files install, so `main` can be imported.
 
-    Several files in this tree put a plain module named `loggers` and a minimal
-    `structlog` into sys.modules to avoid the real dependency, and pytest runs the whole
-    tree in one process. `main` does `from loggers.config import LogConfig`, and that
-    module needs both the real package (a plain module cannot satisfy `loggers.config`)
-    and real structlog (it annotates with `structlog.BoundLogger`). So whichever file
-    sorts first decides whether this one can import main at all. Predates this change:
-    the existing MLX-repair health test hits the same wall in a full-suite run.
+    Several files in this tree put a plain `loggers` module and a minimal `structlog` into
+    sys.modules to avoid the real dependency, and pytest runs the whole tree in one
+    process. `main` does `from loggers.config import LogConfig`, which needs both the real
+    package (a plain module cannot satisfy `loggers.config`) and real structlog (it
+    annotates with `structlog.BoundLogger`), so whichever file sorts first decides whether
+    this one can import main at all. Predates this change: the existing MLX-repair health
+    test hits the same wall in a full-suite run.
 
-    Dropping the stubs is safe in both directions. The real `loggers` package sits in
-    this backend and exports the same `get_logger`, so a later test expecting the stub
-    gets a working superset. If real structlog is genuinely absent the caller skips
-    rather than failing, since that is an environment gap and not a defect here.
+    Dropping the stubs is safe both ways: the real `loggers` package sits in this backend
+    and exports the same `get_logger`, so a later test expecting the stub gets a working
+    superset. If real structlog is genuinely absent the caller skips, since that is an
+    environment gap and not a defect here.
     """
     removed = {}
     stub = sys.modules.get("loggers")
@@ -124,8 +124,8 @@ def test_every_other_host_reports_false(monkeypatch):
 
 def test_it_rides_with_device_type(monkeypatch):
     """Both are authed-only. The frontend keys `fetched` on device_type and reads
-    apple_silicon on the same terms, so a reply may not carry one without the other or
-    the store caches a verdict it was never told."""
+    apple_silicon on the same terms, so a reply carrying one without the other would make
+    the store cache a verdict it was never told."""
     for apple in (True, False):
         body = _health(monkeypatch, apple_silicon = apple)
         assert ("apple_silicon" in body) == ("device_type" in body)

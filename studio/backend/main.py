@@ -1683,11 +1683,10 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
-    # Reported alongside device_type, not folded into it: "mac" is every Darwin host,
-    # and an Intel Mac with a discrete GPU spills to system RAM like a PC, while on
-    # Apple Silicon there is one pool and nowhere to spill. The UI words its memory
-    # warnings from this. Same gate the Metal context budget uses, and a pure platform
-    # check, so it costs nothing on a health poll.
+    # Alongside device_type, not folded into it: "mac" is every Darwin host, and an Intel
+    # Mac with a discrete GPU spills to system RAM like a PC while Apple Silicon has one
+    # pool and nowhere to spill. The UI words its memory warnings from this. Same gate the
+    # Metal context budget uses, and a pure platform check, so a health poll pays nothing.
     from utils.hardware import is_apple_silicon
 
     authed = {

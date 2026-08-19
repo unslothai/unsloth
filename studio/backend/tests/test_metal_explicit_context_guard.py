@@ -3,24 +3,22 @@
 
 """A hand-set context above what unified memory holds must be refused, not launched.
 
-The Metal branch of load_model already works out the largest context that fits, but
-only Auto was ever moved to it: an explicit request was passed through verbatim, on the
-theory that "--fit on" is a backstop. It is one, but not a trustworthy one here.
-llama.cpp will reduce an explicit context (fit_params_min_ctx defaults to 4096; only
-"-c 0" disables the reduction), but it decides from ggml-metal's free-memory report,
-which comes off the device's recommendedMaxWorkingSetSize and knows nothing about
-Studio's own resident gigabyte or two, other running apps, or the iogpu wired limit
-that is the figure actually being blown. When that estimate is optimistic the request
-stands and the launch over-commits wired memory, which Jetsam cannot reclaim, so the
-machine panics instead of the load failing. An M1 Max 32 GB hit exactly that on
+The Metal branch of load_model already works out the largest context that fits, but only
+Auto was moved to it: an explicit request was passed through verbatim, on the theory that
+"--fit on" is a backstop. It is one, but not a trustworthy one here. llama.cpp will reduce
+an explicit context (fit_params_min_ctx defaults to 4096; only "-c 0" disables it), but it
+decides from ggml-metal's free-memory report, off the device's recommendedMaxWorkingSetSize,
+which knows nothing of Studio's own resident gigabyte or two, other running apps, or the
+iogpu wired limit actually being blown. When that estimate is optimistic the request stands
+and the launch over-commits wired memory, which Jetsam cannot reclaim, so the machine
+panics instead of the load failing. An M1 Max 32 GB hit exactly that on
 Qwen3.8-27B-UD-Q4_K_XL, twice, as soon as the context was set by hand.
 
 So the ceiling the branch computes now gates the explicit request too, and the refusal
-names it. Two things it deliberately does not do: refuse against the 4096 fallback the
-branch uses when KV cannot be sized (a guess, not a measurement, and refusing on it
-would block contexts that load fine today), and refuse a manual load with a fixed layer
-count, which is the user taking the memory budget over, as the other two Metal guards
-already treat it.
+names it. Two things it deliberately does not do: refuse against the 4096 fallback used
+when KV cannot be sized (a guess, and refusing on it would block contexts that load fine
+today), and refuse a manual load with a fixed layer count, which is the user taking the
+memory budget over, as the other two Metal guards already treat it.
 """
 
 from __future__ import annotations
@@ -63,17 +61,17 @@ _message = LlamaCppBackend._metal_context_overcommit_message
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
 _REAL_POPEN = subprocess.Popen
 
-# What the stubbed fit reports as the largest context that fits, and the native length
-# of the GGUF under test. Anything between them is a context the user can type into the
-# box today and the machine cannot hold.
+# What the stubbed fit reports as the largest context that fits, and the GGUF's native
+# length. Anything between them is a context the user can type today and the machine
+# cannot hold.
 CEILING = 8192
 NATIVE = 262144
 
 
 @pytest.fixture(autouse = True)
 def _no_opt_out(monkeypatch):
-    """The opt-out is a real environment read, so a host that has it set must not
-    silently turn every refusal test green."""
+    """A real environment read, so a host that has it set must not turn every refusal
+    test silently green."""
     monkeypatch.delenv(_ENV, raising = False)
 
 
@@ -126,14 +124,13 @@ def _launch(
     stub GGUF and the ceiling under test is the one the fit returns.
 
     Returns the launch capture ({"cmd": argv}, empty when nothing launched). Pass
-    ``backend`` to drive a second load through the same instance, which is the only way
-    to observe what a refusal does to state a previous load left behind.
+    ``backend`` to drive a second load through the same instance, the only way to observe
+    what a refusal does to state a previous load left behind.
 
     ``real_fit`` leaves _fit_context_to_vram unstubbed so the branch runs against the
     helper's actual return contract -- its 4096 floor, and its habit of handing the
     request straight back. ``budget_bytes`` / ``weights_bytes`` / ``kv_per_token`` /
-    ``native`` then place the model against the budget; the stubbed ceiling ignores all
-    four, so they only matter with ``real_fit``.
+    ``native`` then place the model against the budget, and only matter with ``real_fit``.
     """
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -156,14 +153,13 @@ def _launch(
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *a, **k: None
-    # This harness does not model host RAM, and None is the documented way to say so:
-    # both _apu_ram_shortfall_message and _host_offload_shortfall_message treat unknown
+    # This harness does not model host RAM, and None is the documented way to say so: both
+    # _apu_ram_shortfall_message and _host_offload_shortfall_message treat unknown
     # available memory as "never refuse". Without it the sibling host-RAM guard fires on
-    # the paravirtual path, which is the one placement here that reports
-    # child_has_no_gpu and so gets past that guard's empty-pool early return. It then
-    # prices the model against the REAL machine, so the virtualised-device tests passed
-    # on a 16 GB runner and failed on a 7 GB macos-14 one. Host-memory dependent, not
-    # OS dependent: a real 8 GB Mac would have failed the same way.
+    # the paravirtual path (the one placement here that reports child_has_no_gpu and so
+    # gets past that guard's empty-pool early return) and prices the model against the
+    # REAL machine, so the virtualised-device tests passed on a 16 GB runner and failed on
+    # a 7 GB one. Host-memory dependent, not OS dependent.
     backend._available_system_memory_mib = lambda *a, **k: None
     backend._amd_apu_wants_unified_memory = lambda *a, **k: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
@@ -183,11 +179,10 @@ def _launch(
             "Process",
             (),
             {
-                # One below pid_max: validly shaped, but names no process, so the
-                # lifetime registry's identity check drops it and it can never be
-                # signalled. A low pid here is not inert decoration -- load_model
-                # adopts whatever it is given and teardown signals that process
-                # group, and killpg(1) is kill(-1), i.e. everything the user owns.
+                # One below pid_max: validly shaped but names no process, so the
+                # lifetime registry's identity check drops it. Not inert decoration
+                # -- load_model adopts whatever pid it is given and teardown signals
+                # that process group, and killpg(1) is kill(-1), everything the user owns.
                 "pid": 4194303,
                 "stdout": (),
                 "poll": lambda self: None,
@@ -311,11 +306,10 @@ class TestWhatLoadModelDoes:
 def test_the_refusal_is_raised_outside_the_placement_handler():
     """Structural, because the failure it guards against is silent.
 
-    The `except Exception` around GPU selection turns any raise inside it into
-    "GPU selection failed", then restores the original request, which is exactly the
-    over-commit being refused. So the branch records the message and load_model raises
-    it after that handler. Raising in place would leave every test above passing on a
-    guard that does nothing.
+    The `except Exception` around GPU selection swallows any raise inside it and restores
+    the original request, which is exactly the over-commit being refused. So the branch
+    records the message and load_model raises it after that handler. Raising in place
+    would leave every test above passing on a guard that does nothing.
     """
     import inspect
 
@@ -331,17 +325,17 @@ class TestAVirtualisedMetalDevice:
     """A Mac VM runs GGUF entirely on CPU, so this budget is the wrong yardstick.
 
     The paravirtual pin rewrites every placement to manual/0 and launches behind
-    --device none, because offloaded layers on a virtualised Metal device produce
-    corrupt output. Nothing is allocated on the GPU, so refusing against a GPU
-    working-set budget would break loads that work today on a Mac VM (and on the
-    macOS GitHub Actions runners, which report exactly this device), and the message
-    would describe hardware the launch never touches. Host RAM is the real limit
-    there, and _host_offload_shortfall_message already prices that.
+    --device none, because offloaded layers on a virtualised Metal device produce corrupt
+    output. Nothing is allocated on the GPU, so refusing against a GPU working-set budget
+    would break loads that work today on a Mac VM (and on the macOS GitHub Actions
+    runners, which report exactly this device), and the message would describe hardware
+    the launch never touches. Host RAM is the real limit, and
+    _host_offload_shortfall_message already prices it.
 
     Caught by the pre-merge OS x GPU simulation, not by review: the exemption reads
-    _paravirtual_cpu_forced, which is set from the hardware, while the neighbouring
-    _caller_owns_budget is read off the REQUEST and so stays False for the Auto load
-    the pin rewrote.
+    _paravirtual_cpu_forced, set from the hardware, while the neighbouring
+    _caller_owns_budget is read off the REQUEST and stays False for the Auto load the
+    pin rewrote.
     """
 
     def test_it_is_not_refused(self, tmp_path, monkeypatch):
@@ -364,10 +358,10 @@ class TestAVirtualisedMetalDevice:
 class TestTheMessageSurvivesTheRoute:
     """load_model raises; the route rewrites the text twice before the user reads it.
 
-    It is caught by the broad handler in _load_model_impl, which redacts native paths
-    and then runs _maybe_unsupported_message over the result, exactly as the existing
-    APU and host-offload refusals are. Both rewrites have to leave this message alone
-    or the user is told something false about a fixable mistake.
+    The broad handler in _load_model_impl redacts native paths and then runs
+    _maybe_unsupported_message over the result, exactly as for the existing APU and
+    host-offload refusals. Both rewrites have to leave this message alone or the user is
+    told something false about a fixable mistake.
     """
 
     def _message(self, tmp_path, monkeypatch) -> str:
@@ -376,13 +370,12 @@ class TestTheMessageSurvivesTheRoute:
         return str(excinfo.value)
 
     def test_it_is_not_relabelled_as_an_unsupported_model(self, tmp_path, monkeypatch):
-        """_maybe_unsupported_message rewrites any error carrying one of these into
-        "This model is not supported yet. Try a different model.", which would send
-        the user off to change models over a context they can simply lower.
+        """_maybe_unsupported_message rewrites any error carrying one of these into "This
+        model is not supported yet. Try a different model.", sending the user off to
+        change models over a context they can simply lower.
 
         Read out of the route source rather than imported: the phrase list is the
-        contract, and importing routes.inference would drag FastAPI into a test that
-        only needs four strings.
+        contract, and importing routes.inference would drag FastAPI in for four strings.
         """
         import ast
         import re
@@ -416,15 +409,15 @@ class TestTheMessageSurvivesTheRoute:
 class TestWhatARefusedReloadCosts:
     """A refused reload ends with no model loaded, and that is the existing contract.
 
-    load_model kills the resident server in its Phase 1, long before the placement
-    block that computes the ceiling. Every refusal raised from that block behaves this
-    way already: the APU RAM shortfall, the unpinnable Vulkan ordinal. Refusing earlier
-    would mean re-deriving the fit outside the one place that owns it, which is the
-    drift _apu_ram_shortfall_message explicitly avoids.
+    load_model kills the resident server in Phase 1, long before the placement block that
+    computes the ceiling, so every refusal raised from that block already behaves this way
+    (the APU RAM shortfall, the unpinnable Vulkan ordinal). Refusing earlier would mean
+    re-deriving the fit outside the one place that owns it, the drift
+    _apu_ram_shortfall_message explicitly avoids.
 
-    So this is pinned rather than fixed, and it is still the better end state: before
-    this guard the same click took the whole machine down. The recovery path is what
-    has to work, and the next test covers it.
+    So this is pinned rather than fixed, and still the better end state: before this guard
+    the same click took the whole machine down. The recovery path is what has to work, and
+    the next test covers it.
     """
 
     def test_the_refused_reload_leaves_nothing_running(self, tmp_path, monkeypatch):
@@ -450,9 +443,9 @@ class TestWhatARefusedReloadCosts:
 class TestTheContextCanArriveByAnotherDoor:
     """requested_ctx folds in a -c from extra args, so every spelling is covered.
 
-    Worth pinning: if the guard read intent.n_ctx directly it would sit one text box
-    away from being bypassed, and the pass-through spelling is the one a user reaches
-    for after being refused.
+    Worth pinning: reading intent.n_ctx directly would leave the guard one text box away
+    from being bypassed, and the pass-through spelling is the one a user reaches for
+    after being refused.
     """
 
     @pytest.mark.parametrize(
@@ -483,8 +476,8 @@ class TestTheContextCanArriveByAnotherDoor:
 _FAT_KV = 1024 * 1024
 _BUDGET = 9 * 1024**3
 # load_model folds a flat compute-buffer reserve into the weights before the fit sees
-# them, so what is left of a 9 GiB budget for weights + KV is well under 9 GiB. Sized
-# so the weights fit with room for a few hundred tokens and nothing like 4096.
+# them, so a 9 GiB budget leaves well under 9 GiB for weights + KV. Sized so the weights
+# fit with room for a few hundred tokens and nothing like 4096.
 _TIGHT_WEIGHTS = 3300 * 1024**2
 _TIGHT_CEILING = 768
 
@@ -498,16 +491,14 @@ class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
     """The fit floors at ``min_ctx`` (4096), so a 4096 coming back means either "4096
     fits" or "nothing fits, here is the floor". Reading the second as "the weights alone
     are over budget" skipped the refusal on exactly the machine that needs it: llama.cpp
-    will not reduce below fit_params_min_ctx (4096) either, so "--fit on" has nothing
-    left to give and the launch over-commits wired memory.
+    will not reduce below 4096 either, so "--fit on" has nothing left to give and the
+    launch over-commits wired memory.
     """
 
     def test_the_premise_the_fit_hands_back_its_own_floor(self):
         """Not a behaviour assertion -- a guard on the return contract the branch reads.
-
-        998 MiB of weights against a 1000 MiB budget leaves room for 2048 tokens at
-        1 KiB each, yet asking with the default floor still answers 4096.
-        """
+        998 MiB of weights against a 1000 MiB budget leaves room for 2048 tokens at 1 KiB
+        each, yet asking with the default floor still answers 4096."""
         backend = LlamaCppBackend()
         backend._can_estimate_kv = lambda: True
         backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 1024
@@ -573,12 +564,12 @@ class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
 
 
 class TestAContextAboveTheModelsNativeLength:
-    """The fit is sized through the native length, so its ceiling can never exceed it
-    and every request past it read as an over-commit whatever the machine had spare.
-    Nothing clamps a request to the native length on the way in (the Extra Arguments box
-    takes a raw --ctx-size and its placeholder suggests --rope-scaling yarn), and
-    llama.cpp builds the context at the full -c, capping only the per-slot value
-    afterwards, so the request is what actually gets allocated.
+    """The fit is sized through the native length, so its ceiling can never exceed it and
+    every request past it read as an over-commit whatever the machine had spare. Nothing
+    clamps a request to native on the way in (the Extra Arguments box takes a raw
+    --ctx-size and its placeholder suggests --rope-scaling yarn), and llama.cpp builds the
+    context at the full -c, capping only the per-slot value afterwards, so the request is
+    what actually gets allocated.
     """
 
     _NATIVE = 32768
@@ -603,9 +594,9 @@ class TestAContextAboveTheModelsNativeLength:
         self, tmp_path, monkeypatch
     ):
         """max_available_ctx is published as max_context_length, and both amber warnings
-        fire when the loaded context exceeds it. Left at the native length, a load this
-        branch measured and allowed reaches the user as "context length exceeds what
-        fits in unified memory", naming a number smaller than the one running.
+        fire when the loaded context exceeds it. Left at native, a load this branch
+        measured and allowed reaches the user as "context length exceeds what fits in
+        unified memory", naming a number smaller than the one running.
         """
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         loaded = int(_ctx_values(out["cmd"])[-1])
@@ -646,10 +637,9 @@ class TestAContextAboveTheModelsNativeLength:
     def test_the_refusal_names_the_measured_ceiling_not_the_native_length(
         self, tmp_path, monkeypatch
     ):
-        """A refusal that names the native length is reporting the wrong limit: here
-        memory holds sixteen times it, so "lower the context to 4,096" throws away a
-        context that would have loaded.
-        """
+        """A refusal that names the native length reports the wrong limit: memory holds
+        sixteen times it here, so "lower the context to 4,096" throws away a context that
+        would have loaded."""
         # 64 KiB per token against ~4 GiB of headroom: tens of thousands of tokens fit,
         # far past the 4096 this GGUF was trained at.
         with pytest.raises(RuntimeError) as excinfo:
@@ -670,12 +660,12 @@ class TestAContextAboveTheModelsNativeLength:
 class TestAnAboveNativeRequestOnAShortNativeModel:
     """Native below 4096, so the extension probe's own floor is above what fits.
 
-    The probe re-prices the request through the fit to find a ceiling the native-sized
-    cap could never reach. Its floor is 4096, which is a floor and not a measurement,
-    and on a model trained at 2048 an above-native request can have room for something
-    between the two. The floored result does not fit, the footprint check discards it,
-    and the refusal falls back to naming the native-sized cap -- on a machine that
-    launches the intermediate context when asked for it directly.
+    The probe re-prices the request through the fit to find a ceiling the native-sized cap
+    could never reach. Its floor is 4096, a floor and not a measurement, and on a model
+    trained at 2048 an above-native request can have room for something between the two.
+    The floored result does not fit, the footprint check discards it, and the refusal
+    falls back to naming the native-sized cap -- on a machine that launches the
+    intermediate context when asked for it directly.
 
     Budget 9216 MiB against 5916 MiB of weights leaves 3300 MiB, so at 1 MiB per token
     the real ceiling is 3072 and 4096 misses by ~800 MiB.
@@ -731,22 +721,20 @@ class TestAnAboveNativeRequestOnAShortNativeModel:
 class TestWhenNothingFitsAtAll:
     """Weights fit, and even the smallest context the search prices does not.
 
-    The narrowest of the three states the over-budget arm has to tell apart, and the
-    one with no number to lower to. It is a measurement, not an absence of one: the fit
-    shrank, which is what says the weights themselves fit, and then the floor it shrank
-    to did not fit either. Leaving it unmeasured let every explicit context through on a
-    host where all of them over-commit, which is the crash this guard exists to stop.
+    The narrowest of the three states the over-budget arm has to tell apart, and the one
+    with no number to lower to. It is a measurement, not an absence of one: the fit
+    shrank, which is what says the weights themselves fit, and then the floor it shrank to
+    did not fit either. Leaving it unmeasured let every explicit context through on a host
+    where all of them over-commit, the crash this guard exists to stop.
 
-    Told apart from weights-alone-over-budget by whether the re-priced answer is
-    smaller. That arm returns the request untouched for any min_ctx, so it cannot
-    shrink; this one always does.
+    Told apart from weights-alone-over-budget by whether the re-priced answer is smaller:
+    that arm returns the request untouched for any min_ctx, so it cannot shrink.
     """
 
     # Weights heavy enough that the budget cannot afford 256 tokens on top of them at
-    # 1 MiB each, but still light enough that the fit can shrink at all -- which is the
-    # signal that separates this state from weights-alone-over-budget. Measured window
-    # for this harness: ~3850 to ~4050 MiB, with 3300 leaving room for 768 tokens and
-    # 4100 tipping into weights-over-budget.
+    # 1 MiB each, but light enough that the fit can shrink at all, the signal that
+    # separates this state from weights-alone-over-budget. Measured window for this
+    # harness: ~3850 to ~4050 MiB (3300 leaves room for 768 tokens, 4100 tips over).
     NOTHING_FITS = dict(
         real_fit = True,
         budget_bytes = _BUDGET,
@@ -836,12 +824,12 @@ class TestWhenNothingFitsAtAll:
 class TestAModelWhoseNativeLengthIsAtTheFloor:
     """The weights-only state has to be read off the budget, not off two fits agreeing.
 
-    Both probes are bounded by the same target, so on a model whose native length is
-    already at or under the search's 256 alignment step they return the same number for
-    a reason that has nothing to do with the weights. Inferring "the fit priced nothing"
-    from that agreement left both verdicts unset and let every explicit context through
-    on a host where none of them fit. Reachable at native == 256 exactly, and also
-    whenever the GGUF carries no context length so the request itself becomes the target.
+    Both probes are bounded by the same target, so on a model whose native length is at or
+    under the search's 256 alignment step they return the same number for a reason
+    unrelated to the weights. Inferring "the fit priced nothing" from that agreement left
+    both verdicts unset and let every explicit context through on a host where none of
+    them fit. Reachable at native == 256 exactly, and whenever the GGUF carries no context
+    length so the request itself becomes the target.
     """
 
     TIGHT = dict(

@@ -22,11 +22,10 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 
 interface PlatformState {
   deviceType: DeviceType;
-  // Unified memory: the GPU and the rest of the system draw on one pool, so an
-  // over-committed load has nowhere to spill and takes the machine down rather than
-  // failing. Narrower than deviceType === "mac", which is every Darwin host including
-  // an Intel Mac with a discrete GPU, where spilling to system RAM is exactly what
-  // happens. Mirrors the backend's own is_apple_silicon gate on the Metal budget.
+  // Unified memory: GPU and system draw on one pool, so an over-committed load has
+  // nowhere to spill and takes the machine down rather than failing. Narrower than
+  // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
+  // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
   appleSilicon: boolean;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
@@ -184,11 +183,10 @@ export async function fetchDeviceType(options?: {
       const keepPlatform = data.device_type === undefined && previous.fetched;
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
-      // Rides with device_type, and is kept on the same terms: a provisional or
-      // unauthenticated reply carries neither, and a browser guess cannot tell an Apple
-      // Silicon Mac from an Intel one. Absent means false, which is the pre-Apple-Silicon
-      // wording everywhere -- correct on an Intel Mac, and on a Mac browser pointed at a
-      // Linux host.
+      // Rides with device_type and is kept on the same terms: a provisional or
+      // unauthenticated reply carries neither, and a browser guess cannot tell Apple
+      // Silicon from Intel. Absent means false, the pre-Apple-Silicon wording -- correct
+      // on an Intel Mac, and on a Mac browser pointed at a Linux host.
       const appleSilicon =
         data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
