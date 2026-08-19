@@ -235,13 +235,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
               modelDetails.config,
             );
-            const patch = shouldApplyTrainingDefaults
-              ? { ...modelDefaultsPatch }
-              : {};
             const preserveContextLength = get().contextLengthManuallySet;
-            if (preserveContextLength) {
-              delete patch.contextLength;
-            }
 
             // Treat a model-config LR as authoritative so async auto-select won't overwrite it.
             const modelConfigHasLR =
@@ -267,6 +261,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
             if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
               modelDefaultsPatch.trainOnCompletions = false;
+            }
+
+            const patch = shouldApplyTrainingDefaults
+              ? { ...modelDefaultsPatch }
+              : {};
+            if (preserveContextLength) {
+              delete patch.contextLength;
             }
 
             const isEmbedding = !!modelDetails.is_embedding;

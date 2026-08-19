@@ -140,7 +140,6 @@ export interface TrainingConfigState {
 export type AdvancedSettingsBaseline = Partial<
   Pick<
     TrainingConfigState,
-    | "contextLength"
     | "optimizerType"
     | "lrSchedulerType"
     | "weightDecay"
