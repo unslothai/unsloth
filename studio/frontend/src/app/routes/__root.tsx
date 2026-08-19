@@ -262,6 +262,8 @@ function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
+  const routeOwnsReloadReadiness =
+    pathname === "/hub" || pathname === "/projects";
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });
@@ -429,7 +431,7 @@ function RootLayout() {
       <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
-          <RouteBoundary readyWhenCommitted={pathname !== "/hub"}>
+          <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
             <Outlet />
           </RouteBoundary>
         </main>
@@ -533,7 +535,7 @@ function RootLayout() {
                     transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
-                    <RouteBoundary readyWhenCommitted={pathname !== "/hub"}>
+                    <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
                       <Outlet />
                     </RouteBoundary>
                   </motion.div>

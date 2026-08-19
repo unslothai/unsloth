@@ -42,6 +42,10 @@ const hubPageSource = readFileSync(
   new URL("../src/features/hub/hub-page.tsx", import.meta.url),
   "utf8",
 );
+const projectsPageSource = readFileSync(
+  new URL("../src/features/chat/projects-page.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -642,14 +646,22 @@ test("media pages retire the shell only after gallery and preview hydration", ()
   );
 });
 
-test("Hub owns reload readiness until route inventory settles", () => {
+test("data-backed routes own reload readiness until hydration settles", () => {
   assert.match(
     rootRouteSource,
-    /readyWhenCommitted=\{pathname !== "\/hub"\}/,
+    /const routeOwnsReloadReadiness =\s*pathname === "\/hub" \|\| pathname === "\/projects"/,
+  );
+  assert.match(
+    rootRouteSource,
+    /readyWhenCommitted=\{!routeOwnsReloadReadiness\}/,
   );
   assert.match(
     hubPageSource,
     /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(
+    projectsPageSource,
+    /if \(!hasLoaded \|\| reloadReadySent\.current\) return;[\s\S]*?unsloth:app-shell-ready/,
   );
 });
 
