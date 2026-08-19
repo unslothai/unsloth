@@ -1572,7 +1572,6 @@ def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
     assert calls[0] >= 12
 
 
-
 def test_the_deleted_conversation_goes_even_when_its_id_comes_back(conn):
     """Sparing a recreated id spared the DELETED conversation along with it.
 

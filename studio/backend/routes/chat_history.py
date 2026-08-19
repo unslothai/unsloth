@@ -726,7 +726,6 @@ async def delete_threads(
 def _archive_cutoff() -> str:
     """The instant a delete was accepted, as an ISO-8601 UTC string. See below."""
     from datetime import datetime, timezone
-
     return datetime.now(timezone.utc).isoformat()
 
 
