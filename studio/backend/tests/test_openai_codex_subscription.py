@@ -918,7 +918,9 @@ def test_persisting_a_new_account_drops_the_plan_catalog(monkeypatch):
         }
 
     codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
-    codex_client._offered_models["provider-5"] = {"gpt-5.7-nova": {"id": "gpt-5.7-nova", "listed": True}}
+    codex_client._offered_models["provider-5"] = {
+        "gpt-5.7-nova": {"id": "gpt-5.7-nova", "listed": True}
+    }
     try:
         # A refresh for the same account keeps it: only the account identity matters.
         codex_auth.save_oauth_bundle("provider-5", _bundle("acct-a"))
