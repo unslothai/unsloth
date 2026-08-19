@@ -131,7 +131,9 @@ test("a plan that describes nothing new never overrides the registry", async () 
     undefined,
   );
   assert.deepEqual(capabilities?.["gpt-5.4"], { vision: true, studio_tools: true });
-  assert.equal("gpt-5.7-nova" in (capabilities ?? {}), false);
+  // No modality list normalizes to null upstream and the backend gate is bool(vision),
+  // so the UI has to say false too or it offers attachments that every send refuses.
+  assert.deepEqual(capabilities?.["gpt-5.7-nova"], { vision: false });
 });
 
 

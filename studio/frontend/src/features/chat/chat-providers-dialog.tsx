@@ -177,9 +177,14 @@ export function codexCapabilitiesWithPlanModels(
   for (const model of listed.models) {
     // Only the plan describes a slug the registry never listed. Without it the
     // composer reads "unknown" as "allowed" and offers image attachments that the
-    // backend then refuses on every send.
-    if (typeof model.vision === "boolean" && !(model.id in registryCapabilities)) {
-      capabilities[model.id] = { ...capabilities[model.id], vision: model.vision };
+    // backend then refuses on every send. A catalog entry carrying no modality list
+    // normalizes to null upstream and the backend gate is bool(vision), so the honest
+    // mirror here is false rather than recording nothing at all.
+    if (!(model.id in registryCapabilities)) {
+      capabilities[model.id] = {
+        ...capabilities[model.id],
+        vision: model.vision === true,
+      };
     }
   }
   return capabilities;
