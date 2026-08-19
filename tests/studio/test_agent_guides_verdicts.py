@@ -82,7 +82,9 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
     connection = source[source.index("\n  connection)") :]
     connection = connection[: connection.index("\n  file-edit)")]
 
-    timed_out = re.search(r'if \[ "\$\{TIMED_OUT:-0\}" = 1 \]; then(.*?)\n    fi', connection, re.DOTALL)
+    timed_out = re.search(
+        r'if \[ "\$\{TIMED_OUT:-0\}" = 1 \]; then(.*?)\n    fi', connection, re.DOTALL
+    )
     assert timed_out, "the connection case no longer distinguishes a timeout from a non-zero exit"
     branch = timed_out.group(1)
 
@@ -108,9 +110,9 @@ def test_a_non_zero_exit_is_still_drift() -> None:
     source = _source()
     connection = source[source.index("\n  connection)") :]
     connection = connection[: connection.index("\n  file-edit)")]
-    assert re.search(r'\[ "\$rc" -eq 0 \] \|\| guide_fail', connection), (
-        "a non-zero exit from the launch command no longer reports drift"
-    )
+    assert re.search(
+        r'\[ "\$rc" -eq 0 \] \|\| guide_fail', connection
+    ), "a non-zero exit from the launch command no longer reports drift"
 
 
 def test_guide_fail_still_names_the_recipe() -> None:
