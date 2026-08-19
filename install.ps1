@@ -336,12 +336,33 @@ function Install-UnslothStudio {
     # variables at a directory we own: every child process and every
     # [System.IO.Path]::GetTempPath() call reads the process environment block.
     function Test-StudioDirectoryUsable {
-        param([string]$Path)
+        param(
+            [string]$Path,
+            # Only for a directory this installer OWNS. Probing the host's own
+            # inherited TMP/TEMP must not bring it into existence: -Force creates
+            # the whole parent chain, so a stale or mistyped TMP would have the
+            # installer silently materialize a tree at a path nobody chose, and
+            # then trust it. Absent means unusable, which is what the private
+            # fallback is for.
+            [switch]$CreateIfMissing
+        )
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         try {
             if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+                if (-not $CreateIfMissing) { return $false }
                 New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
             }
+            # Anything an earlier run could not delete. Bounded self-healing: the
+            # probe below cannot clean up after itself when deletion is what
+            # failed, so each such run used to leave one more file behind forever.
+            try {
+                $cutoff = (Get-Date).AddDays(-1)
+                foreach ($old in @(Get-ChildItem -LiteralPath $Path -File -Filter "unsloth-probe-*.tmp" -ErrorAction Stop)) {
+                    if ($old.LastWriteTime -lt $cutoff) {
+                        Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch {}
             # Write, read back, delete -- not Test-Path: the failures that matter
             # (write without read, a scanner deleting the file) pass an existence check.
             $probe = Join-Path $Path ("unsloth-probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".tmp")
@@ -466,10 +487,21 @@ function Install-UnslothStudio {
             # bound by the legacy path limit.
             $leaf = "ust-" + $PID + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
             $candidate = Join-Path $root $leaf
-            if (Test-StudioDirectoryUsable -Path $candidate) {
+            if (Test-StudioDirectoryUsable -Path $candidate -CreateIfMissing) {
                 Remove-StudioStalePrivateTempDirectories -Root $root
                 return $candidate
             }
+            # The probe creates the candidate before it tests it, so a root that
+            # fails leaves a directory behind, and on a host where every root
+            # fails that is a whole "Unsloth Studio" tree conjured by an install
+            # that then gave up. Take back only what could not be used, and only
+            # if it is empty, so a directory that already had something in it is
+            # never touched.
+            try {
+                if (Test-Path -LiteralPath $candidate -PathType Container) {
+                    [System.IO.Directory]::Delete($candidate, $false)
+                }
+            } catch {}
         }
         return $null
     }

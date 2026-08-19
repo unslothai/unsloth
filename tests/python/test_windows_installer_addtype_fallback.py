@@ -803,6 +803,119 @@ Write-Output "OVERRIDE:$($null -ne $script:StudioTempOverride)"
 
 
 @requires_pwsh
+def test_probing_the_host_temp_never_creates_it(tmp_path: Path):
+    """An inherited TMP that names nothing is unusable, not an instruction.
+
+    New-Item -Force builds the whole parent chain, so treating the host's own
+    TMP as creatable would have the installer materialize a tree at a path
+    nobody chose, on a stale or mistyped value, and then trust it as temp.
+    """
+    ghost = tmp_path / "ghost" / "deeper"
+    result = _run_powershell(
+        _script(
+            f"""
+Write-Output "USABLE:$(Test-StudioDirectoryUsable -Path '{ghost}')"
+Write-Output "EXISTS:$(Test-Path -LiteralPath '{ghost}')"
+""",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "USABLE:") == ["USABLE:False"]
+    assert _lines(result, "EXISTS:") == ["EXISTS:False"]
+    assert not ghost.exists()
+    # A directory the installer owns is a different matter: that one it creates.
+    owned = tmp_path / "owned" / "ust-1-aaaaaaaa"
+    result = _run_powershell(
+        _script(
+            f"Write-Output \"USABLE:$(Test-StudioDirectoryUsable -Path '{owned}' -CreateIfMissing)\"",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "USABLE:") == ["USABLE:True"]
+    assert owned.is_dir()
+
+
+@requires_pwsh
+def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
+    """The probe cannot clean up after itself when deletion is what failed.
+
+    Without a sweep every such run leaves one more file in the host's own
+    temp, forever, since nothing else knows the name. Aged, so a probe running
+    concurrently in another process is never touched.
+    """
+    good = tmp_path / "good"
+    good.mkdir()
+    stale = good / "unsloth-probe-deadbeef.tmp"
+    stale.write_text("left by a run that could not delete it", encoding = "utf-8")
+    fresh = good / "unsloth-probe-cafebabe.tmp"
+    fresh.write_text("another process is using this right now", encoding = "utf-8")
+    aged = time.time() - 3 * 24 * 3600
+    os.utime(stale, (aged, aged))
+
+    result = _run_powershell(
+        _script(
+            f"Write-Output \"USABLE:$(Test-StudioDirectoryUsable -Path '{good}')\"",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "USABLE:") == ["USABLE:True"]
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+@requires_pwsh
+def test_a_root_that_fails_its_probe_is_not_left_behind(tmp_path: Path):
+    """A failed install must not conjure the data directory tree.
+
+    The probe creates each candidate before testing it, so on a host where
+    every root fails, giving up used to leave a "Unsloth Studio" tree on a
+    machine Studio was never installed on.
+    """
+    local_app_data = tmp_path / "localappdata"
+    local_app_data.mkdir()
+    user_profile = tmp_path / "userprofile"
+    user_profile.mkdir()
+
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(local_app_data)
+    env["USERPROFILE"] = str(user_profile)
+
+    result = _run_powershell(
+        _script(
+            """
+# Every candidate fails its probe, whatever the filesystem says.
+function Test-StudioDirectoryUsable {
+    param([string]$Path, [switch]$CreateIfMissing)
+    # Creates unconditionally, the way the real probe did before it took the
+    # switch, so this measures the caller rather than the stub.
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    return $false
+}
+Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
+""",
+            sabotage = False,
+            names = (
+                "Write-StudioLine",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+            ),
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
+    assert not list(local_app_data.rglob("ust-*")), list(local_app_data.rglob("*"))
+    assert not list(user_profile.rglob("ust-*")), list(user_profile.rglob("*"))
+
+
+@requires_pwsh
 def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
