@@ -1734,9 +1734,12 @@ def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
     """
     hidden = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
-    # A live catalog that no longer lists the slug, so the gate decides on the catalog
-    # rather than reaching for a refresh.
-    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
+    # The plan still returns it, marked hidden: that is what ageing out of the picker
+    # looks like, as opposed to a slug the account cannot reach at all.
+    codex_client._offered_models["codex-1"] = {
+        "gpt-5.4": {"id": "gpt-5.4", "listed": True},
+        hidden: {"id": hidden, "listed": False},
+    }
     try:
         refused = _codex_chat_gate(monkeypatch, hidden)
         assert refused.status_code == 400
@@ -1744,6 +1747,28 @@ def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
         accepted = _codex_chat_gate(monkeypatch, hidden, saved_models = [hidden])
         assert accepted.status_code == 401, accepted.detail
         assert "Choose a curated Codex model." not in str(accepted.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_retires_a_saved_slug_the_new_account_does_not_carry(monkeypatch):
+    """Reauthorizing to another account is a real revocation, unlike ageing out.
+
+    The saved row still names the previous account's slugs, so trusting it forever would
+    keep sending them upstream on an account that never had them.
+    """
+    stale = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+    try:
+        # No catalog read yet: the row is the only evidence, so it is still trusted.
+        cold = _codex_chat_gate(monkeypatch, stale, saved_models = [stale])
+        assert cold.status_code == 401, cold.detail
+
+        # The new account's catalog does not carry it at all, hidden or otherwise.
+        codex_client._offered_models["codex-1"] = {"gpt-5.5": {"id": "gpt-5.5", "listed": True}}
+        refused = _codex_chat_gate(monkeypatch, stale, saved_models = [stale])
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
     finally:
         forget_subscription_models("codex-1")
 

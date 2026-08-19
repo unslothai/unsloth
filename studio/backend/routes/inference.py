@@ -12411,6 +12411,7 @@ async def _proxy_to_external_provider(
             ensure_subscription_models,
             offered_subscription_model,
             offered_subscription_model_ids,
+            subscription_catalog_known,
         )
 
         # Through the same helper the saved-credential exception uses, not a bare
@@ -12442,10 +12443,19 @@ async def _proxy_to_external_provider(
         # Gating chat on the seed alone rejects the model the picker just offered.
         allowed_models = set(info.get("default_models", []))
         allowed_models |= offered_subscription_model_ids(payload.provider_id)
-        # A slug already saved on this connection was authorized when it was accepted.
-        # "visibility" is a picker-presentation flag, so a later flip to "hide" retires
-        # the model from what is offered, not from what the user may still call.
-        allowed_models |= set(config.get("models") or [])
+        # A slug already saved on this connection was authorized when it was accepted, so
+        # a later flip to "hide" retires it from what is offered, not from what the user
+        # may still call. That trust ends where the evidence does: once a catalog for the
+        # current account has been read, a saved slug it does not carry at all belongs to
+        # some other account and is no longer authorized here.
+        saved_models = set(config.get("models") or [])
+        if subscription_catalog_known(payload.provider_id):
+            saved_models = {
+                saved
+                for saved in saved_models
+                if offered_subscription_model(payload.provider_id, saved) is not None
+            }
+        allowed_models |= saved_models
         if model not in allowed_models:
             # The catalog is process-local, so a restart leaves a saved plan slug with
             # nothing to authorize it. Refresh once before refusing what the user picked.

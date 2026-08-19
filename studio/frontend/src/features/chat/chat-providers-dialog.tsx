@@ -486,8 +486,11 @@ export function ChatProvidersSettings({
   }, [onProvidersChange]);
 
   function resetForm() {
-    // Any form transition retires an in-flight Codex catalog request.
+    // Any form transition retires an in-flight Codex catalog request. Its spinner goes
+    // with it: the state is shared across forms, so leaving it set would hold the next
+    // form's Load and Save controls disabled until the abandoned request times out.
     codexCatalogRequestRef.current += 1;
+    setModelsLoading(false);
     setEditingProviderId(null);
     setApiKey("");
 
@@ -1091,6 +1094,7 @@ export function ChatProvidersSettings({
     // Switching connections retires an in-flight catalog request, including on the
     // branches below that never reach applyCodexSubscriptionModels.
     codexCatalogRequestRef.current += 1;
+    setModelsLoading(false);
     setEditingProviderId(provider.id);
     autoOpenedAddFormRef.current = true;
     setPage("form");

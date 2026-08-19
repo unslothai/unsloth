@@ -286,6 +286,16 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
     }
 
 
+def subscription_catalog_known(provider_id: str) -> bool:
+    """Whether this process has read a catalog for the connection at all.
+
+    Without one the saved row is the only evidence there is; with one, a slug the plan
+    does not carry has genuinely gone, which is how a reauthorization to another account
+    retires the previous account's selections.
+    """
+    return provider_id in _offered_models
+
+
 def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any] | None:
     """What the plan said about one slug, for models the static registry cannot describe."""
     return _offered_models.get(provider_id, {}).get(model_id)
