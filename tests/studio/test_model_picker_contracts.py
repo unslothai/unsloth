@@ -167,13 +167,41 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
-    # No description on the ordinary path. It stopped being the literal
-    # `description: undefined` when the CPU-fallback branch was added, so pin the
-    # branch and its undefined arm rather than one spelling of the old constant.
+    # How a degraded load is described belongs to one helper, not to this call site.
+    #
+    # This assertion has moved three times: it was `description: undefined`, then
+    # `description: cpuFallbackReason` when the CPU-fallback branch appeared, then the
+    # mmproj branch went in front of that. Each rewrite pinned a fresh spelling of an
+    # inline conditional, and the third one shipped a real bug that no spelling-based
+    # check could have caught: `mmproj ? ... : cpu ? ...` drops the CPU message when
+    # both are set, so a session that lost GPU acceleration AND vision reported only
+    # the vision loss.
+    #
+    # So this no longer describes the conditional at all. It requires the call site to
+    # delegate, and the composition itself is tested where it lives, in
+    # studio/frontend/tests/mmproj-fallback.test.ts, against both reasons together.
+    # Sliced to the end of the helper body, not to the first `};`. That earlier bound
+    # stopped at the `options` object literal, so anything declared after it -- the
+    # toast severity, which is the half that decides whether a degraded load looks
+    # like a plain success -- was silently outside the text being asserted on.
     success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
-    success_toast = success_toast.split("};", 1)[0]
-    assert "description: cpuFallbackReason" in success_toast
-    assert ": undefined," in success_toast
+    success_toast = success_toast.split("if (autoLoadToastDismissed)", 1)[0]
+    assert "loadFallbackNotice(" in success_toast, (
+        "the auto-load success toast no longer builds its notice through "
+        "loadFallbackNotice. Inlining the conditional here is how the CPU-fallback "
+        "message got dropped when the mmproj branch was added.\n" + success_toast
+    )
+    assert "description: notice.description" in success_toast, success_toast
+    assert "notice.degraded ? toast.warning : toast.success" in success_toast, (
+        "a degraded load must not raise a plain success toast:\n" + success_toast
+    )
+    # And the reasons still reach the helper, or it composes nothing.
+    call = success_toast.split("loadFallbackNotice(", 1)[1].split(");", 1)[0]
+    for reason in ("cpuFallbackReason", "mmprojFallbackReason"):
+        assert reason in call, (
+            f"{reason} is no longer passed to loadFallbackNotice, so that half of the "
+            f"degradation is invisible:\n{call}"
+        )
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
