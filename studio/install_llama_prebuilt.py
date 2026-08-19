@@ -6431,7 +6431,9 @@ def validate_server(
                 # For the caller that spawned this script: a validation server is
                 # its grandchild, so a crash here leaves it holding the GPU and
                 # the staged files with nothing recording where it is.
-                _announce_child("started", process.pid)
+                process_pid = getattr(process, "pid", None)
+                if process_pid is not None:
+                    _announce_child("started", process_pid)
                 deadline = time.time() + 60
                 startup_started = time.time()
                 response_body = ""
