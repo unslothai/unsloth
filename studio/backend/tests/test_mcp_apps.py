@@ -400,6 +400,41 @@ def test_a_cold_cache_rediscovers_the_declaration(tmp_path, monkeypatch):
     assert len(probes) == 1
 
 
+def test_a_rediscovery_does_not_cache_a_row_edited_mid_probe(tmp_path, monkeypatch):
+    """The edit route invalidates the cache first, so caching a probe issued
+    against the old endpoint would leave stale tool names and app visibility
+    authorizing widget calls against the new one."""
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "Sys", url = "https://old/mcp", is_enabled = True
+    )
+    import routes.mcp_servers as routes_mcp
+
+    async def fake_list_tools(url, headers, timeout, use_oauth):
+        # The user repoints the server while this probe is still awaiting.
+        mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
+        return [_DASH_TOOL]
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", fake_list_tools)
+    monkeypatch.setattr(
+        routes_mcp,
+        "read_resource_sync",
+        lambda url, headers, uri, **kwargs: {
+            "uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<p/>", "ui": {},
+        },
+    )
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u"))
+    assert excinfo.value.status_code == 404
+    # Nothing from the old endpoint may be left behind to authorize a later call.
+    assert mcp_client.get_cached_tools("s1") is None
+
+
 def test_a_rediscovery_still_refuses_an_undeclared_resource(tmp_path, monkeypatch):
     """The cold-cache probe must widen nothing: only what the server declares."""
     from core.inference import mcp_client

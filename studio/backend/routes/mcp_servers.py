@@ -424,6 +424,14 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
     return server
 
 
+def _row_still_matches(server_id: str, server: dict) -> bool:
+    """Whether the row still holds the config a probe was issued against."""
+    current = mcp_servers_db.get_server(server_id)
+    return current is not None and not any(
+        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    )
+
+
 async def _declared_ui_resources(server: dict) -> dict:
     """tool name -> ui:// template, from this server's discovered tools. The uri
     arrives from the browser, so only what the server declared is fetchable.
@@ -438,17 +446,24 @@ async def _declared_ui_resources(server: dict) -> dict:
     if tools is None and not in_failure_cooloff(server_id):
         use_oauth = bool(server.get("use_oauth"))
         try:
-            tools = await list_tools_async(
+            probed = await list_tools_async(
                 url = server["url"],
                 headers = parse_server_headers(server),
                 timeout = probe_timeout(server["url"], use_oauth),
                 use_oauth = use_oauth,
             )
         except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
-            record_probe_failure(server_id, use_oauth)
-            tools = None
+            probed = None
+            if _row_still_matches(server_id, server):
+                record_probe_failure(server_id, use_oauth)
         else:
-            cache_tools(server_id, tools)
+            if _row_still_matches(server_id, server):
+                cache_tools(server_id, probed)
+            else:
+                # The row moved while the probe was awaiting, so these declarations
+                # belong to the old endpoint and must not authorize a read.
+                probed = None
+        tools = probed
     return ui_resource_uris_for_tools(tools or [])
 
 

@@ -239,7 +239,6 @@ export function McpAppFrame({
               // Only what this host actually implements.
               openLinks: {},
               serverTools: { listChanged: false },
-              serverResources: { listChanged: false },
               logging: {},
             },
             hostContext: {
