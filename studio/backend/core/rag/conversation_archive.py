@@ -700,7 +700,7 @@ def _restamp(
         # kept an ordinal that a genuinely later turn had since taken. Guarded by the
         # `not seats` return above, so a turn that simply failed to match its occurrences
         # never deletes anything.
-        for surplus in rows[len(seats):]:
+        for surplus in rows[len(seats) :]:
             store.delete_document(conn, surplus["id"], commit = False)
             moved = True
         if moved and commit:

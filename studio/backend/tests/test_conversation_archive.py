@@ -2443,9 +2443,7 @@ def test_an_anchor_query_cannot_cost_the_newest_revision_its_slot(conn):
     values = _revisions(8, distractors = 0)
 
     alone = conversation_archive.recall(THREAD, f"{VARIABLE}", top_k = 4)
-    merged = conversation_archive.recall(
-        THREAD, f"{VARIABLE}", top_k = 4, extra_queries = ["timeout"]
-    )
+    merged = conversation_archive.recall(THREAD, f"{VARIABLE}", top_k = 4, extra_queries = ["timeout"])
 
     assert alone is not None and merged is not None
     assert values[-1] in alone[0]
@@ -2464,18 +2462,24 @@ def test_an_orphan_user_row_does_not_lend_its_seat_to_a_later_turn(conn):
     """
     from storage import studio_db
 
-    studio_db.upsert_chat_thread({"id": THREAD, "title": "t", "modelType": "base",
-                                  "modelId": "local-model", "createdAt": 1})
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
     rows = [
-        ("user", "set ZQXVARA123 to 1"),          # orphan: its reply is gone
+        ("user", "set ZQXVARA123 to 1"),  # orphan: its reply is gone
         ("user", "set ZQXVARA123 to 1"),
         ("assistant", "done, ZQXVARA123 is 1"),
     ]
     for index, (role, text) in enumerate(rows):
-        studio_db.upsert_chat_message({"id": f"{THREAD}-{index}", "threadId": THREAD,
-                                       "role": role,
-                                       "content": [{"type": "text", "text": text}],
-                                       "createdAt": index + 2})
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-{index}",
+                "threadId": THREAD,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": index + 2,
+            }
+        )
     answered = [
         {"role": "user", "content": "set ZQXVARA123 to 1"},
         {"role": "assistant", "content": "done, ZQXVARA123 is 1"},
@@ -2506,22 +2510,29 @@ def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
     """
     from storage import studio_db
 
-    studio_db.upsert_chat_thread({"id": THREAD, "title": "t", "modelType": "base",
-                                  "modelId": "local-model", "createdAt": 1})
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
     rows = [
         ("m0", None, "user", "turn 1 about ZQXVARA123"),
         ("m1", "m0", "assistant", "answer 1"),
         ("m2", "m1", "user", "turn 2 about ZQXVARA123"),
-        ("m3", "m2", "assistant", "answer 2 attempt one"),   # abandoned sibling
-        ("m4", "m2", "assistant", "answer 2 attempt two"),   # the live reply
+        ("m3", "m2", "assistant", "answer 2 attempt one"),  # abandoned sibling
+        ("m4", "m2", "assistant", "answer 2 attempt two"),  # the live reply
         ("m5", "m4", "user", "turn 3 about ZQXVARA123"),
         ("m6", "m5", "assistant", "answer 3"),
     ]
     for index, (identifier, parent, role, text) in enumerate(rows):
-        studio_db.upsert_chat_message({"id": identifier, "threadId": THREAD,
-                                       "parentId": parent, "role": role,
-                                       "content": [{"type": "text", "text": text}],
-                                       "createdAt": index + 2})
+        studio_db.upsert_chat_message(
+            {
+                "id": identifier,
+                "threadId": THREAD,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": text}],
+                "createdAt": index + 2,
+            }
+        )
 
     live = [
         {"role": "user", "content": "turn 1 about ZQXVARA123"},
