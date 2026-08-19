@@ -262,6 +262,16 @@ def _is_node_command(command: str) -> bool:
     return _launcher_name(command) in _NODE_COMMANDS
 
 
+def _command_selects_runtime(command: Optional[str]) -> bool:
+    """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of
+    PATH, so handing its children a different Node would only split the two."""
+    return (
+        command is not None
+        and bool(os.path.dirname(command))
+        and _launcher_name(command) == "node"
+    )
+
+
 def _command_needs_npm(command: Optional[str]) -> bool:
     """A direct ``node`` server needs no npm or npx, so requiring them would shadow a
     perfectly good Node its PATH already provides."""
@@ -288,6 +298,8 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
         # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
         return env
     if command is not None and not _is_node_command(command):
+        return env or None
+    if _command_selects_runtime(command):
         return env or None
     if not isinstance(base, str):
         base = os.environ.get("PATH", "")

@@ -32,7 +32,10 @@ def managed_node(tmp_path, monkeypatch):
     bin_dir.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
-    monkeypatch.setattr(node_runtime, "_path_has_usable_node", lambda path, require_npm = True: False)
+    def _no_usable_node(path, require_npm = True):
+        return False
+
+    monkeypatch.setattr(node_runtime, "_path_has_usable_node", _no_usable_node)
     return bin_dir
 
 
@@ -472,3 +475,30 @@ def test_command_needs_npm_only_for_launchers():
     assert mcp_client._command_needs_npm("npx")
     assert mcp_client._command_needs_npm("npm.cmd")
     assert mcp_client._command_needs_npm(None)
+
+
+def test_absolute_node_launcher_keeps_its_configured_path(managed_node, monkeypatch):
+    """An explicit interpreter runs regardless of PATH; its children must match it."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mcp_client._stdio_env({"API_KEY": "sk-1"}, "/opt/node/bin/node")
+    assert env == {"API_KEY": "sk-1"}
+
+
+def test_bare_node_command_is_still_helped(managed_node, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mcp_client._stdio_env(None, "node")
+    assert env["PATH"] == f"{managed_node}{os.pathsep}/usr/bin"
+
+
+def test_absolute_npx_launcher_still_gets_the_runtime(managed_node, monkeypatch):
+    """npx needs a node on PATH to run at all, so it keeps the managed dir."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mcp_client._stdio_env(None, "/opt/node/bin/npx")
+    assert env["PATH"] == f"{managed_node}{os.pathsep}/usr/bin"
+
+
+def test_command_selects_runtime_only_for_node_paths():
+    assert mcp_client._command_selects_runtime("/opt/node/bin/node")
+    assert not mcp_client._command_selects_runtime("node")
+    assert not mcp_client._command_selects_runtime("/opt/node/bin/npx")
+    assert not mcp_client._command_selects_runtime(None)
