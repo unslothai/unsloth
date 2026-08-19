@@ -378,6 +378,25 @@ export function createCodePlugin(
     return result;
   };
 
+  const settlePending = (
+    fence: Fence,
+    highlighter: Highlighter,
+    language: BundledLanguage,
+    themes: ThemeNames,
+  ): void => {
+    const pending = fence.pending;
+    clearTrailing(fence);
+    if (!pending) return;
+    const refreshed = update(
+      fence,
+      highlighter,
+      pending.code,
+      language,
+      themes,
+    );
+    if (refreshed) notifyPending(pending, refreshed);
+  };
+
   const loadHighlighter = (
     key: string,
     language: BundledLanguage,
@@ -429,12 +448,20 @@ export function createCodePlugin(
       const fence = findFence(key, opts.code);
 
       if (fence.result && fence.code === opts.code) {
-        // A refresh queued for this body plus a closing run is this same fence
-        // finishing, so it is spent; a longer body belongs to a sibling sharing
-        // the entry and has to survive. Either way the cache answers this code.
-        const queued = fence.pending?.code;
-        if (queued !== undefined && shedsClosingRun(opts.code, queued)) {
-          clearTrailing(fence);
+        const pending = fence.pending;
+        if (
+          pending !== null &&
+          shedsClosingRun(opts.code, pending.code)
+        ) {
+          // This may be one fence shedding its closing run or a shorter sibling
+          // reusing the same entry. Settle the queued body before serving the
+          // shorter exact hit so neither caller loses its final highlighted state.
+          const loaded = highlighters.get(key)?.highlighter;
+          if (loaded) {
+            const exact = fence.result;
+            settlePending(fence, loaded, language, themes);
+            return exact;
+          }
         }
         return fence.result;
       }
@@ -455,7 +482,12 @@ export function createCodePlugin(
         return null;
       }
 
-      clearTrailing(fence);
+      const pending = fence.pending;
+      if (pending && shedsClosingRun(opts.code, pending.code)) {
+        settlePending(fence, highlighter, language, themes);
+      } else {
+        clearTrailing(fence);
+      }
       const elapsed = monotonicNow() - fence.lastTokenizedAt;
       const grewLargeFence =
         fence.result !== null &&

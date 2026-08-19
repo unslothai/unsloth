@@ -553,7 +553,35 @@ test("a changed theme definition is not answered from the old theme's cache", as
   );
 });
 
-test("shedding a closing delimiter drops the refresh queued for it", async () => {
+test("a shorter delimiter-like sibling cannot drop a queued refresh", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const body = `${Array.from(
+    { length: 120 },
+    (_, index) => `value_${index} = ${index}  # a completed Python line`,
+  ).join("\n")}\n`;
+  await highlightOnce(plugin, { code: body, language, themes: THEMES });
+
+  const longer = `${body}\`\`\``;
+  const arrived: HighlightResult[] = [];
+  const approximate = plugin.highlight(
+    { code: longer, language, themes: THEMES },
+    (result) => arrived.push(result),
+  );
+  const shorter = plugin.highlight({ code: body, language, themes: THEMES });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  assert.deepEqual(
+    approximate?.tokens.at(-1),
+    [{ content: "```", offset: 0 }],
+    "the longer fence must enter the throttled path",
+  );
+  assert.equal(arrived.length, 1, "the longer fence must receive its refresh");
+  assert.deepEqual(arrived[0].tokens, (await reference(longer, "python")).tokens);
+  assert.deepEqual(shorter?.tokens, (await reference(body, "python")).tokens);
+});
+
+test("shedding a possible closing delimiter settles before the shorter result", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
   const body = `${Array.from(
@@ -563,14 +591,23 @@ test("shedding a closing delimiter drops the refresh queued for it", async () =>
   // Markdown reports the closing run as body until it closes the fence.
   await highlightOnce(plugin, { code: `${body}\`\``, language, themes: THEMES });
 
-  const stale: HighlightResult[] = [];
+  const settled: HighlightResult[] = [];
   plugin.highlight({ code: `${body}\`\`\``, language, themes: THEMES }, (result) =>
-    stale.push(result),
+    settled.push(result),
   );
   const closed = plugin.highlight({ code: body, language, themes: THEMES });
+  assert.equal(
+    settled.length,
+    1,
+    "the queued refresh must settle before the shorter result returns",
+  );
   await new Promise((resolve) => setTimeout(resolve, 400));
 
-  assert.equal(stale.length, 0, "the closed fence must cancel the delimiter refresh");
+  assert.equal(settled.length, 1, "the queued refresh must settle exactly once");
+  assert.deepEqual(
+    settled[0].tokens,
+    (await reference(`${body}\`\`\``, "python")).tokens,
+  );
   assert.deepEqual(closed?.tokens, (await reference(body, "python")).tokens);
 });
 
