@@ -384,8 +384,10 @@ def _dedupe_sibling_gguf_folder_entries(models: List[LocalModelInfo]) -> List[Lo
         for file_path in files:
             stem = file_path.stem
             for dirname, dir_model in dir_by_name.items():
-                if stem == dirname or stem.startswith(f"{dirname}-") or stem.startswith(
-                    f"{dirname}_"
+                if (
+                    stem == dirname
+                    or stem.startswith(f"{dirname}-")
+                    or stem.startswith(f"{dirname}_")
                 ):
                     drop_paths.add(str(file_path))
                     break

@@ -365,6 +365,5 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
 
 def test_embeddings_proxy_monitor_prefers_loaded_public_id():
     import inspect
-
     src = inspect.getsource(inf.openai_embeddings)
     assert "_monitor_active_model()" in src
