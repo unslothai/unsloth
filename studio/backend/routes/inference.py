@@ -28,6 +28,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, Collection, List, NamedTuple, Optional, TYPE_CHECKING, Union
+import functools
 import json
 import httpx
 from loggers import get_logger
@@ -2659,26 +2660,24 @@ def _detect_safetensors_features(
     return flags
 
 
-def _generation_prompt_opens_think(template: Optional[str]) -> bool:
-    """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
+@functools.lru_cache(maxsize = 64)
+def _render_generation_prompt_probe(
+    template: str, enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> Optional[str]:
+    """Render the probe generation prompt, or None when the template cannot be rendered.
 
-    Distinguishes templates that PREFILL an open ``<think>`` in the assistant generation
-    prompt (DeepSeek-R1, QwQ, Qwen3-Thinking) -- where the model emits only the closing
-    ``</think>`` and the extractor must start in reasoning mode -- from templates that merely
-    render PAST assistant ``<think>...</think>`` history while leaving the generation prompt
-    open with no ``<think>`` (e.g. Kimi-K2-Thinking), where the model self-emits its own block
-    and the extractor must start in normal mode. Renders a single-user-message probe with the
-    same sandbox transformers uses; on any failure returns True, preserving the historical
-    always-on prefill for templates that cannot be rendered here.
+    Memoised because the render costs ~10ms and runs more than once per request; only the
+    ``<think>`` shape is read back, which no known template varies by date, so a date-stamping
+    template safely keeps its first render.
     """
-    if not template:
-        return False
+    from datetime import datetime
+
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def _raise_exception(message: str):
+        raise RuntimeError(message)
+
     try:
-        from jinja2.sandbox import ImmutableSandboxedEnvironment
-
-        def _raise_exception(message: str):
-            raise RuntimeError(message)
-
         env = ImmutableSandboxedEnvironment(
             trim_blocks = True,
             lstrip_blocks = True,
@@ -2686,16 +2685,47 @@ def _generation_prompt_opens_think(template: Optional[str]) -> bool:
         )
         env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
         env.globals["raise_exception"] = _raise_exception
-        rendered = env.from_string(template).render(
+        # transformers exposes this to every template; without it a date-stamping one raises
+        # here and the failure reads as a prefill.
+        env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
+        reasoning_kwargs: dict = {}
+        if enable_thinking is not None:
+            reasoning_kwargs["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            reasoning_kwargs["reasoning_effort"] = reasoning_effort
+        return env.from_string(template).render(
             messages = [{"role": "user", "content": "hi"}],
             add_generation_prompt = True,
             bos_token = "",
             eos_token = "",
+            **reasoning_kwargs,
         )
     except Exception:
+        return None
+
+
+def _generation_prompt_opens_think(
+    template: Optional[str],
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+) -> bool:
+    """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
+
+    Separates templates that prefill an open ``<think>``, where the model emits only the closing
+    tag, from those that leave the prompt open and let the model emit its own block. A ``None``
+    kwarg is omitted exactly as ``apply_chat_template_for_generation`` omits it, which is what
+    lets a template state its own default. The sandbox omits transformers' ``{% generation %}``
+    extension, so a template using it joins the unrenderable ones in returning True, preserving
+    the historical always-on prefill.
+    """
+    if not template:
+        return False
+    if not isinstance(template, str):
         return True
-    # ``<think>`` is not a substring of ``</think>`` (the ``/`` breaks it), so the last open
-    # tag sitting after the last close tag means the prompt ends inside an open block.
+    rendered = _render_generation_prompt_probe(template, enable_thinking, reasoning_effort)
+    if rendered is None:
+        return True
+    # ``<think>`` is not a substring of ``</think>``, so a later open tag means it stays open.
     return rendered.rfind("<think>") > rendered.rfind("</think>")
 
 
@@ -2707,12 +2737,11 @@ def _sf_reasoning_prefill_mode(
 ) -> bool:
     """Whether a safetensors/MLX generation begins INSIDE an unclosed ``<think>``.
 
-    ``enable_thinking`` templates (Qwen3/GLM) prefill an open ``<think>`` so the model
-    emits only the closing ``</think>``, and the extractor must start in reasoning mode.
     Gated on the STANDARD ``<think>``/``</think>`` markers: bespoke channels (gemma's
-    ``<|think|>``) never emit ``</think>`` and would swallow the answer, so they and
-    gpt-oss and thinking-disabled requests return False. ``enable_thinking`` None
-    defaults thinking ON, so a plain request still prefills.
+    ``<|think|>``) never emit ``</think>`` and would swallow the answer, so they, gpt-oss and
+    thinking-disabled requests return False. Past the gates the generation prompt's shape
+    decides rather than the capability flags, since a template free to state its own default
+    states it.
     """
     if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
         return False
@@ -2737,7 +2766,7 @@ def _sf_reasoning_prefill_mode(
     # so we don't prefill and capture the answer. Plain enable_thinking models ignore effort.
     if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
         return False
-    return True
+    return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort)
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
