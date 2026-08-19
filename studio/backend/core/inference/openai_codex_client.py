@@ -286,7 +286,10 @@ def forget_subscription_models(provider_id: str) -> None:
 
 
 async def list_subscription_models(
-    provider_id: str, access_token: str, account_id: str, force: bool = False
+    provider_id: str,
+    access_token: str,
+    account_id: str,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     """Model slugs this ChatGPT plan can reach; anything else is a 400 upstream.
 
