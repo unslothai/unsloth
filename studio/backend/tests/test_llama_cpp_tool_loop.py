@@ -5923,3 +5923,88 @@ def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypa
     # 3,584 of budget against a real prompt of roughly 2,800: hundreds of tokens of room,
     # not the thousands the estimate claimed from a handful of short messages.
     assert 0 <= budget < 1000, budget
+
+
+def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeypatch):
+    """The exact count is absolute, so caching it for the request goes stale.
+
+    The loop appends the assistant call and the tool result of every intervening tool to
+    the conversation, so a figure taken before them understates the prompt by exactly
+    those exchanges and hands the search room that is already spent.
+    """
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_t",
+                                "function": {"name": "terminal", "arguments": '{"command":"ls"}'},
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_s",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "It was 5150."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 4096
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: 1000
+        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+    )
+
+    budgets: list = []
+
+    def execute_tool(name, arguments, **kwargs):
+        if name == "search_conversation":
+            budgets.append(kwargs.get("conversation_budget_tokens"))
+            return "an earlier turn"
+        # A big result, which the loop appends before the search runs.
+        return "x" * 12000
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "what was the code"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "search_conversation"}},
+            ],
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert budgets and budgets[0] is not None
+    # The 12,000-character tool result is roughly 1,200 tokens of the 3,584-token budget,
+    # and the count taken before it cannot see them.
+    assert budgets[0] < 1400, budgets
