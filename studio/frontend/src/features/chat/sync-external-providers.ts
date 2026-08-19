@@ -26,6 +26,7 @@ import {
 
   PROVIDER_CAPABILITY_WILDCARD,
   pruneProviderModelCapabilities,
+  getProviderModelCapabilities,
   setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
@@ -85,6 +86,32 @@ export function resolveUiProviderTypeFromConfig(
   }
   return configProviderType;
 }
+
+export function mergeLearnedModelCapabilities(
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  registryCapabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  supportsStudioTools: boolean | undefined,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> {
+  const fromRegistry = registryCapabilities ?? {};
+  // A plan-listed slug is learned at runtime and the registry cannot describe it, so
+  // rewriting this map from the registry alone would drop it and leave the composer
+  // reading "unknown" as allowed again on the next start.
+  const capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> = {};
+  for (const [modelId, capability] of Object.entries(stored ?? {})) {
+    if (modelId !== PROVIDER_CAPABILITY_WILDCARD && !(modelId in fromRegistry)) {
+      capabilities[modelId] = capability;
+    }
+  }
+  Object.assign(capabilities, fromRegistry);
+  if (typeof supportsStudioTools === "boolean") {
+    capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
+      ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
+      studio_tools: supportsStudioTools,
+    };
+  }
+  return capabilities;
+}
+
 
 export function pruneProviderModelIds(
   providerType: string,
@@ -152,13 +179,11 @@ export async function syncExternalProvidersFromBackend(
     // Self-hosted model ids are user-supplied, so there is no per-model entry to
     // key off. The registry declares studio_tools once per provider type; park
     // it under the wildcard so the per-model lookup can fall back to it.
-    const capabilities = { ...(entry.model_capabilities ?? {}) };
-    if (typeof entry.supports_studio_tools === "boolean") {
-      capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
-        ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
-        studio_tools: entry.supports_studio_tools,
-      };
-    }
+    const capabilities = mergeLearnedModelCapabilities(
+      getProviderModelCapabilities(entry.provider_type),
+      entry.model_capabilities,
+      entry.supports_studio_tools,
+    );
     setProviderModelCapabilities(entry.provider_type, capabilities);
   }
   // Writing per returned entry can only correct what came back. Capabilities are
