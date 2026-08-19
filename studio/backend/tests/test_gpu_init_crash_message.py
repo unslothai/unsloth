@@ -1675,6 +1675,27 @@ class TestHipRocrRetryKeepsFitBudget:
             str(llama_cpp._llama_lib_dir("/fake/llama-server"))
         )
 
+    def test_a_later_launch_in_the_same_load_still_records_the_correction(
+        self, monkeypatch, tmp_path
+    ):
+        # The correction edits the shared env, so it survives into the outer
+        # recovery spawns (no-flash here). Those call _spawn_and_wait afresh, so
+        # a per-call flag left the launch that actually came up healthy
+        # unrecorded and the sidecar kept the prepend.
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = [_HIP_ROCR_MISMATCH, "", "", ""],
+            returncodes = [127, -11, -11, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 4
+        assert "/opt/rocm/lib" not in launches[-1][1]["LD_LIBRARY_PATH"].split(":")
+        assert LlamaCppBackend._prefers_bundle_only_rocm(
+            str(llama_cpp._llama_lib_dir("/fake/llama-server"))
+        )
+
     def test_a_mix_the_retry_did_not_fix_does_not_spend_the_fit_slot(self, monkeypatch, tmp_path):
         # Bundle-only did not help, so the symbol is still missing. --fit cannot
         # load a missing symbol: stop at two launches and report the mix.

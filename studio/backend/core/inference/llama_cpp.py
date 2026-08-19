@@ -17030,6 +17030,11 @@ class LlamaCppBackend:
                 # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
                 _spawn_cwd: Optional[str] = None
+                # Load-scoped, not per call: the correction edits the shared env,
+                # so it outlives this spawn, and the launch that finally comes up
+                # healthy is often a later one (drafterless, no-flash, arch
+                # fallback). A per-call flag left those successes unrecorded.
+                _did_rocm_retry = False
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
@@ -17042,9 +17047,8 @@ class LlamaCppBackend:
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
-                    nonlocal _last_spawn_cmd, _mem_host_resident
+                    nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
-                    _did_rocm_retry = False
                     _did_fit_retry = False
                     for _spawn_attempt in (0, 1, 2):
                         # Defensive kill: drop an orphan Popen a concurrent load may
