@@ -79,7 +79,7 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
-import { mmprojLoadNotice } from "../utils/mmproj-fallback";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -2201,21 +2201,16 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
-          const mmprojNotice = mmprojFallbackReason
-            ? mmprojLoadNotice(toastDisplayName, mmprojFallbackReason)
-            : null;
-          const loadedTitle = mmprojNotice
-            ? mmprojNotice.title
-            : cpuFallbackReason
-              ? `${toastDisplayName} loaded on CPU`
-              : `${toastDisplayName} loaded`;
-          const loadedDescription = mmprojNotice
-            ? mmprojNotice.description
-            : cpuFallbackReason
-              ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-              : undefined;
-          const showLoadedToast =
-            mmprojNotice || cpuFallbackReason ? toast.warning : toast.success;
+          // Same composition as the auto-load path, through the same helper, so the
+          // two cannot describe an identical failure differently again.
+          const notice = loadFallbackNotice(
+            `${toastDisplayName} loaded`,
+            cpuFallbackReason,
+            mmprojFallbackReason,
+          );
+          const loadedTitle = notice.title;
+          const loadedDescription = notice.description;
+          const showLoadedToast = notice.degraded ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,

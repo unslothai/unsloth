@@ -8,7 +8,11 @@
  * message, so a 200-message thread spent 200 requests on every history event, and
  * streaming raises one of those per chunk.
  */
-import { CHAT_HISTORY_UPDATED_EVENT, getThreadForkCounts } from "../api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  getThreadForkCounts,
+} from "../api/chat-api";
+import { isAssistantLocalThreadId } from "./thread-ids";
 
 // Same reasoning as the sidebar's refresh: each quiet window costs one fetch.
 export const FORK_COUNT_REFRESH_DEBOUNCE_MS = 300;
@@ -48,6 +52,16 @@ let listening = false;
 async function refresh(threadId: string): Promise<void> {
   const entry = entries.get(threadId);
   if (!entry) return;
+  // A thread the server has never seen cannot have forks, so this request can only
+  // ever 404 -- and getThreadForkCounts already maps that to an empty map, which is
+  // what the entry starts as. It is a round trip whose answer is known.
+  //
+  // Not a rounding error: a new chat is in exactly this state, and this store
+  // refreshes on CHAT_HISTORY_UPDATED_EVENT, which fires once per streaming chunk.
+  // So the first reply in a new chat pays one guaranteed-useless request per debounce
+  // window for as long as it streams. The heavy-thread smoke is what noticed --
+  // it counts requests issued inside a measured interaction, and these landed there.
+  if (isAssistantLocalThreadId(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;
   try {

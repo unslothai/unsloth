@@ -76,6 +76,7 @@
       "_REPEAT_LEAD_PUNCT",
       "_REPEAT_TRAIL_PUNCT",
       "_SENTINEL_MAX_LEN",
+      "_SIGN_OFF",
       "_STRIP_SENTINELS",
       "_TC_END_TAG_RE",
       "_TC_FUNC_CLOSE_RE",
