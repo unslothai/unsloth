@@ -102,7 +102,10 @@ def test_a_content_block_reaches_the_widget_under_its_protocol_keys():
     import mcp.types as mcp_types
 
     block = mcp_types.ImageContent(
-        type = "image", data = "AAAA", mimeType = "image/png", _meta = {"k": "v"},
+        type = "image",
+        data = "AAAA",
+        mimeType = "image/png",
+        _meta = {"k": "v"},
     )
     dumped = _content_block_json(block)
     assert dumped["_meta"] == {"k": "v"}
