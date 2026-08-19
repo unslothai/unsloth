@@ -42,6 +42,11 @@ export interface TrainingStatusResponse {
     grad_norm_steps?: number[];
     eval_loss?: number[];
     eval_steps?: number[];
+    reward?: number[];
+    reward_steps?: number[];
+    reward_std?: number[];
+    kl?: number[];
+    completion_length?: number[];
   } | null;
 }
 
@@ -70,6 +75,11 @@ export interface TrainingProgressPayload {
   grad_norm: number | null;
   num_tokens: number | null;
   eval_loss: number | null;
+  reward?: number | null;
+  reward_std?: number | null;
+  reward_breakdown?: Record<string, number> | null;
+  kl?: number | null;
+  completion_length?: number | null;
 }
 
 export interface TrainingSeriesPoint {
@@ -113,6 +123,7 @@ export interface TrainingRuntimeState {
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
+  rewardHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
   selectedHistoryRunId: string | null;
@@ -181,4 +192,5 @@ export interface TrainingViewData {
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
+  rewardHistory: TrainingSeriesPoint[];
 }

@@ -48,8 +48,11 @@ export type { CheckFormatResponse } from "./types/datasets";
 export type {
   AdvancedSettingsBaseline,
   LoraVariant,
+  RewardFunctionSelection,
   TrainingConfigState,
 } from "./types/config";
+export { getRewardFunctionPresets } from "./api/train-api";
+export type { RewardFunctionPreset } from "./types/api";
 export { getModelConfig, listLocalModels } from "./api/models-api";
 export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
 export type {

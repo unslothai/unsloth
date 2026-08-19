@@ -9,6 +9,7 @@ import {
   consumeTrainingProgressStream,
 } from "../lib/training-sse-stream";
 import type {
+  RewardFunctionPreset,
   TrainingResetResponse,
   TrainingStartRequest,
   TrainingStartRequestStatusResponse,
@@ -278,6 +279,14 @@ export async function stopTraining(
     body: scopedTrainingBody({ save }, scope),
   });
   return parseJson<TrainingStopResponse>(response);
+}
+
+export async function getRewardFunctionPresets(
+  signal?: AbortSignal,
+): Promise<RewardFunctionPreset[]> {
+  const response = await authFetch("/api/train/reward-functions", { signal });
+  const payload = await parseJson<{ presets: RewardFunctionPreset[] }>(response);
+  return payload.presets;
 }
 
 export async function resetTraining(
