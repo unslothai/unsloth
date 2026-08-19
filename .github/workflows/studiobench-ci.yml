@@ -46,6 +46,9 @@ on:
       - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
+      # The Chromium install step shells out to this, so an edit to it changes what
+      # this workflow actually runs.
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
   workflow_dispatch:
@@ -144,13 +147,56 @@ jobs:
       # WebKitGTK, but CI pins Chromium explicitly because the tracing and CDP
       # instruments only exist there, and a liveness gate wants the richest
       # instrumentation, not the most representative engine.
+      #
+      # Bounded and retried through the shared helper, and the CDN download is kept
+      # separate from the apt transaction because they are two different failures.
+      # `--with-deps` is deliberately absent: it makes playwright run its own
+      # `apt-get update`, which is the one apt call in this repo that cannot be
+      # restructured to try the image's lists first.
       - name: Install the Chromium engine
         id: pw-install
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+          # Zero hands resilience to the helper's own attempt loop, which reports which
+          # way each attempt went. apt's internal retries are invisible and are charged
+          # to the caller's budget.
+          APT_ACQUIRE_RETRIES: '0'
         run: |
-          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            python -m playwright install-deps chromium
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install chromium
+          fi
+
+          # Ask whether the system libraries are actually missing rather than assuming
+          # it. ubuntu-latest is a browser-testing image and usually ships them, in
+          # which case install-deps is a full apt transaction to install nothing.
+          # Launching the engine is the honest test, and it is what the run does next.
+          probe() {
+            python - <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              try:
+                  browser = p.chromium.launch()
+                  browser.close()
+              except Exception as exc:
+                  print(f"chromium will not start: {type(exc).__name__}: {exc}")
+                  sys.exit(1)
+          print("chromium launches; system libraries are present")
+          PY
+          }
+
+          if probe; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
           else
-            python -m playwright install --with-deps chromium
+            echo "system libraries are missing, installing them"
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium
+            # Fail loudly rather than proceeding into a session that cannot launch a
+            # browser, which would otherwise surface as an opaque timeout later.
+            probe
           fi
 
       - name: Save the Playwright browser cache
@@ -193,10 +239,23 @@ jobs:
       # is not cosmetic: with it set, login succeeds, /healthz answers 200, and
       # every route the harness needs answers 403, so the run reports an empty
       # thread rather than an error.
+      #
+      # The 100K rung and the fast tier's 57.3 s film, because a liveness gate is
+      # only worth anything at a size that exercises the film.
+      #
+      # This was 1K on the reasoning that the smallest rung is the cheapest, and the
+      # first real run refuted it: NINE actions reported NOT RUN, every one of them
+      # for an honest reason the rung itself caused. The thread was shorter than the
+      # viewport, so neither scroll could travel. No follow-up turns were planned, so
+      # `send_turn` found an exhausted queue. The last assistant message carried no
+      # More, Copy or Delete button. Measured across real payloads afterwards: at 10K
+      # `message_menu` still drops out on some cells, and 100K is the first rung where
+      # everything except `image_upload` runs on every cell. That is the same 100K the
+      # README names as the smallest rung carrying real load, arrived at independently.
       - name: Run a real-path session
         run: |
           python -m tests.studio.studiobench \
-            --tier quick --rungs 1K --reps 1 \
+            --tier fast --rungs 100K --reps 1 \
             --attach "http://127.0.0.1:${STUDIO_PORT}" \
             --password "$(cat ~/.unsloth/studio/auth/.bootstrap_password)" \
             --engine chromium \
@@ -205,10 +264,25 @@ jobs:
       # THE GATE. Exits non-zero unless every scheduled action reports ran=true
       # with no missed slot, and refuses a payload with no cell rows rather than
       # passing over it vacuously.
+      #
+      # `image_upload` is excused, and it is the only one. It reports NOT RUN on
+      # every cell of every 100K run measured, always with the same evidence: the
+      # composer's attachments button is in the DOM with a zero box and
+      # `mounted: false`, alongside `model_loaded_hint: false`. This fixture drives
+      # an external provider and loads no model, so Studio does not mount the
+      # control. That is a property of the fixture rather than of any change under
+      # test, which is the only thing this flag is for. Every name here is a hole in
+      # the gate and this one is documented so it can be closed rather than inherited.
+      #
+      # If this step fails with `missed its slot` rather than NOT RUN, that is the
+      # runner failing to keep up with a fixed-duration film, not a defect in the
+      # code under test. The film is built so a slow machine misses a slot instead of
+      # quietly taking a different path through a shorter session.
       - name: Every scheduled action ran
         run: |
           python -m tests.studio.studiobench \
-            --assert-liveness outputs/studiobench-ci/payload.jsonl
+            --assert-liveness outputs/studiobench-ci/payload.jsonl \
+            --allow-not-run image_upload
 
       - name: Stop Studio
         if: always()
