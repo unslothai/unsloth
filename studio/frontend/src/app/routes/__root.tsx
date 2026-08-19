@@ -263,7 +263,10 @@ function RootLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
-    pathname === "/hub" || pathname === "/projects";
+    pathname === "/hub" ||
+    pathname === "/projects" ||
+    pathname === "/data-recipes" ||
+    pathname.startsWith("/data-recipes/");
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });

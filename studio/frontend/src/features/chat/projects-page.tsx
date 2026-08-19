@@ -258,7 +258,9 @@ export function ProjectsPage() {
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
   useEffect(() => {
-    if (!hasLoaded || reloadReadySent.current) return;
+    if (!hasLoaded || reloadReadySent.current) {
+      return;
+    }
     reloadReadySent.current = true;
     window.dispatchEvent(new Event("unsloth:app-shell-ready"));
   }, [hasLoaded]);

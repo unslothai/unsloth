@@ -46,6 +46,20 @@ const projectsPageSource = readFileSync(
   new URL("../src/features/chat/projects-page.tsx", import.meta.url),
   "utf8",
 );
+const dataRecipesPageSource = readFileSync(
+  new URL(
+    "../src/features/data-recipes/pages/data-recipes-page.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const editRecipePageSource = readFileSync(
+  new URL(
+    "../src/features/data-recipes/pages/edit-recipe-page.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -290,6 +304,7 @@ function createEnvironment(options: {
   htmlVariables?: Record<string, string>;
   htmlAttributes?: Record<string, string>;
   styleSheets?: string[];
+  inlineStyleSheets?: string[];
   localStorage?: Map<string, string>;
 }) {
   const storage = options.storage ?? new Map<string, string>();
@@ -353,10 +368,17 @@ function createEnvironment(options: {
       },
     },
     getElementById: () => root,
-    querySelectorAll: (selector: string) =>
-      selector === 'link[rel="stylesheet"]'
-        ? (options.styleSheets ?? []).map((href) => ({ href }))
-        : [],
+    querySelectorAll: (selector: string) => {
+      if (selector === 'link[rel="stylesheet"]') {
+        return (options.styleSheets ?? []).map((href) => ({ href }));
+      }
+      if (selector === "style[data-vite-dev-id]") {
+        return (options.inlineStyleSheets ?? []).map((textContent) => ({
+          textContent,
+        }));
+      }
+      return [];
+    },
     createElement: (tag?: string) => {
       if (tag === "canvas") {
         return {
@@ -380,6 +402,7 @@ function createEnvironment(options: {
         href: "",
         inert: false,
         innerHTML: "",
+        textContent: "",
         children: [] as Record<string, unknown>[],
         removed: false,
         shadow: null as ShadowStub | null,
@@ -491,6 +514,9 @@ function createEnvironment(options: {
         stylesheets: children
           .filter((child) => child.rel === "stylesheet")
           .map((child) => child.href as string),
+        inlineStyles: children
+          .filter((child) => child.tagName === "STYLE")
+          .map((child) => child.textContent as string),
         html: (body?.innerHTML ?? root?.innerHTML ?? "") as string,
         bodyTag: (body?.tagName ?? "") as string,
         rootClass: (root?.className ?? "") as string,
@@ -525,6 +551,7 @@ function storedSnapshot(storage: Map<string, string>) {
   return JSON.parse(raw) as {
     html: string;
     styles?: string[];
+    inlineStyles?: string[];
     rootClass?: string;
     tokens?: Record<string, string>;
     appearance?: {
@@ -649,7 +676,7 @@ test("media pages retire the shell only after gallery and preview hydration", ()
 test("data-backed routes own reload readiness until hydration settles", () => {
   assert.match(
     rootRouteSource,
-    /const routeOwnsReloadReadiness =\s*pathname === "\/hub" \|\| pathname === "\/projects"/,
+    /const routeOwnsReloadReadiness =\s*pathname === "\/hub" \|\|\s*pathname === "\/projects"/,
   );
   assert.match(
     rootRouteSource,
@@ -661,8 +688,42 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     projectsPageSource,
-    /if \(!hasLoaded \|\| reloadReadySent\.current\) return;[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
   );
+  assert.match(
+    rootRouteSource,
+    /pathname === "\/data-recipes" \|\|\s*pathname\.startsWith\("\/data-recipes\/"\)/,
+  );
+  assert.match(
+    dataRecipesPageSource,
+    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(
+    editRecipePageSource,
+    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+  );
+});
+
+test("captures Vite's injected development stylesheet", () => {
+  const css = ".reload-snapshot-shell { color: rgb(1 2 3); }";
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Development shell</main>",
+    inlineStyleSheets: [css],
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const snapshot = storedSnapshot(outgoing.storage);
+  assert.deepEqual(snapshot.styles, []);
+  assert.deepEqual(snapshot.inlineStyles, [css]);
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.deepEqual(incoming.shell?.inlineStyles, [css]);
 });
 
 test("keeps what a display:contents wrapper renders, drops what is offscreen", () => {

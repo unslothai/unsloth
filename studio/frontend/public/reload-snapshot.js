@@ -4,6 +4,7 @@
 (function () {
   var storageKey = "unsloth.reload-snapshot.v1";
   var maxSnapshotLength = 3 * 1024 * 1024;
+  var maxInlineStylesLength = 2 * 1024 * 1024;
   var maxSnapshotAgeMs = 10 * 1000;
   var maxMaterializedMediaPixels = 1500 * 1000;
   var appearanceStorageKey = "unsloth_appearance_customization";
@@ -87,6 +88,26 @@
         if (link.href) hrefs.push(link.href);
       });
     return hrefs;
+  }
+
+  function readInlineStyleSheets() {
+    var styles = [];
+    var total = 0;
+    document
+      .querySelectorAll("style[data-vite-dev-id]")
+      .forEach(function (style) {
+        var text = style.textContent;
+        if (
+          typeof text !== "string" ||
+          !text ||
+          total + text.length > maxInlineStylesLength
+        ) {
+          return;
+        }
+        total += text.length;
+        styles.push(text);
+      });
+    return styles;
   }
 
   // Design tokens the app defines through `:root` do not reach a shadow tree:
@@ -217,6 +238,12 @@
 
   function restoreSnapshot() {
     var snapshot = readStoredSnapshot();
+    var linkedStyles =
+      snapshot && Array.isArray(snapshot.styles) ? snapshot.styles : [];
+    var inlineStyles =
+      snapshot && Array.isArray(snapshot.inlineStyles)
+        ? snapshot.inlineStyles
+        : [];
     if (
       navigationType() !== "reload" ||
       !snapshot ||
@@ -225,8 +252,8 @@
       snapshot.path !== location.pathname + location.search ||
       typeof snapshot.html !== "string" ||
       !snapshot.html ||
-      !Array.isArray(snapshot.styles) ||
-      !snapshot.styles.length
+      !linkedStyles.length &&
+      !inlineStyles.length
     ) {
       return;
     }
@@ -241,7 +268,8 @@
     // markup is a duplicate of the live shell, so leaving it in the page tree
     // makes `#root textarea` (and the UI tests that wait on one) ambiguous.
     var shell = overlay.attachShadow({ mode: "closed" });
-    snapshot.styles.forEach(function (href) {
+    linkedStyles.forEach(function (href) {
+      if (typeof href !== "string" || !href) return;
       var link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = href;
@@ -249,6 +277,12 @@
       // unstyled. Drop it and let the real document through instead.
       link.onerror = removeOverlay;
       shell.appendChild(link);
+    });
+    inlineStyles.forEach(function (text) {
+      if (typeof text !== "string" || !text) return;
+      var style = document.createElement("style");
+      style.textContent = text;
+      shell.appendChild(style);
     });
     // Selectors do not cross the shadow boundary, and 80-odd rules are anchored
     // on `html` (light/dark theming above all), so the copy is rooted in an
@@ -571,6 +605,7 @@
           appearance: readAppearance(),
           tokens: readTokens(),
           styles: readStyleSheets(),
+          inlineStyles: readInlineStyleSheets(),
           rootClass: document.documentElement.className,
         }),
       );
