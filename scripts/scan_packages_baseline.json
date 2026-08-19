@@ -1539,6 +1539,14 @@
       "evidence_hash": "700650886c3879597857b61c13e7bfecec9bf54b28d869d4694608eab01d1e58"
     },
     {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:b08763160ae6f4d638b32f3cc333c4ac4fc0344988c9506efed65e0ef03ec2d5",
+      "evidence_hash": "65b26230747f4b76780dd308ad78a84fc3d2a4e5323894895fc4bdb703e9a5d5"
+    },
+    {
       "package": "ipython",
       "file": "IPython/core/interactiveshell.py",
       "check": "Downloads and executes remote code",
@@ -1688,36 +1696,36 @@
       "file": "openai/_client.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L210:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L220:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L244:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\") | L816:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L826:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L850:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L147:         http_client: httpx2.Client | None = None, | L599:         http_client: httpx2.Client | None = None, | L753:         http_client: httpx2.AsyncClient | None = None, | L1216:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence": "Env: L235:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L245:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L269:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\") | L908:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L918:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L942:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L170:         http_client: httpx2.Client | None = None, | L661:         http_client: httpx2.Client | None = None, | L843:         http_client: httpx2.AsyncClient | None = None, | L1347:         http_client: httpx2.AsyncClient | None = None,",
       "evidence_hash": "ee8e7ed79d2bfe99f85f53b1bff3d0f59cfc0de3393ab31a2955ef4365005e3c",
-      "file_sha256": "389ea48de3b3c46a9048d6636ca19e43533bda98e4dccde2d7f96037d0c82817"
+      "file_sha256": "6303a1c4b4b01491dd6e9ef248ba74d8d7a5af5185a1d45721ab9c904dd77b42"
     },
     {
       "package": "openai",
       "file": "openai/auth/_workload.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx2.Client | None = None, | L109:                 with httpx2.Client() as client: | L134:     http_client: httpx2.Client | None = None, | L156:                 with httpx2.Client() as client:",
+      "evidence": "IMDS: L130:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L183:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L111:     http_client: httpx2.Client | None = None, | L142:                 with httpx2.Client() as client: | L167:     http_client: httpx2.Client | None = None, | L189:                 with httpx2.Client() as client:",
       "evidence_hash": "a4b0fb17867ab99605026f7d5d753ba2d3cd0a79f5fab6d77521ec251c256a4c",
-      "file_sha256": "6a01858ee5a351df969067995bde0a97d4762455468f24c116f818db3aaec95d"
+      "file_sha256": "f61ff8db00ec65d293e7cea656289ac6b0c47faa0997fa70c1731ecf57949512"
     },
     {
       "package": "openai",
       "file": "openai/lib/azure.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L215:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L218:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L539:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L542:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\")\nNetwork: L38: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx2.Client, httpx2.AsyncClient]) | L101: class AzureOpenAI(BaseAzureClient[httpx2.Client, Stream[Any]], OpenAI): | L120:         http_client: httpx2.Client | None = None, | L142:         http_client: httpx2.Client | None = None, | L164:         http_client: httpx2.Client | None = None, | L190:         http_client: httpx2.Client | None = None, | L298:         http_client: httpx2.Client | None = None, | L422: class AsyncAzureOpenAI(BaseAzureClient[httpx2.AsyncClient, AsyncStream[Any]], AsyncOpenAI): | L442:         http_client: httpx2.AsyncClient | None = None, | L465:         http_client: httpx2.AsyncClient | None = None, | L488:         http_client: httpx2.AsyncClient | None = None, | L514:         http_client: httpx2.AsyncClient | None = None, | L622:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence": "Env: L219:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L222:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L548:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L551:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\")\nNetwork: L39: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx2.Client, httpx2.AsyncClient]) | L102: class AzureOpenAI(BaseAzureClient[httpx2.Client, Stream[Any]], OpenAI): | L121:         http_client: httpx2.Client | None = None, | L143:         http_client: httpx2.Client | None = None, | L165:         http_client: httpx2.Client | None = None, | L191:         http_client: httpx2.Client | None = None, | L302:         http_client: httpx2.Client | None = None, | L428: class AsyncAzureOpenAI(BaseAzureClient[httpx2.AsyncClient, AsyncStream[Any]], AsyncOpenAI): | L448:         http_client: httpx2.AsyncClient | None = None, | L471:         http_client: httpx2.AsyncClient | None = None, | L494:         http_client: httpx2.AsyncClient | None = None, | L520:         http_client: httpx2.AsyncClient | None = None, | L631:         http_client: httpx2.AsyncClient | None = None,",
       "evidence_hash": "a2048fafc6303825095270dc766eb7630cdf9b0fb2e6eb0272695dbe9cd185c1",
-      "file_sha256": "b031fc8ab1d1d7865cd7f09e07a8cb08ea15b9269c710df62b1bb505d0920ed2"
+      "file_sha256": "7f6f58dd6e0068765e58af2c59acfa40504a03187953e3459ea008c263f952d7"
     },
     {
       "package": "openai",
       "file": "openai/lib/bedrock.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L105:     token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L150:     environment_token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L415:         http_client: httpx2.Client | None = None, | L531:         http_client: httpx2.Client | None = None, | L649:         http_client: httpx2.AsyncClient | None = None, | L767:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence": "Env: L117:     token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L162:     environment_token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L440:         http_client: httpx2.Client | None = None, | L554:         http_client: httpx2.Client | None = None, | L672:         http_client: httpx2.AsyncClient | None = None, | L788:         http_client: httpx2.AsyncClient | None = None,",
       "evidence_hash": "ed7177e905325f49fc00b6329c7b4c18436af60fa52a559251a3a54618715873",
-      "file_sha256": "9d38c8b3d410100ea7d63d17eac2e92d71a2916305586c244a06111e99da7704"
+      "file_sha256": "75816d2632b709d789ca5ebef43e15c3916691bb7ce9e8ed57181a2faccc667e"
     }
   ]
 }

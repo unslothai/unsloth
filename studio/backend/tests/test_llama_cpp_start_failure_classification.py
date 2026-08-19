@@ -293,6 +293,9 @@ class TestMissingSharedLibrary:
         out = "llama-server: symbol lookup error: llama-server: undefined symbol: ggml_backend_init"
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
+        # Must not steal the ROCm branch: the object here is llama-server.
+        assert "HIP/ROCR" not in msg
+        assert "hsa_amd_queue_create" not in msg
 
     def test_bundled_runtime_library_points_at_the_installer(self):
         # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups)
@@ -499,6 +502,132 @@ class TestMissingSharedLibrary:
         assert "system library" not in msg
 
 
+class TestBundledHipRocrMismatch:
+    """Studio prepends system ROCm, the prebuilt still binds its bundled HIP,
+    and glibc exits 127 on the symbol lookup (#8998). That used to read as a
+    missing llama-server and get retried as a VRAM miss. Neither is true.
+    """
+
+    _FIELD_OUT = (
+        "0.00.018.048 I srv    load_model: loading model '/models/x.gguf'\n"
+        "/home/t/.unsloth/llama.cpp/llama-server: symbol lookup error: "
+        "/home/t/.unsloth/llama.cpp/build/bin/libamdhip64.so.7: "
+        "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+    )
+
+    def test_field_log_is_the_hip_rocr_mix(self):
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(self._FIELD_OUT)
+
+    def test_ggml_symbol_lookup_is_not_the_hip_rocr_mix(self):
+        out = (
+            "llama-server: symbol lookup error: llama-server: "
+            "undefined symbol: ggml_backend_init"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_missing_libamdhip64_is_not_the_hip_rocr_mix(self):
+        # Absent file is the glibc loader line, not a symbol lookup.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "libamdhip64.so.7: cannot open shared object file: "
+            "No such file or directory"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_empty_and_none_are_not_the_mix(self):
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch("")
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(None)
+
+    def test_another_lib_from_the_prepended_dir_is_the_same_mix(self):
+        # The prepend covers the whole system ROCm dir, so rocBLAS against a
+        # different-version HIP fails the same way and wants the same retry.
+        out = (
+            "llama-server: symbol lookup error: "
+            "/home/t/.unsloth/llama.cpp/build/bin/librocblas.so.4: "
+            "undefined symbol: hipGraphicsResourceGetMappedPointer"
+        )
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "librocblas.so.4" in msg
+        assert "hipGraphicsResourceGetMappedPointer" in msg
+        # The field log's symbol is not this crash; do not name it.
+        assert "hsa_amd_queue_create" not in msg
+
+    def test_an_oversized_loader_token_is_bounded_in_the_message(self):
+        # Straight from the child, and _drain_stdout keeps an unterminated line
+        # whole, so the message has to bound both captures.
+        out = (
+            "llama-server: symbol lookup error: "
+            f"/b/libamdhip64.so.{'9' * 3000}: undefined symbol: {'s' * 8192}"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "HIP/ROCR" in msg
+        assert len(msg) < 1000
+
+    def test_an_object_longer_than_a_path_is_not_the_mix(self):
+        # The object capture stops at PATH_MAX: no such path can exist, and an
+        # unbounded one lets a single hostile line drive the scan quadratically.
+        out = (
+            "llama-server: symbol lookup error: "
+            f"/b/libamdhip64.so.{'9' * 8192}: undefined symbol: hsa_amd_queue_create"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_a_bundle_under_a_path_with_spaces_is_still_the_mix(self):
+        # glibc echoes the object verbatim, and a custom LLAMA_SERVER_PATH can
+        # sit under a directory with spaces. Splitting on whitespace dropped
+        # those into the generic 127 text instead of the retry.
+        out = (
+            "llama-server: symbol lookup error: "
+            "/opt/My Runtime/build/bin/libamdhip64.so.7: "
+            "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+        )
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+        assert LlamaCppBackend._bundled_hip_symbol_miss(out)[0].endswith(
+            "/opt/My Runtime/build/bin/libamdhip64.so.7"
+        )
+        assert "libamdhip64.so.7" in _classify(out, "/models/x.gguf", "local/x", 127)
+
+    def test_a_path_component_does_not_stand_in_for_the_object(self):
+        out = (
+            "llama-server: symbol lookup error: "
+            "/opt/librocm-vendor/lib/libfoo.so.1: undefined symbol: foo_init"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_classify_names_the_mix_not_a_missing_binary(self):
+        msg = _classify(self._FIELD_OUT, "/models/x.gguf", "local/x", 127)
+        assert "HIP/ROCR" in msg
+        assert "hsa_amd_queue_create" in msg
+        assert "Vulkan" in msg
+        assert "could not be found or run" not in msg
+        assert "not out of VRAM" in msg
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_classify_on_a_pinned_binary_does_not_send_it_to_the_updater(self, monkeypatch):
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        msg = _classify(
+            self._FIELD_OUT, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server"
+        )
+        assert "unsloth studio update" not in msg
+        assert "custom llama.cpp" in msg
+
+    def test_hip_rocr_retry_is_checked_before_the_fit_on_retry(self):
+        # --fit cannot load a missing symbol, so the library check has to come
+        # first. The launch sequence itself is asserted behaviourally in
+        # test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
+        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        text = src.read_text(encoding = "utf-8")
+        spawn_start = text.index("def _spawn_and_wait(")
+        spawn_end = text.index("def _raise_terminal_load_failure", spawn_start)
+        body = text[spawn_start:spawn_end]
+        assert body.index("_is_bundled_hip_rocr_mismatch") < body.index(
+            "retrying once with --fit on so it can offload"
+        )
+        assert "use_system_rocm = False" in body
+
+
 # Real dyld output. macOS says none of the things glibc says, so before #8566
 # every one of these fell through to "invalid GGUF or not enough memory" on a
 # Mac that had neither problem. Classification is pure text matching, so these
@@ -622,6 +751,51 @@ class TestMacOSLoaderFailures:
         out = "llama_model_load: error loading model: Reason: something went wrong"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "llama-server failed to start." in msg
+
+
+class TestANonGgufFile:
+    # What llama.cpp prints when the bytes are not a GGUF. It formats the four it found with %c,
+    # so an AppleDouble sidecar's 0x00051607 arrives as unprintable characters (#8566).
+    _OUT = (
+        "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
+        "gguf_init_from_reader: invalid magic characters: '\ufffd\ufffd\ufffd\ufffd', "
+        "expected 'GGUF'\n"
+        "llama_server: exiting due to model loading error"
+    )
+
+    def test_it_is_reported_as_not_a_gguf(self, tmp_path):
+        log = tmp_path / "llama-1-port-8080.log"
+        msg = _classify(self._OUT, "/models/._muse-UD-Q2_K_XL.gguf", "local/muse", 1, None, log)
+
+        assert "not a GGUF" in msg
+        # The two things the generic fallback used to blame, neither of which is the cause.
+        assert "enough memory" not in msg.lower()
+        assert not msg.startswith("llama-server failed to start.")
+        # The echoed bytes are unreadable, so the path is the only usable identifier.
+        assert "._muse-UD-Q2_K_XL.gguf" in msg
+        assert "companion" in msg
+        # The remedy for the volume, not the generic re-download (#8566).
+        assert "dot_clean -m" in msg
+        assert "llama-server output:" in msg
+        assert f"Full log: {log}" in msg
+
+    def test_it_does_not_call_an_ordinary_main_model_the_bad_file(self):
+        # The message must not settle which file was invalid, nor promise the output does.
+        assert "is not a GGUF" in _classify(self._OUT, None, "local/muse", 1)
+        msg = _classify(self._OUT, "/models/model-Q4_K_M.gguf", "local/m", 1)
+        assert "model-Q4_K_M.gguf" in msg and "companion" in msg
+        assert "names it" not in msg
+        # An ordinary path is no evidence about the volume, so it keeps the generic remedy.
+        assert "dot_clean" not in msg and "Re-download the model" in msg
+
+    def test_a_dyld_failure_still_outranks_it(self):
+        # Ordering only matters when both appear; the loader diagnosis is the more specific one.
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libggml.dylib\n"
+            "gguf_init_from_reader: invalid magic characters: '????', expected 'GGUF'"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "not a GGUF" not in msg
 
 
 class TestStartupDiagnostics:

@@ -37,6 +37,13 @@ from hub.utils.paths import (
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
+from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.scan_folder_health import (
+    annotate_scan_folders,
+    note_scan_folder_scanned,
+    record_scan_failure,
+    refresh_failed_scan_folders,
+)
 
 logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
@@ -86,6 +93,8 @@ _gguf_variant_state_summary = model_common._gguf_variant_state_summary
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:
+    if is_appledouble_metadata(path):
+        return False
     suffix = path.suffix.lower()
     if suffix == ".safetensors":
         return True
@@ -219,7 +228,12 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
+            is_gguf_file = (
+                not is_dir
+                and child.suffix.lower() == ".gguf"
+                and child.is_file()
+                and not is_appledouble_metadata(child)
+            )
             if not is_dir and not is_gguf_file:
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
@@ -362,6 +376,11 @@ def _scan_hf_cache(
             if snapshot_partial
             else None
         )
+        snapshot_partial_resumable = snapshot_partial and hf_cache_scan.partial_resume_available(
+            "model",
+            model_id,
+            repo_cache_dir = repo_dir,
+        )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
         load_path = repo_dir if active_cache else scan_path
@@ -435,6 +454,7 @@ def _scan_hf_cache(
             snapshot_partial = snapshot_partial,
             gguf_partial = gguf_partial,
             snapshot_partial_transport = snapshot_partial_transport,
+            snapshot_partial_resumable = snapshot_partial_resumable,
         )
         found.extend(rows)
     return found
@@ -476,7 +496,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             break
         try:
             if not child.is_dir():
-                if child.suffix.lower() == ".gguf" and child.is_file():
+                if (
+                    child.suffix.lower() == ".gguf"
+                    and child.is_file()
+                    and not is_appledouble_metadata(child)
+                ):
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -530,7 +554,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                                 updated_at = updated_at,
                             )
                         )
-                    elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
+                    elif (
+                        model_dir.suffix.lower() == ".gguf"
+                        and model_dir.is_file()
+                        and not is_appledouble_metadata(model_dir)
+                    ):
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -683,7 +711,9 @@ async def _collect_models_from_default_sources(
             lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
             folder_path,
         )
-        custom_sources.append((folder_path, discovered))
+        # Carry the registered path: the status registry is keyed on the row, not
+        # on the normalized Path this scan walks.
+        custom_sources.append((folder_path, discovered, str(folder["path"])))
         state_repositories.extend(
             ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
         )
@@ -715,7 +745,7 @@ async def _collect_models_from_default_sources(
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
 
-    for folder_path, discovered in custom_sources:
+    for folder_path, discovered, row_path in custom_sources:
         try:
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
@@ -726,7 +756,13 @@ async def _collect_models_from_default_sources(
             )
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            # Only an OS failure is something the user can fix, so only that is shown.
+            if isinstance(e, OSError):
+                record_scan_failure(row_path, e)
             continue
+        # Off the loop, like the scan above it: the probe opens directories, and on a
+        # stalled network mount scandir sits in the kernel with nothing to yield to.
+        await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
     return local_models
@@ -1013,7 +1049,10 @@ def get_models_folder_response() -> dict:
 
 
 def get_scan_folders_response() -> dict:
-    return {"folders": list_scan_folders()}
+    folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
+    refresh_failed_scan_folders(folders)
+    return {"folders": annotate_scan_folders(folders)}
 
 
 def add_scan_folder_response(path: str) -> dict:

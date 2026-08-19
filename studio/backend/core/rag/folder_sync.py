@@ -23,6 +23,7 @@ from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
 from . import config, ingestion, job_leases, store
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -977,6 +978,10 @@ def _scan(
                 if not entry.is_file(follow_symlinks = False):
                     continue
                 if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
+                    continue
+                # Finder metadata carries the document's extension, and a text parser reads it
+                # with errors="replace", so it would be embedded and cited as a real chunk.
+                if is_appledouble_metadata(Path(full)):
                     continue
                 st = entry.stat(follow_symlinks = False)
                 from_path = False

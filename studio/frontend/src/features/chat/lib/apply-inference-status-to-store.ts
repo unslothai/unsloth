@@ -19,6 +19,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -99,6 +100,7 @@ function ensureActiveModelInStoreList(
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
+    hasVideoInput: status.has_video_input ?? false,
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
@@ -185,6 +187,7 @@ export function applyActiveModelStatusToStore(
       ? (status.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
+  const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentGgufContextLength = status.is_gguf
@@ -343,6 +346,9 @@ export function applyActiveModelStatusToStore(
     reasoningEffortLevels,
     reasoningEffort: clampedReasoningEffort,
     supportsPreserveThinking,
+    ...(hydratingExistingModel && {
+      preserveThinking: preserveThinkingOnLoad,
+    }),
     supportsTools,
     ...resolveToolsEnabledOnLoad(supportsTools),
     reasoningEnabled: supportsReasoning
@@ -362,6 +368,7 @@ export function applyActiveModelStatusToStore(
     loadedIsDiffusion: status.is_diffusion ?? false,
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
     // The spec / KV seeds share the GPU-fields reseed mechanism below: a
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"
