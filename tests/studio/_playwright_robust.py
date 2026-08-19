@@ -423,6 +423,39 @@ BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
 )
 
 
+def wait_for_first(locator: Any, *, timeout_ms: int = 10_000) -> Any | None:
+    """The first match once it exists, or None once the wait expires.
+
+    `Locator.count()` does not wait. It answers about this instant, so every
+    `if locator.count() > 0:` gate is a race with rendering that reads as "the
+    feature is missing" the moment anything delays it -- and reports that as a
+    product failure rather than as a timeout.
+
+    #9251 is what this is written from. Its reload snapshot paints a cloned
+    overlay over the app and takes it down on hydration (or after 5s), which
+    opens a window where the composer is on screen but not yet in the
+    accessibility tree. The Compare step read `count() == 0` **six milliseconds**
+    after it began and reported "Compare nav not found", which is a true
+    statement about that instant and a false one about the app.
+
+    Playwright's auto-waiting covers actions and expectations, not `count()`, so
+    the wait has to be asked for. Returning None rather than raising keeps the
+    caller's existing "is this control present at all" branch, including the
+    fallbacks that legitimately expect a miss.
+    """
+    # Imported here, not at module scope. Nothing else in this file imports
+    # playwright, and the harness-contract tests import it on runners that have
+    # no browser stack -- a top-level import would turn those into collection
+    # errors instead of skips.
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    try:
+        locator.first.wait_for(state = "attached", timeout = timeout_ms)
+    except PlaywrightTimeoutError:
+        return None
+    return locator.first
+
+
 def is_benign_page_error(msg: str) -> bool:
     return any(p in msg for p in BENIGN_PAGE_ERROR_PATTERNS)
 
