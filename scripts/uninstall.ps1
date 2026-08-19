@@ -142,6 +142,49 @@ Environment:
         }
     }
 
+    # Reclaim ONLY what install.ps1 puts under "<LocalAppData>\Unsloth Studio\temp":
+    # directories named ust-<pid>-<hex>, then the temp dir and its parent if they are
+    # left empty. Deliberately narrow. This runs against every LocalAppData spelling,
+    # including one that can name a different user's profile, so it must never be a
+    # recursive delete of anything it did not create. Nothing here follows a link:
+    # Directory.Delete with $false removes a reparse point without touching its target.
+    function _RemoveStudioPrivateTempTrees {
+        param([string[]]$Paths)
+        foreach ($temp in @($Paths)) {
+            if ([string]::IsNullOrWhiteSpace($temp)) { continue }
+            if (-not (Test-Path -LiteralPath $temp -PathType Container)) { continue }
+            $entries = @()
+            try { $entries = @(Get-ChildItem -LiteralPath $temp -Force -ErrorAction Stop) } catch { continue }
+            foreach ($entry in $entries) {
+                # Shape, not prefix: "ust-legacy" and "ust-notapid-x" are not ours.
+                if ($entry.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
+                if (-not ($entry.PSIsContainer)) { continue }
+                try {
+                    if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                        [System.IO.Directory]::Delete($entry.FullName, $false)
+                    } else {
+                        Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+                    }
+                    _Substep "removed: $($entry.FullName)" "Green"
+                } catch {
+                    _Substep "could not remove: $($entry.FullName) ($($_.Exception.Message))" "Yellow"
+                    $script:RemoveFailed = $true
+                }
+            }
+            # Only when empty, so a temp directory holding anything else is left alone,
+            # and likewise the "Unsloth Studio" parent, which on the second spelling may
+            # be a data directory this run has no business deleting.
+            foreach ($dir in @($temp, [System.IO.Path]::GetDirectoryName($temp))) {
+                try {
+                    if ((Test-Path -LiteralPath $dir -PathType Container) -and
+                        -not @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop)) {
+                        [System.IO.Directory]::Delete($dir, $false)
+                    }
+                } catch {}
+            }
+        }
+    }
+
     # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still points
     # at it (else that shortcut blanks); uninstall.sh drops it when WSL is removed.
     function _RemoveDataDirKeepingWslIcon {
@@ -507,19 +550,24 @@ Environment:
 
     # Default install root + default data dir.
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
-    # BOTH LocalAppData spellings, not just the first that answers. The variable is
-    # dropped entirely in service and CI contexts, and install.ps1 also falls through
-    # from it to the known folder when the variable is merely SET but not usable, so
-    # a non-blank $env:LOCALAPPDATA does not mean that is where "Unsloth Studio\temp"
-    # ended up. Reading one candidate leaves the other behind on exactly the hosts
-    # that needed the fallback.
+    $defaultDataRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'
+    $defaultDataDir = if ($defaultDataRoot) { Join-Path $defaultDataRoot "Unsloth Studio" } else { $null }
+    # The SECOND LocalAppData spelling gets the private temp tree only, never the
+    # data directory. install.ps1 falls through from a set-but-unusable
+    # $env:LOCALAPPDATA to the known folder when it places "Unsloth Studio\temp",
+    # so that tree can outlive an uninstall; but the two spellings differ mainly
+    # when they name a DIFFERENT USER's profile (CreateProcessAsUser with a null
+    # environment block, runas /env, a service token), and the data-dir delete is
+    # recursive, sentinel-free and deny-list-free. Reclaiming what this installer
+    # actually put there is the whole requirement; taking a second "Unsloth Studio"
+    # with it is not.
     $knownLocalAppData = $null
     try { $knownLocalAppData = [Environment]::GetFolderPath('LocalApplicationData') } catch { $knownLocalAppData = $null }
-    $defaultDataDirs = @()
+    $privateTempDirs = @()
     foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {
         if ([string]::IsNullOrWhiteSpace($root)) { continue }
-        $candidate = Join-Path $root "Unsloth Studio"
-        if ($defaultDataDirs -notcontains $candidate) { $defaultDataDirs += $candidate }
+        $candidate = Join-Path $root "Unsloth Studio\temp"
+        if ($privateTempDirs -notcontains $candidate) { $privateTempDirs += $candidate }
     }
     # Default-mode ~/.unsloth holds a SHARED llama.cpp build + .cache that are
     # siblings of studio (not under it), so deleting <studio> misses them -- handle
@@ -553,8 +601,8 @@ Environment:
 
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
-    foreach ($d in $defaultDataDirs) {
-        _StopByPortFile -PortFile (Join-Path $d "studio.port") -KnownRoots $knownRoots
+    if ($defaultDataDir) {
+        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $knownRoots
     }
     foreach ($r in $customRoots) {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
@@ -640,7 +688,7 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($knownRoots) + @($defaultDataDirs) + @($defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
@@ -678,7 +726,8 @@ Environment:
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir.
-    foreach ($d in $defaultDataDirs) { _RemoveDataDirKeepingWslIcon $d }
+    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
@@ -769,9 +818,8 @@ Environment:
     # Re-sweep: the first pass may have left unsloth.ico locked by Explorer/SMEH for
     # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
     # keeps the icon -- see the helper.)
-    foreach ($d in $defaultDataDirs) {
-        if (Test-Path -LiteralPath $d) { _RemoveDataDirKeepingWslIcon $d }
-    }
+    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."

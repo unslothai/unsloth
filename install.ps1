@@ -1052,15 +1052,15 @@ public static class UnslothStudioFinalPathV2
         }
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
-        } elseif ($resolved.StartsWith('\\?\Volume{', [System.StringComparison]::OrdinalIgnoreCase)) {
-            # Kept, unlike an ordinary extended DOS path: \\?\C:\x still names a drive
-            # once the prefix comes off, but \\?\Volume{GUID}\x becomes the relative
-            # "Volume{GUID}\x", which the link resolver combines with the link's own
-            # parent, inventing a directory. Measured on 5.1: GetPathRoot returns empty
-            # for BOTH spellings on .NET Framework, so keeping the prefix does not make
-            # the volume matchable against a drive-letter spelling of itself; all it
-            # buys is not inventing a false path.
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            # Every extended spelling, INCLUDING \\?\Volume{GUID}\, because this string
+            # is hashed into the runtime mutex name and unsloth_cli/_studio_runtime_gate.py
+            # strips \\?\ unconditionally (_resolved_windows_path). Keeping the prefix
+            # here made the installer and a running Studio compute different names for
+            # one directory, so neither would exclude the other. Rootedness does matter
+            # while a link target is being anchored, and Resolve-StudioLinkTarget keeps
+            # the extended form for exactly that; nothing after this point anchors
+            # anything, and Combine only drops its left side for a ROOTED right side.
             $resolved = $resolved.Substring(4)
         }
         foreach ($segment in $missingSegments) {

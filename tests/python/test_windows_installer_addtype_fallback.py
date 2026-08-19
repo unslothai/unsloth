@@ -637,22 +637,77 @@ Write-Output "TMP:[$env:TMP]"
 
 
 @requires_pwsh
-def test_final_normalization_keeps_a_volume_guid_rooted():
-    """\\\\?\\C:\\x still names a drive once the prefix comes off. A volume GUID does not.
+def test_final_normalization_strips_every_extended_prefix():
+    r"""This string is hashed into the runtime mutex, so Python decides its shape.
 
-    Stripping it leaves the unrooted "Volume{GUID}\\x", which hashes to a
-    different identity than the same directory reached by drive letter and leaves
-    GetPathRoot empty, so the relaxed process comparison cannot run either.
+    unsloth_cli/_studio_runtime_gate.py::_resolved_windows_path strips \\?\
+    unconditionally, after one special case for \\?\UNC\. A volume GUID kept its
+    prefix here for a while, on the reasoning that the bare "Volume{GUID}\x" is
+    not rooted. That is true, and it matters while a LINK TARGET is being
+    anchored, which is why Resolve-StudioLinkTarget still keeps the extended
+    form. It does not matter here, and keeping it made the installer and a
+    running Studio compute different names for one directory.
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
-    guid = body.index("\\\\?\\Volume{")
-    dos = body.index("$resolved.Substring(4)")
-    # The volume-GUID branch has to come BEFORE the general one, which would
-    # otherwise swallow it and strip the prefix anyway.
-    assert guid < dos
-    branch = body[guid:dos]
-    assert "Substring" not in branch
+    assert "'\\\\?\\Volume{'" not in body
+    assert "$resolved.Substring(4)" in body
+
+    gate = (REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py").read_text(encoding = "utf-8")
+    # The two sides have to agree about which prefixes come off, and there are
+    # exactly two rules on the Python side.
+    assert 'resolved.startswith("\\\\\\\\?\\\\UNC\\\\")' in gate
+    assert 'resolved = resolved[4:]' in gate
+    assert "Volume{" not in gate
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "resolved,expected",
+    [
+        ("\\\\?\\C:\\Users\\bob\\studio", "C:\\Users\\bob\\studio"),
+        ("\\\\?\\UNC\\server\\share\\studio", "\\\\server\\share\\studio"),
+        (
+            "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\data\\studio",
+            "Volume{11111111-2222-3333-4444-555555555555}\\data\\studio",
+        ),
+    ],
+    ids = ["extended-dos", "extended-unc", "volume-guid"],
+)
+def test_the_installer_and_the_runtime_gate_normalize_alike(resolved: str, expected: str):
+    """Byte-for-byte agreement, or the two sides key their lock on different names."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
+    branch = _extract(
+        r"        if \(\$resolved\.StartsWith\('\\\\\?\\UNC\\'.*?\n        \}\n", body
+    )
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f"$resolved = '{resolved}'",
+                branch,
+                'Write-Output "OUT:$resolved"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    got = _lines(result, "OUT:")[0][len("OUT:"):]
+    assert got == expected
+
+    # And the same input through the Python gate's own rules.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_studio_runtime_gate", REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py"
+    )
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    python_side = resolved
+    if python_side.startswith("\\\\?\\UNC\\"):
+        python_side = "\\\\" + python_side[8:]
+    elif python_side.startswith("\\\\?\\"):
+        python_side = python_side[4:]
+    assert got == python_side
 
 
 @requires_pwsh
@@ -1028,20 +1083,26 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     # install.ps1 falls through from a set-but-unusable LOCALAPPDATA to the known
     # folder, so the variable being non-blank does not say where the tree landed.
     assert "foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {" in uninstall
-    assert "foreach ($d in $defaultDataDirs) { _RemoveDataDirKeepingWslIcon $d }" in uninstall
-    assert "_RemoveDataDirKeepingWslIcon $defaultDataDir " not in uninstall
+    # And the second spelling gets the TEMP TREE ONLY. It can name a different
+    # user's profile, and the data-dir delete is recursive with no ownership
+    # sentinel, so widening that to both roots would have been the larger bug.
+    assert 'Join-Path $root "Unsloth Studio\\temp"' in uninstall
+    assert "_RemoveStudioPrivateTempTrees -Paths $privateTempDirs" in uninstall
+    assert "foreach ($d in $defaultDataDirs)" not in uninstall
 
 
 @requires_pwsh
-def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
+def test_the_uninstaller_reclaims_the_temp_tree_at_both_spellings(tmp_path: Path):
     """A set-but-unusable LOCALAPPDATA is the case that produced two roots.
 
     install.ps1 skips such a path and places its private temp under the known
-    folder instead. An uninstaller that stops at the first non-blank candidate
-    then deletes a directory that was never used and leaves the real one behind.
+    folder instead, so an uninstaller that stops at the first non-blank
+    candidate leaves the real tree behind. What the second root must NOT get is
+    the recursive, sentinel-free data-dir delete: the two spellings differ
+    mainly when one of them names a DIFFERENT USER's profile.
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
-    block = _extract(r"    # BOTH LocalAppData spellings.*?\n    \}\n", uninstall)
+    block = _extract(r"    # The SECOND LocalAppData spelling.*?\n    \}\n", uninstall)
 
     dead = str(tmp_path / "gone" / "localappdata")
     env = os.environ.copy()
@@ -1051,50 +1112,58 @@ def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
             [
                 '$ErrorActionPreference = "Stop"',
                 block,
-                '$defaultDataDirs | ForEach-Object { Write-Output "DIR:$_" }',
+                '$privateTempDirs | ForEach-Object { Write-Output "DIR:$_" }',
             ]
         ),
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    dirs = [line[len("DIR:") :] for line in _lines(result, "DIR:")]
+    dirs = [line[len("DIR:"):] for line in _lines(result, "DIR:")]
     assert len(dirs) == 2, dirs
     assert any(d.startswith(dead) for d in dirs), dirs
-    assert all(d.rstrip("\\/").endswith("Unsloth Studio") for d in dirs), dirs
-    # Deduplicated, so the ordinary host where both spellings agree is untouched.
+    # The temp tree, not the data directory.
+    assert all(d.rstrip("\\/").endswith("temp") for d in dirs), dirs
     assert len(set(dirs)) == len(dirs)
 
 
-def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+@requires_pwsh
+def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
+    """Narrow on purpose: this runs against a root that may be another user's.
 
-    # The resolver callers reach is now a dispatcher; only the initializer builds.
-    assert "Add-Type" not in _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
-    assert "Add-Type" not in _extract(
-        r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source
+    Only ust-<pid>-<hex> directories go, matched by shape rather than prefix,
+    and the temp directory and its parent only when they are left empty.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+
+    data = tmp_path / "Unsloth Studio"
+    temp = data / "temp"
+    temp.mkdir(parents = True)
+    (temp / "ust-1234-abcdef01").mkdir()
+    (temp / "ust-1234-abcdef01" / "scratch.bin").write_text("x", encoding = "utf-8")
+    (temp / "ust-legacy").mkdir()
+    (temp / "ust-notapid-abcdef01").mkdir()
+    (temp / "somebody-elses").mkdir()
+    (data / "studio.port").write_text("41343", encoding = "utf-8")
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "function _Substep { param([string]$Msg, [string]$Color) }",
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}')",
+                'Write-Output "DONE:1"',
+            ]
+        )
     )
-    assert "Add-Type" not in _extract(r"    function Get-StudioLexicalPath \{.*?\n    \}\n", source)
-
-    # Every rung of the fallback must keep the "confirmed executable image only"
-    # contract, or a degraded host would block on a name match.
-    image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
-    assert ".CommandLine" not in image
-    assert "Win32_Process" in image
-    assert "QueryFullProcessImageNameW" not in image
-
-    # Source rather than behaviour on purpose: PowerShell 7 does not follow a link
-    # on -Recurse, so the test above passes with or without this guard. Windows
-    # PowerShell 5.1, the shell the desktop app spawns, does follow it.
-    sweep = _extract(
-        r"    function Remove-StudioStalePrivateTempDirectories \{.*?\n    \}\n", source
-    )
-    assert "ReparsePoint" in sweep
-    reparse_branch = sweep.index("ReparsePoint")
-    branch = sweep[reparse_branch : sweep.index("continue", reparse_branch)]
-    assert "-Recurse" not in branch
-    # Remove-Item without -Recurse is no answer either: on 5.1 it reports the
-    # junction target's contents and refuses as "directory not empty", so the link is
-    # never reclaimed (observed on windows-latest).
-    assert "Remove-Item" not in branch
-    assert "[System.IO.Directory]::Delete(" in branch
-    assert ", $false)" in branch
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert not (temp / "ust-1234-abcdef01").exists()
+    # Prefix, not shape, would have taken all three of these.
+    assert (temp / "ust-legacy").is_dir()
+    assert (temp / "ust-notapid-abcdef01").is_dir()
+    assert (temp / "somebody-elses").is_dir()
+    # And neither directory went, because neither was left empty.
+    assert temp.is_dir()
+    assert (data / "studio.port").exists()
