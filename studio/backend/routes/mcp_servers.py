@@ -23,6 +23,7 @@ from core.inference.mcp_client import (
     invalidate_tool_cache,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
@@ -115,6 +116,19 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
+def _oauth_credentials(
+    client_id: str | None, client_secret: str | None
+) -> tuple[str | None, str | None]:
+    normalized_id = (client_id or "").strip() or None
+    normalized_secret = client_secret or None
+    if normalized_secret and not normalized_id:
+        raise HTTPException(
+            status_code = 400,
+            detail = "oauth_client_secret requires oauth_client_id",
+        )
+    return normalized_id, normalized_secret
+
+
 def _row_to_response(row: dict) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
@@ -123,6 +137,8 @@ def _row_to_response(row: dict) -> McpServerResponse:
         headers = parse_server_headers(row) or {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
+        oauth_client_id = row.get("oauth_client_id"),
+        has_oauth_client_secret = bool(row.get("oauth_client_secret")),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
@@ -132,7 +148,8 @@ def _row_to_response(row: dict) -> McpServerResponse:
 async def list_mcp_servers(
     current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
 ):
-    rows = mcp_servers_db.list_servers()
+    # Metadata-only endpoint: never decrypt stored OAuth secrets here.
+    rows = mcp_servers_db.list_servers(decrypt_secrets = False)
     if via_api_key:
         # Drop the row, not just its fields: `url` is the argv (carries
         # credentials), `headers` is the subprocess env, and a blanked url would
@@ -157,6 +174,10 @@ async def create_mcp_server(
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
+    oauth_client_id, oauth_client_secret = _oauth_credentials(
+        payload.oauth_client_id,
+        payload.oauth_client_secret,
+    )
 
     server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
@@ -166,11 +187,15 @@ async def create_mcp_server(
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
+        oauth_client_id = oauth_client_id if use_oauth else None,
+        oauth_client_secret = oauth_client_secret if use_oauth else None,
     )
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False))
 
 
-def _changes_from_payload(payload: McpServerUpdate) -> dict:
+def _changes_from_payload(
+    payload: McpServerUpdate, stored_oauth_client_id: str | None = None
+) -> dict:
     sent = payload.model_fields_set
     changes: dict = {}
 
@@ -192,9 +217,32 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         if payload.use_oauth is None:
             raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
         changes["use_oauth"] = payload.use_oauth
+    if "oauth_client_id" in sent:
+        changes["oauth_client_id"], _ = _oauth_credentials(
+            payload.oauth_client_id,
+            payload.oauth_client_secret if "oauth_client_secret" in sent else None,
+        )
+        if changes["oauth_client_id"] is None:
+            changes["oauth_client_secret"] = None
+    if "oauth_client_secret" in sent:
+        effective_id = changes.get(
+            "oauth_client_id",
+            payload.oauth_client_id or stored_oauth_client_id,
+        )
+        _, changes["oauth_client_secret"] = _oauth_credentials(
+            effective_id,
+            payload.oauth_client_secret,
+        )
+    # Apply transport/auth normalization last so later credential fields cannot
+    # reintroduce stale OAuth configuration.
+    if changes.get("use_oauth") is False:
+        changes["oauth_client_id"] = None
+        changes["oauth_client_secret"] = None
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
         changes["use_oauth"] = False
+        changes["oauth_client_id"] = None
+        changes["oauth_client_secret"] = None
     return changes
 
 
@@ -205,10 +253,25 @@ async def update_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    old = mcp_servers_db.get_server(server_id)
+    old = mcp_servers_db.get_server(server_id, decrypt_secret = False)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
-    changes = _changes_from_payload(payload)
+    changes = _changes_from_payload(
+        payload,
+        stored_oauth_client_id = old.get("oauth_client_id"),
+    )
+    if (
+        "oauth_client_id" in changes
+        and changes["oauth_client_id"] != old.get("oauth_client_id")
+        and "oauth_client_secret" not in changes
+    ):
+        # A secret belongs to one registered client ID. Never silently pair an
+        # existing secret with a newly entered ID.
+        changes["oauth_client_secret"] = None
+    if "url" in changes and changes["url"] != old["url"] and "oauth_client_secret" not in changes:
+        # OAuth metadata at the new endpoint controls where credentials are
+        # submitted. Never carry a confidential client secret across origins.
+        changes["oauth_client_secret"] = None
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # Both directions, so an API key can neither repoint an http row at a command
@@ -228,14 +291,26 @@ async def update_mcp_server(
     # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
     # fastmcp keys tokens by URL and would otherwise let a re-pointed server
     # silently inherit the old account's credentials.
+    oauth_config_changed = any(
+        changes.get(field) != old.get(field)
+        for field in ("oauth_client_id", "oauth_client_secret")
+        if field in changes
+    )
     if bool(old.get("use_oauth")) and (
-        ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
+        ("url" in changes and changes["url"] != old["url"])
+        or changes.get("use_oauth") is False
+        or oauth_config_changed
     ):
-        await clear_oauth_tokens_async(old["url"])
+        await clear_oauth_tokens_async(
+            old["url"],
+            old.get("oauth_client_id"),
+        )
         # That await hands the loop to other requests, so re-read and re-gate
         # before writing: a UI conversion to stdio landing in the window would
         # otherwise let an API key's headers become the command's env.
-        current = mcp_servers_db.get_server(server_id)
+        # Metadata-only re-gate (reads url alone): never decrypt the stored
+        # secret here, so a corrupt/undecryptable secret can't 500 this path.
+        current = mcp_servers_db.get_server(server_id, decrypt_secret = False)
         if current is not None and (
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
@@ -250,16 +325,19 @@ async def update_mcp_server(
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False))
 
 
 @router.delete("/{server_id}", status_code = 204)
 async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
-    old = mcp_servers_db.get_server(server_id)
+    old = mcp_servers_db.get_server(server_id, decrypt_secret = False)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if old.get("use_oauth"):
-        await clear_oauth_tokens_async(old["url"])
+        await clear_oauth_tokens_async(
+            old["url"],
+            old.get("oauth_client_id"),
+        )
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
@@ -288,6 +366,7 @@ async def refresh_mcp_server_tools(
             headers = parse_server_headers(server),
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
+            **oauth_client_kwargs(server),
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
         logger.error(
@@ -331,7 +410,7 @@ async def import_mcp_servers(
     entries, errors = parse_mcp_config(payload.config)
     created: list[McpServerResponse] = []
     skipped: list[str] = []
-    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+    seen_urls = {row["url"] for row in mcp_servers_db.list_servers(decrypt_secrets = False)}
 
     for entry in entries:
         try:
@@ -357,7 +436,7 @@ async def import_mcp_servers(
             use_oauth = entry.use_oauth and not is_stdio(url),
         )
         seen_urls.add(url)
-        created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
+        created.append(_row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False)))
 
     return McpServerImportResult(created = created, skipped = skipped, errors = errors)
 
@@ -377,12 +456,31 @@ async def test_mcp_server(
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
+    oauth_client_id, oauth_client_secret = _oauth_credentials(
+        payload.oauth_client_id,
+        payload.oauth_client_secret,
+    )
+    if payload.server_id and oauth_client_id and not oauth_client_secret:
+        stored = mcp_servers_db.get_server(payload.server_id)
+        if (
+            stored
+            and bool(stored.get("use_oauth"))
+            and stored.get("url") == url
+            and stored.get("oauth_client_id") == oauth_client_id
+        ):
+            oauth_client_secret = stored.get("oauth_client_secret")
     try:
         tools = await list_tools_async(
             url = url,
             headers = headers,
             timeout = probe_timeout(url, payload.use_oauth),
             use_oauth = payload.use_oauth,
+            **oauth_client_kwargs(
+                {
+                    "oauth_client_id": oauth_client_id,
+                    "oauth_client_secret": oauth_client_secret,
+                }
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(

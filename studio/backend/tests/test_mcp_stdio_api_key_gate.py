@@ -198,7 +198,7 @@ def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio
         id = "s1", display_name = "Remote", url = "https://a/mcp", is_enabled = True, use_oauth = True
     )
 
-    async def _clear_then_convert(url):
+    async def _clear_then_convert(url, oauth_client_id = None):
         await asyncio.sleep(0)
         mcp_servers_db.update_server("s1", {"url": STDIO_CMD, "use_oauth": False})
 
