@@ -9,6 +9,7 @@ import {
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
+import { mlxSpeculativeLoadFields } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
@@ -1283,6 +1284,13 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.mlxKvBits ?? null)
               : useChatRuntimeStore.getState().mlxKvBits;
+          // Same source again: the rollback re-loads the model that is resident now,
+          // and the picker pre-applies the incoming model's request before the switch
+          // starts, so the live control is the outgoing one only without previousConfig.
+          const residentMlxSpeculative =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig
+              : useChatRuntimeStore.getState();
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -1378,6 +1386,16 @@ export function useChatModelRuntime() {
           // Per-model, not a standing preference: eligibility is decided per model.
           let loadMlxKvBits =
             pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
+          let loadMlxSpeculative: Pick<
+            PerModelConfig,
+            "mlxSpeculativeMode" | "mlxDraftModel" | "mlxDraftBlockSize"
+          > = pendingLoadConfig ?? stateBeforeUnload;
+          const loadPlatform = usePlatformStore.getState();
+          const targetUsesMlx = isServedByMlx(
+            isGguf,
+            loadPlatform.deviceType,
+            loadPlatform.chatOnlyReason,
+          );
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store.
           // A GGUF native context can exceed maxSeqLength, so sizing on raw maxSeqLength could pass, unload,
@@ -1484,6 +1502,11 @@ export function useChatModelRuntime() {
             const validateCustomContextLength = resetsPerModelSettings
               ? null
               : loadCustomContextLength;
+            // Per-model like the rest: charging the preflight with the outgoing model's
+            // drafter refuses an incoming one the load would have asked Auto for.
+            const validateMlxSpeculative = resetsPerModelSettings
+              ? (pendingLoadConfig ?? DEFAULT_PER_MODEL_CONFIG)
+              : loadMlxSpeculative;
             const validateGpuIds = resetsPerModelSettings
               ? null
               : loadSelectedGpuIds;
@@ -1543,6 +1566,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
+              ...mlxSpeculativeLoadFields(validateMlxSpeculative, targetUsesMlx),
               tensor_parallel: loadTensorParallel,
               disable_vision: loadDisableVision,
               gpu_ids: validateGpuIds ?? undefined,
@@ -1686,6 +1710,7 @@ export function useChatModelRuntime() {
               // Both payload-only. The store keeps its values: a width is dormant preset state off MLX, and a
               // completed load rewrites both anyway.
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadMlxSpeculative = pendingLoadConfig ?? DEFAULT_PER_MODEL_CONFIG;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -1781,6 +1806,7 @@ export function useChatModelRuntime() {
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_bits: loadMlxKvBits ?? null,
+              ...mlxSpeculativeLoadFields(loadMlxSpeculative, targetUsesMlx),
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
@@ -2119,6 +2145,18 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
                   mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
+                  // The resident model's own request, captured before this switch
+                  // staged anything. Sending nothing would restore it with speculation
+                  // off, since that is the backend's default, while the load that
+                  // started the switch sent Auto.
+                  ...mlxSpeculativeLoadFields(
+                    residentMlxSpeculative,
+                    isServedByMlx(
+                      previousIsGguf,
+                      loadPlatform.deviceType,
+                      loadPlatform.chatOnlyReason,
+                    ),
+                  ),
                   speculative_type:
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:

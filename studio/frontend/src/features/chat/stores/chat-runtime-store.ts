@@ -14,6 +14,7 @@ import {
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
+import type { MlxSpeculativeMode } from "@/lib/speculative-modes";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
 import { getChatSettings } from "../api/chat-settings-api";
@@ -2329,6 +2330,9 @@ type ChatRuntimeStore = {
   toolCallTimeout: number;
   kvCacheDtype: string | null;
   mlxKvBits: number | null;
+  mlxSpeculativeMode: MlxSpeculativeMode;
+  mlxDraftModel: string | null;
+  mlxDraftBlockSize: number | null;
   /** Width the backend was last asked for; the verdict belongs beside it. */
   loadedMlxKvBitsRequested: number | null;
   mlxKvQuantReason: string | null;
@@ -4017,6 +4021,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvBits: null,
+  mlxSpeculativeMode: "auto",
+  mlxDraftModel: null,
+  mlxDraftBlockSize: null,
   loadedMlxKvBitsRequested: null,
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
@@ -4926,6 +4933,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
       mlxKvBits: null,
+      mlxSpeculativeMode: "auto",
+      mlxDraftModel: null,
+      mlxDraftBlockSize: null,
       loadedMlxKvBitsRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,

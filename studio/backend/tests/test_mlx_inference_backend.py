@@ -5328,6 +5328,33 @@ def test_an_eagle3_drafter_must_name_the_target_as_its_verifier(monkeypatch):
     assert _matches(spec, "eagle3", draft) is True
 
 
+def test_status_publishes_the_speculation_request_it_asks_callers_to_compare():
+    # The response model declares these with an "off"/None default, so a construction that
+    # simply omits them reports every MLX runtime as having asked for nothing -- and a
+    # client comparing its own request against that never matches, so it declines to adopt
+    # a runtime already running exactly what it wants. Anchored on the sibling width, which
+    # is published the same way, so a status branch that learns to report MLX at all has to
+    # report this too. Read from the syntax tree: reaching the route needs a live backend.
+    import ast
+
+    route = Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    tree = ast.parse(route.read_text(encoding = "utf-8"))
+    published = [
+        {keyword.arg: ast.unparse(keyword.value)
+         for keyword in node.keywords if keyword.arg}
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "InferenceStatusResponse"
+    ]
+    mlx_aware = [call for call in published if "mlx_kv_bits_requested" in call]
+    assert mlx_aware, "no status construction reports MLX runtime state"
+    for call in mlx_aware:
+        for field in ("mlx_speculative_mode", "mlx_draft_model", "mlx_draft_block_size"):
+            assert field in call, f"{field} left at its default"
+            # From the request the load recorded, not from what it resolved to.
+            assert f"{field}_requested" in call[field], (field, call[field])
+
+
 @pytest.mark.parametrize(
     "runtime_ready,enabled,match,memory,caps_reason,reason",
     [

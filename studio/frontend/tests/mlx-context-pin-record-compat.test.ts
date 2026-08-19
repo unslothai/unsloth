@@ -204,12 +204,12 @@ const ROWS: Row[] = [
     mlxRequest: 32768,
     transformersRequest: 32768,
     note:
-      "The task called v4 the 'future' record. It is not: STORAGE_SCHEMA_VERSION is 5 " +
-      "in this tree and in main, not 3, so v4 is a v4-client record and reads normally.",
+      "The task called v4 the 'future' record. It is not: STORAGE_SCHEMA_VERSION is 6, " +
+      "not 3, so v4 is a v4-client record and reads normally.",
   },
   {
-    name: "version 6 (genuinely future)",
-    raw: { version: 6, customContextLength: 32768 },
+    name: "version 7 (genuinely future)",
+    raw: { version: 7, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -330,18 +330,18 @@ test("a patched pin round-trips through storage on both backends", () => {
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // The old client's only forwards guard is `version > 5`, and v1 invites any client
+  // The old client's only forwards guard is `version > 6`, and v1 invites any client
   // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
     true,
   );
   assert.equal(
-    stage({ version: 5, customContextLength: 32768 }).remembered,
+    stage({ version: 6, customContextLength: 32768 }).remembered,
     true,
   );
   assert.equal(
-    stage({ version: 6, customContextLength: 32768 }).remembered,
+    stage({ version: 7, customContextLength: 32768 }).remembered,
     false,
   );
 });

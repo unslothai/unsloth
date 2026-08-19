@@ -16532,6 +16532,10 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
+            # Requested, not effective: a caller compares this against its own request.
+            mlx_speculative_mode = model_info.get("mlx_speculative_mode_requested") or "off",
+            mlx_draft_model = model_info.get("mlx_draft_model_requested"),
+            mlx_draft_block_size = model_info.get("mlx_draft_block_size_requested"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,
