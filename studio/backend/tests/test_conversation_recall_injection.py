@@ -1600,3 +1600,90 @@ def test_a_single_recalled_turn_makes_no_ordering_claim(archived):
 
     assert built is not None
     assert "supersedes" not in built["prefix"]
+def test_a_dense_ascii_result_is_priced_by_the_callers_tokenizer(archived, monkeypatch):
+    """Four characters per token is optimistic for code, minified JSON and hashes.
+
+    Those run nearer two or three, so a result could be admitted at well under its real
+    cost and land in the current tool exchange, which the window is not allowed to evict.
+    A tokenizer-backed caller passes its own counter, and the GGUF path is one.
+    """
+    from core.inference import tools as tools_mod
+
+    source = "def f(x):\n    return {'a':1,'b':[2,3]}\n" * 400
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        return (source, [])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    estimated = tools_mod._conversation_search_tokens(source)
+    exact = int(len(source) / 2.6)
+    assert estimated < exact, (estimated, exact)
+
+    # A budget the estimate clears with room to spare and the tokenizer does not.
+    budget = estimated + tools_mod._TOOL_MESSAGE_FRAMING_TOKENS + 10
+    assert budget < exact, (budget, exact)
+
+    admitted = tools_mod._search_conversation(
+        {"query": "the code", "top_k": 1},
+        {"thread_id": THREAD, "budget_tokens": budget},
+    )
+    refused = tools_mod._search_conversation(
+        {"query": "the code", "top_k": 1},
+        {
+            "thread_id": THREAD,
+            "budget_tokens": budget,
+            "token_counter": lambda text: int(len(text) / 2.6),
+        },
+    )
+
+    assert source in admitted
+    assert "no room" in refused.lower()
+
+
+def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
+    """The first kept message is often an assistant tool call, which has no content.
+
+    Reading `content` alone recorded an empty anchor there, and an empty anchor is not a
+    stale anchor, it is no anchor: the rebase is skipped entirely and the next request
+    replays the absolute count against a transcript that lost a message in front of it,
+    evicting one live turn for each deleted one. The anchor is taken from the tool calls
+    when there is no text, and read back the same way.
+    """
+    from core.inference import llama_cpp
+
+    call = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "terminal", "arguments": '{"command":"ls -la"}'}}],
+    }
+    branch = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "evicted prompt"},
+        {"role": "assistant", "content": "evicted reply"},
+        call,
+        {"role": "tool", "content": "total 0"},
+        {"role": "user", "content": "the turn just sent"},
+    ]
+    conversation = [branch[0]] + branch[3:]
+
+    anchor = llama_cpp._branch_boundary_anchor(conversation, branch)
+    assert anchor, "a tool-call message left the anchor empty, which disables the rebase"
+    assert llama_cpp._branch_boundary(conversation, branch) == 2
+
+    # The user then deletes one already-evicted turn, so the same cut is one shallower.
+    _fake_studio_db(monkeypatch, [_anchored_row(2, anchor)])
+    shortened = [
+        {"role": "user", "content": "evicted prompt"},
+        call,
+        {"role": "tool", "content": "total 0"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", shortened) == 1

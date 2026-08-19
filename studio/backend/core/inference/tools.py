@@ -10004,6 +10004,7 @@ def execute_tool(
     website_policy: dict | None = None,
     conversation_branch: list[dict] | None = None,
     conversation_budget_tokens: int | None = None,
+    conversation_token_counter = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10040,6 +10041,7 @@ def execute_tool(
                 "thread_id": thread_id,
                 "branch_messages": conversation_branch,
                 "budget_tokens": conversation_budget_tokens,
+                "token_counter": conversation_token_counter,
             },
             effective_timeout,
             cancel_event,
@@ -10262,10 +10264,11 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     # forced recall uses, and a single chunk that still does not fit is refused rather
     # than appended to an exchange the window is not allowed to evict.
     if budget is not None:
+        counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
         while True:
             rendered = _rendered_conversation_search(found)
-            if _conversation_search_tokens(rendered) <= int(budget):
+            if _conversation_search_cost(rendered, counter) <= int(budget):
                 return rendered
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
@@ -10274,6 +10277,31 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
             if not found:
                 return "No earlier turns of this conversation matched that query."
     return _rendered_conversation_search(found)
+
+
+# What a `tool` message costs beyond its own text: the role, the call id and whatever the
+# template wraps them in. Small, fixed, and left out entirely before, which is the wrong
+# direction on a check whose whole job is to refuse a result that will not fit.
+_TOOL_MESSAGE_FRAMING_TOKENS = 8
+
+
+def _conversation_search_cost(text: str, counter = None) -> int:
+    """What admitting this result really costs, exactly when the caller has a tokenizer.
+
+    The estimate below is pessimistic for CJK and emoji but still optimistic for ASCII
+    that tokenises densely -- source code, minified JSON, hashes, command output all run
+    nearer two or three characters per token than four -- so a result could be admitted at
+    well under its real cost and then land in the current tool exchange, which the window
+    is not allowed to evict. A tokenizer-backed caller passes its own counter, and the
+    GGUF path is one, so the check that already computes the budget exactly can now spend
+    it exactly too.
+    """
+    if counter is not None:
+        try:
+            return int(counter(text)) + _TOOL_MESSAGE_FRAMING_TOKENS
+        except Exception:
+            logger.debug("conversation search: exact result count failed", exc_info = True)
+    return _conversation_search_tokens(text) + _TOOL_MESSAGE_FRAMING_TOKENS
 
 
 def _conversation_search_tokens(text: str) -> int:

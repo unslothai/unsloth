@@ -625,8 +625,35 @@ def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict
     live = {id(message) for message in conversation}
     for message in messages:
         if id(message) in live:
-            return _archive_message_text(message.get("content"))
+            return _anchor_text(message)
     return ""
+
+
+# Bounded so one long tool argument cannot bloat the metadata the UI stores per turn. The
+# name plus the head of the arguments is already enough to tell two calls apart.
+_ANCHOR_ARGS_CHARS = 200
+
+
+def _anchor_text(message: dict) -> str:
+    """A message as the anchor spells it: its text, or its tool calls when it has none.
+
+    A normal OpenAI assistant tool-call message carries empty ``content`` and puts its
+    substance in ``tool_calls``. Reading only ``content`` recorded an empty anchor there,
+    which silently disables the rebase: the next request cannot re-derive the boundary
+    against a shortened transcript and replays the stale count, evicting one more live
+    message per deleted one. Both sides of the comparison use this, so what is written is
+    what is looked for.
+    """
+    text = _archive_message_text(message.get("content"))
+    if text:
+        return text
+    parts = []
+    for call in message.get("tool_calls") or ():
+        function = (call or {}).get("function") or {}
+        name = str(function.get("name") or "tool")
+        arguments = str(function.get("arguments") or "").strip()[:_ANCHOR_ARGS_CHARS]
+        parts.append(f"{name}: {arguments}" if arguments else name)
+    return "\n".join(parts)
 
 
 def _archive_message_text(content) -> str:
@@ -734,7 +761,7 @@ def _sticky_compaction_boundary(
             anchor = truncation.get("boundary_anchor")
             if isinstance(anchor, str) and anchor:
                 for index, message in enumerate(_branch_non_system(branch_messages)):
-                    if _archive_message_text(message.get("content")) == anchor:
+                    if _anchor_text(message) == anchor:
                         recorded = min(recorded, index)
                         break
             boundaries.append(recorded)
@@ -22224,9 +22251,6 @@ class LlamaCppBackend:
         # for a conversation search to be told there is room it does not have. Carrying
         # the difference makes the estimate exact where it was measured.
         _prompt_token_offset: Optional[int] = None
-        # Filled lazily, and only on the leg where the fit reported nothing. See the
-        # recall budget below.
-        _exact_prompt_tokens: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
         # injected into `conversation`. The archive is keyed by thread and the stored rows
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
@@ -23728,8 +23752,6 @@ class LlamaCppBackend:
                         # stream while the tool blocks (the SSE route turns heartbeats into
                         # keepalives). Result is byte-identical to a direct call.
                         def _invoke_tool(_output_callback, _decision = decision):
-                            # Priced once per request, not once per tool call.
-                            nonlocal _exact_prompt_tokens
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -23766,12 +23788,21 @@ class LlamaCppBackend:
                                 # and the next iteration cannot evict it again because the
                                 # current tool exchange is protected.
                                 #
-                                # So price it exactly instead, once, and only here: this
-                                # runs when the model actually reaches for a retrieval
-                                # tool on a request that did not truncate, not on every
-                                # turn. A failure falls back to the estimate, which is
-                                # what this did before.
-                                if _prompt_token_offset is None and _exact_prompt_tokens is None:
+                                # So price it exactly instead, here: this runs when the
+                                # model actually reaches for a retrieval tool on a request
+                                # that did not truncate, not on every turn. A failure falls
+                                # back to the estimate, which is what this did before.
+                                #
+                                # Recomputed on EVERY search, not cached for the request.
+                                # The count is absolute, and the loop appends the assistant
+                                # call and the tool result of every intervening tool to
+                                # `conversation`, so a cached figure understates the prompt
+                                # by exactly those exchanges and hands the search room that
+                                # is already spent. The offset on the other leg is a
+                                # framing correction rather than a total, so it stays valid
+                                # as the conversation grows.
+                                _exact_prompt_tokens: Optional[int] = None
+                                if _prompt_token_offset is None:
                                     try:
                                         _exact_prompt_tokens = self.count_chat_tokens(
                                             neutralize_control_markup_in_messages(
@@ -23801,6 +23832,22 @@ class LlamaCppBackend:
                                         else estimate_messages_tokens_dense(safe_tools or [])
                                     )
                                 )
+                                if accepts_kwarg(execute_tool, "conversation_token_counter"):
+                                    # The admission check estimates a result's size by
+                                    # characters, which is optimistic for ASCII that
+                                    # tokenises densely: code, minified JSON, hashes and
+                                    # command output all run nearer two or three
+                                    # characters per token than four. This path has a
+                                    # tokenizer, so hand it over and let the check spend
+                                    # the budget as exactly as it computes it.
+                                    kwargs["conversation_token_counter"] = (
+                                        lambda text: self.count_chat_tokens(
+                                            [{"role": "tool", "content": text}],
+                                            None,
+                                            None,
+                                            strict = False,
+                                        )
+                                    )
                                 kwargs["conversation_budget_tokens"] = max(
                                     0,
                                     prompt_budget(self._effective_context_length, max_tokens)
