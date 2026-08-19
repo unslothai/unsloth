@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastVisionModel, UnslothVisionDataCollator
 from unsloth.chat_templates import get_chat_template
 from trl import SFTTrainer, SFTConfig
@@ -31,13 +44,10 @@ from tests.utils.perplexity_eval import (
 )
 
 
-# Define helper functions outside of main
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(
-            convo, tokenize = False, add_generation_prompt = False
-        )
+        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
         for convo in convos
     ]
     return {
@@ -45,58 +55,52 @@ def formatting_prompts_func(examples):
     }
 
 
-def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit = False):
-    """Load model and compute perplexity in subprocess"""
+def load_and_compute_8bit_ppl(
+    result_queue,
+    load_in_4bit = False,
+    load_in_8bit = False,
+):
+    """Load model and compute perplexity in subprocess."""
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import get_chat_template
     from tests.utils.perplexity_eval import ppl_model
 
-    # Load model
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_phi4_text_model",
         max_seq_length = 2048,
         load_in_4bit = load_in_4bit,
         load_in_8bit = load_in_8bit,
     )
-    # Set up tokenizer
     merged_tokenizer = get_chat_template(
         merged_tokenizer,
         chat_template = "phi-4",
     )
 
-    # Load dataset fresh in subprocess
-    dataset_ppl = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "eval"
-    )
+    # Load dataset fresh in subprocess.
+    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
-    # Format the dataset
     def formatting_prompts_func(examples):
         convos = examples["messages"]
         texts = [
-            merged_tokenizer.apply_chat_template(
-                convo, tokenize = False, add_generation_prompt = False
-            )
+            merged_tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
             for convo in convos
         ]
         return {"text": texts}
 
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
 
-    # Compute perplexity using the passed dataset
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # IMPORTANT: Convert to Python float if it's a tensor
+    # Coerce to a Python float.
     if torch.is_tensor(ppl_value):
-        ppl_value = ppl_value.cpu().item()  # Move to CPU and convert to Python scalar
+        ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):
-        ppl_value = ppl_value.item()  # Convert numpy or other array types
+        ppl_value = ppl_value.item()
     else:
-        ppl_value = float(ppl_value)  # Ensure it's a float
+        ppl_value = float(ppl_value)
 
-    # Return only the perplexity value
     result_queue.put(ppl_value)
 
-    # Clean up
     del merged_model
     del merged_tokenizer
     del dataset_ppl
@@ -104,16 +108,14 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit = False, load_in_8bit =
     gc.collect()
 
 
-# Main execution code should be wrapped in this guard
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
 
-    if torch.cuda.is_bf16_supported():
-        compute_dtype = torch.bfloat16
-        attn_implementation = "flash_attention_2"
-    else:
-        compute_dtype = torch.float16
-        attn_implementation = "sdpa"
+    from unsloth import is_bfloat16_supported
+    from unsloth.models._utils import HAS_FLASH_ATTENTION
+
+    compute_dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
+    attn_implementation = "flash_attention_2" if HAS_FLASH_ATTENTION else "sdpa"
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "unsloth/Phi-4",
@@ -130,12 +132,8 @@ if __name__ == "__main__":
         chat_template = "phi-4",
     )
 
-    dataset_train = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "train"
-    )
-    dataset_ppl = load_dataset(
-        "allenai/openassistant-guanaco-reformatted", split = "eval"
-    )
+    dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train")
+    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
@@ -199,12 +197,11 @@ if __name__ == "__main__":
         response_part = "<|im_start|>assistant<|im_sep|>\n\n",
     )
 
-    # run training
     trainer_stats = trainer.train()
 
     add_to_comparison("Qlora model", ppl_model(model, tokenizer, dataset_ppl))
 
-    # saving and merging the model to local disk
+    # Merge and save to local disk.
     print("merge and save to local disk")
     model.save_pretrained_merged(
         save_directory = "./unsloth_out/merged_phi4_text_model", tokenizer = tokenizer
@@ -216,7 +213,6 @@ if __name__ == "__main__":
     # torch.cuda.empty_cache()
     # gc.collect()
 
-    # load model from local disk and test
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./unsloth_out/merged_phi4_text_model",
@@ -253,7 +249,6 @@ if __name__ == "__main__":
 
     print_model_comparison()
 
-    # final cleanup
     safe_remove_directory("./outputs")
     safe_remove_directory("./unsloth_compiled_cache")
     safe_remove_directory("./unsloth_out")

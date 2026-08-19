@@ -1,8 +1,15 @@
 #!/bin/bash
-set -e
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+set -euo pipefail
 
 # ============================================================
 # Qwen3.6 MLX — One-command setup + inference
+#
+# Supply-chain hardening:
+#   - The uv installer is verified against a hardcoded SHA-256 before
+#     execution. Rotate the digest only after verifying the new payload.
+# ============================================================
 #
 # Usage:
 #   bash install_qwen3_6_mlx.sh [--venv-dir DIR]
@@ -104,10 +111,21 @@ else
 fi
 
 # ── Install uv ───────────────────────────────────────────────
+# Pin the uv installer payload by SHA-256. Rotate by running:
+#   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
+# and updating the constant below. We fetch into a temp file, verify
+# the digest, and only then execute. Mismatch aborts.
+_UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
+
 if ! command -v uv >/dev/null 2>&1; then
     step "uv" "installing uv package manager..."
     _uv_tmp=$(mktemp)
     curl -LsSf "https://astral.sh/uv/install.sh" -o "$_uv_tmp"
+    _uv_actual=$(shasum -a 256 "$_uv_tmp" | awk '{print $1}')
+    if [ "$_uv_actual" != "$_UV_INSTALLER_SHA256" ]; then
+        rm -f "$_uv_tmp"
+        fail "uv installer SHA-256 mismatch: got $_uv_actual expected $_UV_INSTALLER_SHA256 (refusing to execute)"
+    fi
     sh "$_uv_tmp" </dev/null
     rm -f "$_uv_tmp"
     if [ -f "$HOME/.local/bin/env" ]; then
@@ -122,8 +140,23 @@ fi
 _VENV_PY="$VENV_DIR/bin/python"
 
 # ── Install dependencies ──────────────────────────────────────
-step "install" "installing mlx-vlm..."
-uv pip install --python "$_VENV_PY" -q mlx-vlm
+step "install" "installing current mlx-vlm..."
+# Reinstall even when the existing version satisfies the request. Older copies of
+# this installer modified mlx-vlm in place, so version metadata alone is not proof
+# that a reused environment still contains the resolver-selected distribution.
+uv pip install --python "$_VENV_PY" -q \
+    --upgrade-package mlx-vlm --reinstall-package mlx-vlm mlx-vlm
+# The old installer also added a legacy module that current mlx-vlm wheels do
+# not own. Remove it only when it is absent from the selected distribution.
+"$_VENV_PY" - <<'PY'
+from importlib.metadata import distribution
+
+dist = distribution("mlx-vlm")
+legacy_module = dist.locate_file("mlx_vlm/generate.py")
+owned_files = {str(path) for path in (dist.files or ())}
+if legacy_module.is_file() and "mlx_vlm/generate.py" not in owned_files:
+    legacy_module.unlink()
+PY
 substep "done"
 
 step "install" "installing transformers>=5.2.0..."
@@ -149,27 +182,28 @@ else
     fail "Installation verification failed. Please ensure Python >=3.10 and try again."
 fi
 
-# ── Apply patches for multi-turn image chat ──────────────────
-_PATCH_BASE="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/fix/ui-fix/unsloth/models/patches/mlx_vlm_qwen3_5"
-_SITE_PKGS=$("$_VENV_PY" -c "import site; print(site.getsitepackages()[0])")
+# Verify the active Qwen runtime rather than overwriting the package selected
+# by the resolver with an older copy of its internal modules.
+if "$_VENV_PY" - <<'PY'
+from mlx_vlm.generate import stream_generate
+from mlx_vlm.models.base import InputEmbeddingsFeatures
+from mlx_vlm.models.qwen3_5.config import ModelConfig
+from mlx_vlm.models.qwen3_5.qwen3_5 import Model, ModelConfig as RuntimeModelConfig, sanitize_key
 
-step "patch" "fixing multi-turn image chat..."
-
-if curl -sSLf "${_PATCH_BASE}/qwen3_5.py" -o "${_SITE_PKGS}/mlx_vlm/models/qwen3_5/qwen3_5.py"; then
-    substep "patched qwen3_5.py (MRoPE position reset)"
+required_fields = {"position_ids", "rope_deltas"}
+available_fields = set(getattr(InputEmbeddingsFeatures, "__dataclass_fields__", ()))
+if ModelConfig is not RuntimeModelConfig:
+    raise RuntimeError("Qwen3.5 model and config modules are inconsistent")
+if not callable(Model) or not callable(sanitize_key) or not callable(stream_generate):
+    raise RuntimeError("Qwen3.5 model, sanitizer, or generation entry point is unavailable")
+if not required_fields.issubset(available_fields):
+    raise RuntimeError("mlx-vlm lacks the Qwen3.5 request-owned position interface")
+PY
+then
+    substep "Qwen3.5 model + generation runtime verified"
 else
-    step "warning" "failed to download qwen3_5.py patch — multi-turn image chat may not work" "$C_WARN"
+    fail "Installed mlx-vlm does not provide a coherent Qwen3.5/3.6 runtime. Please retry with a current mlx-vlm release."
 fi
-
-if curl -sSLf "${_PATCH_BASE}/generate.py" -o "${_SITE_PKGS}/mlx_vlm/generate.py"; then
-    substep "patched generate.py (mask trim on cache reuse)"
-else
-    step "warning" "failed to download generate.py patch — multi-turn image chat may not work" "$C_WARN"
-fi
-
-# Clear pycache so patches take effect
-find "${_SITE_PKGS}/mlx_vlm" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-substep "cleared bytecode cache"
 
 # ── Done ──────────────────────────────────────────────────────
 echo ""

@@ -18,10 +18,9 @@ import {
 interface ShutdownDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called after the shutdown API returns success, right before we replace
-   *  document.body with the "Server stopped" page. Callers use this to remove
-   *  their beforeunload listener — otherwise the browser would prompt
-   *  "Leave site?" when the user tries to close the final tab. */
+  /** Called after shutdown succeeds, before we replace document.body. Lets
+   *  callers remove their beforeunload listener so the browser doesn't prompt
+   *  "Leave site?" when closing the final tab. */
   onAfterShutdown?: () => void;
 }
 
@@ -44,7 +43,7 @@ export function ShutdownDialog({
         return;
       }
     } catch {
-      // Network error — shutdown request never reached the server
+      // Network error: request never reached the server
       toastError("Could not reach server");
       setStopping(false);
       return;
@@ -53,8 +52,8 @@ export function ShutdownDialog({
     onAfterShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
-        <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>
-        <p style="font-size:0.9rem;color:#888;margin:0">You can now close this tab.</p>
+        <p style="font-size:calc(1.1rem * var(--ui-font-scale, 1));font-weight:600;margin:0">Unsloth has stopped.</p>
+        <p style="font-size:calc(0.9rem * var(--ui-font-scale, 1));color:#888;margin:0">You can now close this tab.</p>
       </div>`;
   };
 
@@ -62,7 +61,7 @@ export function ShutdownDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Stop Unsloth Studio?</AlertDialogTitle>
+          <AlertDialogTitle>Stop Unsloth?</AlertDialogTitle>
           <AlertDialogDescription>
             This will shut down the server. Any active training or inference
             jobs will be terminated. You can restart it any time from the

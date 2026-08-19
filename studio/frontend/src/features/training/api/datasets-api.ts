@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   CheckFormatResponse,
-  LocalDatasetsResponse,
   UploadDatasetResponse,
 } from "../types/datasets";
-import { authFetch } from "@/features/auth";
 
 type CheckDatasetFormatArgs = {
   datasetName: string;
@@ -14,7 +15,55 @@ type CheckDatasetFormatArgs = {
   subset?: string | null;
   split?: string | null;
   isVlm?: boolean;
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+  signal?: AbortSignal;
 };
+
+export class DatasetFormatError extends Error {
+  readonly errorCode: string | null;
+  readonly status: number;
+
+  constructor(
+    message: string,
+    status: number,
+    errorCode: string | null = null,
+  ) {
+    super(message);
+    this.name = "DatasetFormatError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+async function readDatasetFormatError(
+  response: Response,
+): Promise<DatasetFormatError> {
+  const fallbackResponse = response.clone();
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    const detail = payload.detail;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const structured = detail as { code?: unknown; message?: unknown };
+      if (typeof structured.message === "string" && structured.message) {
+        return new DatasetFormatError(
+          structured.message,
+          response.status,
+          typeof structured.code === "string" ? structured.code : null,
+        );
+      }
+    }
+  } catch {
+    return new DatasetFormatError(
+      await readFastApiError(fallbackResponse),
+      response.status,
+    );
+  }
+  return new DatasetFormatError(
+    await readFastApiError(fallbackResponse),
+    response.status,
+  );
+}
 
 export async function checkDatasetFormat({
   datasetName,
@@ -22,47 +71,68 @@ export async function checkDatasetFormat({
   subset,
   split,
   isVlm,
+  preferLocalCache,
+  localPath,
+  signal,
 }: CheckDatasetFormatArgs): Promise<CheckFormatResponse> {
-  const res = await authFetch("/api/datasets/check-format", {
+  const res = await authFetch("/api/hub/datasets/check-format", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(hfToken),
+    },
     body: JSON.stringify({
       dataset_name: datasetName,
-      hf_token: hfToken || undefined,
       subset: subset || undefined,
-      split: split || "train",
+      train_split: split || "train",
       is_vlm: !!isVlm,
+      prefer_local_cache: !!preferLocalCache,
+      local_path: localPath || undefined,
     }),
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${res.status})`);
+    throw await readDatasetFormatError(res);
   }
 
   return res.json();
 }
 
-export async function uploadTrainingDataset(
+export function uploadTrainingDataset(
   file: File,
 ): Promise<UploadDatasetResponse> {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await authFetch("/api/datasets/upload", {
+  return uploadTrainingDatasetForm(form);
+}
+
+export function uploadNativeTrainingDataset(
+  nativePathLease: string,
+): Promise<UploadDatasetResponse> {
+  const form = new FormData();
+  form.append("nativePathLease", nativePathLease);
+
+  return uploadTrainingDatasetForm(form);
+}
+
+async function uploadTrainingDatasetForm(
+  form: FormData,
+): Promise<UploadDatasetResponse> {
+  const res = await authFetch("/api/hub/datasets/upload", {
     method: "POST",
     body: form,
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Upload failed (${res.status})`);
+    throw new Error(await readFastApiError(res, "Upload failed"));
   }
 
   return res.json();
 }
 
-// ── AI Assist ────────────────────────────────────────────────────────
+// ── AI Assist ──
 
 type AiAssistMappingArgs = {
   columns: string[];
@@ -71,6 +141,7 @@ type AiAssistMappingArgs = {
   hfToken?: string | null;
   modelName?: string | null;
   modelType?: "text" | "vision" | "audio" | "embeddings" | null;
+  signal?: AbortSignal;
 };
 
 export type AiAssistMappingResponse = {
@@ -92,33 +163,27 @@ export async function aiAssistMapping({
   hfToken,
   modelName,
   modelType,
+  signal,
 }: AiAssistMappingArgs): Promise<AiAssistMappingResponse> {
-  const res = await authFetch("/api/datasets/ai-assist-mapping", {
+  const res = await authFetch("/api/hub/datasets/ai-assist-mapping", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(hfToken),
+    },
     body: JSON.stringify({
       columns,
       samples: samples.slice(0, 5),
       dataset_name: datasetName || undefined,
-      hf_token: hfToken || undefined,
       model_name: modelName || undefined,
       model_type: modelType || undefined,
     }),
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `AI assist failed (${res.status})`);
+    throw new Error(await readFastApiError(res, "AI assist failed"));
   }
 
-  return res.json();
-}
-
-export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
-  const res = await authFetch("/api/datasets/local");
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `Request failed (${res.status})`);
-  }
   return res.json();
 }

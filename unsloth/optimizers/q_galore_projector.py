@@ -27,22 +27,16 @@ class GaLoreProjector:
     """Low-rank gradient projector with optional INT4/INT8 quantized projection
     matrices and layer-adaptive subspace update scheduling.
 
-    The projector computes an SVD of the gradient to obtain an orthogonal basis
-    for the top-``rank`` subspace.  Gradients are projected into this subspace
-    for the optimizer step, then projected back to full rank for the weight
-    update.
+    SVD of the gradient gives an orthogonal basis for the top-``rank`` subspace.
+    Gradients are projected in for the optimizer step, then back to full rank for
+    the weight update. Two Q-GaLore innovations:
 
-    Two key Q-GaLore innovations are implemented:
-
-    1. **Quantized projection matrices** — when ``quant=True``, the orthogonal
-       matrix is stored in INT4/INT8, reducing the memory cost of keeping the
-       projector state.
-
-    2. **Layer-adaptive update scheduling** — a rolling queue of cosine
-       similarities between consecutive orthogonal vectors is maintained.  When
-       the average exceeds ``cos_threshold``, ``update_proj_gap`` is multiplied
-       by ``gamma_proj``, effectively reducing the frequency of expensive SVD
-       recomputations for layers whose subspace has stabilized.
+    1. Quantized projection matrices: with ``quant=True`` the orthogonal matrix
+       is stored in INT4/INT8 to cut projector-state memory.
+    2. Layer-adaptive update scheduling: when the rolling-average cosine
+       similarity of consecutive orthogonal vectors exceeds ``cos_threshold``,
+       ``update_proj_gap`` is multiplied by ``gamma_proj`` to recompute SVD less
+       often for stabilized layers.
 
     Args:
         rank: Target rank for the low-rank projection.
@@ -191,11 +185,7 @@ class GaLoreProjector:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_orthogonal(
-        weights: torch.Tensor,
-        rank: int,
-        side: str,
-    ) -> torch.Tensor:
+    def _compute_orthogonal(weights: torch.Tensor, rank: int, side: str) -> torch.Tensor:
         """Compute the top-``rank`` orthogonal matrix via truncated SVD.
 
         Args:
@@ -233,11 +223,7 @@ class GaLoreProjector:
     # Adaptive scheduling
     # ------------------------------------------------------------------
 
-    def _update_adaptive_schedule(
-        self,
-        float_ortho: torch.Tensor,
-        side: str,
-    ) -> None:
+    def _update_adaptive_schedule(self, float_ortho: torch.Tensor, side: str) -> None:
         """Track subspace stability and increase ``update_proj_gap`` if stable."""
         self.svd_count += 1
 
@@ -329,10 +315,7 @@ def _quantize(
 
 @torch.no_grad()
 def _dequantize(
-    w: torch.Tensor,
-    scales: torch.Tensor,
-    zeros: torch.Tensor,
-    original_shape: tuple,
+    w: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, original_shape: tuple
 ) -> torch.Tensor:
     """Dequantize from uint8 back to float."""
     # Infer group size: scales has shape (n_groups, 1), so n_groups = scales.shape[0]

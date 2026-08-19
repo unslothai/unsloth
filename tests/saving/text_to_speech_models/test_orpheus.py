@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastModel
 from transformers import CsmForConditionalGeneration
 import torch
@@ -99,7 +112,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'='*80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # Treat warnings as errors
+    warnings.simplefilter("error")
     try:
         model.save_pretrained_merged("orpheus", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")
@@ -135,13 +148,12 @@ print(f"{'='*80}")
 
 FastLanguageModel.for_inference(model)  # Enable native 2x faster inference
 
-# Moving snac_model cuda to cpu
 snac_model.to("cpu")
 prompts = [
     "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person.",
 ]
 
-chosen_voice = None  # None for single-speaker
+chosen_voice = None  # single-speaker
 
 prompts_ = [(f"{chosen_voice}: " + p) if chosen_voice else p for p in prompts]
 
@@ -152,9 +164,7 @@ for prompt in prompts_:
     all_input_ids.append(input_ids)
 
 start_token = torch.tensor([[128259]], dtype = torch.int64)  # Start of human
-end_tokens = torch.tensor(
-    [[128009, 128260]], dtype = torch.int64
-)  # End of text, End of human
+end_tokens = torch.tensor([[128009, 128260]], dtype = torch.int64)  # End of text, End of human
 
 all_modified_input_ids = []
 for input_ids in all_input_ids:
@@ -165,9 +175,7 @@ for input_ids in all_input_ids:
 
 all_padded_tensors = []
 all_attention_masks = []
-max_length = max(
-    [modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids]
-)
+max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
 for modified_input_ids in all_modified_input_ids:
     padding = max_length - modified_input_ids.shape[1]
     padded_tensor = torch.cat(
@@ -267,7 +275,6 @@ try:
 except Exception as e:
     assert False, f"Inference failed with exception: {e}"
 
-# Verify the file exists
 import os
 
 assert os.path.exists(output_path), f"Audio file not found at {output_path}"

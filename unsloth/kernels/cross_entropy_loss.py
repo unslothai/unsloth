@@ -75,9 +75,7 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(
-        tl.float32
-    )
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING:
@@ -162,9 +160,7 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(
-        tl.float32
-    )
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING:
@@ -289,13 +285,14 @@ _cross_entropy_backward = triton.heuristics(
 )(_cross_entropy_backward)
 
 
-MAX_FUSED_SIZE = 65536  # 2**16
-
-
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, logits, labels, logit_softcapping: float = 0, logit_scaling: float = 0
+        ctx,
+        logits,
+        labels,
+        logit_softcapping: float = 0,
+        logit_scaling: float = 0,
     ):
         n_rows: int
         vocab_size: int
@@ -461,3 +458,16 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
 # Patch CE Losses in transformers
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
+
+    # Redirect LOSS_MAPPING aliases still pointing at stock ForCausalLMLoss
+    # (e.g. ForConditionalGeneration for Qwen3.5, Csm...). unsloth_zoo also
+    # does this; remove once the floor pin passes unslothai/unsloth-zoo#656.
+    try:
+        import transformers.loss.loss_utils as _lu
+        _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")
+        if _unsloth_loss is not None:
+            for _key, _fn in list(_lu.LOSS_MAPPING.items()):
+                if getattr(_fn, "__name__", "") == "ForCausalLMLoss":
+                    _lu.LOSS_MAPPING[_key] = _unsloth_loss
+    except (ImportError, AttributeError):
+        pass

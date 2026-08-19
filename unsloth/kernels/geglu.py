@@ -30,18 +30,11 @@ INT32_SAFETY_BUFFER = NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIP
 
 @triton.jit
 def _exact_forward_kernel(
-    e,
-    g,
-    h,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
-            tl.int64
-        )
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -80,12 +73,7 @@ def geglu_exact_forward_kernel(gate, up):
 
 @triton.jit
 def _exact_backward_kernel(
-    DW,
-    e,
-    g,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
 ):
     """
     f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
@@ -99,9 +87,7 @@ def _exact_backward_kernel(
     """
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
-            tl.int64
-        )
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -111,7 +97,7 @@ def _exact_backward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
-    # Break e_row away for re-use
+    # Break e_row away for reuse
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     f_partial_row = 0.5 * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_partial_row * e_row
@@ -155,18 +141,11 @@ def geglu_exact_backward_kernel(DW, e, g):
 
 @triton.jit
 def _approx_forward_kernel(
-    e,
-    g,
-    h,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
-            tl.int64
-        )
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -180,9 +159,7 @@ def _approx_forward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
-    f_row = (
-        0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
-    )
+    f_row = 0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
@@ -210,12 +187,7 @@ def geglu_approx_forward_kernel(gate, up):
 
 @triton.jit
 def _approx_backward_kernel(
-    DW,
-    e,
-    g,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
 ):
     """
     f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) ))
@@ -233,9 +205,7 @@ def _approx_backward_kernel(
     """
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
-            tl.int64
-        )
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)

@@ -12,7 +12,5 @@ def downsample(values: list[float], target_count: int) -> list[float]:
         return []
     if target_count == 1:
         return [values[-1]]
-    indices = [
-        round(i * (len(values) - 1) / (target_count - 1)) for i in range(target_count)
-    ]
+    indices = [round(i * (len(values) - 1) / (target_count - 1)) for i in range(target_count)]
     return [values[i] for i in indices]

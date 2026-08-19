@@ -108,13 +108,10 @@ def _grouped_gemm_forward_kernel(
                 )
 
             # Process tiles for this expert
-            while (
-                tidx >= processed_tiles
-                and tidx < processed_tiles + num_tiles_per_expert
-            ):
+            while tidx >= processed_tiles and tidx < processed_tiles + num_tiles_per_expert:
                 tile_idx = tidx - processed_tiles
 
-                # Check if L2 cache re-use for this order is optimal
+                # Check if L2 cache reuse for this order is optimal
                 tile_m_idx = tile_idx % num_m_tiles
                 tile_n_idx = tile_idx // num_m_tiles
 
@@ -146,9 +143,7 @@ def _grouped_gemm_forward_kernel(
                     load_idx = (
                         (expert_token_offsets // TOPK) * K
                     )  # Permute on load from token -> expert order, divide by TOPK to index from original number of tokens
-                    store_idx = (
-                        indices_to_gather[:, None] * N
-                    )  # Store in contiguous order
+                    store_idx = indices_to_gather[:, None] * N  # Store in contiguous order
                 else:
                     off_am = tile_m_idx * BLOCK_SIZE_M
                     if not PERMUTE_Y:
@@ -200,17 +195,13 @@ def _grouped_gemm_forward_kernel(
 
                     if FUSE_MUL_PRE:
                         # Check for correct broadcasting
-                        topk_weights = tl.load(
-                            topk_weights_ptr + topk_load_idx, mask = row_mask
-                        )
+                        topk_weights = tl.load(topk_weights_ptr + topk_load_idx, mask = row_mask)
                         x *= topk_weights.to(x.dtype)
 
                     if not USE_TMA_LOAD_W:
                         w = tl.load(w_ptrs, mask = offs_bn[:, None] < N)
                     else:
-                        w = w_desc.load(
-                            [expert_idx, tile_n_idx * BLOCK_SIZE_N, k_offset]
-                        )
+                        w = w_desc.load([expert_idx, tile_n_idx * BLOCK_SIZE_N, k_offset])
                         w = tl.reshape(w, (BLOCK_SIZE_N, BLOCK_SIZE_K))
 
                     x = x.to(w.dtype)
@@ -228,9 +219,7 @@ def _grouped_gemm_forward_kernel(
                 # Fusing before accumulator dtype conversion results in numerical diffs
                 if FUSE_MUL_POST:
                     # Check for correct broadcasting
-                    topk_weights = tl.load(
-                        topk_weights_ptr + topk_load_idx, mask = row_mask
-                    )
+                    topk_weights = tl.load(topk_weights_ptr + topk_load_idx, mask = row_mask)
                     y *= topk_weights.to(output_dtype)
 
                 offs_bn = tile_n_idx * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)

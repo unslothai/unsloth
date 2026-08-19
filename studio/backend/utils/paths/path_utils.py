@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
 
-# Lightweight instrumentation counters for operational visibility.
+# Instrumentation counters for operational visibility.
 _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
     "calls": 0,
     "memo_hits": 0,
@@ -34,7 +34,7 @@ def _is_wsl() -> bool:
     if sys.platform == "win32":
         return False
     try:
-        with open("/proc/version", "r") as f:
+        with open("/proc/version", "r", encoding = "utf-8") as f:
             return "microsoft" in f.read().lower()
     except Exception:
         return False
@@ -44,27 +44,17 @@ _IS_WSL: bool = _is_wsl()
 
 
 def normalize_path(path: str) -> str:
-    """
-    Normalize filesystem paths for cross-platform use.
+    """Normalize filesystem paths for cross-platform use.
 
-    On WSL, converts Windows drive-letter paths to ``/mnt/<drive>/...``.
-    On native Windows, keeps the drive letter and normalizes separators.
-    On Linux/macOS (non-WSL), paths are returned with forward slashes.
-
-    Examples (WSL):
-        C:\\Users\\... -> /mnt/c/Users/...
-    Examples (native Windows):
-        C:\\Users\\... -> C:/Users/...
-    Examples (Linux/macOS):
-        /home/user/... -> /home/user/... (unchanged)
+    WSL maps drive-letter paths to ``/mnt/<drive>/...``; native Windows keeps
+    the drive and normalizes separators; elsewhere slashes are forward-only.
     """
     if not path:
         return path
 
     # Handle Windows drive letters (C:\\ or c:\\)
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
-        # Only map to /mnt/<drive>/ when running under WSL;
-        # on native Windows the drive letter must be preserved.
+        # Map to /mnt/<drive>/ only under WSL; native Windows keeps the drive letter.
         if _IS_WSL:
             drive = path[0].lower()
             rest = path[3:].replace("\\", "/")
@@ -86,7 +76,7 @@ def is_local_path(path: str) -> bool:
     if not path:
         return False
 
-    # If it exists on disk, treat as local (covers relative paths like "outputs/foo").
+    # Exists on disk → local (covers relative paths like "outputs/foo").
     try:
         if Path(normalize_path(path)).expanduser().exists():
             return True
@@ -122,7 +112,7 @@ def is_model_cached(model_name: str) -> bool:
     if not cache_path:
         return False
 
-    # Check for actual model files
+    # Check for model files
     for suffix in [".safetensors", ".bin", ".json"]:
         if list(cache_path.rglob(f"*{suffix}")):
             return True
@@ -132,24 +122,16 @@ def is_model_cached(model_name: str) -> bool:
 
 def _hf_hub_cache_dir() -> Path:
     """Return HF cache root honoring HF_HUB_CACHE when available."""
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        return Path(HF_HUB_CACHE)
-    except Exception as exc:
-        logger.debug(
-            "Could not read huggingface_hub HF_HUB_CACHE, using default hub path: %s",
-            exc,
-        )
-        return Path.home() / ".cache" / "huggingface" / "hub"
+    from utils.hf_cache_settings import get_hf_cache_paths
+    return get_hf_cache_paths().hub_cache
 
 
 def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
     """Resolve repo_id to the exact casing already present in local HF cache.
 
-    Policy: prefer the requested/canonical repo_id, but if a case-variant already
-    exists in local HF cache, reuse that exact cached spelling. This avoids
-    duplicate downloads while preserving user intent whenever possible.
+    Policy: prefer the requested/canonical repo_id, but reuse a case-variant's
+    exact cached spelling if one already exists in local HF cache. Avoids
+    duplicate downloads while preserving user intent where possible.
     """
     _CACHE_CASE_RESOLUTION_STATS["calls"] += 1
 
@@ -164,8 +146,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
 
     expected_dir = f"models--{model_name.replace('/', '--')}"
 
-    # Always check the exact-case path first so a newly-appeared exact match
-    # wins over any previously memoized variant.
+    # Exact-case path first so a new exact match beats a memoized variant.
     exact_path = cache_dir / expected_dir
     if exact_path.is_dir():
         if use_memo:
@@ -173,8 +154,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
 
-    # Validate memoized entries still exist on disk before returning them.
-    # This prevents stale results when cache dirs are deleted/recreated.
+    # Revalidate memoized entries on disk to avoid stale results.
     if use_memo:
         cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
         if cached is not None:
@@ -182,7 +162,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             if cached_path.is_dir():
                 _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
                 return cached
-            # Stale entry -- drop it and re-scan below.
+            # Stale entry -- drop it and re-scan below
             _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
 
     expected_lower = expected_dir.lower()
@@ -201,7 +181,7 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             candidates.append(repo_part.replace("--", "/"))
 
         if candidates:
-            # Deterministic tie-break if multiple case variants coexist.
+            # Deterministic tie-break if multiple case variants coexist
             resolved = sorted(candidates)[0]
             if len(candidates) > 1:
                 _CACHE_CASE_RESOLUTION_STATS["tie_breaks"] += 1
@@ -227,3 +207,74 @@ def reset_cache_case_resolution_state() -> None:
     _CACHE_CASE_RESOLUTION_MEMO.clear()
     for key in _CACHE_CASE_RESOLUTION_STATS:
         _CACHE_CASE_RESOLUTION_STATS[key] = 0
+
+
+def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
+    import subprocess
+    if not _IS_WSL:
+        return False
+    try:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", str(path)],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        if not windows_path:
+            return False
+        argument = f"/select,{windows_path}" if is_file else windows_path
+        subprocess.Popen(["explorer.exe", argument])
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
+    """Open the OS file manager with *path* selected (best effort per platform).
+
+    Raises ``FileNotFoundError`` when the target is gone: the Linux branch falls
+    back to the parent, which for a sandbox is the root holding every other
+    chat's.
+
+    ``expect_dir`` refuses anything that is not a real directory, symlinks
+    included, since both would take the file branch and name that same parent.
+    One ``lstat`` answers type and link-ness together, leaving no window between
+    the checks (``is_dir()`` follows links; ``follow_symlinks = False`` is 3.13+
+    only, and this runs on 3.10). Off by default: the cached-model reveal points
+    at a file, and a symlinked one, as an HF cache snapshot is a link farm.
+    """
+    import stat as stat_module
+    import subprocess
+
+    if expect_dir:
+        try:
+            entry = os.lstat(path)  # No-follow, and the only stat here.
+        except OSError as exc:
+            raise FileNotFoundError(str(path)) from exc
+        if not stat_module.S_ISDIR(entry.st_mode):
+            raise FileNotFoundError(str(path))
+        is_dir, is_file = True, False
+    else:
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        # Decided ONCE and then only read; each branch used to re-stat.
+        is_dir = path.is_dir()
+        is_file = not is_dir and path.is_file()
+        if not is_dir and not is_file:
+            raise FileNotFoundError(str(path))
+
+    target = str(path)
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", target] if is_file else ["open", target]
+        subprocess.Popen(cmd)
+    elif os.name == "nt":
+        if is_file:
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        else:
+            os.startfile(target)  # noqa: S606 - local user's own file manager
+    elif not _wsl_reveal_in_explorer(path, is_file):
+        # No cross-desktop "select file" standard on Linux; open the directory.
+        subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])

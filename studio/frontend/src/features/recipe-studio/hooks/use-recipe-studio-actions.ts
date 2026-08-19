@@ -112,6 +112,10 @@ export function useRecipeStudioActions({
     recipeId,
     currentSignature: persistence.currentSignature,
     payloadResult,
+    initialRunRows:
+      typeof initialPayload?.run?.rows === "number"
+        ? initialPayload.run.rows
+        : null,
     onExecutionStart,
     onPreviewSuccess,
   });

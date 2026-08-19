@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
+
+// Native IPC, so it works outside a user gesture (e.g. after an await).
+async function copyWithTauriClipboard(text: string): Promise<boolean> {
+  try {
+    const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+    await writeText(text);
+    return true;
+  } catch (error) {
+    console.warn("Tauri clipboard-manager writeText failed", error);
+    return false;
+  }
+}
+
 /**
- * Copy text to clipboard in a way that works on Mac/Safari.
- * Uses a synchronous textarea + execCommand fallback so the copy runs in the
- * same user gesture as the click (required by Safari's clipboard security).
+ * Synchronous textarea + execCommand copy so it runs in the same user gesture
+ * as the click (required by Safari's clipboard security).
  */
 function copyWithExecCommand(text: string): boolean {
   if (typeof document === "undefined" || !document.body) return false;
@@ -32,50 +45,30 @@ function copyWithExecCommand(text: string): boolean {
   }
 }
 
-export function copyToClipboard(text: string): boolean {
+export async function copyToClipboard(text: string): Promise<boolean> {
   if (typeof text !== "string" || text.length === 0) {
     return false;
   }
 
-  if (typeof document !== "undefined" && document.queryCommandSupported?.("copy") !== false) {
-    if (copyWithExecCommand(text)) return true;
-  }
-
-  // Async fallback for environments where execCommand is entirely unsupported
-  // but the Clipboard API is available (rare; kept for original contract parity).
-  if (typeof navigator?.clipboard?.writeText === "function") {
-    navigator.clipboard.writeText(text).then(
-      () => {},
-      () => {},
-    );
+  // Exactly one writer runs per call. Pre-arming the web write would keep the click's
+  // activation for a native failure, but it also leaves a second write in flight that a
+  // rapid second copy can lose a race to, and a silently stale clipboard is worse than a
+  // visible failure. Gated synchronously, so a browser still writes inside the gesture.
+  if (isTauri && (await copyWithTauriClipboard(text))) {
     return true;
   }
 
-  return false;
-}
-
-export async function copyToClipboardAsync(text: string): Promise<boolean> {
-  if (typeof text !== "string" || text.length === 0) {
-    return false;
-  }
-
-  // Prefer the async Clipboard API: avoids focus disruption in Radix
-  // focus-trapped dialogs where execCommand always fails.
+  // Primary: async Clipboard API
   if (typeof navigator?.clipboard?.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return true;
-    } catch {
-      // Clipboard API rejected (e.g. NotAllowedError, permission policy).
-      // User activation is still valid through promise chains per spec, so
-      // execCommand can succeed for callers outside focus-trapped dialogs.
-      // Inside a Radix modal the focus trap will block textarea.focus() and
-      // execCommand returns false harmlessly.
-      return copyWithExecCommand(text);
+    } catch (error) {
+      console.warn("Async clipboard API failed, falling back to execCommand", error);
+      // Rejected (NotAllowedError, insecure context, etc.); fall through.
     }
   }
 
-  // No Clipboard API (older browser / non-secure context): still in the
-  // original user-gesture frame, so execCommand can work.
+  // Fallback: execCommand (works in Safari when called during user gesture)
   return copyWithExecCommand(text);
 }

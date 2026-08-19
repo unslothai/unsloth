@@ -8,6 +8,7 @@ import { isOxcCodeShape } from "./validators/oxc-code-shape";
 import { isOxcValidationMode } from "./validators/oxc-mode";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
+const GITHUB_ITEM_TYPES = new Set(["issues", "pulls", "commits"]);
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validation rules
 export function getConfigErrors(config: NodeConfig | null): string[] {
@@ -268,15 +269,49 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
   }
   if (config.kind === "seed") {
     const seedSourceType = config.seed_source_type ?? "hf";
-    if (seedSourceType === "hf" && !config.hf_repo_id.trim()) {
+    if (seedSourceType === "github_repo") {
+      const repos = (config.github_repo_slug ?? "")
+        .split(/[\n,]/)
+        .map((repo) => repo.trim())
+        .filter(Boolean);
+      if (repos.length === 0) {
+        errors.push("Add at least one GitHub repository.");
+      }
+      if (
+        repos.some((repo) => {
+          const parts = repo.split("/");
+          return parts.length !== 2 || parts.some((part) => !part);
+        })
+      ) {
+        errors.push("GitHub repositories must use owner/name format.");
+      }
+      const itemTypes = config.github_item_types?.length
+        ? config.github_item_types
+        : ["issues", "pulls"];
+      if (itemTypes.length === 0) {
+        errors.push("Choose at least one GitHub item type.");
+      } else if (itemTypes.some((itemType) => !GITHUB_ITEM_TYPES.has(itemType))) {
+        errors.push("GitHub item types must be issues, pulls, or commits.");
+      }
+      const limit = parseIntNumber(config.github_limit ?? "100");
+      if (limit === null || limit < 1 || limit > 5000) {
+        errors.push("Items per repo must be an integer from 1 to 5000.");
+      }
+      const maxComments = parseIntNumber(config.github_max_comments_per_item ?? "30");
+      if (maxComments === null || maxComments < 0 || maxComments > 200) {
+        errors.push("Max comments per item must be an integer from 0 to 200.");
+      }
+    } else if (seedSourceType === "hf" && !config.hf_repo_id.trim()) {
       errors.push("Choose a Hugging Face dataset.");
     }
-    const hasPath =
-      seedSourceType === "unstructured"
-        ? (config.resolved_paths?.length ?? 0) > 0
-        : Boolean(config.hf_path.trim());
-    if (!hasPath) {
-      errors.push("Load the source-data preview first.");
+    if (seedSourceType !== "github_repo") {
+      const hasPath =
+        seedSourceType === "unstructured"
+          ? (config.resolved_paths?.length ?? 0) > 0
+          : Boolean(config.hf_path.trim());
+      if (!hasPath) {
+        errors.push("Load the source-data preview first.");
+      }
     }
     if (
       seedSourceType === "hf" &&
@@ -304,7 +339,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       ) {
         errors.push("Chunk overlap must be less than chunk size.");
       }
-    } else {
+    } else if (seedSourceType !== "github_repo") {
       const selectedDropColumns = (config.seed_drop_columns ?? [])
         .map((value) => value.trim())
         .filter(Boolean);

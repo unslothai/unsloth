@@ -4,7 +4,9 @@
 "use client";
 
 import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
-import { GlobeIcon, LoaderIcon } from "lucide-react";
+import { GlobeIcon } from "lucide-react";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useState } from "react";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
@@ -23,6 +25,33 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
+// Mirrors _normalize_url_scheme: a dotted host, optionally followed by a port
+// that may be empty ("example.com:" fetches on the default port) but otherwise
+// has to be in range, so the card names a host only when the backend fetches it.
+const RE_BARE_HOST = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::(\d{0,5}))?(?:[/?#]|$)/;
+
+function isBareHostFetchedAsHttps(value: string): boolean {
+  const match = RE_BARE_HOST.exec(value);
+  if (!match) return false;
+  const port = match[1];
+  if (!port) return true;
+  return Number(port) >= 1 && Number(port) <= 65535;
+}
+
+/**
+ * Reject non-http(s) URLs. Web-search/fetch output is provider-controlled,
+ * so hostile `javascript:` / `data:` lines must not reach a Source <a href>.
+ */
+function isSafeHttpUrl(raw: string): boolean {
+  const value = raw.trim();
+  if (!value || /[\r\n]/.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /** Parse the backend's "Title: ...\nURL: ...\nSnippet: ...\n---" format into structured sources. */
 function parseSearchResults(raw: string): ParsedSource[] {
@@ -35,13 +64,14 @@ function parseSearchResults(raw: string): ParsedSource[] {
     const titleMatch = block.match(RE_TITLE);
     const urlMatch = block.match(RE_URL);
     const snippetMatch = block.match(RE_SNIPPET);
-    if (titleMatch && urlMatch) {
-      sources.push({
-        title: titleMatch[1].trim(),
-        url: urlMatch[1].trim(),
-        snippet: snippetMatch?.[1]?.trim() ?? "",
-      });
-    }
+    if (!titleMatch || !urlMatch) continue;
+    const url = urlMatch[1].trim();
+    if (!isSafeHttpUrl(url)) continue;
+    sources.push({
+      title: titleMatch[1].trim(),
+      url,
+      snippet: snippetMatch?.[1]?.trim() ?? "",
+    });
   }
   return sources;
 }
@@ -56,8 +86,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const isUrlFetch = !!url;
   const displayDomain = (() => {
     if (!url) return "";
+    // new URL() throws on the bare hosts the backend fetches, so mirror that
+    // grammar or the card names no host for exactly the URLs it does fetch.
+    const bare = url.startsWith("//") ? url.slice(2) : url;
+    const candidate = isBareHostFetchedAsHttps(bare) ? `https://${bare}` : url;
     try {
-      const parsed = new URL(url);
+      const parsed = new URL(candidate);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
       return parsed.hostname.replace(/^www\./, "");
     } catch {
@@ -65,11 +99,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     }
   })();
   const isRunning = status?.type === "running";
-  const sources = result
-    ? parseSearchResults(
-        typeof result === "string" ? result : JSON.stringify(result),
-      )
-    : [];
+  const resultText = result == null ? "" : stringifyToolResult(result);
+  const sources = resultText ? parseSearchResults(resultText) : [];
 
   // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
@@ -99,8 +130,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {isRunning ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderIcon className="size-3.5 animate-spin" />
+          <div className="flex items-center text-sm text-muted-foreground">
             <span>
               {isUrlFetch
                 ? <>Reading {displayDomain || "page"}&hellip;</>
@@ -123,12 +153,10 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               </Source>
             ))}
           </div>
-        ) : result ? (
+        ) : resultText ? (
           <div>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {typeof result === "string"
-                ? result
-                : JSON.stringify(result, null, 2)}
+              {resultText}
             </pre>
           </div>
         ) : null}

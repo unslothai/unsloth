@@ -8,8 +8,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
 from utils.paths import ensure_dir, unstructured_seed_cache_root
 
 DEFAULT_CHUNK_SIZE = 1200
@@ -18,11 +16,24 @@ MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
 _CACHE_DIR = unstructured_seed_cache_root()
 
+_PANDAS = None
 
-def resolve_chunking(
-    chunk_size: Any,
-    chunk_overlap: Any,
-) -> tuple[int, int]:
+
+def _pandas():
+    # Imported on use, not at module scope, so importing this module costs nothing.
+    global _PANDAS
+    if _PANDAS is None:
+        try:
+            import pandas as pd
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                f"pandas is required for unstructured seed processing: {exc}"
+            ) from exc
+        _PANDAS = pd
+    return _PANDAS
+
+
+def resolve_chunking(chunk_size: Any, chunk_overlap: Any) -> tuple[int, int]:
     size = _to_int(chunk_size, DEFAULT_CHUNK_SIZE)
     size = max(1, min(size, MAX_CHUNK_SIZE))
     overlap = _to_int(chunk_overlap, DEFAULT_CHUNK_OVERLAP)
@@ -31,11 +42,7 @@ def resolve_chunking(
 
 
 def build_unstructured_preview_rows(
-    *,
-    source_path: Path,
-    preview_size: int,
-    chunk_size: Any,
-    chunk_overlap: Any,
+    *, source_path: Path, preview_size: int, chunk_size: Any, chunk_overlap: Any
 ) -> list[dict[str, str]]:
     parquet_path, rows = materialize_unstructured_seed_dataset(
         source_path = source_path,
@@ -46,14 +53,7 @@ def build_unstructured_preview_rows(
     if rows:
         return rows[:count]
 
-    try:
-        import pandas as pd
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            f"pandas is required for unstructured seed processing: {exc}"
-        ) from exc
-
-    dataframe = pd.read_parquet(parquet_path).head(count)
+    dataframe = _pandas().read_parquet(parquet_path).head(count)
     return [
         {"chunk_text": str(value.get("chunk_text", "")).strip()}
         for value in dataframe.to_dict(orient = "records")
@@ -78,15 +78,12 @@ def build_multi_file_preview_rows(
     return _round_robin_preview(rows, preview_size)
 
 
-def _round_robin_preview(
-    rows: list[dict[str, str]],
-    preview_size: int,
-) -> list[dict[str, str]]:
-    """Pick preview rows round-robin across source files so every file is represented."""
+def _round_robin_preview(rows: list[dict[str, str]], preview_size: int) -> list[dict[str, str]]:
+    """Pick preview rows round-robin across source files so each is represented."""
     if not rows or preview_size <= 0:
         return []
 
-    # Group rows by source_file, preserving order of first appearance
+    # Group by source_file, preserving first-appearance order.
     from collections import OrderedDict
 
     grouped: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
@@ -115,10 +112,7 @@ def _round_robin_preview(
 
 
 def materialize_unstructured_seed_dataset(
-    *,
-    source_path: Path,
-    chunk_size: Any,
-    chunk_overlap: Any,
+    *, source_path: Path, chunk_size: Any, chunk_overlap: Any
 ) -> tuple[Path, list[dict[str, str]]]:
     resolved = source_path.expanduser().resolve()
     if not resolved.is_file():
@@ -145,15 +139,8 @@ def materialize_unstructured_seed_dataset(
 
     rows = [{"chunk_text": chunk} for chunk in chunks]
     ensure_dir(_CACHE_DIR)
-    try:
-        import pandas as pd
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            f"pandas is required for unstructured seed processing: {exc}"
-        ) from exc
-
     tmp_path = _CACHE_DIR / f"{key}.tmp.parquet"
-    pd.DataFrame(rows).to_parquet(tmp_path, index = False)
+    _pandas().DataFrame(rows).to_parquet(tmp_path, index = False)
     tmp_path.replace(parquet_path)
     return parquet_path, rows
 
@@ -164,12 +151,12 @@ def materialize_multi_file_unstructured_seed(
     chunk_size: int,
     chunk_overlap: int,
 ) -> tuple[Path, list[dict[str, str]]]:
-    """Chunk multiple files and combine into one parquet dataset with source_file column."""
+    """Chunk multiple files into one parquet dataset with a source_file column."""
     chunk_size, chunk_overlap = resolve_chunking(chunk_size, chunk_overlap)
     cache_key = _compute_multi_file_cache_key(file_entries, chunk_size, chunk_overlap)
     cached = _CACHE_DIR / f"{cache_key}.parquet"
     if cached.exists():
-        df = pd.read_parquet(cached)
+        df = _pandas().read_parquet(cached)
         rows = df.to_dict(orient = "records")
         return cached, rows
 
@@ -187,7 +174,7 @@ def materialize_multi_file_unstructured_seed(
     if not all_rows:
         raise ValueError("No text found in any uploaded files.")
 
-    df = pd.DataFrame(all_rows)
+    df = _pandas().DataFrame(all_rows)
     ensure_dir(_CACHE_DIR)
     tmp = _CACHE_DIR / f"{cache_key}.tmp.parquet"
     df.to_parquet(tmp, index = False)
@@ -209,12 +196,7 @@ def normalize_unstructured_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", normalized).strip()
 
 
-def split_text_into_chunks(
-    *,
-    text: str,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> list[str]:
+def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     if not text:
         return []
     if chunk_size <= 0:
@@ -268,12 +250,7 @@ def _to_int(value: Any, fallback: int) -> int:
     return parsed
 
 
-def _compute_cache_key(
-    *,
-    source_path: Path,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> str:
+def _compute_cache_key(*, source_path: Path, chunk_size: int, chunk_overlap: int) -> str:
     stat = source_path.stat()
     payload = "|".join(
         [
@@ -288,9 +265,7 @@ def _compute_cache_key(
 
 
 def _compute_multi_file_cache_key(
-    file_entries: list[tuple[Path, str]],
-    chunk_size: int,
-    chunk_overlap: int,
+    file_entries: list[tuple[Path, str]], chunk_size: int, chunk_overlap: int
 ) -> str:
     parts: list[str] = []
     for path, name in sorted(file_entries, key = lambda e: e[1]):

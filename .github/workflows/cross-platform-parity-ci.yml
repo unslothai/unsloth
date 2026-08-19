@@ -1,0 +1,270 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Runs installer parity and autostart opt-out tests across all three platforms.
+#
+# Why: the parity test guards that install.sh and install.ps1 stay in sync.
+# It originally ran only on ubuntu-latest through studio-backend-ci.yml.
+# On Windows, Path.read_text() defaults to the cp1252 locale encoding, so a
+# non-cp1252 byte in install.sh raises UnicodeDecodeError even though Linux
+# and macOS default to UTF-8. The reads were pinned to encoding="utf-8" in
+# #6166; this matrix keeps that from silently regressing. Pure pytest, no GPU,
+# sub-second, so the matrix is cheap. Linux also runs the POSIX rollback test
+# under dash, matching the supported curl-to-sh installer path.
+#
+# The interactive-prompt guard rides along for the same reason: a text scan over
+# the same scripts, refusing new yes/no questions (see #7016, reverted in #8040).
+# Its paths are globbed, since a newly named installer has to trigger the very
+# check that refuses to let it land unregistered.
+#
+# The setup-output encoding tests ride along for the same reason again, and it is
+# the sharpest case of it: they spawn install.ps1's and setup.ps1's own banner
+# under Windows PowerShell 5.1 with the flags and the CREATE_NO_WINDOW the
+# desktop app uses, so on Linux they either skip or fall back to pwsh 7, which is
+# UTF-8 by default and cannot reproduce anything. Backend CI already collects
+# that file on ubuntu, which covers its source contracts; this row is the only
+# place its byte-level half means something.
+
+name: Cross-platform parity
+
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
+      # The System32 working-directory guard the CLI callback runs; all of that
+      # logic lives here now, so an edit to it alone must still run this leg.
+      - 'unsloth_cli/_system_dir_guard.py'
+      # test_installer_profile_hardening.py asserts this module directly (unconditional
+      # -NoProfile, the proxy handoff), so a change to it has to run here.
+      - 'unsloth_cli/commands/studio.py'
+      - 'tests/test_installer_skip_autostart.py'
+      - 'tests/test_installer_system32_guard.py'
+      - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_profile_hardening.py'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'install*.bat'
+      - 'uninstall*.sh'
+      - 'uninstall*.ps1'
+      - 'uninstall*.bat'
+      - 'uninstall*.py'
+      - 'install*.py'
+      - 'studio/setup*.sh'
+      - 'studio/setup*.ps1'
+      - 'scripts/install*.sh'
+      - 'scripts/install*.ps1'
+      - 'scripts/uninstall*.sh'
+      - 'scripts/uninstall*.ps1'
+      - 'scripts/build_whisper_cpp.sh'
+      - 'studio/setup*.bat'
+      - 'setup*.sh'
+      - 'setup*.ps1'
+      - 'setup*.bat'
+      - 'studio/install_*.py'
+      - 'studio/backend/requirements/single-env/patch_metadata.py'
+      - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/sh/test_install_rollback_lifecycle.sh'
+      - 'tests/studio/test_install_rollback_lifecycle.ps1'
+      - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'studio/setup.ps1'
+      - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
+      - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_application_control_cli_fallback.ps1'
+      # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
+      # process.rs's, so a change to either spelling has to run here.
+      - 'studio/src-tauri/src/process.rs'
+      - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
+      - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
+      - 'tests/sh/test_setup_xpu_posix_summary.sh'
+      - 'studio/setup.sh'
+      - '.github/workflows/cross-platform-parity-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
+      # The System32 working-directory guard the CLI callback runs; all of that
+      # logic lives here now, so an edit to it alone must still run this leg.
+      - 'unsloth_cli/_system_dir_guard.py'
+      # test_installer_profile_hardening.py asserts this module directly (unconditional
+      # -NoProfile, the proxy handoff), so a change to it has to run here.
+      - 'unsloth_cli/commands/studio.py'
+      - 'tests/test_installer_skip_autostart.py'
+      - 'tests/test_installer_system32_guard.py'
+      - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_profile_hardening.py'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'install*.bat'
+      - 'uninstall*.sh'
+      - 'uninstall*.ps1'
+      - 'uninstall*.bat'
+      - 'uninstall*.py'
+      - 'install*.py'
+      - 'studio/setup*.sh'
+      - 'studio/setup*.ps1'
+      - 'scripts/install*.sh'
+      - 'scripts/install*.ps1'
+      - 'scripts/uninstall*.sh'
+      - 'scripts/uninstall*.ps1'
+      - 'scripts/build_whisper_cpp.sh'
+      - 'studio/setup*.bat'
+      - 'setup*.sh'
+      - 'setup*.ps1'
+      - 'setup*.bat'
+      - 'studio/install_*.py'
+      - 'studio/backend/requirements/single-env/patch_metadata.py'
+      - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_setup_output_encoding.py'
+      - 'tests/sh/test_install_rollback_lifecycle.sh'
+      - 'tests/studio/test_install_rollback_lifecycle.ps1'
+      - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'studio/setup.ps1'
+      - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
+      - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_amd_venv_repair_loop.ps1'
+      - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_application_control_cli_fallback.ps1'
+      # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
+      # process.rs's, so a change to either spelling has to run here.
+      - 'studio/src-tauri/src/process.rs'
+      - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
+      - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
+      - 'tests/sh/test_setup_xpu_posix_summary.sh'
+      - 'studio/setup.sh'
+      - '.github/workflows/cross-platform-parity-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: parity (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # No macOS leg on purpose. This matrix exists for Windows: the parity
+        # tests are pure `Path.read_text()` + regex assertions over install.sh /
+        # install.ps1 / setup.ps1, and the OS-specific risk they guard is the
+        # cp1252 default encoding on Windows. There is no `platform.`,
+        # `sys.platform`, `darwin` or `uname` reference anywhere in
+        # tests/python/test_cross_platform_parity.py, so the macOS row asserted
+        # exactly what the Linux row already asserts. macOS concurrency is
+        # capped at 5 account-wide; do not add it back without a Mac-specific
+        # assertion to justify it.
+        #
+        # The three `runner.os != 'Windows'` shell steps below lose nothing
+        # either. All three cover Intel XPU logic no Mac can reach: install.sh's
+        # flavor guard no-ops on Darwin (get_torch_index_url returns .../cpu
+        # there and the guard body only runs for a non-cpu tag), and setup.sh's
+        # XPU escape and hardware summary key on a +xpu wheel or an .../whl/xpu
+        # pin, which exist for Linux and Windows only. The BSD userland and
+        # bash 3.2 exposure of install.sh and setup.sh themselves stays covered
+        # on macos-15, where studio-mac-ui-smoke (which absorbed the former
+        # studio-mac-update-smoke), studio-mac-inference-smoke,
+        # studio-mac-install-matrix and clean-machine-install-ci run them for
+        # real (`bash install.sh`, and `unsloth studio update`, which shells
+        # out to `bash studio/setup.sh`).
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+      # test_installer_profile_hardening.py imports unsloth_cli.commands.studio, which pulls
+      # the CLI's import chain; without these the job dies on ModuleNotFoundError before a
+      # single test runs. rich arrives through typer today, but unsloth_cli imports it
+      # directly, so it is named rather than left to somebody else's dependency list. No
+      # torch: UNSLOTH_NO_TORCH keeps the suite off it.
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich
+      # -rs: these files are full of platform-gated cases, and a case that
+      # silently stopped running on the row it exists for still reports green.
+      - name: Cross-platform parity tests
+        env:
+          UNSLOTH_NO_TORCH: '1'
+        run: >-
+          python -m pytest
+          tests/python/test_cross_platform_parity.py
+          tests/python/test_windows_python_venv_hardening.py
+          tests/python/test_windows_setup_output_encoding.py
+          tests/test_installer_skip_autostart.py
+          tests/test_installer_system32_guard.py
+          tests/test_installer_interactive_prompts.py
+          tests/test_installer_profile_hardening.py
+          -q -rs
+      - name: PowerShell rollback lifecycle tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_install_rollback_lifecycle.ps1
+      # Mocks the registry cmdlets rather than reading a hive, so it runs on all three.
+      - name: Intel registry fallback tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
+      # Same reason: the filesystem is mocked, so no real venv or Windows is needed.
+      - name: Setup XPU pre-report tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1
+      # Parses install.ps1 with the AST and executes the extracted builder, so no venv.
+      - name: XPU arm64 torchaudio tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
+      # Same again: mocked filesystem reads and one `python -c` child, so no venv, no AMD GPU and
+      # no Windows needed. Read the file header before adding cases -- pwsh 7 cannot reproduce the
+      # 5.1 half of #8335, so the checks covering it are deliberately source shapes.
+      - name: AMD venv repair loop tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_venv_repair_loop.ps1
+      # The same file under Windows PowerShell 5.1, the shell the CLI actually launches setup.ps1
+      # with. Every other step here is `shell: pwsh` (PowerShell 7), and 7 answers `.Count = 1`
+      # for the single CimInstance 5.1 answers `$null` for, so only this leg fails on unfixed #8335.
+      - name: AMD venv repair loop tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1
+      # Slices the shipped $nameArchTable out of install.ps1 and setup.ps1 and resolves GPU
+      # names through PowerShell's own -match, so no venv, no AMD GPU and no Windows needed.
+      - name: AMD GPU-name arch table tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
+      # Windows needed. The 1260 classification is exercised against crafted exceptions:
+      # a hosted runner has no Application Control policy to be denied by. The enforced
+      # end-to-end leg lives in the AppLocker workflow.
+      - name: Application Control CLI fallback tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
+      - name: POSIX rollback lifecycle tests
+        if: runner.os == 'Linux'
+        run: sh tests/sh/test_install_rollback_lifecycle.sh
+      # bash, not sh: the helper under test is extracted from install.sh, which is bash.
+      - name: install.sh XPU flavor probe tests
+        if: runner.os != 'Windows'
+        run: bash tests/sh/test_install_sh_xpu_flavor_probe.sh
+      # Same reason: the escape and the hardware summary are extracted from setup.sh and run
+      # against built venv trees, so no real install is needed.
+      - name: setup.sh XPU fast-path + summary tests
+        if: runner.os != 'Windows'
+        run: |
+          bash tests/sh/test_setup_xpu_fastpath_escape.sh
+          bash tests/sh/test_setup_xpu_posix_summary.sh

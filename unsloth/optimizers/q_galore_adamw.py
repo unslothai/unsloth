@@ -31,19 +31,17 @@ __all__ = ["QGaLoreAdamW8bit", "install_weight_quant_hooks"]
 try:
     import bitsandbytes.functional as bnb_F
     from bitsandbytes.optim.optimizer import Optimizer2State
-
     _HAS_BNB = True
 except ImportError:
     _HAS_BNB = False
-    # Provide a fallback base so the module can at least be imported.
+    # Fallback base so the module can still be imported.
     Optimizer2State = torch.optim.Optimizer
 
 
 def _require_bnb():
     if not _HAS_BNB:
         raise ImportError(
-            "Unsloth: Q-GaLore requires bitsandbytes. "
-            "Install it with: pip install bitsandbytes"
+            "Unsloth: Q-GaLore requires bitsandbytes. Install it with: pip install bitsandbytes"
         )
 
 
@@ -100,10 +98,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
             block_wise,
             is_paged = is_paged,
         )
-
-    # ------------------------------------------------------------------
-    # Core step
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def step(self, closure = None):
@@ -175,12 +169,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                     grad = state["projector"].project(p.grad, state["step"])
 
-                    # Save current weight; replace p.data with zeros so
-                    # the 8-bit update writes the pure weight delta.
+                    # Zero p.data so the 8-bit update writes the pure delta.
                     p._saved_data = p.data.clone()
-                    p.data = torch.zeros_like(
-                        grad, dtype = p.data.dtype, device = p.data.device
-                    )
+                    p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
                     p.grad = grad
 
                 # --- 8-bit Adam update ---
@@ -217,9 +208,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
-                    # Replace p.data with a scalar placeholder to free float memory.
-                    # A forward pre-hook (install_weight_quant_hooks) will
-                    # dequantize back to float before the next forward pass.
+                    # Scalar placeholder to free float memory; the forward
+                    # pre-hook (install_weight_quant_hooks) dequantizes before
+                    # the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
                 state["step"] += 1
@@ -228,10 +219,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
             torch.cuda.synchronize()
 
         return loss
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _has_weight_quant(p: torch.Tensor, group: dict) -> bool:
@@ -264,10 +251,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
         for name, p in model.named_parameters():
             if id(p) in weight_quant_params:
-                # Store quantization metadata WITHOUT converting weights to
-                # uint8.  The first optimizer.step() will quantize after the
-                # update.  We store dummy scales/zeros so _has_weight_quant()
-                # returns True on the first step.
+                # Store metadata without converting weights to uint8; the first
+                # step() quantizes after the update. Dummy scales/zeros keep
+                # _has_weight_quant() True on the first step.
                 p._q_scales = None
                 p._q_zeros = None
                 p._q_shape = p.data.shape
@@ -295,18 +281,12 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     """
     handles = []
     for module in model.modules():
-        has_quant_param = any(
-            hasattr(p, "_q_scales") for p in module.parameters(recurse = False)
-        )
+        has_quant_param = any(hasattr(p, "_q_scales") for p in module.parameters(recurse = False))
         if has_quant_param:
             h = module.register_forward_pre_hook(_weight_quant_pre_hook)
             handles.append(h)
     return handles
 
-
-# ======================================================================
-# Param-group construction helper
-# ======================================================================
 
 # Default linear layer names in transformer blocks that should use GaLore.
 _DEFAULT_GALORE_TARGETS = {
@@ -366,9 +346,7 @@ def make_q_galore_param_groups(
     Returns:
         List of two param group dicts: ``[galore_group, non_galore_group]``.
     """
-    targets = (
-        set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
-    )
+    targets = set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
 
     galore_params = []
     non_galore_params = []
@@ -377,9 +355,8 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Check if any target module name appears as a component in the param name.
-        # Exclude 1-D parameters (biases, norms) because GaLoreProjector.project
-        # requires 2-D gradients.
+        # Match target module names; exclude 1-D params (biases, norms) since
+        # GaLoreProjector.project requires 2-D gradients.
         name_parts = name.split(".")
         is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)
 

@@ -2,14 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Format a byte-per-second rate as a human-readable string.
- *
- *   512            → "512 B/s"
- *   1_234_567      → "1.2 MB/s"
- *   1_234_567_890  → "1.15 GB/s"
- *
- * Returns `"--"` for non-finite or non-positive inputs so callers can
- * render the label safely before the first stable sample arrives.
+ * Format a byte-per-second rate (e.g. 1_234_567 → "1.2 MB/s"). Returns `"--"`
+ * for non-finite or non-positive inputs so the label renders safely before the
+ * first stable sample.
  */
 export function formatRate(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "--";
@@ -21,13 +16,8 @@ export function formatRate(bytesPerSecond: number): string {
 }
 
 /**
- * Format an ETA (in seconds) as a short human-readable string.
- *
- *   47       → "47s"
- *   125      → "2m 5s"
- *   3725     → "1h 2m"
- *
- * Returns `"--"` for non-finite or non-positive inputs.
+ * Format an ETA in seconds as a short string (e.g. 125 → "2m 5s", 3725 →
+ * "1h 2m"). Returns `"--"` for non-finite or non-positive inputs.
  */
 export function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "--";
