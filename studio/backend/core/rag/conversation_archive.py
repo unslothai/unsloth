@@ -1116,7 +1116,30 @@ def has_archive(thread_id: str) -> bool:
 
 
 def _normalise(text: str) -> str:
-    return " ".join((text or "").split()).lower()
+    """Probe text for comparison: trimmed at both ends, otherwise exactly as written.
+
+    Case IS the edit. Lowercasing left a turn corrected only in capitalisation matching
+    its archived copy, so `_document_matches_one_run` kept the pre-edit document live and
+    a recall could answer with it: measured, `Foo` after it was corrected to `foo`, still
+    validated. The two sides here are a stored render and the live text of the same
+    messages, so there is no spelling difference to be tolerant of, and nothing else
+    retires the stale copy -- the edit changes the digest, so it is written as a new
+    document and the branch filter is the only thing that could have dropped the old one.
+
+    `strip()` and not `rstrip()`, even though trimming each probe also discards leading
+    indentation. Keeping leading whitespace looks tighter and is worse: `render_turn`
+    strips the whole message, so a live turn beginning with a space or a newline then
+    starts its run at a non-zero offset and `_document_matches_one_run` retires it.
+    Measured, `   hello there` and a pasted block opening on a newline both went from
+    live to retired, which is a silent loss of recall on exactly the pasted code that
+    tends to matter.
+
+    Indentation-only edits are therefore still tolerated, in both directions: probes are
+    matched per line and as substrings, so leading whitespace never decides. Closing that
+    needs the probe splitter to carry offsets, which is a bigger change than this bug
+    warrants. Lexical search does its own tokenising and never reads this.
+    """
+    return (text or "").strip()
 
 
 def _normalise_cased(text: str) -> str:
@@ -1298,6 +1321,14 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
             stripped = stripped[: -len(_TRUNCATION_MARKER.strip())].strip()
         if stripped:
             entries.append((stripped, truncated or is_call))
+        elif truncated and entries:
+            # The cut landed exactly on a line boundary, so the marker is a line of its
+            # own and the line before it is the one that was cut short. Dropping the empty
+            # marker dropped the flag with it, the last real probe was read as complete,
+            # and `_document_matches_one_run` retired an unedited over-cap turn: measured
+            # on a 900-line tool result whose 4000-character cut fell on a newline, the
+            # live turn came back off-branch and no query could return it.
+            entries[-1] = (entries[-1][0], True)
     return entries
 
 
