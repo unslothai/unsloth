@@ -846,6 +846,18 @@ public static class UnslothStudioFinalPathV2
                 $target = '\\?\' + $target
             }
         }
+        # "\real" is rooted as far as IsPathRooted is concerned but names no drive,
+        # so GetFullPath would resolve it against the PROCESS current drive. Windows
+        # resolves a drive-less target on the LINK's own volume, so anchor it there.
+        if ($target.Length -ge 1 -and ($target[0] -eq '\' -or $target[0] -eq '/') -and
+            -not ($target.Length -ge 2 -and ($target[1] -eq '\' -or $target[1] -eq '/'))) {
+            $linkRoot = $null
+            try { $linkRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Path)) } catch { $linkRoot = $null }
+            # Empty for a volume-GUID spelling; leaving the target alone beats guessing.
+            if (-not [string]::IsNullOrEmpty($linkRoot)) {
+                try { $target = [System.IO.Path]::Combine($linkRoot, $target.TrimStart('\', '/')) } catch {}
+            }
+        }
         try {
             if (-not [System.IO.Path]::IsPathRooted($target)) {
                 $parent = [System.IO.Path]::GetDirectoryName($Path)

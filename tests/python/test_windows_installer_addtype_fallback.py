@@ -487,6 +487,44 @@ def test_the_nt_device_prefix_becomes_a_usable_path(raw: str, expected: str):
 
 
 @requires_pwsh
+def test_a_drive_less_rooted_target_lands_on_the_link_own_root(tmp_path: Path):
+    """A symlink may store "\\real", which is rooted but names no drive.
+
+    IsPathRooted says true, so anchoring against the link is skipped and
+    GetFullPath then resolves the target against whatever drive the PROCESS
+    happens to be sitting on. Windows resolves it on the LINK's volume, so a
+    link on D: must never normalize to C:\\real: that is a different directory,
+    and it would be the one the fallback mutex and the in-use scan protect.
+    """
+    link = tmp_path / "nested" / "link"
+    link.parent.mkdir(parents = True)
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                _helpers("Resolve-StudioLinkTarget"),
+                "function Get-Item {",
+                "    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)",
+                "    $item = New-Object psobject",
+                '    $item | Add-Member -MemberType NoteProperty -Name Target -Value "\\real"',
+                "    Write-Output $item",
+                "}",
+                f"$root = [System.IO.Path]::GetPathRoot('{link}')",
+                f"Write-Output \"TARGET:[$(Resolve-StudioLinkTarget -Path '{link}')]\"",
+                'Write-Output "ROOT:[$root]"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    got = _lines(result, "TARGET:")[0].split("[", 1)[1].rstrip("]")
+    root = _lines(result, "ROOT:")[0].split("[", 1)[1].rstrip("]")
+    assert got.startswith(root), f"{got} is not on the link's own root {root}"
+    assert got.rstrip("\\/").endswith("real")
+    # The whole point: it is NOT reparented under the link's own directory either.
+    assert "nested" not in got
+
+
+@requires_pwsh
 @pytest.mark.parametrize(
     "tmp,expect_override",
     [
