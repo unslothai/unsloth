@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -33,14 +34,28 @@ def _extract(pattern: str, source: str) -> str:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    result = subprocess.run(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 30,
-    )
+    # Through a FILE, not -Command: these scripts carry the whole extracted helper
+    # chain, and Windows caps a command line at 32767 characters. Passed inline,
+    # the moment the chain grows past that every test here dies as WinError 206
+    # "The filename or extension is too long" instead of testing anything.
+    # utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI.
+    handle, name = tempfile.mkstemp(suffix = ".ps1")
+    os.close(handle)
+    try:
+        Path(name).write_text(script, encoding = "utf-8-sig")
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
+            check = True,
+            capture_output = True,
+            text = True,
+            env = env,
+            timeout = 60,
+        )
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
     return result.stdout.strip()
 
 
@@ -144,8 +159,13 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # Long enough that the child outlives the scan itself. Windows PowerShell 5.1
+    # pays a cold start plus a real csc.exe compile of the native helper before it
+    # can look at anything, which alone can outlast a six-ping child; the process
+    # would then be gone by the time the scan ran, and the test would read as
+    # "the in-use check missed it".
     child = subprocess.Popen(
-        [str(probe), "-n", "6", "127.0.0.1"],
+        [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = creationflags,
     )
     try:
@@ -157,7 +177,7 @@ $ErrorActionPreference = "Stop"
 """
         env = os.environ.copy()
         env["TEST_VENV"] = str(scripts.parent)
-        deadline = time.monotonic() + 4
+        deadline = time.monotonic() + 60
         observed = []
         while time.monotonic() < deadline:
             observed = _run_powershell(shell, script, env).splitlines()
