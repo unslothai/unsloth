@@ -12408,6 +12408,7 @@ async def _proxy_to_external_provider(
             CodexTransportError,
             CodexQuotaError,
             CodexReauthorizationError,
+            offered_subscription_model_ids,
         )
 
         # Through the same helper the saved-credential exception uses, not a bare
@@ -12434,7 +12435,12 @@ async def _proxy_to_external_provider(
         from core.inference.providers import get_provider_info as _get_codex_provider_info
 
         info = _get_codex_provider_info("openai_codex") or {}
-        if model not in info.get("default_models", []):
+        # The seed is only a seed: /codex/models is what the plan can reach, and the
+        # provider routes already accept saving a listed slug that is newer than it.
+        # Gating chat on the seed alone rejects the model the picker just offered.
+        allowed_models = set(info.get("default_models", []))
+        allowed_models |= offered_subscription_model_ids(payload.provider_id)
+        if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
         model_supports_vision = bool(

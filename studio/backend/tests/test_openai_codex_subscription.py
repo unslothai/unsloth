@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 
 import threading
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import asyncio
 import hashlib
 import json
@@ -1365,3 +1365,83 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
     # are no longer the tail of the conversation.
     assert replayed[-1]["role"] == "user"
     assert "provide your final answer now" in replayed[-1]["content"]
+
+
+def _codex_chat_gate(monkeypatch, model: str):
+    """Drive the chat route far enough to answer "may this model be used?".
+
+    The gate is one line inside ``_proxy_to_external_provider`` and is only
+    reachable through the route, so the access resolver is stubbed to raise: a
+    401 means the model was accepted and the request moved on, a 400 means it
+    was refused.
+    """
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda _pid: {
+            "id": _pid,
+            "provider_type": "openai_codex",
+            "base_url": OPENAI_CODEX_API_BASE,
+            "display_name": "ChatGPT subscription",
+            "is_enabled": True,
+        },
+    )
+
+    async def _refuse(*_args, **_kwargs):
+        raise codex_auth.CodexAuthError("stub: past the model gate")
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _refuse)
+
+    async def _is_disconnected():
+        return False
+
+    request = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = _is_disconnected,
+    )
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "codex-1",
+        external_model = model,
+        stream = True,
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inf._proxy_to_external_provider(payload, request, current_subject = "t")
+        )
+    return excinfo.value
+
+
+def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
+    """A slug the picker offered and the provider routes saved must be chattable.
+
+    ``/codex/models`` is the truth once connected, so a plan can list a model
+    newer than the curated seed. The provider routes accept saving it; gating
+    the chat route on the seed alone would reject the very model the user just
+    picked, on every message.
+    """
+    listed = "gpt-5.7-nova"
+    assert listed not in get_provider_info("openai_codex")["default_models"]
+
+    forget_subscription_models("codex-1")
+    refused = _codex_chat_gate(monkeypatch, listed)
+    assert refused.status_code == 400
+    assert "Choose a curated Codex model." in str(refused.detail)
+
+    # Exactly what a picker fetch records for this connection.
+    codex_client._offered_models["codex-1"] = {listed}
+    try:
+        accepted = _codex_chat_gate(monkeypatch, listed)
+        assert accepted.status_code == 401, accepted.detail
+        assert "Choose a curated Codex model." not in str(accepted.detail)
+        # A slug no plan ever listed is still refused.
+        never_listed = _codex_chat_gate(monkeypatch, "gpt-5.3-codex-spark")
+        assert never_listed.status_code == 400
+        assert "Choose a curated Codex model." in str(never_listed.detail)
+    finally:
+        forget_subscription_models("codex-1")
