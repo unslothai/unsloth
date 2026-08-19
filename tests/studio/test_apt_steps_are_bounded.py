@@ -239,6 +239,62 @@ def test_helper_defaults_are_what_the_budgets_assume() -> None:
     assert LOCK_WAIT_SECONDS == 24 * 5 + 5
 
 
+def test_the_helper_makes_apt_fail_fast() -> None:
+    """
+    The bound is the backstop; this is the part that stops the stall happening.
+
+    apt's `Acquire::http::Timeout` defaults to 120s and is an *idle* timeout, so a
+    socket that is open and trickling never trips it. That is how a 126 kB index
+    file cost 29 minutes: apt did not consider waiting on it an error at all.
+    Without these four options the helper still works, but every stall costs the
+    full step budget and ends in a kill -- and the kill is what orphans the dpkg
+    lock, so an apt that gives up on its own is one we never have to kill.
+    """
+    source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
+
+    # The generated config only, not the whole file. Searching the file matches the
+    # header comment, which names these options while explaining them -- so deleting
+    # the line that actually sets one would have gone unnoticed. It did, on the
+    # first version of this test.
+    written = re.search(r'conf="(.*?)"\n', source, re.DOTALL)
+    assert written, f"{HELPER} no longer builds an apt config to write"
+    conf = written.group(1)
+
+    for option in (
+        "Acquire::Retries",
+        "Acquire::http::Timeout",
+        "Acquire::https::Timeout",
+        "Acquire::ftp::Timeout",
+    ):
+        assert option in conf, f"{HELPER} no longer sets {option}; it writes: {conf!r}"
+
+    # Well under apt's 120s default, or it buys nothing. The whole point is that a
+    # dead transfer is abandoned in seconds rather than minutes.
+    match = re.search(r'APT_TIMEOUT="\$\{APT_ACQUIRE_TIMEOUT:-(\d+)\}"', source)
+    assert match, f"{HELPER} does not define a default transfer timeout"
+    assert int(match.group(1)) <= 30, (
+        f"a {match.group(1)}s transfer timeout is close enough to apt's 120s "
+        f"default that a stalled mirror still eats the step budget"
+    )
+
+    # Ordering is the whole value: configured inside or after the retry loop, the
+    # first attempt -- the one that actually stalls -- runs unconfigured.
+    configure = source.index("configure_apt_fail_fast\n\nfor attempt")
+    loop = source.index('for attempt in $(seq 1 "$ATTEMPTS")')
+    assert configure < loop, (
+        f"{HELPER} configures apt at or after the retry loop, so the first "
+        f"attempt runs with apt's 120s idle timeout"
+    )
+
+    # Best effort: a runner that cannot write the file must still run the command.
+    # `set -e` is absent here by design, but a bare failing `tee` would still leave
+    # the function returning non-zero into a caller that may have it set.
+    assert "could not write" in source, (
+        f"{HELPER} does not handle an unwritable apt config, so a runner that "
+        f"refuses the write would fail before running the command at all"
+    )
+
+
 def test_the_guard_is_not_vacuous() -> None:
     """
     Every assertion above is a for-loop over steps this finds. If the detector

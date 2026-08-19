@@ -123,13 +123,17 @@ jobs:
         # with no reason and every later step skipped. update and install go as one
         # unit, since retrying the install after a stalled update re-reads the same
         # broken package list.
-        timeout-minutes: 13
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
         env:
-          RETRY_ATTEMPTS: '3'
-          RETRY_ATTEMPT_TIMEOUT: '150'
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev'
+            'apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev; }'
 
       - name: Install, interrupted at "${{ matrix.label }}"
         env:
