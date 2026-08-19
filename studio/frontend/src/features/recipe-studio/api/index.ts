@@ -447,13 +447,24 @@ type UnstructuredFileUploadResponse = {
   error?: string;
 };
 
+/** A desktop drop, redeemed server-side: Tauri hands the webview a path, never
+ * a File, so the bytes never cross the bridge. */
+export interface NativeUnstructuredUpload {
+  nativePathLease: string;
+  name: string;
+  size: number;
+}
+
+export type UnstructuredUploadSource = File | NativeUnstructuredUpload;
+
 export async function uploadUnstructuredFile(
-  file: File,
+  file: UnstructuredUploadSource,
   blockId: string,
   signal?: AbortSignal,
 ): Promise<UnstructuredFileUploadResponse> {
   const formData = new FormData();
-  formData.append("file", file);
+  if (file instanceof File) formData.append("file", file);
+  else formData.append("nativePathLease", file.nativePathLease);
   formData.append("block_id", blockId);
 
   const res = await authFetch(

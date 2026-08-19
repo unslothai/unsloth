@@ -56,6 +56,7 @@ import {
   hfApiToken,
   isHiddenModelId,
   jobKeyOf,
+  scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
   useOnlineStatus,
@@ -5560,34 +5561,47 @@ export function HubModelPicker({
 
                     {/* Folder paths */}
                     {!customFoldersCollapsed &&
-                      scanFolders.map((f) => (
-                        <div
-                          key={f.id}
-                          className="group flex items-center gap-1.5 px-2.5 py-0.5"
-                        >
-                          <HugeiconsIcon
-                            icon={Folder02Icon}
-                            className="size-3 shrink-0 text-muted-foreground/40"
-                          />
-                          <span
-                            className="min-w-0 flex-1 truncate font-mono text-ui-10 text-muted-foreground/70"
-                            title={f.path}
-                          >
-                            {f.path}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveFolder(f.id)}
-                            aria-label={`Remove folder ${f.path}`}
-                            className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                      scanFolders.map((f) => {
+                        const problem = scanFolderStatusCopy(f.status);
+                        return (
+                          <div
+                            key={f.id}
+                            className="group flex items-center gap-1.5 px-2.5 py-0.5"
                           >
                             <HugeiconsIcon
-                              icon={Cancel01Icon}
-                              className="size-3"
+                              icon={Folder02Icon}
+                              className="size-3 shrink-0 text-muted-foreground/40"
                             />
-                          </button>
-                        </div>
-                      ))}
+                            <div className="min-w-0 flex-1">
+                              <span
+                                className="block truncate font-mono text-ui-10 text-muted-foreground/70"
+                                title={f.path}
+                              >
+                                {f.path}
+                              </span>
+                              {problem ? (
+                                <span
+                                  className="block truncate text-ui-10 text-amber-600 dark:text-amber-500"
+                                  title={problem.hint}
+                                >
+                                  {problem.title}
+                                </span>
+                              ) : null}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFolder(f.id)}
+                              aria-label={`Remove folder ${f.path}`}
+                              className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                            >
+                              <HugeiconsIcon
+                                icon={Cancel01Icon}
+                                className="size-3"
+                              />
+                            </button>
+                          </div>
+                        );
+                      })}
 
                     {/* Recommended folders */}
                     {!customFoldersCollapsed &&

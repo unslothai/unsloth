@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+import math
 import os
 import sys
 import time
@@ -2481,6 +2482,15 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
+        // randomUUID is unavailable in this opaque HTTP context. The strict CSP
+        // forbids crypto-boot.js, so install the same fallback inline.
+        const installRandomUUIDFallback = () => {
+          if (!window.crypto || typeof crypto.randomUUID === "function") return;
+          const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+          crypto.randomUUID = () =>
+            "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+              (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
+        };
         // Stamp the load this frame was served for. A report still in flight
         // when the canvas is swapped would otherwise be read as the new one's.
         const loadVersion = new URLSearchParams(location.search).get("v") || "";
@@ -2501,6 +2511,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
+        // Survives the document.open() in render(), so once is enough.
+        installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
@@ -5516,6 +5528,7 @@ async def _maybe_auto_switch_model(
     *,
     require_vision: bool = False,
     require_image: bool = True,
+    modality_label: str = "image or audio",
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
@@ -5526,7 +5539,8 @@ async def _maybe_auto_switch_model(
     to a text-only target before it runs, so an image request can't evict the
     resident vision model only to 400 afterwards; ``require_image`` is what makes
     that rejection modality-aware, since an audio request needs the projector but
-    not a vision tower.
+    not a vision tower. ``modality_label`` names the inputs actually attached, so
+    the rejection does not report a modality the request never carried.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -5684,7 +5698,7 @@ async def _maybe_auto_switch_model(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    "The requested model does not support the image or audio input in this request.",
+                    f"The requested model does not support the {modality_label} input in this request.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -8633,6 +8647,13 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
+            # same reason: the host-RAM guard reads the finished argv, so it answers too late
+            _host_offload = await asyncio.to_thread(
+                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            )
+            if _host_offload:
+                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
+                raise HTTPException(status_code = 400, detail = _host_offload)
 
         if chat_load_needs_gpu:
             await asyncio.to_thread(
@@ -11676,6 +11697,9 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
 # can expand to a far larger PCM array than the encoded-size cap implies.
 _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
+# The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
+# Flooring instead refused a file of exactly the size the composer allows.
+_MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
 _MAX_AUDIO_SECONDS = 30 * 60
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
@@ -11819,6 +11843,41 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     arr, sr = _decode_audio_mono(raw)
     arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
+
+
+def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]]:
+    """The clip's base64 without its data URI header, plus why it is refused.
+
+    The header is not payload, so counting it would refuse a clip of exactly the
+    size the composer allows. Returned rather than raised so the pre-switch and
+    post-load checks share one rule while raising their own way.
+    """
+    if video_b64.startswith("data:"):
+        video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
+    if not video_b64:
+        return "", (400, "Could not read the provided video file.")
+    if len(video_b64) > _MAX_VIDEO_B64_CHARS:
+        return video_b64, (413, "Video file is too large (max 64 MB).")
+    return video_b64, None
+
+
+def _inject_video_part(messages: list[dict], video_b64: str) -> None:
+    """Append an input_video part to the last user message, in place.
+
+    llama-server samples the clip into frames itself (ffmpeg via mtmd), so the
+    container is forwarded untouched. Rides the message list like image_url and
+    input_audio, so it flows through the plain and tool-calling paths alike.
+    Ref: llama.cpp tools/server/server-common.cpp, `type == "input_video"`.
+    """
+    part = {"type": "input_video", "input_video": {"data": video_b64}}
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            else:
+                msg["content"] = [{"type": "text", "text": content or ""}, part]
+            return
 
 
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
@@ -13183,6 +13242,13 @@ async def openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
+        # input_video is llama.cpp's own part type, so the proxy has nowhere to
+        # put the clip. Say so rather than answering as if there were no video.
+        if payload.video_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Video input is only supported on a local GGUF model with video support.",
+            )
         return await _proxy_to_external_provider(payload, request, current_subject)
 
     # Reject a malformed function tool here: it would otherwise reach
@@ -13220,6 +13286,7 @@ async def openai_chat_completions(
     _pre_parsed = None
     _needs_vision = False
     _needs_image = False
+    _modality_label = "image or audio"
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -13321,7 +13388,30 @@ async def openai_chat_completions(
         # audio-only request asks for the projector alone, since an audio model's
         # projector carries no vision tower.
         _needs_image = bool(_pre_parsed[2]) or _request_has_image(payload)
-        _needs_vision = _needs_image or bool(payload.audio_base64)
+        # Video rides that projector too. Its own /props gate can only run after
+        # the load, so this at least keeps a text-only target from evicting a
+        # working model to serve a clip it could never take.
+        _needs_vision = _needs_image or bool(payload.audio_base64) or bool(payload.video_base64)
+        # Name what is actually attached, so the refusal does not report a
+        # modality the request never carried.
+        _modality_label = (
+            " or ".join(
+                name
+                for name, present in (
+                    ("image", _needs_image),
+                    ("audio", bool(payload.audio_base64)),
+                    ("video", bool(payload.video_base64)),
+                )
+                if present
+            )
+            or _modality_label
+        )
+        # Size is knowable now and the switch is not cheap: refuse an oversized
+        # clip before it costs a model load.
+        if payload.video_base64:
+            _, _video_rejection = _video_b64_rejection(payload.video_base64)
+            if _video_rejection is not None:
+                raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
@@ -13329,6 +13419,7 @@ async def openai_chat_completions(
         current_subject,
         require_vision = _needs_vision,
         require_image = _needs_image,
+        modality_label = _modality_label,
     )
 
     llama_backend = get_llama_cpp_backend()
@@ -13651,6 +13742,15 @@ async def openai_chat_completions(
             ),
         )
 
+    # Injection lives in the GGUF branch below, since input_video is llama.cpp's
+    # own part type. Without this a transformers model answers as if the clip
+    # were never attached.
+    if payload.video_base64 and not using_gguf:
+        raise _reject(
+            400,
+            "Video input is only supported on a local GGUF model with video support.",
+        )
+
     # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
     # fields the client omitted, so agents and API clients get the model's tuned defaults
     # unless they set the field explicitly. Placed after external-provider routing (which
@@ -13722,6 +13822,14 @@ async def openai_chat_completions(
             raise _reject(
                 400,
                 "Audio input is not supported together with guided decoding or client-supplied tools yet.",
+            )
+        if payload.video_base64:
+            # Same shape: _build_openai_passthrough_body forwards an explicit
+            # field list, so the clip would be dropped and the model would
+            # answer without it.
+            raise _reject(
+                400,
+                "Video input is not supported together with guided decoding or client-supplied tools yet.",
             )
 
         # Preserve the vision guard from the non-passthrough path below:
@@ -13806,6 +13914,20 @@ async def openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
 
+        # Forwarded whole: llama-server owns the frame sampling, and takes the
+        # clip only when /props reports modalities.video.
+        video_b64 = None
+        if payload.video_base64:
+            if not getattr(llama_backend, "_has_video_input", False):
+                raise _reject(
+                    400,
+                    "Video provided but the current GGUF model cannot take video input. "
+                    "It needs an mmproj with video support, and ffmpeg/ffprobe installed.",
+                )
+            video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
+            if video_rejection is not None:
+                raise _reject(*video_rejection)
+
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
             llama_backend.is_vision,
@@ -13814,6 +13936,8 @@ async def openai_chat_completions(
         image_b64 = None
         if audio_b64:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
+        if video_b64:
+            _inject_video_part(gguf_messages, video_b64)
 
         cancel_event = threading.Event()
 
@@ -17836,6 +17960,24 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     return _with_system(messages)
 
 
+def _responses_text_format(text: Any) -> Optional[dict]:
+    """Responses ``text.format`` -> Chat Completions ``response_format``.
+
+    ``{"type": "text"}`` and a verbosity-only ``text`` carry no constraint -> None.
+    """
+    fmt = text.get("format") if isinstance(text, dict) else None
+    if not isinstance(fmt, dict):
+        return None
+    if fmt.get("type") == "json_object":
+        return {"type": "json_object"}
+    if fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
+        return None
+    json_schema = {"name": str(fmt.get("name") or "response"), "schema": fmt["schema"]}
+    if fmt.get("strict") is not None:
+        json_schema["strict"] = bool(fmt["strict"])
+    return {"type": "json_schema", "json_schema": json_schema}
+
+
 def _build_chat_request(
     payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
 ) -> ChatCompletionRequest:
@@ -17907,6 +18049,11 @@ def _build_chat_request(
                 chat_kwargs["reasoning_effort"] = "none"
             elif effort != "none":
                 chat_kwargs["reasoning_effort"] = effort
+
+    response_format = _responses_text_format(payload.text)
+    if response_format is not None:
+        # Lands in model_extra, where _extract_response_format reads it.
+        chat_kwargs["response_format"] = response_format
 
     return ChatCompletionRequest(**chat_kwargs)
 
@@ -19470,6 +19617,12 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "Cannot count tokens for messages containing audio.",
         )
+    # And video, whose frames llama-server samples at completion time.
+    if getattr(payload, "video_base64", None):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing video.",
+        )
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -19571,6 +19724,16 @@ async def chat_count_tokens(
                         auto_heal_tool_calls = _count_auto_heal,
                         enabled_tool_names = _count_history_gate,
                     ).strip()
+
+    # Nothing survived the resolution above, so the template would render its generation marker
+    # alone and the total would describe a conversation nobody has started (#8882). Decided here
+    # because only this side knows whether `--enable-tools` put schemas in an otherwise bare prompt,
+    # and the passthrough's own catalog renders with no message to carry it.
+    if not openai_messages and not openai_tools:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for an empty prompt.",
+        )
 
     # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
     # so omitting these prices the template in whatever mode the model was LOADED in.
@@ -21065,13 +21228,33 @@ def _nudge_retry_messages(
     )
 
 
-async def _anthropic_passthrough_retry_url(llama_backend, exc):
+def _is_lost_upstream_connection(exc) -> bool:
+    """True only for errors that mean the connection died, not that it was slow.
+
+    ``httpx.RequestError`` also covers ``TimeoutException`` (ConnectTimeout,
+    ReadTimeout, WriteTimeout, PoolTimeout), and a long generation on a HEALTHY
+    llama-server surfaces as ``ReadTimeout``. ``_respawn_if_dead`` reports a live
+    process healthy, so a respawn retry on a timeout resubmits the same prompt to
+    a server that is still decoding the first copy: double the wall clock and two
+    slots burnt. ``NetworkError`` (Connect/Read/Write/CloseError) plus
+    ``RemoteProtocolError`` (a FIN before the response line) are the dead-server
+    set, and they are exactly what ``_open_chat_stream_with_respawn_retry`` retries
+    on. RemoteProtocolError is a sibling of NetworkError, not a subclass, so both
+    have to be named.
+    """
+    return isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError))
+
+
+async def _passthrough_retry_url(llama_backend, exc):
     """Fresh upstream URL after respawning a dead llama-server, else None.
 
     A crashed server relaunches on a NEW ephemeral port, so a passthrough still
     holding the old base_url keeps failing until the next load. Mirrors the
     respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
     already scheduled its own recovery, or when nothing needed respawning.
+
+    Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post
+    to the same upstream route, and a crash strands whichever one is in use.
     """
     recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
     if recover is not None and recover(exc):
@@ -21231,7 +21414,7 @@ async def _anthropic_passthrough_stream(
             except httpx.ConnectError as exc:
                 # Nothing has streamed yet, so a respawned server can be retried once
                 # on its new port without duplicating output.
-                url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+                url = await _passthrough_retry_url(llama_backend, exc)
                 if url is None:
                     raise
                 req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
@@ -21397,7 +21580,7 @@ async def _anthropic_passthrough_non_streaming(
             # Nothing was returned yet, so retry once against the respawned server's
             # new port; the nudge retry below then reuses the same fresh URL.
             retry_url = (
-                await _anthropic_passthrough_retry_url(llama_backend, exc)
+                await _passthrough_retry_url(llama_backend, exc)
                 if isinstance(exc, httpx.ConnectError)
                 else None
             )
@@ -22283,6 +22466,9 @@ async def _openai_passthrough_stream_admitted(
         _truncate_budget = (
             _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
         )
+        # One respawn per request: a second unreachable upstream after a successful
+        # relaunch is a real failure, not a stale port.
+        _respawn_retried = False
 
         while True:
             try:
@@ -22309,7 +22495,31 @@ async def _openai_passthrough_stream_admitted(
                 resp = await send_task
                 send_task = None
             except httpx.RequestError as e:
-                # llama-server subprocess crashed / starting / unreachable.
+                # llama-server subprocess crashed / starting / unreachable. Nothing has
+                # streamed yet, so a respawned server can be retried once on its new
+                # ephemeral port without duplicating output, exactly as /v1/messages does.
+                # Without this an OpenAI-API client stays broken until the next explicit
+                # load, while an Anthropic-API client on the same backend recovers itself.
+                if not _respawn_retried and _is_lost_upstream_connection(e):
+                    _respawn_retried = True
+                    retry_url = await _passthrough_retry_url(llama_backend, e)
+                    if retry_url is not None:
+                        closed = False
+                        try:
+                            await _aclose_send_task(send_task)
+                            closed = True
+                        finally:
+                            # Only a retry that is actually going upstream keeps the slot.
+                            if not closed:
+                                _release_admission(admission_lease, _tracker)
+                        send_task = None
+                        target_url = retry_url
+                        # The relaunch minted a fresh --api-key, so the pre-crash
+                        # Authorization header would come back 401.
+                        upstream_headers = _openai_passthrough_upstream_headers(
+                            llama_backend = llama_backend
+                        )
+                        continue
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Nested so a cancel inside _aclose_send_task's wait cannot skip the closes.
@@ -22391,7 +22601,7 @@ async def _openai_passthrough_stream_admitted(
             disconnect_watcher = None
 
             nonlocal resp, send_task, first_token_deadline, _truncate_budget
-            nonlocal client
+            nonlocal client, target_url, upstream_headers, _respawn_retried
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -22568,6 +22778,78 @@ async def _openai_passthrough_stream_admitted(
                             try:
                                 resp = send_task.result()
                             except httpx.RequestError as e:
+                                # A crash while the request sat queued or prefilling lands
+                                # here, not in the pre-header handler: the 100 ms status
+                                # window closed long ago. Only SSE comments have been
+                                # emitted, so the same one-shot, connection-failure-only
+                                # recovery applies without duplicating model output.
+                                if not _respawn_retried and _is_lost_upstream_connection(e):
+                                    _respawn_retried = True
+                                    # The respawn replays a full load_model, which for a large
+                                    # GGUF outlasts by minutes the five second silence this
+                                    # very loop already treats as too long for a committed SSE
+                                    # response. Awaiting it inline would stop both keepalives
+                                    # and disconnect polling for the whole reload, so the
+                                    # client or proxy can drop the stream before the recovered
+                                    # request is ever submitted. Pump the same loop instead.
+                                    retry_task = asyncio.create_task(
+                                        _passthrough_retry_url(llama_backend, e)
+                                    )
+                                    respawn_cancelled = False
+                                    last_keepalive_at = time.monotonic()
+                                    while not retry_task.done():
+                                        done, _ = await asyncio.wait(
+                                            {retry_task},
+                                            timeout = min(
+                                                _STREAM_DISCONNECT_POLL_TIMEOUT_S,
+                                                _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
+                                            ),
+                                            return_when = asyncio.FIRST_COMPLETED,
+                                        )
+                                        if retry_task in done:
+                                            break
+                                        if await _preheader_cancelled(cancel_event, request):
+                                            respawn_cancelled = True
+                                            break
+                                        now = time.monotonic()
+                                        if (
+                                            now - last_keepalive_at
+                                            >= _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
+                                        ):
+                                            last_keepalive_at = now
+                                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                    if respawn_cancelled:
+                                        # The reload runs in a worker thread that cancel()
+                                        # cannot interrupt, and it is serialised and
+                                        # idempotent, so let it finish and drop its URL
+                                        # rather than leave the outcome unretrieved.
+                                        retry_task.add_done_callback(_discard_task_outcome)
+                                        api_monitor.finish(monitor_id, "cancelled")
+                                        return
+                                    retry_url = retry_task.result()
+                                    if retry_url is not None:
+                                        target_url = retry_url
+                                        upstream_headers = _openai_passthrough_upstream_headers(
+                                            llama_backend = llama_backend
+                                        )
+                                        send_task = asyncio.create_task(
+                                            _send_stream_with_preheader_cancel(
+                                                client,
+                                                client.build_request(
+                                                    "POST",
+                                                    target_url,
+                                                    json = body,
+                                                    headers = upstream_headers,
+                                                ),
+                                                cancel_event,
+                                                request = request,
+                                                mark_cancel_on_cancel = False,
+                                            )
+                                        )
+                                        first_token_deadline = (
+                                            time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                                        )
+                                        continue
                                 logger.error(
                                     "openai passthrough stream: upstream unreachable: %s", e
                                 )
@@ -23057,6 +23339,8 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_budget = (
         _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
     )
+    # One respawn per request, as on the streaming twin.
+    _respawn_retried = False
 
     async def _post(body_to_send):
         if cancel_event is None and request is None:
@@ -23113,9 +23397,22 @@ async def _openai_passthrough_non_streaming_upstream(
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except httpx.RequestError as e:
-            # llama-server subprocess crashed / starting / unreachable. Surface the
-            # same friendly message the sync chat path emits so operators don't see
-            # a bare 500 with no diagnostic.
+            # llama-server subprocess crashed / starting / unreachable. Nothing has been
+            # sent to the client yet, so retry once on the new port of a respawned server.
+            # The helper defers to an MTP fallback already in flight, so nothing respawns
+            # underneath it; the recovery call below stays for the paths it declines.
+            if not _respawn_retried and _is_lost_upstream_connection(e):
+                _respawn_retried = True
+                retry_url = await _passthrough_retry_url(llama_backend, e)
+                if retry_url is not None:
+                    target_url = retry_url
+                    # The relaunch minted a fresh --api-key; the pre-crash header 401s.
+                    upstream_headers = _openai_passthrough_upstream_headers(
+                        llama_backend = llama_backend
+                    )
+                    continue
+            # Surface the same friendly message the sync chat path emits so operators
+            # don't see a bare 500 with no diagnostic.
             logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
             get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)

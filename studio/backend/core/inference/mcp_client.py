@@ -155,6 +155,35 @@ def stdio_mcp_enabled() -> bool:
     return True
 
 
+def stdio_mcp_disabled_reason() -> str:
+    """User-facing reason local commands are off, mirroring stdio_mcp_enabled().
+
+    Telling a user whose gate is suspended by an active tunnel to set
+    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 would re-enable local command execution on
+    a published API, so the suspended cases must name their actual cause."""
+    from state.tool_policy import get_tool_policy
+    from utils.host_policy import loopback_default_active, remote_connector_active
+
+    if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1" and loopback_default_active():
+        if remote_connector_active():
+            return (
+                "Local commands are disabled while Remote Access is on, because the "
+                "server is reachable from outside this machine. Turn off Remote Access "
+                "to use local MCP servers, or use an http:// or https:// URL instead."
+            )
+        if get_tool_policy() is False:
+            return (
+                "Local commands are disabled because tools are disabled for this "
+                "server. Restart without --disable-tools, or use an http:// or "
+                "https:// URL instead."
+            )
+    return (
+        "Local commands aren't enabled on this server. To allow them, set "
+        "UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Unsloth, or use an "
+        "http:// or https:// URL instead."
+    )
+
+
 # Probe timeouts for discovering a server's tool list. OAuth needs minutes for
 # first-connect/expired-token browser sign-in; stdio allows for first-run
 # package download (e.g. `npx -y ...`); HTTP fails fast.

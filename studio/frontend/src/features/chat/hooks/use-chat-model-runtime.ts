@@ -80,10 +80,12 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   type CpuFallbackReason,
+  type MmprojFallbackReason,
   type InferenceStatusResponse,
   isMultimodalResponse,
 } from "../types/api";
@@ -220,6 +222,7 @@ function describeModel(model: {
   is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
@@ -250,6 +253,7 @@ function toChatModelSummary(model: {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -262,6 +266,7 @@ function toChatModelSummary(model: {
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
+    hasVideoInput: Boolean(model.has_video_input),
   };
 }
 
@@ -280,6 +285,7 @@ export function syncModelCapabilities(
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
+    has_video_input?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
@@ -290,6 +296,9 @@ export function syncModelCapabilities(
     isAudio: Boolean(resp.is_audio),
     audioType: resp.audio_type ?? null,
     hasAudioInput: Boolean(resp.has_audio_input),
+    // /api/models/list omits this for the active GGUF row, so without it the
+    // video adapter reads false after every load and status hydration.
+    hasVideoInput: Boolean(resp.has_video_input),
   };
   const idx = models.findIndex((m) => m.id === modelId);
   if (idx === -1) {
@@ -1046,6 +1055,7 @@ export function useChatModelRuntime() {
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
+      let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1525,8 +1535,11 @@ export function useChatModelRuntime() {
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
+
+              force_reload: forceReload,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
+            mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -1736,6 +1749,7 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              mmprojFallbackReason: loadResponse.mmproj_fallback_reason ?? null,
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
               activeLoadId: loadPath === modelId ? null : loadPath,
@@ -2201,13 +2215,16 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
-          const loadedTitle = cpuFallbackReason
-            ? `${toastDisplayName} loaded on CPU`
-            : `${toastDisplayName} loaded`;
-          const loadedDescription = cpuFallbackReason
-            ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-            : undefined;
-          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+          // Same composition as the auto-load path, through the same helper, so the
+          // two cannot describe an identical failure differently again.
+          const notice = loadFallbackNotice(
+            `${toastDisplayName} loaded`,
+            cpuFallbackReason,
+            mmprojFallbackReason,
+          );
+          const loadedTitle = notice.title;
+          const loadedDescription = notice.description;
+          const showLoadedToast = notice.degraded ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,

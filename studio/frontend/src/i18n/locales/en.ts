@@ -182,6 +182,8 @@ export const en = {
       closeAriaLabel: "Close settings",
       searchPlaceholder: "Search settings…",
       searchNoResults: "No settings found.",
+      panelFailed: "This section could not be loaded.",
+      panelReload: "Reload",
     },
     tabs: {
       general: "General",
@@ -194,8 +196,52 @@ export const en = {
       data: "Data",
       apiKeys: "API",
       agents: "Agents",
+      keyboardShortcuts: "Shortcuts",
       debugging: "Logs",
       about: "About",
+    },
+    keyboardShortcuts: {
+      title: "Keyboard shortcuts",
+      description:
+        "Change any shortcut, or clear one to free the chord for your browser or OS.",
+      searchPlaceholder: "Search shortcuts…",
+      noResults: "No shortcuts match that search.",
+      unassigned: "Unassigned",
+      recording: "Press keys…",
+      recordingHint: "Press the new chord, or Esc to cancel.",
+      needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
+      conflict: "Also used by another shortcut",
+      conflictShadowed: "Another shortcut has this chord and runs instead",
+      edit: "Change shortcut",
+      clear: "Remove shortcut",
+      reset: "Restore default",
+      resetAll: "Reset all to defaults",
+      groups: {
+        general: "General",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "New chat",
+          description: "Start a new chat",
+        },
+        searchChats: {
+          label: "Search chats",
+          description: "Open the chat search dialog",
+        },
+        toggleSidebar: {
+          label: "Toggle sidebar",
+          description: "Show or hide the sidebar",
+        },
+        openSettings: {
+          label: "Open settings",
+          description: "Open the settings dialog",
+        },
+        openKeyboardShortcuts: {
+          label: "Keyboard shortcuts",
+          description: "Open this shortcuts list",
+        },
+      },
     },
     debugging: {
       logSection: "Log file",
@@ -357,6 +403,7 @@ export const en = {
         modelLabel: "TTS model",
         modelDescription:
           "Load an audio model from the model selector (e.g. Orpheus TTS)",
+        openAudioAction: "Open Audio",
         voiceLabel: "Voice",
         voiceDescription: "Best voices on this device",
         speedLabel: "Speed",
@@ -366,6 +413,7 @@ export const en = {
         previewDescription: "Play a short sample",
         previewFailed: "TTS preview failed",
         previewAction: "Preview",
+        preparingAction: "Generating…",
         stopAction: "Stop",
         ttsLabel: "Text to speech",
         notSupported: "Not supported in this browser",
@@ -1104,6 +1152,9 @@ export const en = {
       archivedVideos: "Archived videos",
       archivedVideosDescription: "View and manage videos you have archived.",
       manageAction: "Manage",
+      manageChats: "Manage chats",
+      manageChatsDescription:
+        "Select multiple chats to move, pin, archive, export, or delete.",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",
       exportedOneArchivedChat: "Exported 1 archived chat",

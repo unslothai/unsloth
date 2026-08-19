@@ -1574,6 +1574,23 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
+def _inference_active() -> bool:
+    """True while at least one generation is in flight.
+
+    Published so the desktop health watchdog can tell a backend that is busy serving from
+    one that has died: a saturated host can stall the event loop past a probe budget, and
+    killing there ends a response the user is still waiting on.
+
+    A len() under a threading.Lock held only for that read, so the route stays cheap.
+    Failures report "not busy", the same answer as before this field existed.
+    """
+    try:
+        from state import active_generations
+        return active_generations.count() > 0
+    except Exception:
+        return False
+
+
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
@@ -1599,6 +1616,12 @@ async def liveness_check():
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():
         alive["torch_warm_in_progress"] = True
+    # Startup is not the only window where a healthy backend can miss probes: an
+    # oversubscribed host generating on every slot stalls this loop the same way, long
+    # after the warm is over. The watchdog widens its failure budget on this marker
+    # rather than ending a stream that is still producing tokens.
+    if _inference_active():
+        alive["inference_active"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
         if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -1650,6 +1673,10 @@ async def health_check(request: Request):
     # to have liveness, so the warm marker has to reach it by the same path.
     if _torch_warm_in_progress():
         base["torch_warm_in_progress"] = True
+    # Lockstep with /api/liveness for the same reason: the fallback route has to carry the
+    # busy marker too, or an older backend loses the widened budget.
+    if _inference_active():
+        base["inference_active"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1683,6 +1710,12 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
+    # Alongside device_type, not folded into it: "mac" is every Darwin host, and an Intel
+    # Mac with a discrete GPU spills to system RAM like a PC while Apple Silicon has one
+    # pool and nowhere to spill. The UI words its memory warnings from this. Same gate the
+    # Metal context budget uses, and a pure platform check, so a health poll pays nothing.
+    from utils.hardware import is_apple_silicon
+
     authed = {
         **base,
         "version": UNSLOTH_VERSION,
@@ -1703,6 +1736,7 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        authed["apple_silicon"] = is_apple_silicon()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
@@ -2283,13 +2317,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_remote_frontend_request(scope, app_state) -> bool:
+    """True for a request the desktop backend may answer with its packaged web UI.
+
+    Two ways in, both identified by the connection itself rather than a client
+    header the caller controls: Cloudflare's own edge, or one of the sockets the
+    runtime LAN listener bound (Settings > LAN access).
+    """
+    from lan_access import request_on_lan_listener
+    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+
+
 class _TunnelOnlyFrontend:
     def __init__(self, frontend_app, app_state):
         self.frontend_app = frontend_app
         self.app_state = app_state
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+        if scope["type"] != "http" or _is_remote_frontend_request(scope, self.app_state):
             await self.frontend_app(scope, receive, send)
             return
         await Response(status_code = 404)(scope, receive, send)
@@ -2301,7 +2346,11 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional)"""
+    """Mount frontend static files (optional).
+
+    ``tunnel_only`` restricts the mount to remote callers: the Cloudflare edge, or
+    a socket the runtime LAN listener bound. See :func:`_is_remote_frontend_request`.
+    """
     if not build_path.exists():
         return False
 
@@ -2317,7 +2366,7 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
 
     def _frontend_request_allowed(request: Request) -> bool:
-        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
+        return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()

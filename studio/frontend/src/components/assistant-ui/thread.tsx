@@ -79,11 +79,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  CHAT_HISTORY_UPDATED_EVENT,
-  forkChatThread,
-  getForkCount,
-} from "@/features/chat/api/chat-api";
+import { forkChatThread } from "@/features/chat/api/chat-api";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -184,6 +180,8 @@ import {
   type PromptQueueUIItemStatus,
   type PromptQueueUIState,
   usePromptQueueUI,
+  forkCountFor,
+  subscribeForkCounts,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -287,6 +285,7 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type FocusEvent as ReactFocusEvent,
   type ReactNode,
   type RefObject,
   Fragment,
@@ -298,6 +297,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
@@ -1512,6 +1512,7 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
+  useThreadForkCounts();
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -1727,7 +1728,10 @@ export const Thread: FC<{
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : "pt-[calc(var(--studio-content-top-inset,0px)+48px)]",
+                : // + the chat-model notice, which is an opaque absolute bar
+                  // directly under the header. 0px whenever it is not showing,
+                  // so every other surface keeps the padding it had.
+                  "pt-[calc(var(--studio-content-top-inset,0px)+48px+var(--studio-chat-notice-height,0px))]",
             )}
           >
             {!hideWelcome && (
@@ -2438,6 +2442,17 @@ const Composer: FC<{
   );
   const [materializingDroppedAudio, setMaterializingDroppedAudio] =
     useState(false);
+  const hasPendingVideoAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingVideoAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  const registeringVideoDrops = useNativeIntentStore(
+    (s) => s.registeringVideoDrops > 0,
+  );
+  const [materializingDroppedVideo, setMaterializingDroppedVideo] =
+    useState(false);
   // A parked send must not fire on a failed drop: the user is owed the toast and
   // their text, not a send of the text alone. Assigned below, once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
@@ -2464,6 +2479,16 @@ const Composer: FC<{
     seenAudioDropFailuresRef.current = audioDropFailures;
     cancelQueuedSendRef.current?.();
   }, [audioDropFailures]);
+  const videoDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.videoDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
+  const seenVideoDropFailuresRef = useRef(videoDropFailures);
+  // Cancel the parked send before `endVideoDropRegistration` reopens the gate.
+  useEffect(() => {
+    if (seenVideoDropFailuresRef.current === videoDropFailures) return;
+    seenVideoDropFailuresRef.current = videoDropFailures;
+    cancelQueuedSendRef.current?.();
+  }, [videoDropFailures]);
   // Registering and reading a dropped clip is async, so hold the send gate:
   // the composer sees nothing until `addAttachment` lands.
   useEffect(() => {
@@ -2577,6 +2602,123 @@ const Composer: FC<{
     return () => {
       disposed = true;
       setMaterializingDroppedAudio(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
+
+  // Same drain as audio, one queue over: one clip per message, and the send
+  // gate has to hold across the read either way.
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimVideoAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    // A re-key follows the same composer; a thread switch parks the clip back.
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    // A remount hides the new key, so tag the batch; the next instance claims it.
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addVideoAttachments(key, intents);
+      store.noteVideoDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingVideo = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedVideo(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeVideoAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped video", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              // Do not let a send parked on this clip go out as bare text.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            // The read is async; a chat switch in that window must not steal the clip.
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              // Chat-wide, not per file (no video mmproj, no ffmpeg, too large,
+              // already attached), and every adapter path toasted: stop quietly.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              return;
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        // A drain for a target already left must not touch the flag; cleanup
+        // cleared it, and the live target may have set it again.
+        if (!disposed) {
+          // The early returns requeue mid-batch, and a drop can land while
+          // `draining` gated the subscription.
+          const pending =
+            useNativeIntentStore.getState().pendingVideoAttachments[targetKey]
+              ?.length ?? 0;
+          // Only the instance still owning this composer re-drains; otherwise
+          // the batch stays parked rather than looping here forever.
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingVideo();
+          } else {
+            setMaterializingDroppedVideo(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // A predecessor's requeue can land after setup, so keep watching.
+      const orphaned = Object.entries(state.videoDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimVideoAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if ((state.pendingVideoAttachments[targetKey]?.length ?? 0) > 0) {
+        void drainPendingVideo();
+      }
+    });
+    void drainPendingVideo();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedVideo(false);
       unsubscribe();
     };
   }, [nativeAttachmentTargetKey, aui]);
@@ -2722,6 +2864,10 @@ const Composer: FC<{
     registeringAudioDrops ||
     hasPendingAudioAttachments ||
     materializingDroppedAudio;
+  const hasMaterializingVideoAttachments =
+    registeringVideoDrops ||
+    hasPendingVideoAttachments ||
+    materializingDroppedVideo;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2761,6 +2907,7 @@ const Composer: FC<{
     !hasPendingAttachments &&
     !hasMaterializingImageAttachments &&
     !hasMaterializingAudioAttachments &&
+    !hasMaterializingVideoAttachments &&
     !disabled &&
     !overlay;
   const canQueueCurrentPrompt =
@@ -3594,7 +3741,14 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" | "audio" | "settings" = "indexing") => {
+    (
+      waitingOn:
+        | "indexing"
+        | "images"
+        | "audio"
+        | "video"
+        | "settings" = "indexing",
+    ) => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
@@ -3603,9 +3757,11 @@ const Composer: FC<{
           ? "Waiting for dropped images"
           : waitingOn === "audio"
             ? "Waiting for dropped audio"
-            : waitingOn === "settings"
-              ? "Loading this chat's settings"
-              : "Waiting for documents to finish indexing";
+            : waitingOn === "video"
+              ? "Waiting for dropped video"
+              : waitingOn === "settings"
+                ? "Loading this chat's settings"
+                : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once they are ready.",
         duration: Infinity,
@@ -3621,19 +3777,30 @@ const Composer: FC<{
     if (
       disabled ||
       overlay ||
-      (!hasMaterializingImageAttachments && !hasMaterializingAudioAttachments) ||
+      (!hasMaterializingImageAttachments &&
+        !hasMaterializingAudioAttachments &&
+        !hasMaterializingVideoAttachments) ||
       !hasSendableContent ||
       isComposingRef.current ||
       hasPendingAttachments
     ) {
       return;
     }
-    enqueueSend(hasMaterializingImageAttachments ? "images" : "audio");
+    // Name what is actually being waited on, or a parked video drop reports
+    // itself as audio.
+    enqueueSend(
+      hasMaterializingImageAttachments
+        ? "images"
+        : hasMaterializingAudioAttachments
+          ? "audio"
+          : "video",
+    );
   }, [
     disabled,
     overlay,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
+    hasMaterializingVideoAttachments,
     hasSendableContent,
     hasPendingAttachments,
     isComposingRef,
@@ -3646,9 +3813,11 @@ const Composer: FC<{
       isComposingRef.current ||
       hasPendingAttachments ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments,
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments,
     [
       hasMaterializingAudioAttachments,
+      hasMaterializingVideoAttachments,
       hasMaterializingImageAttachments,
       hasPendingAttachments,
       hasSendableContent,
@@ -3752,7 +3921,8 @@ const Composer: FC<{
       indexingActive ||
       threadScopedSettingsPending ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments
     ) {
       return;
     }
@@ -3789,6 +3959,7 @@ const Composer: FC<{
     threadScopedSettingsPending,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
+    hasMaterializingVideoAttachments,
     aui,
     canQueueCurrentPrompt,
     canQueuePastedTextPrompt,
@@ -3850,7 +4021,8 @@ const Composer: FC<{
     uploading:
       hasPendingAttachments ||
       hasMaterializingImageAttachments ||
-      hasMaterializingAudioAttachments,
+      hasMaterializingAudioAttachments ||
+      hasMaterializingVideoAttachments,
     researchActive: isResearchActive,
     runActive: threadIsRunning || promptQueueActive,
     queueDisabled: Boolean(disableQueue),
@@ -6453,6 +6625,152 @@ const DiffusionCanvas: FC = () => {
 };
 
 /**
+ * Mounts an autohidden action bar while focus is inside the message, the way hovering it does.
+ *
+ * `autohide="not-last"` UNMOUNTS every bar but the newest reply's, so Copy, Edit, Refresh,
+ * Delete, Read aloud and More leave the tab order on older messages and a keyboard or screen
+ * reader user has no way back: `:focus-within` in CSS cannot help, there is nothing to style.
+ * The reveal has to be JS, and it drives `message.setIsHovering`, the same flag the library's
+ * own `mouseenter`/`mouseleave` (MessagePrimitive.Root) writes and the only input to
+ * `useActionBarFloatStatus` besides the More menu's interaction lock. Reusing it rather than
+ * layering a second visibility source is what keeps the two from disagreeing.
+ *
+ * One flag, two writers, so the two clobber each other unless this hook covers both crossings:
+ *   - pointer leaves while focus is inside (a Tab that scrolls the message under a parked
+ *     cursor does exactly this): the library clears the flag, which would unmount the element
+ *     that currently has focus. `reassert` below sets it back inside the same event.
+ *   - focus leaves while the pointer is still over the message: clearing would unmount a bar
+ *     the user is pointing at, and no second `mouseenter` is coming. The `:hover` test defers
+ *     to the library's own `mouseleave` instead.
+ */
+function useActionBarFocusReveal() {
+  const aui = useAui();
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const focusWithinRef = useRef(false);
+  const clearFrameRef = useRef<number | null>(null);
+
+  // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
+  // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
+  // hand focus back to lives in that bar, so a popup this message owns counts as engaged.
+  // Scoped to the action bar, NOT to every expanded descendant. Reasoning and tool cards are
+  // Radix CollapsibleTriggers and render aria-expanded="true" while open, which is the resting
+  // state of a message whose tool output the reader has expanded. An unscoped lookup treated
+  // those as an open popup, so `decide` rescheduled itself every frame for as long as the
+  // disclosure stayed open, held focusWithinRef and the synthetic hover set, and left the bar
+  // mounted: a per-frame DOM query per such message, which is the slowdown this branch removes.
+  const openPopupTrigger = useCallback(
+    () =>
+      rootRef.current?.querySelector(
+        '.aui-assistant-action-bar-root [aria-expanded="true"]',
+      ) ?? null,
+    [],
+  );
+
+  const isEngaged = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return false;
+    const active = document.activeElement;
+    if (active && el.contains(active)) return true;
+    return openPopupTrigger() !== null;
+  }, [openPopupTrigger]);
+
+  const cancelPendingClear = useCallback(() => {
+    if (clearFrameRef.current !== null) {
+      cancelAnimationFrame(clearFrameRef.current);
+      clearFrameRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Decide, a frame from now, whether focus has really left, and keep asking until it has.
+   *
+   * Deferred rather than read off `relatedTarget`: that is null both for focus going to the
+   * browser chrome and for focus entering a portal, and it says nothing at all when the
+   * focused element is REMOVED, which is how a menu closes and which Chrome reports with no
+   * focusout event whatsoever. Reading `document.activeElement` a frame later answers all of
+   * them. Clearing late costs a frame of a mounted bar; clearing early destroys the element
+   * the user is on, so late is the safe direction.
+   */
+  const scheduleClear = useCallback(
+    (restart: boolean) => {
+      if (clearFrameRef.current !== null) {
+        if (!restart) return;
+        cancelAnimationFrame(clearFrameRef.current);
+      }
+      const decide = () => {
+        clearFrameRef.current = null;
+        const el = rootRef.current;
+        if (!el || !focusWithinRef.current) return;
+        const active = document.activeElement;
+        if (active && el.contains(active)) return;
+        if (openPopupTrigger()) {
+          // Focus is in this message's own portaled menu, whose interaction lock is holding
+          // the bar open anyway. Deciding now would be wrong and deciding never would pin the
+          // bar open for good, so ask again next frame; the loop lasts only as long as the
+          // menu is open on this one message.
+          clearFrameRef.current = requestAnimationFrame(decide);
+          return;
+        }
+        focusWithinRef.current = false;
+        if (!el.matches(":hover")) {
+          aui.message().setIsHovering(false);
+        }
+      };
+      clearFrameRef.current = requestAnimationFrame(decide);
+    },
+    [aui, openPopupTrigger],
+  );
+
+  // onFocus/onBlur on a container are focusin/focusout in React, so they give focus-within.
+  const handleFocus = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>) => {
+      const el = rootRef.current;
+      const target = event.target as Node | null;
+      if (el && target && !el.contains(target)) {
+        // React bubbles focus events out of PORTALS along the React tree, so this is this
+        // message's own menu, rendered into document.body. Focus is not in the subtree, so do
+        // not cancel the watchdog -- the menu will take focus with it when it unmounts, and
+        // that removal fires no focusout to wake us up again.
+        scheduleClear(false);
+        return;
+      }
+      cancelPendingClear();
+      if (focusWithinRef.current) return;
+      focusWithinRef.current = true;
+      aui.message().setIsHovering(true);
+    },
+    [aui, cancelPendingClear, scheduleClear],
+  );
+
+  const handleBlur = useCallback(() => {
+    if (!focusWithinRef.current) return;
+    scheduleClear(true);
+  }, [scheduleClear]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    // From an effect on purpose: MessagePrimitive.Root binds its own mouseleave from a ref
+    // callback, which commits before effects run, so this listener is registered second and
+    // runs second on the same element. Both writes land in one dispatch, the store settles on
+    // `true`, and React never renders the intermediate `false` -- so the bar does not unmount
+    // and the focused control is not destroyed under the user.
+    const reassert = () => {
+      if (focusWithinRef.current && isEngaged()) {
+        aui.message().setIsHovering(true);
+      }
+    };
+    el.addEventListener("mouseleave", reassert);
+    return () => {
+      el.removeEventListener("mouseleave", reassert);
+      cancelPendingClear();
+    };
+  }, [aui, isEngaged, cancelPendingClear]);
+
+  return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
+}
+
+/**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
  * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
@@ -6461,6 +6779,7 @@ const DiffusionCanvas: FC = () => {
  */
 const AssistantMessage: FC = () => {
   const aui = useAui();
+  const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
   const researchRunId = useAuiState(({ message }) => {
@@ -6531,6 +6850,20 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
+      // The message itself is the tab stop that lets the reveal below fire. Without it, a reply
+      // whose body is plain prose -- no link, no image, no code fence and so not even
+      // Streamdown's per-fence Copy button -- contains nothing focusable once `autohide` has
+      // unmounted its action bar, and Tab has no way into the message at all: Copy, Edit,
+      // Delete and More are unreachable for the whole thread except its newest reply.
+      // A tabIndex rather than a visually hidden button on purpose: it adds no DOM node (this
+      // PR exists to cut per-message weight) and it draws nothing at rest. The app's own
+      // `:focus-visible` rule in index.css gives it the same soft 1px keyboard indicator every
+      // other focusable container gets, and `:focus-visible` means a mouse click on a reply
+      // still draws nothing.
+      tabIndex={0}
+      ref={focusReveal.ref}
+      onFocus={focusReveal.onFocus}
+      onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
@@ -6590,41 +6923,75 @@ const AssistantMessage: FC = () => {
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
+
+      {/*
+        The same reveal, for the other traversal direction.
+
+        The tabIndex on the root above only works going FORWARD. A container is reached before its
+        own descendants, so Shift+Tab arriving from the message below lands on the last tabbable
+        thing in this message -- and with the bar unmounted that is the root, which sits BEFORE
+        the bar in DOM order. Focusing it mounts the controls and then the next Shift+Tab steps
+        past them to the previous message, so Copy, Edit, Delete and More are reachable going
+        forward and unreachable going backward.
+
+        A sentinel AFTER the bar is what makes the backward pass land inside the message: focus
+        stops here, the bar mounts, and the next Shift+Tab goes into the last control rather than
+        out of the message. Deliberately not a focus redirect to that control, which would trap
+        the forward pass in a loop between the last button and this element.
+
+        A span with no content rather than a visually hidden button: it is one node with no text,
+        which matters in a PR whose point is per-message weight, and it draws nothing at rest for
+        the same :focus-visible reason as the root.
+
+        No onFocus/onBlur of its own: React's onFocus is focusin and bubbles, so focus landing
+        here already reaches the root's handler and mounts the bar. Duplicating them would run
+        the same handler twice per focus change for no effect. No role either -- it performs no
+        action, so labelling it as a button would misdescribe it; the aria-label is what stops it
+        being an unannounced stop for a screen reader.
+      */}
+      <span
+        className="aui-assistant-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
     </MessagePrimitive.Root>
   );
 };
 
 const COPY_RESET_MS = 2000;
 
-const ForkCountBadge: FC = () => {
-  const aui = useAui();
-  const messageId = useAuiState(({ message }) => message.id);
-  const [count, setCount] = useState(0);
-
+/**
+ * One fork-count subscription for as long as the thread is on screen.
+ *
+ * The badges below sit inside action bars that autohide, so at rest at most the newest reply
+ * has one, and none at all while the thread is running or while its last message is a prompt.
+ * Left to them, the last badge leaving would drop the thread's counts and the next hover would
+ * fetch them all again -- one whole-thread request per message the pointer crosses, with the
+ * badge arriving a round trip after the bar it sits in.
+ */
+const useThreadForkCounts = (): void => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
   useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      const remoteId = aui.threadListItem().getState().remoteId;
-      if (!remoteId) {
-        if (!cancelled) setCount(0);
-        return;
-      }
-      void getForkCount(remoteId, messageId)
-        .then((n) => {
-          if (!cancelled) setCount(n);
-        })
-        .catch(() => {
-          /* swallow: badge is non-critical */
-        });
-    };
-    refresh();
-    const handler = () => refresh();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    };
-  }, [aui, messageId]);
+    if (!remoteId) return;
+    return subscribeForkCounts(remoteId, () => {});
+  }, [remoteId]);
+};
+
+const ForkCountBadge: FC = () => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
+  const messageId = useAuiState(({ message }) => message.id);
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      remoteId ? subscribeForkCounts(remoteId, onChange) : () => {},
+    [remoteId],
+  );
+  const getSnapshot = useCallback(
+    () => (remoteId ? forkCountFor(remoteId, messageId) : 0),
+    [remoteId, messageId],
+  );
+  const count = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   if (count <= 0) return null;
   return (
@@ -6936,6 +7303,21 @@ const AssistantActionBar: FC = () => {
     <>
       <ActionBarPrimitive.Root
         hideWhenRunning={!speaking}
+        // Unmounts the bar on every message that is not hovered, as the user bar already does.
+        // Mounted, each one holds ~8 tooltips subscribed to the global modal-layer store, so
+        // every menu open fanned out across the whole thread.
+        //
+        // "not-last", not "always": an unmounted bar is out of the tab order too, and these are
+        // the only Copy, Refresh, Read aloud and More controls a message has. The newest reply
+        // keeps its bar, so a keyboard user still reaches the message they are acting on, and
+        // the other N-1 still go: 8 tooltip subscriptions on a 500-message thread instead of
+        // ~250. "never" while speaking because this bar carries the only Stop reading control,
+        // which neither hover nor a later reply must take away.
+        //
+        // The older N-1 are deferred, not lost: useActionBarFocusReveal on the message root
+        // remounts a bar when focus enters that message, so tabbing brings back what hovering
+        // brings back and the controls return to the accessibility tree with it.
+        autohide={speaking ? "never" : "not-last"}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
@@ -6971,7 +7353,10 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        <ActionBarMorePrimitive.Root>
+        {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
+            that is an INHERITED property, so every open invalidates style for the whole
+            document. On a long thread that recalc is the bulk of the open+close cost. */}
+        <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
               tooltip="More"

@@ -8,6 +8,9 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+// Deep import, not the feature barrel: the barrel pulls in SettingsDialog,
+// which renders sidebar-aware panels and would close an import cycle.
+import { useShortcut } from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
@@ -40,7 +43,6 @@ const noop = () => {}
 
 const SIDEBAR_WIDTH = `${SIDEBAR_WIDTH_DEFAULT}px`
 const SIDEBAR_WIDTH_ICON = "3rem"
-const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
@@ -146,21 +148,9 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Adds a keyboard shortcut to toggle the sidebar.
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault()
-        toggleSidebar()
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [toggleSidebar])
+  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind
+  // or clear it.
+  useShortcut("toggleSidebar", toggleSidebar)
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.

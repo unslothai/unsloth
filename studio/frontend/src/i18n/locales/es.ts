@@ -185,6 +185,8 @@ export const es = {
       closeAriaLabel: "Cerrar configuración",
       searchPlaceholder: "Buscar en la configuración…",
       searchNoResults: "No se encontró ninguna opción.",
+      panelFailed: "No se pudo cargar esta sección.",
+      panelReload: "Recargar",
     },
     tabs: {
       general: "General",
@@ -199,6 +201,50 @@ export const es = {
       agents: "Agentes",
       debugging: "Registros",
       voice: "Voz",
+      keyboardShortcuts: "Atajos",
+    },
+    keyboardShortcuts: {
+      title: "Atajos de teclado",
+      description:
+        "Cambia cualquier atajo, o bórralo para liberar la combinación para el navegador o el sistema.",
+      searchPlaceholder: "Buscar atajos…",
+      noResults: "Ningún atajo coincide con esa búsqueda.",
+      unassigned: "Sin asignar",
+      recording: "Pulsa las teclas…",
+      recordingHint: "Pulsa la nueva combinación, o Esc para cancelar.",
+      needsModifier: "Añade ⌘, Ctrl o Alt. Una tecla suelta se tragaría lo que escribes.",
+      conflict: "También lo usa otro atajo",
+      conflictShadowed: "Otro atajo tiene esta combinación y se ejecuta en lugar de este",
+      edit: "Cambiar atajo",
+      clear: "Quitar atajo",
+      reset: "Restaurar el valor predeterminado",
+      resetAll: "Restablecer todo",
+      groups: {
+        general: "General",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Nuevo chat",
+          description: "Iniciar un chat nuevo",
+        },
+        searchChats: {
+          label: "Buscar chats",
+          description: "Abrir el diálogo de búsqueda de chats",
+        },
+        toggleSidebar: {
+          label: "Alternar barra lateral",
+          description: "Mostrar u ocultar la barra lateral",
+        },
+        openSettings: {
+          label: "Abrir ajustes",
+          description: "Abrir el diálogo de ajustes",
+        },
+        openKeyboardShortcuts: {
+          label: "Atajos de teclado",
+          description: "Abrir esta lista de atajos",
+        },
+      },
     },
     debugging: {
       logSection: "Archivo de registro",
@@ -364,6 +410,7 @@ export const es = {
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carga un modelo de audio desde el selector de modelos (por ejemplo, Orpheus TTS)",
+        openAudioAction: "Abrir Audio",
         voiceLabel: "Voz",
         voiceDescription: "Las mejores voces de este dispositivo",
         speedLabel: "Velocidad",
@@ -372,6 +419,7 @@ export const es = {
         previewLabel: "Escuchar la voz",
         previewDescription: "Reproducir una muestra corta",
         previewAction: "Escuchar",
+        preparingAction: "Generando…",
         previewFailed: "No se pudo reproducir la muestra de TTS",
         stopAction: "Detener",
         ttsLabel: "Texto a voz",
@@ -1138,6 +1186,9 @@ export const es = {
       archivedVideos: "Vídeos archivados",
       archivedVideosDescription: "Consulta y gestiona los vídeos que has archivado.",
       manageAction: "Gestionar",
+      manageChats: "Gestionar chats",
+      manageChatsDescription:
+        "Selecciona varios chats para moverlos, fijarlos, archivarlos, exportarlos o eliminarlos.",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
       exportedOneArchivedChat: "Se exportó 1 chat archivado",

@@ -3,9 +3,12 @@
 
 import asyncio
 import importlib.util
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 
 def _seed_route_source() -> str:
@@ -221,3 +224,159 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
+
+
+# A desktop drop names a local file of any size, so the cap has to be enforced
+# on its stat. Reading first let a multi-gigabyte drop into backend memory
+# before the 413 (#9036).
+def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    huge = tmp_path / "corpus.txt"
+    huge.write_bytes(b"x" * 64)
+
+    reads: list[str] = []
+    real_open = Path.open
+
+    def tracking_open(self, *args, **kwargs):
+        reads.append(self.name)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES", 32)
+    monkeypatch.setattr(
+        seed_route,
+        "verify_native_path_lease",
+        lambda *a, **k: SimpleNamespace(canonical_path = huge),
+        raising = False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.native_path_leases",
+        SimpleNamespace(
+            NativePathLeaseError = RuntimeError,
+            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = huge),
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
+        )
+    assert excinfo.value.status_code == 413
+    assert reads == [], "the file was opened before the size check"
+
+
+# The block's remaining budget bounds the read too, so a file that grew between
+# the stat and the read cannot slip past it.
+def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    dropped = tmp_path / "notes.txt"
+    dropped.write_bytes(b"y" * 64)
+
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 16)
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.native_path_leases",
+        SimpleNamespace(
+            NativePathLeaseError = RuntimeError,
+            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = dropped),
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
+        )
+    assert excinfo.value.status_code == 413
+
+
+class _BlockPlugin:
+    """Meta path finder making the optional seed plugin look uninstalled."""
+
+    def __init__(self, name: str = "data_designer_unstructured_seed"):
+        self.name = name
+        self.attempts = 0
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname == self.name or fullname.startswith(self.name + "."):
+            self.attempts += 1
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
+        return None
+
+
+def _without_plugin(monkeypatch, seed_route):
+    import sys
+
+    blocker = _BlockPlugin()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+    for name in [m for m in sys.modules if m.split(".")[0] == blocker.name]:
+        monkeypatch.delitem(sys.modules, name)
+    seed_route._CHUNKING = None
+    return blocker
+
+
+def test_unstructured_preview_reports_unavailable_without_the_plugin(monkeypatch, tmp_path):
+    """Deferring the plugin import must not change what a missing plugin looks like."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+
+    assert seed_route._chunking() is None
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        seed_route._read_preview_rows_from_unstructured_file(
+            path = tmp_path / "a.txt", preview_size = 5, chunk_size = None, chunk_overlap = None
+        )
+    assert exc.value.status_code == 500
+    assert "Unstructured seed support not available" in exc.value.detail
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        seed_route._read_preview_rows_from_multi_files(
+            block_id = "block",
+            file_ids = ["a"],
+            file_names = ["a.txt"],
+            preview_size = 5,
+            chunk_size = None,
+            chunk_overlap = None,
+        )
+    assert exc.value.status_code == 500
+    assert "Unstructured seed support not available" in exc.value.detail
+
+
+def test_missing_plugin_is_probed_once(monkeypatch, tmp_path):
+    """A failed probe is remembered, so previews do not retry the import every time."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    blocker = _without_plugin(monkeypatch, seed_route)
+
+    assert seed_route._chunking() is None
+    assert seed_route._chunking() is None
+    assert blocker.attempts == 1
+
+
+def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_path):
+    """normalize_unstructured_text lives in the plugin; without it raw text stands."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+    source = tmp_path / "notes.txt"
+    source.write_text("a\n\n\n\nb", encoding = "utf-8")
+
+    # The plugin is what collapses the run of blank lines.
+    assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
+
+
+def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_path):
+    """With the plugin installed the same call sites still go through it."""
+    pytest.importorskip("data_designer_unstructured_seed")
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    seed_route._CHUNKING = None
+
+    chunking = seed_route._chunking()
+    assert chunking is not None
+    assert chunking.resolve_chunking(0, 0)[0] == 1
+    source = tmp_path / "notes.txt"
+    source.write_text("a\n\n\n\nb", encoding = "utf-8")
+    assert seed_route._extract_text_from_file(source, ".txt") == "a\n\nb"

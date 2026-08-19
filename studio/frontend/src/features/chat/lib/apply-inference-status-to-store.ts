@@ -100,6 +100,7 @@ function ensureActiveModelInStoreList(
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
+    hasVideoInput: status.has_video_input ?? false,
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
@@ -367,6 +368,7 @@ export function applyActiveModelStatusToStore(
     loadedIsDiffusion: status.is_diffusion ?? false,
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
     // The spec / KV seeds share the GPU-fields reseed mechanism below: a
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"

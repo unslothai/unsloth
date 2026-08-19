@@ -188,12 +188,15 @@ async def download_dataset_response(
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        # Pollable when rejected by this repo's own in-flight job; an
-        # in-progress delete leaves no job, so flag it via ``adoptable``.
+        # Pollable when rejected by this repo's own in-flight job, and that is
+        # also the only case that attached to anything; an in-progress delete
+        # leaves no job, so both come from ``adoptable``.
+        adoptable = _registry.adoptable(key)
         return {
             "repo_id": repo_id,
             "state": claim_state,
-            "accepted": _registry.adoptable(key),
+            "accepted": adoptable,
+            "attached": adoptable,
             "generation": generation,
             # An adopted job keeps the transport it started on, so report it
             # rather than let the caller assume the one it asked for.
@@ -234,6 +237,7 @@ async def download_dataset_response(
         "repo_id": repo_id,
         "state": state,
         "accepted": True,
+        "attached": False,
         "generation": generation,
         # See models: the resolved transport, which a downgrade can make
         # different from the one requested.
