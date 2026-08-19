@@ -325,3 +325,43 @@ def test_client_does_not_touch_env_for_a_python_server(managed_node, monkeypatch
     monkeypatch.setenv("PATH", "/usr/bin")
     client = mcp_client._client("python -m my_server", {"API_KEY": "sk-1"})
     assert client.transport.env == {"API_KEY": "sk-1"}
+
+
+def test_windows_npx_sibling_runtime_is_the_one_validated(
+    managed_node_install, monkeypatch, tmp_path
+):
+    """npx.cmd runs the node.exe beside it, so that runtime decides, not PATH order."""
+    good = tmp_path / "good"
+    good.mkdir()
+    _make_executable(good, "node")
+    old = tmp_path / "old"
+    old.mkdir()
+    _make_executable(old, "npx")
+    (old / "node.exe").write_text("")
+    monkeypatch.setattr(node_runtime, "_IS_WINDOWS", True)
+    checked = []
+    monkeypatch.setattr(
+        node_runtime,
+        "_node_version_ok",
+        lambda executable: checked.append(str(executable))
+        or not str(executable).startswith(str(old)),
+    )
+    configured = f"{good}{os.pathsep}{old}"
+    result = node_runtime.path_with_managed_node(configured)
+    assert any(c.endswith("node.exe") for c in checked), checked
+    assert result == f"{managed_node_install}{os.pathsep}{configured}"
+
+
+def test_posix_split_layout_still_trusts_the_path_node(
+    managed_node_install, monkeypatch, tmp_path
+):
+    """On POSIX npx is a shebang script resolving node via PATH, so a split is fine."""
+    good = tmp_path / "good"
+    good.mkdir()
+    _make_executable(good, "node")
+    other = tmp_path / "other"
+    other.mkdir()
+    _make_executable(other, "npx")
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
+    configured = f"{good}{os.pathsep}{other}"
+    assert node_runtime.path_with_managed_node(configured) == configured

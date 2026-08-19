@@ -21,6 +21,8 @@ from pathlib import Path
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _NODE_VERSION_PROBE_TIMEOUT_SECONDS = 10
+# Module-level so the Windows-only npx branch below stays reachable from tests.
+_IS_WINDOWS = os.name == "nt"
 
 
 # Keep in sync with the setup scripts' Node floor: Get-NodeDecision (setup.ps1) /
@@ -106,6 +108,15 @@ def _path_has_usable_node(path: str) -> bool:
         return False
     if not node or not npx:
         return False
+    if _IS_WINDOWS:
+        # npm's npx.cmd runs the node.exe beside it when there is one, so that is the
+        # runtime to validate, not whatever ``node`` happens to resolve to first.
+        sibling = os.path.join(os.path.dirname(npx), "node.exe")
+        try:
+            if os.path.isfile(sibling):
+                node = sibling
+        except OSError:
+            return False
     if _usable_node_cache.get(node):
         return True
     ok = _node_version_ok(node)
