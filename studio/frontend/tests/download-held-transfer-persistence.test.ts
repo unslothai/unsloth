@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// An XET-to-HTTP reclaim keeps the same generation, so the first reading for the
+// new run holds the dead run's downloadedBytes beside a shrunken expectedBytes.
+// measuredTransfer marks that reading as held so the remainder is not derived
+// from it. If the flag does not survive a reload, the restored job carries the
+// stale bytes with the guard reading "measured" again, and the row goes back to
+// "0 B left" until a poll repairs it -- on app start that is the whole gap
+// before the first poll returns.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { ManagedDownload } from "../src/features/hub/download-manager/download-manager-types.ts";
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+
+registerBundlerResolver();
+const { store } = installLocalStorageFake();
+
+const PERSIST_KEY = "unsloth.studio.downloads";
+let flushPersistedState: (() => void) | undefined;
+Object.assign(globalThis.window, {
+  addEventListener: (type: string, listener: () => void) => {
+    if (type === "pagehide") flushPersistedState = listener;
+  },
+});
+
+function persistedJob(repoId: string, extra: Record<string, unknown> = {}) {
+  return {
+    key: `model:${repoId}`,
+    kind: "model",
+    repoId,
+    variant: "Q4_K_M",
+    state: "running",
+    downloadedBytes: 3_000_000_000,
+    completedBytes: 0,
+    expectedBytes: 500_000_000,
+    fraction: 0.1,
+    error: null,
+    startedAt: 1,
+    ...extra,
+  };
+}
+
+store.set(
+  PERSIST_KEY,
+  JSON.stringify({
+    state: {
+      jobs: {
+        held: persistedJob("org/held-model", { measuredTransfer: false }),
+        measured: persistedJob("org/measured-model", {
+          measuredTransfer: true,
+        }),
+        legacy: persistedJob("org/legacy-model"),
+      },
+      conflicts: {},
+    },
+    version: 1,
+  }),
+);
+
+const { getState, jobKeyOf, putJob } = await import(
+  "../src/features/hub/download-manager/download-manager-state.ts"
+);
+
+test("a held reading is still held after the reload that carried it", () => {
+  const jobs = getState().jobs;
+  assert.equal(
+    jobs[jobKeyOf("model", "org/held-model", "Q4_K_M")]?.measuredTransfer,
+    false,
+  );
+});
+
+test("a measured reading restores as measured", () => {
+  const jobs = getState().jobs;
+  assert.equal(
+    jobs[jobKeyOf("model", "org/measured-model", "Q4_K_M")]?.measuredTransfer,
+    true,
+  );
+});
+
+test("a record written before the field still means never polled", () => {
+  // Undefined, not false: an older job has no held figure to distrust.
+  const jobs = getState().jobs;
+  assert.equal(
+    jobs[jobKeyOf("model", "org/legacy-model", "Q4_K_M")]?.measuredTransfer,
+    undefined,
+  );
+});
+
+test("the held marker is written out with the job", () => {
+  const key = jobKeyOf("model", "org/writeback-model", "Q4_K_M");
+  const job: ManagedDownload = {
+    key,
+    kind: "model",
+    repoId: "org/writeback-model",
+    variant: "Q4_K_M",
+    state: "running",
+    downloadedBytes: 3_000_000_000,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 500_000_000,
+    fraction: 0.1,
+    bytesPerSec: 0,
+    error: null,
+    startedAt: 2,
+    measuredTransfer: false,
+  };
+
+  putJob(job);
+  assert.ok(flushPersistedState);
+  flushPersistedState();
+
+  const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
+  assert.equal(persisted.state.jobs[key].measuredTransfer, false);
+});

@@ -80,6 +80,14 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
+    // A held reading survives the reload that carried it. Dropping the flag
+    // would restore the stale downloadedBytes beside the new run's shrunken
+    // expectedBytes with the guard reading undefined (so, measured), which is
+    // the "0 B left" the guard exists to stop. Absent stays absent, so a record
+    // written before this field still means "never polled".
+    ...(typeof value.measuredTransfer === "boolean"
+      ? { measuredTransfer: value.measuredTransfer }
+      : {}),
     ...(isResolvedTransport(value.transport)
       ? { transport: value.transport }
       : {}),
@@ -126,6 +134,9 @@ function toPersistedJob(
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+    ...(job.measuredTransfer !== undefined
+      ? { measuredTransfer: job.measuredTransfer }
+      : {}),
     ...(job.transport !== undefined ? { transport: job.transport } : {}),
     // Alongside the transport, never instead of it: a fallback run reads as
     // plain HTTP without this and the reloaded card offers Pause for a stop
