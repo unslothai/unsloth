@@ -132,7 +132,18 @@ def messages_have_media(messages: list[dict]) -> bool:
         for part in content:
             if not isinstance(part, dict):
                 continue
-            if part.get("type") in ("image_url", "input_audio", "audio", "input_image"):
+            # `input_video` is llama.cpp's own part type, written by `_inject_video_part`
+            # into the same message list this fit then sees. Missing from the list, a video
+            # prompt ran the rolling preflight even though `/apply-template` does not count
+            # the sampled video tokens, so it could be certified as fitting when it does
+            # not, or lose history it did not need to lose.
+            if part.get("type") in (
+                "image_url",
+                "input_audio",
+                "audio",
+                "input_image",
+                "input_video",
+            ):
                 return True
     return False
 

@@ -234,6 +234,12 @@ def test_rolling_media_detection_covers_image_and_audio_parts():
     assert messages_have_media(
         [{"role": "user", "content": [{"type": "input_audio", "input_audio": {}}]}]
     )
+    # llama.cpp's own part type, written by `_inject_video_part` into the very list this
+    # fit is handed. Missed, a video prompt ran the preflight that video tokens are not
+    # counted by, so it could be certified as fitting when it does not.
+    assert messages_have_media(
+        [{"role": "user", "content": [{"type": "input_video", "input_video": {"data": "AAAA"}}]}]
+    )
     assert not messages_have_media([{"role": "user", "content": "text only"}])
 
 
