@@ -32,7 +32,10 @@ import {
 } from "./runtime-registry";
 
 const PERSIST_KEY = "unsloth.studio.downloads";
-const PERSIST_VERSION = 1;
+// 2 is the first version whose records can say whether their byte counters were measured.
+// Below it, an absent marker is not evidence of anything, so the migration decides.
+const PERSIST_VERSION = 2;
+const MEASURED_TRANSFER_VERSION = 2;
 const PERSIST_THROTTLE_MS = 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -47,7 +50,10 @@ function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
 }
 
-function sanitizePersistedJob(value: unknown): ManagedDownload | null {
+function sanitizePersistedJob(
+  value: unknown,
+  legacy = false,
+): ManagedDownload | null {
   if (!isRecord(value)) return null;
   const kind = isDownloadKind(value.kind) ? value.kind : null;
   const repoId = typeof value.repoId === "string" ? value.repoId : null;
@@ -80,14 +86,20 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
-    // A held reading survives the reload that carried it. Dropping the flag
-    // would restore the stale downloadedBytes beside the new run's shrunken
-    // expectedBytes with the guard reading undefined (so, measured), which is
-    // the "0 B left" the guard exists to stop. Absent stays absent, so a record
-    // written before this field still means "never polled".
+    // A held reading survives the reload that carried it. Dropping the flag would restore the
+    // stale downloadedBytes beside the new run's shrunken expectedBytes with the guard reading
+    // undefined (so, measured), which is the "0 B left" the guard exists to stop.
+    //
+    // Absent means "never polled" only for a record written since the field existed. Below that
+    // version a job that HAD polled says nothing either way, and an upgrade landing mid-reclaim
+    // restores its held bytes as measured -- so a legacy record already carrying counters is read
+    // as held instead. It costs one poll of an untightened remainder; believing it costs the
+    // "0 B left" this whole marker is for.
     ...(typeof value.measuredTransfer === "boolean"
       ? { measuredTransfer: value.measuredTransfer }
-      : {}),
+      : legacy && nonNegativeNumber(value.downloadedBytes) > 0
+        ? { measuredTransfer: false }
+        : {}),
     ...(isResolvedTransport(value.transport)
       ? { transport: value.transport }
       : {}),
@@ -99,13 +111,14 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
 
 function sanitizePersistedState(
   persisted: unknown,
+  legacy = false,
 ): Partial<DownloadManagerState> {
   if (!isRecord(persisted) || !isRecord(persisted.jobs)) {
     return { jobs: {}, conflicts: {} };
   }
   const jobs: Record<string, ManagedDownload> = {};
   for (const value of Object.values(persisted.jobs)) {
-    const job = sanitizePersistedJob(value);
+    const job = sanitizePersistedJob(value, legacy);
     if (job) jobs[job.key] = job;
   }
   return {
@@ -250,7 +263,8 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
         ? noopStorage
         : createThrottledStorage(window.localStorage, PERSIST_THROTTLE_MS),
     ),
-    migrate: (persisted) => sanitizePersistedState(persisted),
+    migrate: (persisted, version) =>
+      sanitizePersistedState(persisted, version < MEASURED_TRANSFER_VERSION),
     merge: (persisted, current) => ({
       ...current,
       ...sanitizePersistedState(persisted),

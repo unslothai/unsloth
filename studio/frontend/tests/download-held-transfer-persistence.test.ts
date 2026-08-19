@@ -55,11 +55,11 @@ store.set(
         measured: persistedJob("org/measured-model", {
           measuredTransfer: true,
         }),
-        legacy: persistedJob("org/legacy-model"),
+        unpolled: persistedJob("org/unpolled-model"),
       },
       conflicts: {},
     },
-    version: 1,
+    version: 2,
   }),
 );
 
@@ -83,11 +83,12 @@ test("a measured reading restores as measured", () => {
   );
 });
 
-test("a record written before the field still means never polled", () => {
-  // Undefined, not false: an older job has no held figure to distrust.
+test("a current record with no marker still means never polled", () => {
+  // Undefined, not false: written since the field existed, so its absence is
+  // the record saying it never polled rather than saying nothing.
   const jobs = getState().jobs;
   assert.equal(
-    jobs[jobKeyOf("model", "org/legacy-model", "Q4_K_M")]?.measuredTransfer,
+    jobs[jobKeyOf("model", "org/unpolled-model", "Q4_K_M")]?.measuredTransfer,
     undefined,
   );
 });
