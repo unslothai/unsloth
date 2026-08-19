@@ -24,8 +24,8 @@ from utils.api_errors import safe_validation_errors
 
 router = APIRouter()
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
-    max_workers=32,
-    thread_name_prefix="chat-generation-events",
+    max_workers = 32,
+    thread_name_prefix = "chat-generation-events",
 )
 _SENSITIVE_KEYS = {
     "accesskey",
@@ -64,11 +64,11 @@ _ENVELOPE_MAX_JSON_CHARS = 1_000_000
 
 
 class CreateChatGenerationRun(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    runId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    threadId: str = Field(min_length=1, max_length=256)
-    userMessageId: str = Field(min_length=1, max_length=256)
-    assistantMessageId: str = Field(min_length=1, max_length=256)
+    model_config = ConfigDict(extra = "forbid")
+    runId: str = Field(min_length = 1, max_length = 128, pattern = r"^[A-Za-z0-9_-]+$")
+    threadId: str = Field(min_length = 1, max_length = 256)
+    userMessageId: str = Field(min_length = 1, max_length = 256)
+    assistantMessageId: str = Field(min_length = 1, max_length = 256)
     requestPayload: dict[str, Any]
 
 
@@ -132,15 +132,15 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     unknown = set(raw) - set(ChatCompletionRequest.model_fields)
     if unknown:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported durable request fields: {', '.join(sorted(unknown))}",
+            status_code = 400,
+            detail = f"Unsupported durable request fields: {', '.join(sorted(unknown))}",
         )
     try:
         request = ChatCompletionRequest.model_validate(raw)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=422,
-            detail=safe_validation_errors(exc.errors()),
+            status_code = 422,
+            detail = safe_validation_errors(exc.errors()),
         ) from exc
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
     # other persisted field, including extra message-envelope fields, with the credential policy.
@@ -159,20 +159,20 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         if isinstance(message, dict)
     ]
     if _contains_sensitive_key(durable_config) or _contains_sensitive_key(message_envelopes):
-        raise HTTPException(status_code=400, detail="Credentials cannot be persisted")
+        raise HTTPException(status_code = 400, detail = "Credentials cannot be persisted")
     if any(raw.get(field) not in (None, "") for field in _EXTERNAL_ROUTING_FIELDS):
         raise HTTPException(
-            status_code=400,
-            detail="Durable chat runs are available only for local inference",
+            status_code = 400,
+            detail = "Durable chat runs are available only for local inference",
         )
     if raw.get("tools"):
         raise HTTPException(
-            status_code=400,
-            detail="Client-executed tool chains use the legacy streaming path",
+            status_code = 400,
+            detail = "Client-executed tool chains use the legacy streaming path",
         )
     if (request.n or 1) != 1:
-        raise HTTPException(status_code=400, detail="Durable chat runs require n=1")
-    sanitized = request.model_dump(mode="json", exclude_none=True)
+        raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
+    sanitized = request.model_dump(mode = "json", exclude_none = True)
     for field in _EXTERNAL_ROUTING_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True
@@ -185,28 +185,28 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
 def _require_run(run_id: str, owner_subject: str) -> dict[str, Any]:
     run = db.get_run(run_id, owner_subject)
     if run is None:
-        raise HTTPException(status_code=404, detail="Chat generation run not found")
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     return run
 
 
 def _event_cursor(after: int | None, last_event_id: str | None) -> int:
     if after is not None and after > _SQLITE_MAX_INTEGER:
-        raise HTTPException(status_code=400, detail="Event cursor is too large")
+        raise HTTPException(status_code = 400, detail = "Event cursor is too large")
     header_after = 0
     if last_event_id:
-        if re.fullmatch(r"[0-9]+", last_event_id, flags=re.ASCII) is None:
-            raise HTTPException(status_code=400, detail="Last-Event-ID must be an integer")
+        if re.fullmatch(r"[0-9]+", last_event_id, flags = re.ASCII) is None:
+            raise HTTPException(status_code = 400, detail = "Last-Event-ID must be an integer")
         max_text = str(_SQLITE_MAX_INTEGER)
         normalized = last_event_id.lstrip("0") or "0"
         if len(normalized) > len(max_text) or (
             len(normalized) == len(max_text) and normalized > max_text
         ):
-            raise HTTPException(status_code=400, detail="Event cursor is too large")
+            raise HTTPException(status_code = 400, detail = "Event cursor is too large")
         header_after = int(normalized)
     return max(after or 0, header_after)
 
 
-@router.post("", status_code=202)
+@router.post("", status_code = 202)
 async def create_chat_generation_run(
     payload: CreateChatGenerationRun,
     request: Request,
@@ -221,34 +221,34 @@ async def create_chat_generation_run(
         try:
             run, created = await asyncio.to_thread(
                 db.create_run,
-                run_id=payload.runId,
-                owner_subject=current_subject,
-                thread_id=payload.threadId,
-                user_message_id=payload.userMessageId,
-                assistant_message_id=payload.assistantMessageId,
-                request_payload=sanitized,
+                run_id = payload.runId,
+                owner_subject = current_subject,
+                thread_id = payload.threadId,
+                user_message_id = payload.userMessageId,
+                assistant_message_id = payload.assistantMessageId,
+                request_payload = sanitized,
             )
         except db.ChatGenerationConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Thread not found") from exc
+            raise HTTPException(status_code = 404, detail = "Thread not found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="Generation run conflicts") from exc
+            raise HTTPException(status_code = 409, detail = "Generation run conflicts") from exc
         supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
         if supervisor is not None and run["status"] == "queued":
             supervisor.start(
                 run["id"],
-                thread_id=run["threadId"],
-                model=run["requestPayload"].get("model"),
+                thread_id = run["threadId"],
+                model = run["requestPayload"].get("model"),
             )
     return {**run, "created": created}
 
 
 @router.get("/active")
 def active_chat_generation_runs(
-    thread_id: str = Query(alias="threadId"), current_subject: str = Depends(get_current_subject)
+    thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {"runs": db.list_active(current_subject, thread_id)}
 
@@ -267,7 +267,7 @@ def cancel_chat_generation_run(
     _require_run(run_id, current_subject)
     run = db.request_cancel(run_id, current_subject)
     if run is None:
-        raise HTTPException(status_code=404, detail="Chat generation run not found")
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
     if supervisor is not None and run["status"] == "cancelling":
         supervisor.cancel(run_id)
@@ -278,8 +278,8 @@ def cancel_chat_generation_run(
 async def chat_generation_events(
     run_id: str,
     request: Request,
-    after: int | None = Query(None, ge=0, le=_SQLITE_MAX_INTEGER),
-    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    after: int | None = Query(None, ge = 0, le = _SQLITE_MAX_INTEGER),
+    last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
     _require_run(run_id, current_subject)
@@ -309,7 +309,7 @@ async def chat_generation_events(
                 }
                 if event["type"] != "chunk":
                     data["run"] = snapshot
-                encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                encoded = json.dumps(data, ensure_ascii = False, separators = (",", ":"))
                 yield f"id: {cursor}\nevent: {event['type']}\ndata: {encoded}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
                 snapshot["lastEventSeq"]
@@ -322,6 +322,6 @@ async def chat_generation_events(
 
     return StreamingResponse(
         stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
