@@ -289,9 +289,10 @@ def test_a_multiline_instruction_survives_being_read_back():
         + checkpoint._CLOSE
     )
     assert checkpoint._block_items(flat) == ["plain one", "plain two"]
-    assert checkpoint._block_items(
-        "<carried_forward>\nheader\n\n- plain one\n</carried_forward>"
-    ) == []
+    assert (
+        checkpoint._block_items("<carried_forward>\nheader\n\n- plain one\n</carried_forward>")
+        == []
+    )
 
 
 def test_the_merged_block_is_re_capped_not_just_concatenated():
@@ -1542,18 +1543,15 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     # The next request of the same epoch, read back the way production reads it.
     later = branch + [reply, {"role": "user", "content": "and now the second half"}]
     replayed_boundary = llama_cpp._sticky_compaction_boundary("t1", later)
-    assert replayed_boundary == recorded, (
-        f"the persisted boundary shrank from {recorded} to {replayed_boundary} on read-back"
-    )
+    assert (
+        replayed_boundary == recorded
+    ), f"the persisted boundary shrank from {recorded} to {replayed_boundary} on read-back"
 
-    replayed, _ = _fit(
-        later, sticky_dropped = replayed_boundary, protected_message_ids = protected
-    )
+    replayed, _ = _fit(later, sticky_dropped = replayed_boundary, protected_message_ids = protected)
     live = {id(message) for message in replayed}
     back = [message for message in evicted if id(message) in live]
-    assert not back, (
-        "turns the reset compacted away are back one turn later: "
-        + ", ".join(str(message["content"])[:24] for message in back)
+    assert not back, "turns the reset compacted away are back one turn later: " + ", ".join(
+        str(message["content"])[:24] for message in back
     )
 
 
@@ -1587,7 +1585,8 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     # And Studio's own block is still appended, and still read back on the next reset.
     assert system.count("<carried_forward>") == 2
     assert "STATUS::ZQXVARA123-ALPHA" in system
-    assert (
-        checkpoint._block_items(system) and
-        "Never quote an internal price." not in checkpoint._block_items(system)
+    assert checkpoint._block_items(
+        system
+    ) and "Never quote an internal price." not in checkpoint._block_items(
+        system
     ), "the caller's bullets were adopted as carried-forward user history"
