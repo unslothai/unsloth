@@ -43,22 +43,40 @@ def resolve_effective_use_xet(use_xet: bool) -> bool:
     return False
 
 
-def resolve_requested_use_xet(transport_mode: Optional[str], use_xet: bool) -> tuple[bool, str]:
+def resolve_requested_use_xet(
+    transport_mode: Optional[str], use_xet: Optional[bool]
+) -> tuple[bool, str]:
     """Turn a download request's transport preference into ``(use_xet, reason)``.
 
     ``transport_mode`` is the current field; ``use_xet`` is the older boolean, still honoured so an
     older frontend or scripted caller keeps working. An explicit "xet" is respected even on a
     machine the health check dislikes, but still gets the memory caps and the stall fallback.
+
+    A request stating neither takes the install's setting, so a scripted caller follows
+    Settings > General rather than a transport baked in here.
     """
     mode = (transport_mode or "").strip().lower()
+    if not mode and use_xet is None:
+        mode = installed_transport_mode()
     if mode == download_registry.TRANSPORT_HTTP:
         return (False, "HTTP (requested)")
     if mode == download_registry.TRANSPORT_XET:
         return (resolve_effective_use_xet(True), "Xet (requested)")
     if mode == download_registry.TRANSPORT_AUTO:
         return resolve_auto_use_xet()
-    resolved = resolve_effective_use_xet(use_xet)
+    resolved = resolve_effective_use_xet(bool(use_xet))
     return (resolved, "Xet" if resolved else "HTTP")
+
+
+def installed_transport_mode() -> str:
+    """The transport this install defaults to, or HTTP if the setting cannot be read."""
+    try:
+        from utils.download_transport_settings import get_download_transport_mode
+
+        return get_download_transport_mode()
+    except Exception as exc:  # noqa: BLE001 - never let a settings read block a download
+        logger.debug("Download transport setting unreadable, using HTTP: %s", exc)
+        return download_registry.TRANSPORT_HTTP
 
 
 def resolve_auto_use_xet() -> tuple[bool, str]:

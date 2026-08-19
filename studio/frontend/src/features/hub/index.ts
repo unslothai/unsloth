@@ -8,8 +8,10 @@ export {
   jobKeyOf,
   startExternalJob,
   subscribeJobListeners,
+  type TransportMode,
   updateExternalJob,
   useDownloadManagerStore,
+  useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
 export { useHubDatasetSearch } from "./hooks/use-hub-dataset-search";
@@ -126,4 +128,7 @@ export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
-export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";
+export {
+  classifyUnslothSupport,
+  studioPageForTask,
+} from "./lib/unsloth-support";
