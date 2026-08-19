@@ -3378,7 +3378,9 @@ def test_display_strip_keeps_provenance_trace_intact():
     # one -- the split then eats the real terminator and the whole answer.
     from routes.inference import _ReasoningSpanGuard, _split_think_segments
 
-    trace = 'emit </think> then <tool_call>{"name": "get_weather", "arguments": {}}</tool_call> ends it'
+    trace = (
+        'emit </think> then <tool_call>{"name": "get_weather", "arguments": {}}</tool_call> ends it'
+    )
     raw = f"<think>{trace}</think>It is sunny."
     prov = {"wrapped": 1, "wraps": [{"len": len(trace)}]}
 
@@ -3406,7 +3408,9 @@ def test_display_strip_protects_the_wrap_of_each_tool_turn():
     from routes.inference import _ReasoningSpanGuard
 
     first = "short first turn"
-    second = 'emit </think> then <tool_call>{"name": "get_weather", "arguments": {}}</tool_call> ends it'
+    second = (
+        'emit </think> then <tool_call>{"name": "get_weather", "arguments": {}}</tool_call> ends it'
+    )
     prov = {"wrapped": 2, "wraps": [{"len": len(first)}, {"len": len(second)}]}
     guard = _ReasoningSpanGuard(prov)
     names = {"get_weather"}
@@ -3440,7 +3444,6 @@ def test_display_strip_still_cleans_tool_xml_after_the_trace():
 def test_display_strip_leaves_unwrapped_leading_tag_to_the_cleaner():
     # wrapped == 0: the model typed the tag itself, so behaviour must not change.
     from routes.inference import _ReasoningSpanGuard, _strip_tool_xml_for_display
-
     raw = '<think>literal</think>Done <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>ok'
     for prov in ({"wrapped": 0, "wraps": []}, None):
         assert _ReasoningSpanGuard(prov).strip(
