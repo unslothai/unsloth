@@ -31,9 +31,8 @@ function finiteReading(value: number | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-// No measurement yet: Xet commits bytes in batches, so a small transfer can
-// sit at 0 B for its whole life. The bar shows activity instead of a dead 0%.
-// A pending cancellation is not activity, so it keeps the measured reading.
+// Xet commits bytes in batches, so a small transfer can sit at 0 B for its
+// whole life; show activity, not a dead 0%. Cancelling is not activity.
 export function isIndeterminateProgress(
   progress: {
     downloadedBytes: number;

@@ -13,8 +13,6 @@ const { isIndeterminateProgress } = await import(
 );
 
 test("zero measured bytes and fraction reads as indeterminate", () => {
-  // A Xet transfer commits bytes in batches: a small file reads 0 B for its
-  // whole life. The card must show activity rather than a stuck 0% bar.
   assert.equal(
     isIndeterminateProgress({ downloadedBytes: 0, fraction: 0 }),
     true,
@@ -38,9 +36,8 @@ test("a nonzero fraction alone is determinate too", () => {
 });
 
 test("a pending cancellation is not transfer activity", () => {
-  // The row keeps rendering the bar while state is "cancelling", directly above
-  // a "Cancelling..." status. An animated "Transferring..." there would say the
-  // cancel did not take, so the measured reading stands instead.
+  // The row still renders the bar while cancelling, above a "Cancelling..."
+  // status; an animated "Transferring..." there would contradict it.
   assert.equal(
     isIndeterminateProgress({ downloadedBytes: 0, fraction: 0 }, true),
     false,
