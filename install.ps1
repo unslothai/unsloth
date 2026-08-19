@@ -983,10 +983,14 @@ public static class UnslothStudioFinalPathV2
         } elseif ($resolved.StartsWith('\\?\Volume{', [System.StringComparison]::OrdinalIgnoreCase)) {
             # Kept, unlike an ordinary extended DOS path. \\?\C:\x still names a
             # drive once the prefix comes off; \\?\Volume{GUID}\x does not -- it
-            # becomes the unrooted "Volume{GUID}\x", which then hashes to a
-            # different identity than the same directory reached by drive letter,
-            # and leaves GetPathRoot empty so the relaxed process comparison
-            # cannot run either. Deliberately left as it is.
+            # becomes "Volume{GUID}\x", which IsPathRooted reports as relative, so
+            # the link resolver combines it with the link's own parent and invents
+            # a directory that does not exist.
+            # Measured on Windows PowerShell 5.1, so the reason is only that:
+            # GetPathRoot returns empty for BOTH spellings on .NET Framework, so
+            # keeping the prefix buys nothing there and the volume still cannot be
+            # matched against a drive-letter spelling of itself without the native
+            # resolver. What it does buy is not inventing a false path.
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = $resolved.Substring(4)
         }
