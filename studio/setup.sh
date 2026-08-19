@@ -3323,6 +3323,9 @@ else
             # a later setup run report "already matches" and skip repairing the
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            if [ "$_setup_xpu_ready" = true ] || _has_intel_xpu_gpu; then
+                export GGML_SYCL=1
+            fi
             if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"

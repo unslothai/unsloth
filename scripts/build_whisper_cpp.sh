@@ -58,6 +58,9 @@ CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF"
 if [ "${GGML_CUDA:-0}" = "1" ]; then
     CMAKE_FLAGS="$CMAKE_FLAGS -DGGML_CUDA=ON"
 fi
+if [ "${GGML_SYCL:-0}" = "1" ]; then
+    CMAKE_FLAGS="$CMAKE_FLAGS -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
+fi
 
 # shellcheck disable=SC2086
 cmake -S "$INSTALL_DIR/src" -B "$INSTALL_DIR/src/build" $CMAKE_FLAGS
