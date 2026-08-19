@@ -501,7 +501,10 @@ def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
     api_monitor.clear()
-    assert cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"}).status_code == 200
+    assert (
+        cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"}).status_code
+        == 200
+    )
     rows = api_monitor.snapshot(include_details = False)
     assert len(rows) == 1
     assert rows[0]["model"] == "my-flux"
