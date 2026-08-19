@@ -23,6 +23,7 @@ const thread = read("../src/components/assistant-ui/thread.tsx");
 const researchPanel = read(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
+const artifact = read("../src/features/chat/artifacts/artifact-surface.tsx");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -208,6 +209,35 @@ test("the research panel reserves the notice's height too", () => {
   // notice must keep the exact geometry they had before this notice existed.
   assert.doesNotMatch(
     style,
+    /--studio-chat-notice-height,\s*2\.25rem/,
+    "the panel must not assume a notice is present",
+  );
+});
+
+test("the canvas panel reserves the notice's height too", () => {
+  // The other column the notice spans. The canvas panel's top offset was a fixed
+  // 90px, which clears the 48px header on top of a 34px content inset by 8px and
+  // nothing more, so a 36px notice covers the top 28px of the panel: the
+  // preview/source tabs and the close control sit in exactly that band, and the
+  // notice is opaque and takes pointer events at z-30. Same fix as the research
+  // panel, and 0px whenever no notice is on screen.
+  const panel = slice(artifact, 'variant === "panel"', "aria-label=");
+  assert.match(
+    panel,
+    /marginTop:\s*\n?\s*"calc\(90px \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+  );
+  // Both edges move, or the panel keeps its height and overflows the bottom.
+  assert.match(
+    panel,
+    /height:\s*\n?\s*"calc\(100% - 122px - var\(--studio-chat-notice-height, 0px\)\)"/,
+  );
+  // The class list must not still carry the fixed geometry the style replaces.
+  assert.doesNotMatch(panel, /mt-\[90px\]/);
+  assert.doesNotMatch(panel, /h-\[calc\(100%_-_122px\)\]/);
+  // 0px is the only safe fallback: the overlay variant and every chat without a
+  // notice keep the exact geometry they had before this notice existed.
+  assert.doesNotMatch(
+    panel,
     /--studio-chat-notice-height,\s*2\.25rem/,
     "the panel must not assume a notice is present",
   );
