@@ -138,6 +138,7 @@ import type { ModelType, ThreadRecord } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   CpuFallbackReason,
+  MmprojFallbackReason,
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -145,6 +146,7 @@ import type {
   OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
@@ -2574,7 +2576,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
-  const lastLoaded = readLastLocalModelLoad();
+  const lastLoaded = await readLastLocalModelLoad(options?.abortSignal);
   let autoLoadToastDismissed = false;
   const toastId = toast.message("Loading a model…", {
     description: lastLoaded
@@ -2607,16 +2609,23 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const showAutoLoadSuccess = (
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,
+    mmprojFallbackReason?: MmprojFallbackReason | null,
   ): void => {
+    // Both reasons, composed. Nesting them as `mmproj ? ... : cpu ? ...` dropped the
+    // CPU message whenever both were set, which is reachable and is the case this
+    // feature exists for -- see loadFallbackNotice.
+    const notice = loadFallbackNotice(
+      message,
+      cpuFallbackReason,
+      mmprojFallbackReason,
+    );
     const options = {
-      description: cpuFallbackReason
-        ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-        : undefined,
+      description: notice.description,
       duration: 5000,
       icon: undefined,
     };
-    const showToast = cpuFallbackReason ? toast.warning : toast.success;
-    const title = cpuFallbackReason ? `${message} on CPU` : message;
+    const showToast = notice.degraded ? toast.warning : toast.success;
+    const title = notice.title;
     if (autoLoadToastDismissed) {
       showToast(title, options);
       return;
@@ -3086,6 +3095,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // override; null stays null (auto/VRAM-fit).
           customContextLength: config.customContextLength,
           loadedIsMultimodal: isMultimodalResponse(loadResp),
+          mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
           ...resolveLoadedSpeculativeSettings(loadResp),
@@ -3125,6 +3135,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           customContextLength: null,
           ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
+          mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
@@ -3136,7 +3147,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ggufVariant: candidate.ggufVariant,
         });
       }
-      showAutoLoadSuccess(candidate.successLabel, loadResp.cpu_fallback_reason);
+      showAutoLoadSuccess(
+        candidate.successLabel,
+        loadResp.cpu_fallback_reason,
+        loadResp.mmproj_fallback_reason,
+      );
     });
     return true;
   }
@@ -3437,6 +3452,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
         activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
         });
@@ -3448,6 +3464,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
+          loadResp.mmproj_fallback_reason,
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -4508,6 +4525,7 @@ export function createOpenAIStreamAdapter(
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
           loadError: runtime.lastModelLoadError,
+          mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
@@ -4768,6 +4786,7 @@ export function createOpenAIStreamAdapter(
         provisional?: boolean;
         duplicate?: boolean;
         reason?: string;
+        mcp_server?: string;
         [key: string]: unknown;
       };
       type PositionedToolCallPart = ToolCallMessagePart & {

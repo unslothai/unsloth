@@ -176,6 +176,31 @@ function mlxRuntimeStateFrom(resp: any) {
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
   };
 }
+// Imported by chat-adapter.ts from ../utils/mmproj-fallback, and used by the auto-load
+// success toast to say how a load was degraded. Without a stub it is a bare
+// ReferenceError inside the retry loop, which scores as a failed load and fails every
+// scenario as a wrong-model assertion -- the exact shape the guard below exists to
+// catch, and the third time it has happened (see #7699).
+//
+// Mirrors the real composition rather than returning a fixed string: these scenarios do
+// not assert on toast copy, but a stub that ignored its arguments would let a call site
+// stop passing one of the two reasons without anything here noticing, which is the bug
+// this helper was introduced to fix. The exact wording lives in mmproj-fallback.ts and
+// is tested in studio/frontend/tests/mmproj-fallback.test.ts.
+function loadFallbackNotice(
+  baseTitle: string,
+  cpuFallbackReason: any,
+  mmprojFallbackReason: any,
+) {
+  const parts: string[] = [];
+  if (cpuFallbackReason) parts.push(`cpu:${cpuFallbackReason}`);
+  if (mmprojFallbackReason) parts.push(`mmproj:${mmprojFallbackReason}`);
+  return {
+    title: parts.length > 0 ? `${baseTitle} (${parts.join(", ")})` : baseTitle,
+    description: parts.length > 0 ? parts.join(" ") : undefined,
+    degraded: parts.length > 0,
+  };
+}
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
   if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };

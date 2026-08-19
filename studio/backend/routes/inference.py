@@ -2481,6 +2481,15 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
+        // randomUUID is unavailable in this opaque HTTP context. The strict CSP
+        // forbids crypto-boot.js, so install the same fallback inline.
+        const installRandomUUIDFallback = () => {
+          if (!window.crypto || typeof crypto.randomUUID === "function") return;
+          const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+          crypto.randomUUID = () =>
+            "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+              (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
+        };
         // Stamp the load this frame was served for. A report still in flight
         // when the canvas is swapped would otherwise be read as the new one's.
         const loadVersion = new URLSearchParams(location.search).get("v") || "";
@@ -2501,6 +2510,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
+        // Survives the document.open() in render(), so once is enough.
+        installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
@@ -8630,6 +8641,13 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
+            # same reason: the host-RAM guard reads the finished argv, so it answers too late
+            _host_offload = await asyncio.to_thread(
+                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            )
+            if _host_offload:
+                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
+                raise HTTPException(status_code = 400, detail = _host_offload)
 
         if chat_load_needs_gpu:
             await asyncio.to_thread(
@@ -19589,6 +19607,16 @@ async def chat_count_tokens(
                         auto_heal_tool_calls = _count_auto_heal,
                         enabled_tool_names = _count_history_gate,
                     ).strip()
+
+    # Nothing survived the resolution above, so the template would render its generation marker
+    # alone and the total would describe a conversation nobody has started (#8882). Decided here
+    # because only this side knows whether `--enable-tools` put schemas in an otherwise bare prompt,
+    # and the passthrough's own catalog renders with no message to carry it.
+    if not openai_messages and not openai_tools:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for an empty prompt.",
+        )
 
     # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
     # so omitting these prices the template in whatever mode the model was LOADED in.
