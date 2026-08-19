@@ -174,7 +174,9 @@ export function codexCapabilitiesWithPlanModels(
     registryCapabilities,
     entry?.supports_studio_tools,
   );
-  for (const model of listed.models) {
+  // Hidden entries are described too: they stay selectable, so the composer needs their
+  // modalities as much as the offered ones.
+  for (const model of listed.known ?? listed.models) {
     // Only the plan describes a slug the registry never listed. Without it the
     // composer reads "unknown" as "allowed" and offers image attachments that the
     // backend then refuses on every send. A catalog entry carrying no modality list
@@ -209,7 +211,7 @@ export function resolveCodexPickerModels(
   // A saved slug the plan still returns is kept even when it is no longer offered:
   // "hide" retires a model from the picker, it does not revoke one already in use.
   // Only a slug the plan does not return at all is retired from the selection.
-  const known = new Set(listed.known ?? offeredIds);
+  const known = new Set((listed.known ?? listed.models).map((model) => model.id));
   const selected = savedModels.filter((model) => known.has(model));
   const catalog = [...new Set([...offeredIds, ...selected])];
   return { catalog, selected };

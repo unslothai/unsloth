@@ -1015,7 +1015,9 @@ def test_model_route_falls_back_to_curated_when_upstream_is_unusable(monkeypatch
     live = call()
     assert live["source"] == "subscription"
     assert [model["id"] for model in live["models"]] == ["gpt-5.6-terra"]
-    assert live["known"] == ["gpt-5.6-terra", "codex-auto-review"]
+    assert [model["id"] for model in live["known"]] == ["gpt-5.6-terra", "codex-auto-review"]
+    # The hidden entry keeps its metadata so the picker can still describe it.
+    assert live["known"][1]["display_name"] == "codex-auto-review"
 
 
 def test_client_never_emits_done_marker_itself():
@@ -1738,5 +1740,66 @@ def test_chat_keeps_a_saved_slug_the_plan_stopped_listing(monkeypatch):
         accepted = _codex_chat_gate(monkeypatch, hidden, saved_models = [hidden])
         assert accepted.status_code == 401, accepted.detail
         assert "Choose a curated Codex model." not in str(accepted.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
+    """The image gate must not report a text-only model when the connection is dead."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
+    saved = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda _pid: {
+            "id": _pid,
+            "provider_type": "openai_codex",
+            "base_url": OPENAI_CODEX_API_BASE,
+            "display_name": "ChatGPT subscription",
+            "is_enabled": True,
+            "models": [saved],
+        },
+    )
+
+    async def _needs_reauth(*_args, **_kwargs):
+        raise codex_auth.CodexAuthError("ChatGPT authorization expired. Reconnect.")
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _needs_reauth)
+
+    async def _is_disconnected():
+        return False
+
+    payload = ChatCompletionRequest(
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                    },
+                ],
+            }
+        ],
+        provider_id = "codex-1",
+        external_model = saved,
+        stream = True,
+    )
+    request = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = _is_disconnected,
+    )
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(
+                inf._proxy_to_external_provider(payload, request, current_subject = "t")
+            )
+        assert excinfo.value.status_code == 401
+        assert "does not accept image input" not in str(excinfo.value.detail)
     finally:
         forget_subscription_models("codex-1")

@@ -186,7 +186,9 @@ async def list_subscription_models(
         return {"models": curated, "source": "curated"}
     return {
         "models": offered,
-        "known": [model["id"] for model in models],
+        # Full entries, not just ids: a hidden slug stays selectable, so the client needs
+        # its capabilities too or it will guess and offer what the chat route refuses.
+        "known": models,
         "source": "subscription",
     }
 

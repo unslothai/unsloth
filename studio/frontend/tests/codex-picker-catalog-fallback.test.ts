@@ -6,8 +6,8 @@ import { after, before, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 
 interface SubscriptionModels {
-  models: { id: string }[];
-  known?: string[];
+  models: { id: string; vision?: boolean | null }[];
+  known?: { id: string; vision?: boolean | null }[];
   source: "subscription" | "curated";
 }
 
@@ -163,7 +163,7 @@ test("a saved slug the plan still returns survives losing its picker slot", asyn
     ["gpt-5.7-nova"],
     {
       models: [{ id: "gpt-5.4" }],
-      known: ["gpt-5.4", "gpt-5.7-nova"],
+      known: [{ id: "gpt-5.4" }, { id: "gpt-5.7-nova" }],
       source: "subscription",
     },
   );
@@ -177,7 +177,25 @@ test("a slug the plan no longer returns at all is retired", async () => {
   const { selected } = resolve(
     CURATED,
     ["gpt-5.6-sol"],
-    { models: [{ id: "gpt-5.4" }], known: ["gpt-5.4"], source: "subscription" },
+    { models: [{ id: "gpt-5.4" }], known: [{ id: "gpt-5.4" }], source: "subscription" },
   );
   assert.deepEqual(selected, []);
+});
+
+
+test("a hidden saved slug still contributes its capability", async () => {
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const capabilities = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  // Hidden slugs stay selectable, so a fresh browser has to learn their modalities from
+  // here or the composer guesses and offers what the chat route refuses.
+  const resolved = capabilities(
+    ENTRY,
+    {
+      source: "subscription",
+      models: [{ id: "gpt-5.4", vision: true }],
+      known: [{ id: "gpt-5.4", vision: true }, { id: "gpt-5.7-nova", vision: false }],
+    },
+    undefined,
+  );
+  assert.deepEqual(resolved?.["gpt-5.7-nova"], { vision: false });
 });

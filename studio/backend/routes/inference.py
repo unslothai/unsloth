@@ -12476,6 +12476,11 @@ async def _proxy_to_external_provider(
             # actual image is worth the fetch; a text turn should not pay for one.
             try:
                 await ensure_subscription_models(payload.provider_id)
+            except (CodexAuthError, CodexReauthorizationError) as exc:
+                # Same rule as the authorization refresh above: a dead connection is not
+                # a text-only model, and this branch runs before resolve_access, so
+                # swallowing it here would report the wrong failure first.
+                raise HTTPException(status_code = 401, detail = str(exc)) from exc
             except Exception:
                 pass
             listed_model = offered_subscription_model(payload.provider_id, model)
