@@ -22,6 +22,24 @@ from models.inference import LoadRequest
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
 
+# captured before the autouse fixture below pins it, so its own test can reach the real one.
+_REAL_HOST_HAS_NON_GGUF_BACKEND = resolver._host_has_a_non_gguf_backend
+
+
+@pytest.fixture(autouse = True)
+def _host_serves_non_gguf(monkeypatch):
+    """Pin the host-capability gates for the classifier tests.
+
+    They are about the config rules, not about whether this machine happens to have
+    torch or MLX installed, and an unpinned MLX verdict made the whole file pass or fail
+    by platform. Each gate is covered by its own test below.
+    """
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    # the device itself, not the helper, so a test setting DEVICE for itself still wins.
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+
 
 @pytest.fixture(autouse = True)
 def _clean_resolver_index():
@@ -518,7 +536,7 @@ def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
     proj = tmp_path / "mmproj-F16.gguf"
     proj.write_text("x")
     assert resolver._local_gguf_entry("p", SimpleNamespace(path = str(proj))) is None
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj))) is False
+    assert resolver.local_servable_model(SimpleNamespace(id = str(proj), path = str(proj))) is None
     root = tmp_path / "MTP"
     root.mkdir()
     main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
@@ -2391,23 +2409,33 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
-def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
+def test_local_servable_model_reads_files_not_model_format(tmp_path):
     # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models must
-    # decide GGUF-ness from the on-disk files. A standalone .gguf (no model_format)
-    # is servable; a safetensors-only dir is not.
+    # decide the format from the on-disk files. A checkpoint dir needs a root
+    # config.json to prove it is a model and not a bare adapter.
     from types import SimpleNamespace
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(gguf), path = str(gguf))) is True
+    assert resolver.local_servable_model(SimpleNamespace(id = str(gguf), path = str(gguf))) == (
+        True,
+        (),
+    )
 
     st = tmp_path / "safetensors_model"
     st.mkdir()
-    (st / "model.safetensors").write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(st), path = str(st))) is False
+    (st / "model.safetensors").write_bytes(_safetensors_bytes())
+    (st / "tokenizer.json").write_text("{}")
+    (st / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
+    assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) is None
+    (st / "config.json").write_text(_CHAT_CONFIG)
+    assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) == (
+        False,
+        (),
+    )
 
 
-def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
+def test_local_servable_model_excludes_ollama_links(tmp_path):
     # Codex P2: Ollama entries come from a scanner _build_index skips, so their
     # advertised ids never resolve; the catalog must not report them as servable.
     from types import SimpleNamespace
@@ -2417,13 +2445,18 @@ def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
     ollama_gguf = links / "model-Q4_K_M.gguf"
     ollama_gguf.write_bytes(b"x" * 32)
     assert (
-        resolver.info_has_local_gguf(SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf)))
-        is False
+        resolver.local_servable_model(
+            SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf))
+        )
+        is None
     )
     # The same GGUF outside an ollama-link dir is still servable.
     plain = tmp_path / "model-Q4_K_M.gguf"
     plain.write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(plain), path = str(plain))) is True
+    assert resolver.local_servable_model(SimpleNamespace(id = str(plain), path = str(plain))) == (
+        True,
+        (),
+    )
 
 
 def test_embeddings_input_present_helper():
@@ -2940,7 +2973,12 @@ def _chat_msg(text = "hi"):
     return ChatMessage(role = "user", content = text)
 
 
-def _responses_payload(*, tools = None, set_model = True):
+def _responses_payload(
+    *,
+    tools = None,
+    set_model = True,
+    stream = None,
+):
     from models.inference import ResponsesRequest
 
     kwargs = dict(input = "hi")
@@ -2948,6 +2986,8 @@ def _responses_payload(*, tools = None, set_model = True):
         kwargs["model"] = "org/B-GGUF"
     if tools is not None:
         kwargs["tools"] = tools
+    if stream is not None:
+        kwargs["stream"] = stream
     return ResponsesRequest(**kwargs)
 
 
@@ -3148,7 +3188,8 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # target can't be loaded and evict the working audio model. Assert the handler
     # flags require_vision so the hook's multimodal probe runs, and that it asks for
     # the projector alone: an audio model's projector carries no vision tower, so
-    # requiring one would refuse the very models that serve the request.
+    # requiring one would refuse the very models that serve the request. A
+    # safetensors or MLX checkpoint declares audio apart, so that flag rides along.
     from models.inference import ChatMessage, ImageContentPart, ImageUrl
 
     class _Reached(Exception):
@@ -3163,8 +3204,16 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         *,
         require_vision = False,
         require_image = True,
+        require_audio_input = False,
+        gguf_only = False,
+        gguf_only_message = None,
+        audio_preflight = None,
     ):
-        captured.update(require_vision = require_vision, require_image = require_image)
+        captured.update(
+            require_vision = require_vision,
+            require_image = require_image,
+            require_audio_input = require_audio_input,
+        )
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -3172,7 +3221,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured == {"require_vision": True, "require_image": False}
+    assert captured == {
+        "require_vision": True,
+        "require_image": False,
+        "require_audio_input": True,
+    }
 
     # An image in the same request does need the vision tower.
     img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
@@ -3183,7 +3236,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured == {"require_vision": True, "require_image": True}
+    assert captured == {
+        "require_vision": True,
+        "require_image": True,
+        "require_audio_input": True,
+    }
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
@@ -3538,8 +3595,11 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        require_audio_input = False,
+        gguf_only = False,
     ):
         captured["require_vision"] = require_vision
+        captured["gguf_only"] = gguf_only
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
@@ -3548,6 +3608,8 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    # llama.cpp serves this endpoint alone, so a non-GGUF swap must not be attempted.
+    assert captured["gguf_only"] is True
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────
@@ -7986,3 +8048,1432 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
         assert settings.normalize_model_override(
             {"llama_extra_args": ["--top-k", "40"]}, keep_empty_extra_args = keep
         ) == {"llama_extra_args": ["--top-k", "40"]}
+
+
+# ── non-GGUF discovery and switching ──
+
+
+# Chat generation is the only route these entries feed, so the classifier requires a
+# generative architecture; every fixture below is a plain causal LM unless it says otherwise.
+_CHAT_CONFIG = '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}'
+
+
+def _safetensors_bytes(nbytes = 32):
+    """A minimal but structurally valid .safetensors file.
+
+    The resolver reads the header and checks the file carries the bytes it declares, so a
+    fixture of arbitrary filler now reads as a truncated checkpoint and is withheld.
+    """
+    import struct
+
+    header = json.dumps(
+        {"w": {"dtype": "F32", "shape": [nbytes // 4], "data_offsets": [0, nbytes]}}
+    ).encode()
+    return struct.pack("<Q", len(header)) + header + b"\0" * nbytes
+
+
+def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
+    """An on-disk non-GGUF checkpoint: config.json and a tokenizer beside safetensors.
+
+    Unquantized, so it is servable on any host; the MLX-gating test adds the
+    mlx-lm quantization block itself.
+    """
+    path = root / name
+    path.mkdir()
+    (path / "config.json").write_text(_CHAT_CONFIG)
+    (path / "model.safetensors").write_bytes(_safetensors_bytes())
+    (path / "tokenizer.json").write_text("{}")
+    # chat generation raises without one, so a real servable checkpoint carries it.
+    (path / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
+    return path
+
+
+def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
+    # The Images and Video backends own these; /v1/chat/completions cannot serve them.
+    from types import SimpleNamespace
+
+    pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
+    (pipeline / "model_index.json").write_text("{}")
+    info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_partial_download_is_not_a_servable_chat_model(tmp_path):
+    # Advertising an incomplete snapshot hands out an id whose load must fail.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path)
+    info = SimpleNamespace(id = str(path), path = str(path), partial = True)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_adapter_only_directory_is_not_a_servable_chat_model(tmp_path):
+    # A bare LoRA adapter has no config.json and cannot be served on its own.
+    from types import SimpleNamespace
+
+    path = tmp_path / "adapter"
+    path.mkdir()
+    (path / "adapter_config.json").write_text("{}")
+    (path / "adapter_model.safetensors").write_bytes(_safetensors_bytes())
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_installed_mlx_model_is_indexed_and_resolves(tmp_path, monkeypatch):
+    # Issue #8748: an unloaded MLX model was invisible to the resolver, so a request
+    # naming it 404'd as not downloaded.
+    import routes.models as models_route
+    from utils import paths
+
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path)
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization": {"group_size": 64, "bits": 4}}'
+    )
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(tmp_path)}])
+
+    resolver._scan = (0.0, {})
+    assert resolver.resolve_local_gguf(str(path)) == (str(path), None, path.name)
+    # No quant to pin: these weights carry their quantization internally.
+    assert resolver.resolve_local_gguf(f"{path.name}:Q4_K_M") is None
+    assert resolver.local_target_is_gguf(str(path), path.name) is False
+    # An index that no longer carries the entry must not flip the answer to GGUF.
+    resolver._scan = (0.0, {})
+    assert resolver.local_target_is_gguf(str(path), path.name) is False
+
+
+def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
+    # The other half of #8748: the switch must load it through the orchestrator.
+    llama = _FakeBackend(None)
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    entry = resolver._LocalGgufEntry(
+        "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+
+    _run_hook("unsloth/Qwen3-MLX")
+
+    assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
+    assert calls[0].gguf_variant is None
+    # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
+    assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"
+    assert getattr(llama, "_openai_advertised_id", None) is None
+    assert inference_route._openai_model_objects()[0]["id"] == "unsloth/Qwen3-MLX"
+
+
+def test_auto_switch_does_not_reload_a_resident_mlx_model(monkeypatch):
+    # Either guard alone stops the reload, so both are asserted directly as well.
+    llama = _FakeBackend(None)
+
+    class _FakeOrchestrator:
+        active_model_name = "/srv/models/Qwen3-MLX"
+        models: dict = {}
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    entry = resolver._LocalGgufEntry(
+        "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+
+    assert inference_route._loaded_satisfies("unsloth/Qwen3-MLX") is True
+    assert inference_route._loaded_identity_satisfies("unsloth/Qwen3-MLX") is True
+    _run_hook("unsloth/Qwen3-MLX")
+    assert calls == []
+
+
+def test_a_resident_mlx_alias_counts_as_a_namespaced_identity(monkeypatch):
+    # Without the alias this reads a bare basename, so an unknown org/model would be
+    # answered by the resident MLX model instead of refused.
+    class _FakeOrchestrator:
+        active_model_name = "/srv/models/Qwen3-MLX"
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resident_id_is_namespaced() is True
+
+
+def test_a_gguf_only_endpoint_refuses_a_non_gguf_target_before_loading(monkeypatch):
+    # Codex P1: /v1/completions, /v1/embeddings and the Anthropic routes read llama.cpp
+    # alone, and loading a non-GGUF model unloads the resident GGUF, so an unguarded
+    # switch left them with nothing to serve and a 503.
+    llama = _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    entry = resolver._LocalGgufEntry(
+        "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "unsloth/Qwen3-MLX", object(), "tester", gguf_only = True
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert calls == [], "the resident GGUF was unloaded for a swap the endpoint cannot use"
+    assert llama.is_loaded is True
+
+
+def test_an_audio_request_probes_audio_capability_on_a_non_gguf_target(monkeypatch):
+    # Codex P2: audio rides a companion mmproj only for a GGUF. Probing vision on a
+    # safetensors Whisper rejected a model the non-GGUF chat branch can serve.
+    seen = {}
+
+    monkeypatch.setattr(
+        inference_route,
+        "_target_is_vision",
+        lambda path, *_a: seen.setdefault("vision", path) and False,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "_target_accepts_audio_input",
+        lambda path: seen.setdefault("audio", path) or True,
+    )
+    assert (
+        inference_route._target_accepts_request_input("/srv/models/Whisper", False, False, True)
+        is True
+    )
+    assert "vision" not in seen
+    # A GGUF still answers both from the one mmproj probe.
+    inference_route._target_accepts_request_input("/srv/models/A.gguf", True, False, True)
+    assert seen.get("vision") == "/srv/models/A.gguf"
+
+
+def test_a_custom_code_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: an auto_map repo needs trust_remote_code plus the subject's approval
+    # fingerprint, and a switch carries neither, so advertising it guarantees a load
+    # that fails after evicting the resident model.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "CustomCode")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"AutoModel": "modeling.MyModel"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_embedding_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: only the generative chat path consumes non-GGUF entries, and
+    # /v1/embeddings is GGUF-only, so a SentenceTransformer would be loaded as a
+    # language model and fail after the swap evicted the resident model.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "bge-small")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is not None
+    (path / "modules.json").write_text("[]")
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_sharded_checkpoint_missing_shards_is_not_switchable(tmp_path):
+    # Codex P2: _has_non_gguf_weights is satisfied by one file, so a sharded repo
+    # whose index names absent shards was advertised and failed on load.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Sharded")
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+    (path / "model-00002-of-00002.safetensors").write_bytes(_safetensors_bytes())
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
+    # Codex P1: _responses_stream reads llama.cpp alone, so a streaming Responses
+    # request naming a non-GGUF model unloaded the resident GGUF and then 400'd.
+    captured = {}
+
+    async def _capture(model, request, subject, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    for streaming in (True, False):
+        captured.clear()
+        payload = _responses_payload(stream = streaming)
+        with pytest.raises(RuntimeError):
+            asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+        assert captured["gguf_only"] is streaming
+
+
+def test_a_pickle_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: .bin weights are pickle-backed, so an API request must not be able to
+    # load one without an explicit load action.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "PickleOnly")
+    (path / "model.safetensors").unlink()
+    (path / "pytorch_model.bin").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_checkpoint_without_tokenizer_assets_is_not_switchable(tmp_path):
+    # Codex P2: weights alone cannot serve chat, and the swap has already evicted the
+    # resident model by the time the loader finds no tokenizer.
+    from types import SimpleNamespace
+
+    path = tmp_path / "WeightsOnly"
+    path.mkdir()
+    (path / "config.json").write_text(_CHAT_CONFIG)
+    (path / "model.safetensors").write_bytes(_safetensors_bytes())
+    (path / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+    (path / "tokenizer.json").write_text("{}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_mlx_quantized_weights_are_offered_only_on_an_mlx_host(tmp_path, monkeypatch):
+    # Codex P2: mlx-lm quantized weights load through MLXInferenceBackend alone, so
+    # advertising them on CUDA evicts the resident model for a load that must fail.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path)
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization": {"group_size": 64, "bits": 4}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", None)  # detection has not run yet
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    assert resolver.local_servable_model(info) == (False, ())
+
+    # An unquantized conversion is ordinary safetensors and loads anywhere.
+    (path / "config.json").write_text(_CHAT_CONFIG)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_auto_map_in_a_processor_config_is_not_switchable(tmp_path):
+    # Codex P2: trust_remote_code runs auto_map from any of the scanner's config
+    # files, not just config.json, and a switch carries no approval fingerprint.
+    from types import SimpleNamespace
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
+    for name in REMOTE_CODE_CONFIG_FILES:
+        path = _local_checkpoint(tmp_path, f"custom-{name}")
+        info = SimpleNamespace(id = str(path), path = str(path))
+        assert resolver.local_servable_model(info) is not None
+        blob = '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"A": "m.M"}}'
+        (path / name).write_text(blob)
+        assert resolver.local_servable_model(info) is None, name
+
+
+def test_a_case_variant_path_is_not_treated_as_the_resident_model(monkeypatch):
+    # Codex P2: lowercasing made /models/Foo satisfy a request resolving to
+    # /models/foo, which then recorded the alias on the wrong resident weights.
+    llama = _FakeBackend(None)
+
+    class _FakeOrchestrator:
+        active_model_name = "/models/Foo"
+        models: dict = {}
+        _openai_advertised_id = None
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/foo", None, "/models/foo"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    entry = resolver._LocalGgufEntry("/models/foo", "/models/foo", (), is_gguf = False)
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"/models/foo": entry}))
+
+    async def _accept(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept)
+
+    _run_hook("/models/foo")
+    assert calls, "the case-variant path was mistaken for the resident model"
+    assert calls[0].model_path == "/models/foo"
+
+
+def test_a_non_generative_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: chat generation is the only route these entries feed, so an
+    # encoder-only or classifier checkpoint would fail in the language-model load.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "bert-base")
+    (path / "config.json").write_text('{"architectures": ["BertForSequenceClassification"]}')
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_lora_directory_with_a_copied_config_is_not_switchable(tmp_path):
+    # Codex P2: ModelConfig resolves an adapter's base_model_name_or_path, so the
+    # switch could fetch weights this resolver promises never to download.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "SomeLoRA")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is not None
+    (path / "adapter_config.json").write_text("{}")
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_processor_config_alone_is_not_a_tokenizer(tmp_path):
+    # Codex P2: preprocessor_config.json is image or audio preprocessing metadata and
+    # leaves the loader with no vocabulary to tokenize with.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoVocab")
+    (path / "tokenizer.json").unlink()
+    (path / "preprocessor_config.json").write_text("{}")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_transformers_quantization_is_not_offered_on_an_mlx_host(tmp_path, monkeypatch):
+    # Codex P2: the worker picks MLXInferenceBackend for every non-GGUF target on that
+    # host, and mlx-lm cannot load a bitsandbytes, GPTQ or AWQ layout.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "BnB")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",'
+        ' "quantization_config": {"quant_method": "bitsandbytes"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    # Transformers builds the quantizer from the checkpoint, so the package has to be here.
+    monkeypatch.setattr(resolver, "_quantizer_runtime_present", lambda _m: False)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(resolver, "_quantizer_runtime_present", lambda _m: True)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_audio_only_request_does_not_demand_vision_from_a_non_gguf_target(monkeypatch):
+    # Codex P2: the chat route sets needs_vision for audio so a GGUF is asked for its
+    # projector. Applying that to a non-GGUF target refused the very audio checkpoints
+    # that can serve the request.
+    monkeypatch.setattr(inference_route, "_target_accepts_audio_input", lambda path: True)
+    monkeypatch.setattr(
+        inference_route, "_target_is_vision", lambda *_a: pytest.fail("vision probed")
+    )
+    assert (
+        inference_route._target_accepts_request_input(
+            "/srv/models/Whisper", False, True, True, None, False
+        )
+        is True
+    )
+
+
+def test_a_nested_non_gguf_row_is_not_marked_resident(monkeypatch):
+    # Codex P2: a non-GGUF model loads from its own directory, so a catalog row nested
+    # under the loaded one is different weights and must not read as loaded.
+    class _FakeOrchestrator:
+        active_model_name = "/models/A"
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resolves_to_resident("/models/A") is True
+    assert inference_route._resolves_to_resident("/models/A/sub/B") is False
+
+
+def test_an_audio_vlm_stays_switchable(tmp_path, monkeypatch):
+    # Codex P2: MLXInferenceBackend serves audio_vlm as a chat model that also takes
+    # audio, so excluding every detected audio type withheld Gemma 3n and its kin.
+    from types import SimpleNamespace
+    from utils.models import model_config
+
+    path = _local_checkpoint(tmp_path, "gemma-3n")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for audio_type, servable in (("audio_vlm", True), ("whisper", False), ("csm", False)):
+        monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_kw: audio_type)
+        assert (resolver.local_servable_model(info) is not None) is servable, audio_type
+
+
+def test_a_text_seq2seq_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: ForConditionalGeneration is overloaded. T5 and BART wear it, and the
+    # serving path has no seq2seq branch, so only a multimodal sub-config qualifies.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "t5-base")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}'
+    )
+    assert resolver.local_servable_model(info) is None
+    (path / "config.json").write_text(
+        '{"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3", "vision_config": {}}'
+    )
+    # A VLM also needs its processor assets before it can be advertised.
+    assert resolver.local_servable_model(info) is None
+    (path / "preprocessor_config.json").write_text("{}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_tokenizer_metadata_alone_is_not_a_vocabulary(tmp_path):
+    # Codex P2: tokenizer_config.json carries settings, not the vocabulary the loader
+    # needs, so it cannot make a checkpoint eligible on its own.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "MetadataOnly")
+    (path / "tokenizer.json").unlink()
+    (path / "tokenizer_config.json").write_text("{}")
+    (path / "chat_template.jinja").write_text("{{ messages }}")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+    # A bare vocab.json is only half a BPE tokenizer; it needs its merges.
+    (path / "vocab.json").write_text("{}")
+    assert resolver.local_servable_model(info) is None
+    # an empty merges.txt is a copy still in flight, like an empty vocabulary.
+    (path / "merges.txt").write_text("")
+    assert resolver.local_servable_model(info) is None
+    (path / "merges.txt").write_text("#version: 0.2\ng h\n")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_host_without_a_non_gguf_backend_advertises_none(tmp_path, monkeypatch):
+    # Codex P2: with neither torch nor MLX the worker has nothing to load safetensors
+    # with, and _load_model_impl unloads the resident GGUF before that fails.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoBackend")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: False)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_shard_without_its_index_is_not_switchable(tmp_path):
+    # Codex P2: a shard names its set in the filename, so one present without the index
+    # that declares the rest is a half-downloaded directory.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Fragment")
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_nested_row_is_not_resident_against_a_loaded_gguf_directory(monkeypatch):
+    # Codex P2: llama.cpp loading out of /models/A must not mark the separately
+    # cataloged /models/A/sub/B resident through the directory prefix rule.
+    llama = _FakeBackend("/models/A")
+    llama.gguf_path = "/models/A"
+
+    class _FakeOrchestrator:
+        active_model_name = None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resolves_to_resident("/models/A/sub/B", exact_only = True) is False
+    assert inference_route._resolves_to_resident("/models/A", exact_only = True) is True
+
+
+def test_a_non_canonical_safetensors_name_is_not_switchable(tmp_path):
+    # Codex P2: the loader receives no variant, so model.fp16.safetensors or a stray
+    # optimizer.safetensors is not weights it can open.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "VariantOnly")
+    (path / "model.safetensors").rename(path / "model.fp16.safetensors")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
+    # the loader selects GPT2LMHeadModel too, so requiring ForCausalLM alone hid working models.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "gpt2")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["GPT2LMHeadModel"], "model_type": "gpt2"}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_fp8_checkpoint_is_offered_only_on_cuda(tmp_path, monkeypatch):
+    # Codex P2: verify_fp8_support_if_applicable rejects FP8 outside CUDA, so a CPU,
+    # ROCm or MLX host would evict the resident model for a load that cannot succeed.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "FP8")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization_config": {"quant_method": "fp8"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    # a capability the tier check accepts, or the verdict turns on whether torch is imported.
+    import sys
+    import types as _types
+
+    _torch = _types.ModuleType("torch")
+    _torch.cuda = _types.SimpleNamespace(get_device_capability = lambda: (9, 0))
+    monkeypatch.setitem(sys.modules, "torch", _torch)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_the_fp8_capability_probe_fails_closed(monkeypatch):
+    # codex P2: the loader runs the same query, so a probe that raises here raises there too.
+    import sys
+    import types as _types
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False, raising = False)
+
+    torch = _types.ModuleType("torch")
+    torch.cuda = _types.SimpleNamespace(get_device_capability = lambda: (9, 0))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    assert resolver._fp8_suits_host("fp8") is True
+
+    def _raise():
+        raise RuntimeError("CUDA driver version is insufficient")
+
+    torch.cuda.get_device_capability = _raise
+    assert resolver._fp8_suits_host("fp8") is False
+
+
+def test_an_obsolete_bin_index_does_not_hide_a_safetensors_checkpoint(tmp_path):
+    # Codex P2: a conversion can leave pytorch_model.bin.index.json behind with its
+    # shards deleted. Transformers ignores it once the safetensors set is complete, so
+    # validating it withheld a model that loads fine by hand.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Converted")
+    (path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "pytorch_model-00001-of-00002.bin"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_model_type_without_architectures_is_not_switchable(tmp_path):
+    # the causal mapping holds bert and bart, so model_type alone stays withheld either way.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "no-arch")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for model_type in ("t5", "deberta-v2", "qwen3"):
+        (path / "config.json").write_text(json.dumps({"model_type": model_type}))
+        assert resolver.local_servable_model(info) is None, model_type
+
+    import transformers  # noqa: F401
+
+    for model_type in ("t5", "deberta-v2", "qwen3"):
+        (path / "config.json").write_text(json.dumps({"model_type": model_type}))
+        assert resolver.local_servable_model(info) is None, model_type
+
+
+def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
+    # Codex P1: load_model publishes active_model_name for the new weights, so an alias
+    # cleared afterwards leaves a window where a request for the old model matches it
+    # and is answered by the new ones. The clear must precede the load call.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    # Anchored on the line start: llama_backend.load_model appears earlier and would
+    # otherwise match as a substring of the orchestrator call this guards.
+    clear = src.index("\n        backend._openai_advertised_id = None")
+    load = src.index("\n            backend.load_model,")
+    assert clear < load, "the alias must be cleared before load_model publishes the new model"
+
+
+def test_an_nvfp4_checkpoint_is_not_switchable(tmp_path, monkeypatch):
+    # Codex P2: NVFP4 wears an MLX-shaped quantization block, but the loader rejects its
+    # per-module metadata, so advertising it costs the resident model for a certain fail.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "NVFP4")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",'
+        ' "quantization": {"group_size": 16, "bits": 4, "mode": "nvfp4"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_stale_alias_after_unload_is_not_a_resident_identity(monkeypatch):
+    # Codex P2: the alias outlives an unload, so reading it ungated made an unrelated
+    # org/model request look like a mismatch against a model that is no longer loaded.
+    class _FakeOrchestrator:
+        active_model_name = None
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resident_id_is_namespaced() is False
+
+
+def test_a_slow_tokenizer_vocabulary_is_accepted(tmp_path):
+    # Codex P2: unsloth.models.loader_utils._has_local_tokenizer_files accepts vocab.txt
+    # and spiece.model, so rejecting them hid loadable checkpoints.
+    from types import SimpleNamespace
+    for name in ("vocab.txt", "spiece.model"):
+        path = _local_checkpoint(tmp_path, f"slow-{name}")
+        (path / "tokenizer.json").unlink()
+        (path / name).write_text("[UNK]\n")
+        info = SimpleNamespace(id = str(path), path = str(path))
+        assert resolver.local_servable_model(info) == (False, ()), name
+        # an empty vocabulary is a copy still in flight, not a slow tokenizer.
+        (path / name).write_text("")
+        assert resolver.local_servable_model(info) is None, name
+
+
+def test_a_stray_shard_beside_complete_weights_is_ignored(tmp_path):
+    # Codex P2: a complete model.safetensors is what the loader opens, so a leftover
+    # shard with no index must not withhold the checkpoint.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "StrayShard")
+    (path / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+    # With no canonical file the shards are the weight set, so the index is required.
+    (path / "model.safetensors").unlink()
+    assert resolver.local_servable_model(info) is None
+
+
+def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
+    # _prepare_audio_for_llama takes a data: URI, containers torchaudio cannot open, and a continuation.
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_base64",
+        lambda _b64: pytest.fail("the non-GGUF decoder ran for a GGUF target"),
+    )
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
+    preflight = {"b64": "data:audio/mp4;base64,AAAA", "continue_final": True}
+    asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
+    assert "decoded" not in preflight
+
+    # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route._preflight_audio_for_switch(dict(preflight), False))
+    assert exc.value.status_code == 400
+    assert "continue_final_message" in exc.value.detail
+    assert "audio input" in exc.value.detail
+
+
+def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
+    # on a torch-free host the swap used to unload the resident model, then fail importing torchaudio.
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._preflight_audio_for_switch(
+                {"b64": "AAAA", "continue_final": False}, False
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "torchaudio" in exc.value.detail["error"]["message"]
+
+
+def test_non_audio_bytes_are_rejected_before_a_non_gguf_switch(monkeypatch):
+    # non-audio bytes are a deterministic 400, and the decoded array is reused downstream.
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+
+    def _decode(b64):
+        if b64 != "GOOD":
+            raise ValueError("not audio")
+        return "pcm"
+
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", _decode)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._preflight_audio_for_switch(
+                {"b64": "AAAA", "continue_final": False}, False
+            )
+        )
+    assert exc.value.status_code == 400
+
+    preflight = {"b64": "GOOD", "continue_final": False}
+    asyncio.run(inference_route._preflight_audio_for_switch(preflight, False))
+    assert preflight["decoded"] == "pcm"
+
+
+def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):
+    # Codex P2: _decode_audio_base64 imports torchaudio, which a GGUF-only install does
+    # not ship, so requiring it in the preflight 400'd valid llama.cpp audio requests.
+    reached = {}
+
+    async def _capture(*_a, **_kw):
+        reached["switch"] = True
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_base64",
+        lambda _b64: pytest.fail("torchaudio decoder ran on a GGUF-only host"),
+    )
+    payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
+    with pytest.raises(RuntimeError):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert reached.get("switch")
+
+
+def test_an_unknown_quantizer_is_withheld(tmp_path, monkeypatch):
+    # Codex P2: GPTQ, AWQ and anything unrecognized were accepted by the fallback even
+    # though Studio ships none of those runtimes, so the load failed after the swap.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    for method in ("gptq", "awq", "something-invented"):
+        path = _local_checkpoint(tmp_path, f"q-{method}")
+        (path / "config.json").write_text(
+            '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",'
+            f' "quantization_config": {{"quant_method": "{method}"}}}}'
+        )
+        info = SimpleNamespace(id = str(path), path = str(path))
+        assert resolver.local_servable_model(info) is None, method
+
+
+def test_fp8_is_withheld_on_rocm(tmp_path, monkeypatch):
+    # Codex P2: ROCm keeps DeviceType.CUDA, but the loader reads it as hip and refuses
+    # FP8, so the numeric capability checks alone let it through.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "FP8-ROCm")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization_config": {"quant_method": "fp8"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True, raising = False)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_index_naming_shards_in_a_subdirectory_still_serves(tmp_path):
+    # Codex P2: shard paths resolve relative to the index, so a subdirectory is valid.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "SubdirShards")
+    (path / "model.safetensors").unlink()
+    (path / "weights").mkdir()
+    (path / "weights" / "model-00001-of-00001.safetensors").write_bytes(_safetensors_bytes())
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "weights/model-00001-of-00001.safetensors"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+    # A path climbing out of the checkpoint is still refused.
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "../escape.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_symlinked_hf_snapshot_is_not_withheld(tmp_path):
+    # An HF cache snapshot symlinks its weights into blobs/, so judging shard confinement
+    # on a resolved path put every cached checkpoint outside its own directory and
+    # withheld all of them. Caught end to end, not by the file-backed fixtures above.
+    from types import SimpleNamespace
+
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    blob = blobs / "deadbeef"
+    blob.write_bytes(_safetensors_bytes())
+    snapshot = tmp_path / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(_CHAT_CONFIG)
+    (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
+    (snapshot / "model.safetensors").symlink_to(blob)
+    (snapshot / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model.safetensors"}}'
+    )
+    info = SimpleNamespace(id = str(snapshot), path = str(snapshot))
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_drive_qualified_shard_path_is_withheld(tmp_path):
+    # "C:/x" is relative to PurePosixPath but resets the anchor when joined on Windows.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "DriveShard")
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00001.safetensors").write_bytes(_safetensors_bytes())
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+    for escape in ("C:/evil/model.safetensors", "C:model.safetensors"):
+        (path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a": escape}})
+        )
+        assert resolver.local_servable_model(info) is None, escape
+
+
+def test_a_truncated_checkpoint_is_withheld(tmp_path):
+    # codex P2: a copy still in flight passes is_file, and partial covers only Studio downloads.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Truncated")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+    intact = _safetensors_bytes()
+    for broken in (b"", b"\x00" * 4, intact[: len(intact) - 8], b"z" * 64):
+        (path / "model.safetensors").write_bytes(broken)
+        assert resolver.local_servable_model(info) is None, broken[:8]
+
+    # a truncated shard behind an index is withheld the same way, once no singular file wins.
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00001.safetensors").write_bytes(intact[:-8])
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_safetensors_file_with_no_tensors_is_withheld(tmp_path):
+    # codex P2: a __metadata__-only header clears the extent check and loads random weights.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoTensors")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for header in ({}, {"__metadata__": {"format": "pt"}}):
+        blob = json.dumps(header).encode()
+        (path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob)
+        assert resolver.local_servable_model(info) is None, header
+
+
+def test_a_tensor_span_that_contradicts_its_shape_is_withheld(tmp_path):
+    # codex P2: the loader rejects a reversed span or a shape that does not fill it.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadSpan")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(entry, payload = None):
+        # sized to the declared span by default, since trailing bytes are their own rejection.
+        if payload is None:
+            payload = max(entry["data_offsets"])
+        blob = json.dumps({"w": entry}).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * payload
+        )
+
+    write({"dtype": "F32", "shape": [8], "data_offsets": [8, 4]})
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": "F32", "shape": [8], "data_offsets": [0, 16]})
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": "F32", "shape": [-1], "data_offsets": [0, 32]})
+    assert resolver.local_servable_model(info) is None
+
+    # agreeing metadata is accepted, and a dtype the table predates skips the size check.
+    write({"dtype": "F32", "shape": [8], "data_offsets": [0, 32]})
+    assert resolver.local_servable_model(info) == (False, ())
+    write({"dtype": "F4_SOMETHING_NEW", "shape": [8], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_data_layout_that_is_not_an_exact_partition_is_withheld(tmp_path):
+    # codex P2: safetensors 0.8.0 rejects an overlap, a gap and trailing bytes alike (verified).
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadLayout")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(tensors, payload):
+        blob = json.dumps(tensors).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * payload
+        )
+
+    def tensor(start, stop):
+        return {"dtype": "F32", "shape": [(stop - start) // 4], "data_offsets": [start, stop]}
+
+    write({"a": tensor(0, 16), "b": tensor(0, 16)}, 16)  # overlap
+    assert resolver.local_servable_model(info) is None
+    write({"a": tensor(0, 16), "b": tensor(32, 48)}, 48)  # gap
+    assert resolver.local_servable_model(info) is None
+    write({"a": tensor(0, 16)}, 64)  # trailing bytes
+    assert resolver.local_servable_model(info) is None
+    write({"a": tensor(4, 20)}, 20)  # does not start at 0
+    assert resolver.local_servable_model(info) is None
+
+    # a contiguous partition covering the buffer exactly is accepted, in any header order.
+    write({"b": tensor(16, 32), "a": tensor(0, 16)}, 32)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_mlx_host_withholds_a_config_with_no_model_type(tmp_path, monkeypatch):
+    # codex P2: model_type is what the MLX loader selects an implementation from.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "NoModelType")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text('{"architectures": ["XLNetLMHeadModel"]}')
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_stubbed_quantizer_runtime_does_not_count_as_installed(monkeypatch):
+    # codex P2: find_spec succeeds against the Windows ROCm stubs, which cannot dequantize.
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    config = {"quantization_config": {"quant_method": "torchao"}}
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setattr(stub, "is_stubbed", lambda _name: False)
+    assert resolver._quantization_suits_host(config) is True
+    monkeypatch.setattr(stub, "is_stubbed", lambda _name: True)
+    assert resolver._quantization_suits_host(config) is False
+
+
+def test_two_directories_differing_only_by_case_keep_their_own_weights(tmp_path, monkeypatch):
+    # codex P1: folding path keys let a request for one resolve the other's checkpoint.
+    # built directly, so the collision is exercised where the test filesystem folds case.
+    paths = ("/models/Foo", "/models/foo")
+    entries = {path: resolver._LocalGgufEntry(path, path, (), is_gguf = False) for path in paths}
+    index = {}
+    for path in paths:
+        index.setdefault(resolver._index_key(path), entries[path])
+    for path in paths:
+        index.setdefault(path.lower(), entries[path])
+
+    for path in paths:
+        resolved = resolver._resolve_from_index(path, index)
+        assert resolved is not None
+        assert resolved[0] == path, path
+
+    # a repo id stays case-insensitive, which is how clients name one.
+    repo = resolver._LocalGgufEntry("org/Chat", "/models/chat", (), is_gguf = False)
+    repo_index = {resolver._index_key("org/Chat"): repo}
+    assert resolver._resolve_from_index("ORG/chat", repo_index)[0] == "/models/chat"
+
+    # codex P1 again: the advertised basenames Foo and foo are not path-shaped and refolded.
+    alias_index = {}
+    aliases = {"Foo": "/models/Foo", "foo": "/models/foo"}
+    entries = {
+        alias: resolver._LocalGgufEntry(alias, load, (), is_gguf = False)
+        for alias, load in aliases.items()
+    }
+    for alias, load in aliases.items():
+        alias_index.setdefault(resolver._index_key(alias, exact = True), entries[alias])
+    for alias in aliases:
+        alias_index.setdefault(alias.lower(), entries[alias])
+    for alias, load in aliases.items():
+        assert resolver._resolve_from_index(alias, alias_index)[0] == load, alias
+
+
+def test_a_checkpoint_with_no_chat_template_is_withheld(tmp_path):
+    # codex P2: generate_stream raises outright without one, after the swap has evicted.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoTemplate")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+    (path / "tokenizer_config.json").write_text('{"model_max_length": 4096}')
+    assert resolver.local_servable_model(info) is None
+    # the standalone file newer saves write counts too.
+    (path / "chat_template.jinja").write_text("{{ messages }}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_fabricated_architecture_is_withheld(tmp_path, monkeypatch):
+    # codex P2: the ForCausalLM suffix is a convention, not proof the loader implements it.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "MadeUp")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["MadeUpForCausalLM"], "model_type": "made_up"})
+    )
+    assert resolver.local_servable_model(info) is None
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["MadeUpForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_saved_template_override_admits_a_base_checkpoint(tmp_path, monkeypatch):
+    # codex P2: the switch passes chat_template_override to the loader, so this can serve chat.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "OverrideTemplate")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "tokenizer_config.json").write_text('{"model_max_length": 4096}')
+    assert resolver.local_servable_model(info) is None
+
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a, **_k: ("key", {"chat_template_override": "{{ messages }}"}),
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_empty_chat_template_file_does_not_count(tmp_path):
+    # found by sweeping the same presence-only class Codex raised for the tokenizer.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "EmptyTemplate")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "tokenizer_config.json").write_text('{"model_max_length": 4096}')
+    (path / "chat_template.jinja").write_text("")
+    assert resolver.local_servable_model(info) is None
+    (path / "chat_template.jinja").write_text("{{ messages }}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_the_resident_fast_paths_do_not_fold_a_path_alias(monkeypatch):
+    # found by sweeping every _matches_any call: this one runs before both corrected checks.
+    resident = "/models/Foo"
+    backend = types.SimpleNamespace(
+        active_model_name = resident, _openai_advertised_id = "Foo", models = {}
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    assert inference_route._loaded_satisfies("Foo") is True
+    assert inference_route._loaded_satisfies("foo") is False
+    assert inference_route._loaded_identity_satisfies("foo") is False
+
+
+def test_transformers_families_are_not_architecture_gated(tmp_path, monkeypatch):
+    # codex P2: transformers module names are not derived from model_type (openai-gpt lives
+    # in transformers.models.openai) and a sidecar registry is invisible here, so probing it
+    # withheld loadable checkpoints twice. MLX keeps its probe, whose mapping is one per family.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    path = _local_checkpoint(tmp_path, "OpenAIGPT")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for model_type in ("openai-gpt", "brand_new_sidecar_family"):
+        (path / "config.json").write_text(
+            json.dumps({"architectures": ["OpenAIGPTLMHeadModel"], "model_type": model_type})
+        )
+        assert resolver.local_servable_model(info) == (False, ()), model_type
+
+
+def test_a_tensor_without_a_dtype_is_withheld(tmp_path):
+    # codex P2: an absent dtype is malformed metadata, not a width this table predates.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoDtype")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(tensor):
+        blob = json.dumps({"w": tensor}).encode()
+        (path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 4)
+
+    write({"shape": [1], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": 4, "shape": [1], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) is None
+    # a well-formed name this table has not learned yet still skips the width check alone.
+    write({"dtype": "F4_NEW", "shape": [1], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_unreadable_processor_config_is_withheld(tmp_path):
+    # codex P2: the processor is built by parsing it, after the swap has already run.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadProcessor")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Gemma3ForConditionalGeneration"],
+                "model_type": "gemma3",
+                "vision_config": {},
+            }
+        )
+    )
+    (path / "preprocessor_config.json").write_text("")
+    assert resolver.local_servable_model(info) is None
+    (path / "preprocessor_config.json").write_text("{not json")
+    assert resolver.local_servable_model(info) is None
+    (path / "preprocessor_config.json").write_text("{}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_boolean_is_not_a_safetensors_offset(tmp_path):
+    # codex P2: bool subclasses int, so shape [true] and offsets [false, 4] passed.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BoolOffsets")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(tensor, payload):
+        blob = json.dumps({"w": tensor}).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * payload
+        )
+
+    write({"dtype": "F32", "shape": [True], "data_offsets": [False, 4]}, 4)
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}, 4)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_unreadable_safetensors_metadata_is_withheld(tmp_path):
+    # codex P2: safetensors 0.8.0 requires __metadata__ to be str -> str (verified).
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadMeta")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    tensor = {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}
+
+    def write(metadata):
+        blob = json.dumps({"__metadata__": metadata, "a": tensor}).encode()
+        (path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 16)
+
+    write({"format": "pt"})
+    assert resolver.local_servable_model(info) == (False, ())
+    for broken in (["x"], {"k": 1}, {"k": {"a": "b"}}):
+        write(broken)
+        assert resolver.local_servable_model(info) is None, broken
+
+
+def test_an_empty_tokenizer_file_is_withheld(tmp_path):
+    # codex P2: a copy in flight leaves a file AutoTokenizer rejects after the swap.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "EmptyTokenizer")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+    (path / "tokenizer.json").write_text("")
+    assert resolver.local_servable_model(info) is None
+    # truncated mid-copy, so the closing delimiter never arrived.
+    (path / "tokenizer.json").write_text('{"model": {"vocab": ')
+    assert resolver.local_servable_model(info) is None
+    (path / "tokenizer.json").write_text('{"model": {"vocab": {}}}')
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_unreadable_mlx_registry_withholds_the_model(tmp_path, monkeypatch):
+    # codex P2: a registry find_spec cannot import is one the loader cannot import either.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "BrokenMlx")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+    def _raise(_name):
+        raise ModuleNotFoundError("mlx_lm")
+
+    monkeypatch.setattr("importlib.util.find_spec", _raise)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_mlx_host_withholds_a_family_mlx_cannot_build(tmp_path, monkeypatch):
+    # codex P2: a complete XLNet checkpoint clears every other gate, then fails in the loader.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "MlxArch")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["XLNetLMHeadModel"], "model_type": "xlnet"})
+    )
+    assert resolver.local_servable_model(info) is None
+
+    # the registry follows the loader's text_only decision: mlx-lm for text, mlx-vlm otherwise.
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+    (path / "preprocessor_config.json").write_text("{}")
+    (path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlavaForConditionalGeneration"],
+                "model_type": "llava",
+                "vision_config": {},
+            }
+        )
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+    # llava lives only in mlx-vlm, so a text-classified config naming it cannot load.
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["LlavaForConditionalGeneration"], "model_type": "llava"})
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_host_with_no_accelerator_serves_gguf_only(monkeypatch):
+    # codex P2: unsloth's get_device_type raises without a GPU, so a CPU wheel proves nothing.
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU, raising = False)
+    assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is False
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is True
+
+
+def test_a_pickle_shard_named_by_a_safetensors_index_is_withheld(tmp_path):
+    # codex P1: the index is selected but its filenames are opened, unpickling a .bin shard.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "PickleShard")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    shard = _safetensors_bytes()
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00001.safetensors").write_bytes(shard)
+    (path / "pytorch_model.bin").write_bytes(b"x" * 32)
+    (path / "model.safetensors.index.json").write_text('{"weight_map": {"a": "pytorch_model.bin"}}')
+    assert resolver.local_servable_model(info) is None
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_the_n_refusal_names_n_not_the_endpoint(monkeypatch):
+    # the default gguf_only wording sent the caller to the endpoint they were already on.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", None, "org/B-MLX"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_k: False)
+    payload = _chat_request(model = "org/B-MLX", n = 2)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    message = str(exc.value.detail)
+    assert "'n' greater than 1" in message
+    assert "This endpoint serves GGUF models only" not in message
+    assert rec.calls == []
+
+
+def test_a_serving_hf_cache_row_is_reported_loaded(tmp_path, monkeypatch):
+    # the scanner lists the models--* dir but the orchestrator records the snapshot it loaded.
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Chat"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(_CHAT_CONFIG)
+    (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
+    (snapshot / "model.safetensors").write_bytes(_safetensors_bytes())
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = str(snapshot), models = {}),
+    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    info = SimpleNamespace(id = "org/Chat", model_id = "org/Chat", path = str(repo))
+    rows = inference_route._servable_catalog_rows([info])
+    assert [(is_gguf, quants, resident) for _i, is_gguf, quants, resident in rows] == [
+        (False, (), True)
+    ]

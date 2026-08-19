@@ -1129,6 +1129,9 @@ class MLXInferenceBackend:
         # Keep the token so the native-template fallback can fetch a gated
         # model's repo template during generation.
         self._hf_token = hf_token
+        # 0 means "model default" for GGUF, and an API switch sends it; clamp like Transformers.
+        if not max_seq_length or max_seq_length <= 0:
+            max_seq_length = 2048
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)

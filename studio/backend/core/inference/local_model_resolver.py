@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve an OpenAI-request ``model`` string to a downloaded local GGUF.
+"""Resolve an OpenAI-request ``model`` string to a downloaded local model.
 
-Used by the opt-in auto-switch path. The match is conservative: only names
-that map to an already-downloaded local GGUF (and a quant that is actually on
-disk) are eligible, so an arbitrary OpenAI model string still falls through to
-the loaded model (drop-in compat) and no surprise multi-GB download is ever
-triggered. The local-model scan is cached for a few seconds since auto-switch
-consults it per request.
+Used by the opt-in auto-switch path. Two kinds of local model qualify: a GGUF
+(served by llama.cpp, with a quant that is actually on disk) and a non-GGUF
+checkpoint such as safetensors or MLX weights (served by the inference
+orchestrator). The match is conservative either way: only names that map to
+something already downloaded are eligible, so an arbitrary OpenAI model string
+still falls through to the loaded model (drop-in compat) and no surprise
+multi-GB download is ever triggered. The local-model scan is cached for a few
+seconds since auto-switch consults it per request.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ class _LocalGgufEntry:
     loader_id: str  # advertised id (repo id / folder name), also the override key
     load_path: str  # concrete on-disk dir/file passed to /load so it never downloads
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
+    is_gguf: bool = True  # False routes the load to the inference orchestrator
 
 
 _CACHE_TTL_S = 5.0
@@ -82,6 +85,22 @@ def _advertised_loader_id(info) -> Optional[str]:
             return alt
     # No clean alias: strip to a path-free public id so a host path is never advertised.
     return public_model_id(raw_id) or raw_id
+
+
+def _index_key(value: str, exact: bool = False) -> str:
+    """The index key for an id: exact for anything naming a local directory, else folded.
+
+    Two directories differing only by case are different weights on a case-sensitive
+    filesystem, and ``/v1/models`` publishes both, so folding them together let a request
+    for one resolve the other's checkpoint. ``exact`` covers the aliases derived from such
+    a directory as well as the path itself: ``/models/Foo`` is advertised as ``Foo``, which
+    is not path-shaped and would otherwise fold onto ``foo``. Repo ids stay
+    case-insensitive, which is how clients name them, and every id is also indexed folded
+    as a fallback, so the case-insensitive filesystems where both spellings name one
+    directory keep resolving.
+    """
+    stripped = value.strip()
+    return stripped if exact or _is_abs_path_id(stripped) else stripped.lower()
 
 
 def _resolve_load_dir(p):
@@ -149,11 +168,621 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         return None
 
 
-def local_gguf_quants(info) -> Optional[tuple[str, ...]]:
-    """On-disk quant labels for *info*, or None when it is not a servable local
-    GGUF. Read from the files, not ``info.model_format``: the HF-cache scanner
-    leaves that unset for GGUF snapshots, so filtering on it drops every cached
-    GGUF. One scan tells /v1/models what it can serve and which quant to name."""
+# Safetensors only: a bin index left behind by a conversion names shards that are gone,
+# and Transformers ignores it once the safetensors set is complete.
+_WEIGHT_INDEXES = ("model.safetensors.index.json",)
+# Real tokenizer vocabulary. tokenizer_config.json and the processor configs carry
+# metadata, not the vocabulary the loader needs, so neither counts on its own.
+_TOKENIZER_MARKERS = ("tokenizer.json", "tokenizer.model", "vocab.txt", "spiece.model")
+
+
+def _has_tokenizer_vocabulary(load_dir) -> bool:
+    """Whether a real tokenizer vocabulary sits beside the weights.
+
+    Mirrors unsloth.models.loader_utils._has_local_tokenizer_files: a bare vocab.json is
+    only half a BPE tokenizer and needs merges.txt, while the slow-tokenizer vocabularies
+    vocab.txt and spiece.model stand on their own.
+    """
+    if any(_asset_file_is_readable(load_dir / name) for name in _TOKENIZER_MARKERS):
+        return True
+    return _asset_file_is_readable(load_dir / "vocab.json") and _asset_file_is_readable(
+        load_dir / "merges.txt"
+    )
+
+
+def _asset_file_is_readable(path) -> bool:
+    """Whether a vocabulary file is present and not obviously unusable.
+
+    A copy still in flight leaves a zero-byte or truncated file that AutoTokenizer rejects
+    only after the swap. The JSON vocabularies are checked at their delimiters rather than
+    parsed: tokenizer.json runs to tens of megabytes, and parsing one per catalog row on
+    every scan would cost far more than the case it catches.
+    """
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return False
+        if path.suffix.lower() != ".json":
+            return True
+        with path.open("rb") as handle:
+            head = handle.read(1)
+            handle.seek(max(0, size - 64))
+            tail = handle.read().rstrip()
+        return head == b"{" and tail.endswith(b"}")
+    except OSError:
+        return False
+
+
+# far above any real header: a corrupt length reads huge, and reading it is the failure here.
+_MAX_SAFETENSORS_HEADER_BYTES = 256 * 1024 * 1024
+
+
+def _is_index(value) -> bool:
+    """A nonnegative integer offset or dimension, excluding bool, which subclasses int."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+# bytes per element, fixed-width dtypes only; sub-byte and unlisted ones skip the check.
+_SAFETENSORS_DTYPE_BYTES = {
+    "F64": 8,
+    "I64": 8,
+    "U64": 8,
+    "F32": 4,
+    "I32": 4,
+    "U32": 4,
+    "F16": 2,
+    "BF16": 2,
+    "I16": 2,
+    "U16": 2,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "I8": 1,
+    "U8": 1,
+    "BOOL": 1,
+}
+
+
+def _tensor_span_matches_shape(entry: dict, span: int) -> bool:
+    """Whether a tensor's declared byte span agrees with its dtype and shape.
+
+    Every tensor needs a shape, whatever its dtype, since the loader rejects an entry
+    without one. Only the byte count is conditional: an unrecognized dtype is more likely
+    a format this table predates than a corrupt file, so its span is left to the extent
+    check rather than withholding a checkpoint that would load.
+    """
+    shape = entry.get("shape")
+    if not isinstance(shape, list):
+        return False
+    elements = 1
+    for dimension in shape:
+        if not _is_index(dimension):
+            return False
+        elements *= dimension
+    dtype = entry.get("dtype")
+    # an absent or non-string dtype is malformed, unlike a well-formed name this predates.
+    if not isinstance(dtype, str) or not dtype:
+        return False
+    width = _SAFETENSORS_DTYPE_BYTES.get(dtype)
+    return True if width is None else elements * width == span
+
+
+def _safetensors_file_is_intact(path) -> bool:
+    """Whether a .safetensors file carries a header and all the bytes that header declares.
+
+    A copy still in flight, an interrupted transfer or a zero-byte placeholder passes an
+    ``is_file`` check and then fails in the loader, by which point the swap has unloaded
+    the resident model. ``partial`` only covers Studio's own downloads, so weights a user
+    put in a scan folder by hand are checked here instead. Reads the header, never the
+    tensors: 8 bytes of length, then the JSON, then the declared layout. Verified against
+    safetensors 0.8.0, which rejects an overlap, a gap and trailing bytes alike.
+    """
+    import json
+    import struct
+
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with path.open("rb") as handle:
+            (header_len,) = struct.unpack("<Q", handle.read(8))
+            if header_len <= 0 or header_len > _MAX_SAFETENSORS_HEADER_BYTES:
+                return False
+            if 8 + header_len > size:
+                return False
+            header = json.loads(handle.read(header_len))
+        if not isinstance(header, dict):
+            return False
+        spans = []
+        for name, entry in header.items():
+            if name == "__metadata__":
+                # str -> str or the loader refuses the header outright.
+                if not isinstance(entry, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in entry.items()
+                ):
+                    return False
+                continue
+            if not isinstance(entry, dict):
+                return False
+            offsets = entry.get("data_offsets")
+            if not (isinstance(offsets, list) and len(offsets) == 2):
+                return False
+            if not all(_is_index(value) for value in offsets):
+                return False
+            start, stop = offsets
+            if start > stop:
+                return False
+            if not _tensor_span_matches_shape(entry, stop - start):
+                return False
+            spans.append((start, stop))
+        # a __metadata__-only header would otherwise load a model of random weights.
+        if not spans:
+            return False
+        # an exact partition: safetensors rejects an overlap, a gap and a trailing byte alike.
+        cursor = 0
+        for start, stop in sorted(spans):
+            if start != cursor:
+                return False
+            cursor = stop
+        return 8 + header_len + cursor == size
+    except (OSError, ValueError, struct.error):
+        return False
+
+
+def _has_canonical_safetensors(load_dir) -> bool:
+    """Whether the loader will find weights under the names it actually looks for.
+
+    It receives no variant, so ``model.fp16.safetensors`` or a stray
+    ``optimizer.safetensors`` is not weights it can open.
+    """
+    import re
+
+    canonical = load_dir / "model.safetensors"
+    if canonical.is_file():
+        return _safetensors_file_is_intact(canonical)
+    if (load_dir / "model.safetensors.index.json").is_file():
+        return True
+    try:
+        return any(
+            re.fullmatch(r"model-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
+        )
+    except OSError:
+        return False
+
+
+# A LoRA directory can carry a copied config.json and tokenizer beside these, and
+# ModelConfig would then resolve its base model and fetch weights this resolver
+# promises never to download.
+_ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
+# The multimodal sub-configs the repo's own vision detector reads, which is what tells
+# a served VLM apart from a plain seq2seq wearing the same architecture suffix.
+_MULTIMODAL_CONFIG_KEYS = (
+    "vision_config",
+    "img_processor",
+    "image_token_index",
+    "projector_config",
+    "audio_config",
+)
+
+
+# The chat loader reaches these weights through causal and vision auto classes, so an
+# encoder-only or classifier checkpoint has no head it can generate with.
+_AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
+
+
+def _is_generative_chat_config(config: dict) -> bool:
+    """Whether a config.json describes a checkpoint the chat loader can generate with."""
+    architectures = config.get("architectures")
+    # model_type cannot stand in for the list: transformers' causal mapping lists bert and bart.
+    if not isinstance(architectures, list) or not architectures:
+        return False
+    names = [name for name in architectures if isinstance(name, str)]
+    # Not every causal checkpoint wears ForCausalLM: GPT2LMHeadModel and friends are
+    # selected from model_type by the loader, and withholding them is the invisibility
+    # this whole path exists to remove.
+    if any(name.endswith(("ForCausalLM", "LMHeadModel")) for name in names):
+        return True
+    # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving
+    # path has no AutoModelForSeq2SeqLM branch, so require a multimodal sub-config.
+    return any(name.endswith("ForConditionalGeneration") for name in names) and any(
+        key in config for key in _MULTIMODAL_CONFIG_KEYS
+    )
+
+
+def _host_has_a_non_gguf_backend() -> bool:
+    """Whether this host can serve non-GGUF weights at all.
+
+    The worker picks MLX on Apple Silicon and Transformers everywhere else, so a host
+    with neither leaves the load to fail after the swap has unloaded the resident GGUF.
+    An installed torch is not enough: the Transformers worker imports unsloth, whose
+    get_device_type raises outright on a host with no NVIDIA, AMD or Intel accelerator,
+    so a CPU-only or Vulkan-only box with a CPU wheel serves GGUF alone. Read the
+    detected device rather than importing torch, which costs seconds on this path.
+    """
+    if _host_serves_mlx():
+        return True
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.DEVICE not in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
+            return False
+        from importlib.util import find_spec
+
+        return find_spec("torch") is not None
+    except Exception:
+        return False
+
+
+_FP8_QUANT_METHODS = ("fp8", "fbgemm_fp8")
+
+
+def _mentions_nvfp4(config: dict) -> bool:
+    """Whether a config declares NVFP4 anywhere in its quantization metadata."""
+    for key in ("quantization", "quantization_config"):
+        block = config.get(key)
+        if isinstance(block, dict) and "nvfp4" in str(block).lower():
+            return True
+    return False
+
+
+def _fp8_suits_host(quant_method: str) -> bool:
+    """Whether this host can load an FP8 checkpoint, mirroring the loader's own gates.
+
+    verify_fp8_support_if_applicable requires CUDA, compute capability 8.9 for fp8 and
+    an H100 class card for fbgemm_fp8. The capability tiers need torch, so they apply
+    only when it is already imported; a cold import on the request path is not worth it.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        # ROCm keeps DeviceType.CUDA, but the loader reads it as hip and refuses FP8.
+        if hw.DEVICE != hw.DeviceType.CUDA or getattr(hw, "IS_ROCM", False):
+            return False
+        import sys
+
+        torch = sys.modules.get("torch")
+        if torch is None:
+            return True
+    except Exception:
+        return True
+    # the loader runs the same query, so a probe that raises here raises there too.
+    try:
+        major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        return False
+    if quant_method == "fbgemm_fp8":
+        return major >= 9
+    return major * 10 + minor >= 89
+
+
+# The runtime each quantizer needs. Transformers builds the quantizer from the
+# checkpoint's own config, so a method whose package is absent fails the load outright.
+_QUANTIZER_RUNTIMES = {
+    "bitsandbytes": ("bitsandbytes",),
+    "gptq": ("gptqmodel", "auto_gptq"),
+    "awq": ("awq", "autoawq"),
+    "compressed-tensors": ("compressed_tensors",),
+    # this repo's own portable export path writes these, and transformers reloads them.
+    "torchao": ("torchao",),
+}
+
+
+def _quantizer_runtime_present(quant_method: str) -> bool:
+    """Whether the package a recognized quantizer needs is installed.
+
+    find_spec keeps the probe off the import path. An unrecognized method has no known
+    runtime to look for, so it is withheld rather than guessed at.
+    """
+    modules = _QUANTIZER_RUNTIMES.get(quant_method)
+    if not modules:
+        return False
+    try:
+        from importlib.util import find_spec
+        from core._torchao_stub import is_stubbed
+
+        # find_spec succeeds against the Windows ROCm stubs, which cannot dequantize.
+        return any(find_spec(name) is not None and not is_stubbed(name) for name in modules)
+    except Exception:
+        return False
+
+
+def _saved_chat_template_override(load_path: str, loader_id: str, variant: Optional[str]) -> bool:
+    """Whether the override the switch would apply supplies a chat template.
+
+    Resolved through the same helper the load uses, so the answer cannot disagree with
+    what is actually passed to the loader.
+    """
+    try:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+        _key, override = resolve_override_for_load(load_path, loader_id, variant)
+        return bool(isinstance(override, dict) and override.get("chat_template_override"))
+    except Exception:
+        return False
+
+
+def _has_a_chat_template(
+    load_dir,
+    loader_id: str,
+    variant: Optional[str] = None,
+) -> bool:
+    """Whether chat generation will find a template for this checkpoint.
+
+    ``generate_stream`` raises outright without one, so a base checkpoint would load,
+    evict the resident model and then refuse every message. What ships beside the weights
+    counts, and so does a saved ``chat_template_override``, which the switch resolves and
+    passes to the loader. The mapper generation also consults does not: it is keyed by
+    ``active_model_name``, which for an auto-switch is the concrete load path rather than
+    the advertised alias, so a hit there would not install a template at generate time.
+    """
+    if _saved_chat_template_override(str(load_dir), loader_id, variant):
+        return True
+    # readable, not merely present: an empty one is a copy in flight and installs no template.
+    for name in ("chat_template.jinja", "chat_template.json"):
+        if _asset_file_is_readable(load_dir / name):
+            return True
+    for name in ("tokenizer_config.json", "processor_config.json", "preprocessor_config.json"):
+        entry = _read_json(load_dir / name)
+        if isinstance(entry, dict) and entry.get("chat_template"):
+            return True
+    return False
+
+
+def _loader_implements_architecture(config: dict) -> bool:
+    """Whether the MLX loader implements this checkpoint's model_type.
+
+    A causal-looking class name is not enough: ``MadeUpForCausalLM`` satisfies every other
+    gate and then fails in the loader, once the swap has unloaded the resident model. The
+    MLX stacks keep one module per family, so the family's presence answers it, and they
+    are not interchangeable for a given load: MLXInferenceBackend passes ``text_only`` off
+    its vision verdict, reaching mlx-vlm for a multimodal checkpoint and mlx-lm otherwise.
+    That modality is read from the config keys this module already uses to require
+    processor files, rather than is_vision_model, which runs a subprocess.
+
+    Transformers is deliberately not probed the same way. Its module names are not derived
+    from model_type (``openai-gpt`` lives in ``transformers.models.openai``), and the
+    orchestrator may load a checkpoint under a sidecar whose registry this process cannot
+    see, so the probe withheld loadable models twice. Asking transformers itself would
+    mean importing it on the request path, which costs seconds per catalog row, and the
+    only checkpoints it would reject are fabricated ones nobody ships.
+    """
+    if not _host_serves_mlx():
+        return True
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not model_type.strip():
+        return False
+    multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
+    package = "mlx_vlm" if multimodal else "mlx_lm"
+    name = model_type.strip().lower().replace("-", "_")
+    if not name.isidentifier():
+        return False
+    # fail closed: a registry this cannot import is one the loader cannot import either.
+    try:
+        from importlib.util import find_spec
+        return find_spec(f"{package}.models.{name}") is not None
+    except Exception:
+        return False
+
+
+def _quantization_suits_host(config: dict) -> bool:
+    """Whether this host's backend can load the checkpoint's quantization, if any.
+
+    mlx-lm reads its own ``quantization`` block and nothing else, while the
+    Transformers backend reads ``quant_method`` layouts and not MLX's. Either
+    mismatch loads only after the resident model has already been unloaded.
+    """
+    mlx_host = _host_serves_mlx()
+    # NVFP4 wears an MLX-shaped block but the loader rejects its per-module metadata,
+    # so it is not loadable on any host this resolver feeds.
+    if _mentions_nvfp4(config):
+        return False
+    if isinstance(config.get("quantization"), dict) and "group_size" in config["quantization"]:
+        return mlx_host
+    method = (config.get("quantization_config") or {}).get("quant_method")
+    if not isinstance(method, str) or not method.strip():
+        return True
+    if mlx_host:
+        return False
+    if method in _FP8_QUANT_METHODS:
+        return _fp8_suits_host(method)
+    return _quantizer_runtime_present(method)
+
+
+def _read_json(path):
+    """Parsed JSON for *path*, or None when it is absent or unreadable."""
+    import json
+    try:
+        with path.open(encoding = "utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def _host_serves_mlx() -> bool:
+    """Whether this host's inference worker would pick MLXInferenceBackend.
+
+    Reads the detected verdict without triggering detection, so an unknown device
+    reads as "not MLX" and the entry is simply withheld until startup has decided.
+    """
+    try:
+        from utils.hardware import hardware as hw
+        return hw.DEVICE == hw.DeviceType.MLX
+    except Exception:
+        return False
+
+
+def _weight_shards_all_present(load_dir) -> bool:
+    """Whether every shard a weight index references is on disk.
+
+    ``_has_non_gguf_weights`` is satisfied by a single file, so a sharded checkpoint
+    missing shards would be advertised and then fail to load. This is the non-GGUF
+    counterpart to the GGUF branch checking its quants. Only the ./models, LM Studio
+    and scan-folder rows need it; the HF cache scanner reports an incomplete snapshot
+    through ``info.partial``.
+    """
+    import json
+    import re
+    from pathlib import PurePosixPath
+
+    # A shard names its set in the filename, so one present without the index that
+    # declares the rest is a half-downloaded directory. Only when the shards are the
+    # weights being loaded: a complete model.safetensors makes a leftover shard
+    # irrelevant, and the loader never opens it.
+    try:
+        if not (load_dir / "model.safetensors").is_file() and any(
+            re.fullmatch(r".+-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
+        ):
+            if not (load_dir / "model.safetensors.index.json").is_file():
+                return False
+    except OSError:
+        return False
+    # the loader opens a complete model.safetensors, so a consolidation's leftover index is unread.
+    if (load_dir / "model.safetensors").is_file():
+        return True
+    for name in _WEIGHT_INDEXES:
+        index_file = load_dir / name
+        if not index_file.is_file():
+            continue
+        try:
+            with index_file.open(encoding = "utf-8") as handle:
+                weight_map = (json.load(handle) or {}).get("weight_map")
+        except (OSError, ValueError):
+            return False
+        if not isinstance(weight_map, dict) or not weight_map:
+            return False
+        for shard in set(weight_map.values()):
+            # Confinement is judged on the written path, not a resolved one: an HF cache
+            # snapshot symlinks its weights into blobs/, so resolving would place every
+            # cached checkpoint outside its own directory and withhold all of them.
+            if not isinstance(shard, str) or not shard:
+                return False
+            relative = PurePosixPath(shard.replace("\\", "/"))
+            # ":" too: "C:/x" is relative to PurePosixPath but resets the anchor on Windows.
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or any(":" in part for part in relative.parts)
+            ):
+                return False
+            # the index is picked but its filenames are opened, so a .bin here loads a pickle.
+            if relative.suffix != ".safetensors":
+                return False
+            shard_file = load_dir / relative
+            if not shard_file.is_file() or not _safetensors_file_is_intact(shard_file):
+                return False
+    return True
+
+
+def _weight_assets_are_complete(load_dir) -> bool:
+    """Whether *load_dir* holds a complete checkpoint the chat loader can open.
+
+    On-disk shape only, nothing parsed from the config: real, whole safetensors weights
+    beside a tokenizer, and none of the markers that make a directory something other
+    than a servable model (a diffusers pipeline, a bare LoRA adapter, an embedder).
+    """
+    from routes.models import _local_pipeline_index
+
+    if _local_pipeline_index(load_dir) or not (load_dir / "config.json").is_file():
+        return False
+    # Safetensors only. A .bin checkpoint is pickle-backed, and an API request
+    # must not be able to execute one without an explicit load action.
+    if not _has_canonical_safetensors(load_dir) or not _weight_shards_all_present(load_dir):
+        return False
+    if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
+        return False
+    # Weights alone cannot serve chat, and the swap has evicted the resident model
+    # by the time the loader finds the tokenizer missing.
+    if not _has_tokenizer_vocabulary(load_dir):
+        return False
+    # Only the generative chat path consumes these, and an embedder loaded as a
+    # language model fails after the swap has already evicted the resident one.
+    # Same marker is_embedding_model reads for a local path, without its memo,
+    # which would pin a verdict for the process from one scan.
+    return not (load_dir / "modules.json").is_file()
+
+
+def _config_is_servable_here(load_dir, config: dict) -> bool:
+    """Whether *config* describes a chat model this host can load without an explicit action.
+
+    Everything the switch cannot recover from once it has run: a repo needing
+    ``trust_remote_code``, a VLM with no processor files, a quantization this host has no
+    runtime for, weights with no generative head, and the audio families whose request
+    shape the chat route rejects only after the swap.
+    """
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
+
+    # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
+    for name in REMOTE_CODE_CONFIG_FILES:
+        candidate = config if name == "config.json" else _read_json(load_dir / name)
+        if isinstance(candidate, dict) and "auto_map" in candidate:
+            return False
+    # A VLM builds an AutoProcessor, which tokenizer files alone cannot supply. Same
+    # pair unsloth.models.loader_utils._has_local_processor_files reads, checked here
+    # rather than imported so the request path stays clear of the unsloth package.
+    # readable, not merely present: the processor is built by parsing it, after the swap.
+    if any(key in config for key in _MULTIMODAL_CONFIG_KEYS) and not any(
+        isinstance(_read_json(load_dir / name), dict)
+        for name in ("processor_config.json", "preprocessor_config.json")
+    ):
+        return False
+    if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
+        return False
+    if not _loader_implements_architecture(config):
+        return False
+    # whisper and TTS need a request shape the chat route rejects only after the swap.
+    from utils.models.model_config import detect_audio_type
+
+    audio_type = detect_audio_type(str(load_dir), local_files_only = True)
+    return audio_type is None or audio_type in _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES
+
+
+def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+    """Build an entry for a local non-GGUF checkpoint (safetensors, MLX) the
+    inference orchestrator can serve, else None.
+
+    Requires a root ``config.json`` beside real, complete weights, so a bare LoRA
+    adapter or a tokenizer-only snapshot is never offered as a model. Diffusers
+    pipelines, embedders, custom-code repos and partial downloads are rejected too:
+    only the generative chat path consumes these entries, and a switch that cannot
+    load its target has already evicted the resident model by the time it fails.
+    """
+    from pathlib import Path
+
+    path = getattr(info, "path", None)
+    if not isinstance(path, str) or getattr(info, "partial", False):
+        return None
+    # model-independent, so first: with no backend every row is withheld anyway.
+    if not _host_has_a_non_gguf_backend():
+        return None
+    try:
+        p = Path(path)
+        if not p.is_dir():
+            return None
+        load_dir = _resolve_load_dir(p)
+        if not _weight_assets_are_complete(load_dir):
+            return None
+        config = _read_json(load_dir / "config.json")
+        if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
+            return None
+        if not _has_a_chat_template(load_dir, loader_id):
+            return None
+        # No quants: quantization is baked in, so there is no ":<quant>" to pin.
+        return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
+    except Exception:
+        return None
+
+
+def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+    """Entry for whichever backend can serve *info* from disk, GGUF first."""
+    return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
+
+
+def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
+    """``(is_gguf, on-disk quant labels)`` when this server can serve *info* straight
+    from disk, else None. Non-GGUF weights carry no quant labels.
+
+    Read from the files, not ``info.model_format``: the HF-cache scanner leaves that
+    unset for GGUF snapshots, so filtering on it drops every cached GGUF. One scan
+    tells /v1/models what it can serve and which quant to name.
+    """
     from pathlib import Path
 
     path = getattr(info, "path", None)
@@ -164,17 +793,29 @@ def local_gguf_quants(info) -> Optional[tuple[str, ...]]:
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
         return None
-    entry = _local_gguf_entry(getattr(info, "id", "") or "", info)
-    return entry.variants if entry is not None else None
+    entry = _local_servable_entry(getattr(info, "id", "") or "", info)
+    return (entry.is_gguf, entry.variants) if entry is not None else None
 
 
-def info_has_local_gguf(info) -> bool:
-    """True when *info* points to on-disk GGUF weights the auto-switch path can load."""
-    return local_gguf_quants(info) is not None
+def local_load_dir(path: Optional[str]) -> Optional[str]:
+    """The concrete directory *path* loads from, or None when it names no directory.
+
+    An HF cache repo resolves to its snapshot, which is what the orchestrator records as
+    the active model, so a caller comparing a scanned catalog path against resident state
+    is comparing the same string the loader used. Touches the filesystem.
+    """
+    from pathlib import Path
+
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        return str(_resolve_load_dir(Path(path)))
+    except Exception:
+        return path
 
 
 def _build_index() -> dict[str, _LocalGgufEntry]:
-    """Map normalized id/model_id/display_name -> local GGUF entry.
+    """Map normalized id/model_id/display_name -> local model entry.
 
     Scans the same roots Unsloth's model picker lists (./models, the active plus
     legacy/default HF caches, LM Studio dirs, and user scan folders) so a named
@@ -196,6 +837,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
+    folded: list[tuple[str, _LocalGgufEntry]] = []
     seen_hf: set[str] = set()
 
     try:
@@ -273,7 +915,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)
-        entry = _local_gguf_entry(loader_id, info)
+        entry = _local_servable_entry(loader_id, info)
         if entry is None:
             continue
         # Index every alias (including the path) so a client can resolve by any of
@@ -285,11 +927,17 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             public_model_id(raw_id),
         ):
             if key:
-                index.setdefault(key.strip().lower(), entry)
+                # keyed off the source: an alias of a case-distinct directory is as ambiguous.
+                index.setdefault(_index_key(key, exact = _is_abs_path_id(raw_id)), entry)
+                folded.append((key.strip().lower(), entry))
         # Other revisions of the same repo resolve to their own weights, so a pin on
         # one keeps working after Hugging Face writes a newer snapshot.
         for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
-            index.setdefault(name.strip().lower(), sibling_entry)
+            index.setdefault(_index_key(name), sibling_entry)
+            folded.append((name.strip().lower(), sibling_entry))
+    # last: one model's folded spelling is another's exact key when two paths differ by case.
+    for key, entry in folded:
+        index.setdefault(key, entry)
     return index
 
 
@@ -312,6 +960,9 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
     (``<root>/models--org--name/snapshots/<rev>``). A scan folder that merely happens
     to be called ``snapshots`` holds unrelated models, and treating those as
     revisions would silently serve one model in place of another.
+
+    GGUF only: ``snapshot_variants_all_complete`` reports a revision offering no quants
+    as incomplete, so a non-GGUF repo pins to its scanned revision alone.
     """
     from pathlib import Path
     from types import SimpleNamespace
@@ -487,6 +1138,7 @@ def resolve_local_gguf(
 
     ``load_path`` is the concrete on-disk path to hand /load (so it never fetches
     a remote), ``loader_id`` is the advertised id used as the launch-override key.
+    ``gguf_variant`` is None for a non-GGUF checkpoint, which has no quant to pin.
     ``requested`` is ``repo`` or ``repo:VARIANT``. An exact id match wins first
     (so ids containing a colon still resolve); else the last ``:VARIANT`` is split
     off and resolves only when that quant is on disk, unless it names no quant at
@@ -513,7 +1165,8 @@ def _resolve_from_index(
 ) -> Optional[tuple[str, Optional[str], str]]:
     """Resolve *requested* against one immutable published index mapping."""
     try:
-        entry = index.get(requested.lower())
+        # exact before folded, so a case-distinct id resolves its own weights.
+        entry = index.get(requested.strip()) or index.get(requested.strip().lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None
             return entry.load_path, variant, entry.loader_id
@@ -521,7 +1174,7 @@ def _resolve_from_index(
         base, sep, variant = requested.rpartition(":")
         if not sep:
             return None
-        entry = index.get(base.strip().lower())
+        entry = index.get(base.strip()) or index.get(base.strip().lower())
         if entry is None:
             return None
         wanted = variant.strip().lower()
@@ -537,6 +1190,32 @@ def _resolve_from_index(
         return entry.load_path, (entry.variants[0] if entry.variants else None), entry.loader_id
     except Exception:
         return None
+
+
+def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:
+    """Whether an auto-switch target is served by llama.cpp rather than the orchestrator.
+
+    Reads the weights the load will actually open, so a rebuilt index that no longer
+    carries the entry cannot flip the answer mid-switch. Falls back to the indexed
+    entry, then to True, which is what the callers need for a target that is not a
+    concrete path: llama.cpp is the only backend auto-switch used before non-GGUF
+    support, and the idle-unload reload stash only ever holds a freed GGUF.
+
+    Touches the filesystem, so call it off the event loop.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    if isinstance(load_path, str) and load_path:
+        try:
+            if Path(load_path).exists():
+                return _local_gguf_entry("", SimpleNamespace(path = load_path)) is not None
+        except OSError:
+            pass
+    if not isinstance(loader_id, str) or not loader_id.strip():
+        return True
+    entry = _scan[1].get(loader_id.strip().lower())
+    return entry.is_gguf if entry is not None else True
 
 
 MISS_MODEL_NOT_FOUND = "model_not_found"
