@@ -72,6 +72,10 @@ const studioPageSource = readFileSync(
   new URL("../src/features/studio/studio-page.tsx", import.meta.url),
   "utf8",
 );
+const apiMonitorPageSource = readFileSync(
+  new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url),
+  "utf8",
+);
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -774,6 +778,11 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   assert.match(
     studioPageSource,
     /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?unsloth:app-shell-ready/,
+  );
+  assert.match(rootRouteSource, /pathname === "\/api-monitor"/);
+  assert.match(
+    apiMonitorPageSource,
+    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
   );
 });
 
