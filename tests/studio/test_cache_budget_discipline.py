@@ -66,6 +66,11 @@ PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
     ("notebooks-ci.yml", "api-introspect"),
+    # Installs a 709-line Colab pip-freeze, eight matrix legs at once, and each leg
+    # downloads the identical set. It is cron and dispatch only, so none of that is
+    # on a pull request's critical path -- but eight ubuntu runners holding a 25
+    # minute cap contend for the same pool every other job queues against.
+    ("notebooks-ci.yml", "smoke-install"),
     ("studio-backend-ci.yml", "pytest"),
     ("studio-backend-ci.yml", "repo-cpu-tests"),
     ("studio-export-capability-ci.yml", "capability"),

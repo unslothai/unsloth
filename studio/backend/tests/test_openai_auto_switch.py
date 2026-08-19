@@ -4206,6 +4206,67 @@ def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
     assert counted != {}, "the tokenizer must be reached"
 
 
+def test_chat_count_tokens_refuses_an_empty_prompt(monkeypatch):
+    """#8882: an empty conversation renders the generation marker alone.
+
+    unsloth/Phi-4-mini-instruct-GGUF Q4_K_M renders "<|assistant|>" for an empty message list, one
+    token, and the header reported it as usage on a chat nobody had started.
+    """
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(_count_request([]), "tester"))
+    assert excinfo.value.status_code == 503
+    assert "empty" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == []
+
+
+def test_chat_count_tokens_counts_an_empty_chat_carrying_a_system_prompt(monkeypatch):
+    # The system prompt is in every request the chat will send, so it occupies the window already.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 7)
+    body = _counted_body(_count_request([{"role": "system", "content": "You are helpful."}]))
+    assert body["input_tokens"] == 7
+    assert [message.get("role") for message in counted.get("messages") or []] == ["system"]
+
+
+def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch):
+    """`--enable-tools` outranks the request's own `enable_tools: false`.
+
+    The client cannot see that policy, so the emptiness verdict belongs here: the schemas and the
+    action nudge it injects are real occupancy, and refusing them would blank a bar that has a
+    number to show.
+    """
+    import state.tool_policy as _tp
+
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 850, supports_tools = True)
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: True)
+
+    body = _counted_body(_count_request([], enable_tools = False))
+    assert body["input_tokens"] == 850
+    nudged = any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+    assert nudged is True
+
+
+def test_chat_count_tokens_counts_a_passthrough_catalog_without_messages(monkeypatch):
+    # The passthrough forwards the caller's own schemas, and /apply-template renders them with no
+    # message to carry them, so the prompt is not empty even though `messages` is.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 640, supports_tools = True)
+    catalog = [{"type": "function", "function": {"name": "lookup_order"}}]
+    body = _counted_body(_count_request([], tools = catalog))
+    assert body["input_tokens"] == 640
+    assert [(tool.get("function") or {}).get("name") for tool in counted.get("tools") or []] == [
+        "lookup_order"
+    ]
+
+
 # Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
 # from these exact messages, and the tool loop opens it by splicing in what RAG retrieves.
 _PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
