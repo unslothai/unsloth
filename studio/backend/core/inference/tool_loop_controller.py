@@ -175,10 +175,7 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
-def coerce_tool_call_replay_arguments(
-    args_text: Any,
-    structured_args: Any = None,
-) -> str:
+def coerce_tool_call_replay_arguments(args_text: Any, structured_args: Any = None) -> str:
     """Return OpenAI-wire ``function.arguments`` JSON text safe to replay upstream.
 
     Mirrors the frontend ``toolCallReplayArguments`` helper: prefer the streamed
