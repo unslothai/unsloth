@@ -1944,11 +1944,13 @@ async def _tunnel_safe_json(coro, *, label: str):
                 yield json.dumps(jsonable_encoder(payload)).encode()
             return
 
-    return _SameTaskStreamingResponse(
+    response = _SameTaskStreamingResponse(
         _body(),
         media_type = "application/json",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+    response._same_task = task
+    return response
 
 
 async def _aclose_stream_resources(
@@ -5041,11 +5043,11 @@ def _active_gguf_intent(
     )
 
 
-def _resolve_model_identifier_for_request(
+def _verify_native_path_lease_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
-) -> tuple[str, str, bool]:
+):
     if not request.native_path_lease:
-        return request.model_path, request.model_path, False
+        return None
     try:
         grant = verify_native_path_lease(
             request.native_path_lease,
@@ -5062,6 +5064,15 @@ def _resolve_model_identifier_for_request(
             status_code = 400,
             detail = redact_native_paths(str(exc)),
         ) from exc
+    return grant
+
+
+def _resolve_model_identifier_for_request(
+    request: LoadRequest | ValidateModelRequest, *, operation: str, native_grant = None
+) -> tuple[str, str, bool]:
+    if native_grant is None and not request.native_path_lease:
+        return request.model_path, request.model_path, False
+    grant = native_grant or _verify_native_path_lease_for_request(request, operation = operation)
     display_label = grant.display_label or Path(request.model_path).name or "Native model"
     return str(grant.canonical_path), display_label, True
 
@@ -8499,6 +8510,7 @@ async def _run_tracked_load_model_impl(
     attempt: Optional[_ScopedLoadAttempt] = None,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    native_grant = None,
 ):
     global _running_load_attempt
 
@@ -8517,6 +8529,7 @@ async def _run_tracked_load_model_impl(
                 current_request_counted = current_request_counted,
                 on_reload_confirmed = on_reload_confirmed,
                 load_cancel_event = attempt.cancel_event,
+                native_grant = native_grant,
             )
         )
         try:
@@ -8531,6 +8544,10 @@ async def _run_tracked_load_model_impl(
                 except asyncio.CancelledError:
                     if current_task is not None:
                         current_task.uncancel()
+                except BaseException:
+                    if not load_task.done():
+                        raise
+                    break
             try:
                 load_task.result()
             except BaseException:
@@ -8639,6 +8656,27 @@ def _finish_load_admission(operation: _LoadAdmission) -> None:
     _finish_load_attempt(operation.attempt)
 
 
+def _defer_sync_load_admission(operation: _LoadAdmission, task: asyncio.Task) -> None:
+    global _last_async_load_error
+    operation = operation._replace(task = task)
+    with _load_admissions_lock:
+        if _load_admissions.get(operation.token) is not None:
+            _load_admissions[operation.token] = operation
+
+    def _finish(done_task: asyncio.Task) -> None:
+        global _last_async_load_error
+        try:
+            done_task.result()
+        except BaseException:
+            pass
+        else:
+            with _load_admissions_lock:
+                _last_async_load_error = None
+        _finish_load_admission(operation)
+
+    task.add_done_callback(_finish)
+
+
 @router.post("/load", response_model = Union[LoadResponse, LoadAcceptedResponse])
 async def load_model(
     request: LoadRequest,
@@ -8664,8 +8702,9 @@ async def load_model(
     if request.async_load:
         if not request.load_request_id:
             raise HTTPException(status_code = 422, detail = "async_load requires load_request_id")
-        deletion_model_path, _, _ = _resolve_model_identifier_for_request(
-            request, operation = "load-model"
+        native_grant = _verify_native_path_lease_for_request(request, operation = "load-model")
+        deletion_model_path = (
+            str(native_grant.canonical_path) if native_grant is not None else request.model_path
         )
         pending_model_label = _lifecycle_model_label(request.model_path, request.gguf_variant)
         with _load_admissions_lock:
@@ -8707,6 +8746,7 @@ async def load_model(
                             action = "Loading a model",
                             cancel = cancel,
                         ),
+                        native_grant = native_grant,
                     )
                     get_llama_cpp_backend()._loaded_by_user_action = True
                     with _load_admissions_lock:
@@ -8744,7 +8784,9 @@ async def load_model(
         return LoadAcceptedResponse(status = "loading", model = pending_model_label)
 
     with _load_admissions_lock:
-        if _pending_async_load is not None or _load_admissions:
+        if _pending_async_load is not None or any(
+            item.kind == "async" for item in _load_admissions.values()
+        ):
             raise HTTPException(status_code = 409, detail = "Another model operation is already in progress.")
         attempt = _begin_load_attempt(request, current_subject)
         operation = _LoadAdmission(
@@ -8756,16 +8798,23 @@ async def load_model(
             attempt,
         )
         _load_admissions[operation.token] = operation
+    deferred = False
     try:
         response = await _tunnel_safe_json(
             load_model_gated(request, fastapi_request, current_subject, user_initiated = True, attempt = attempt),
             label = "Model load",
         )
-        with _load_admissions_lock:
-            _last_async_load_error = None
+        task = getattr(response, "_same_task", None)
+        if task is not None:
+            _defer_sync_load_admission(operation, task)
+            deferred = True
+        else:
+            with _load_admissions_lock:
+                _last_async_load_error = None
         return response
     finally:
-        _finish_load_admission(operation)
+        if not deferred:
+            _finish_load_admission(operation)
 
 
 async def load_model_gated(
@@ -8831,6 +8880,7 @@ async def _load_model_impl(
     current_request_counted: bool = False,
     on_reload_confirmed = None,
     load_cancel_event: Optional[threading.Event] = None,
+    native_grant = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -8908,9 +8958,16 @@ async def _load_model_impl(
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
 
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "load-model")
-        )
+        if native_grant is None:
+            model_identifier, model_log_label, native_grant_backed = (
+                _resolve_model_identifier_for_request(request, operation = "load-model")
+            )
+        else:
+            model_identifier, model_log_label, native_grant_backed = (
+                _resolve_model_identifier_for_request(
+                    request, operation = "load-model", native_grant = native_grant
+                )
+            )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -198,6 +199,38 @@ def test_manual_unload_cancels_pending_async_admission(monkeypatch):
         await operation.task
 
     run(scenario())
+
+
+def test_async_native_lease_is_verified_once_and_reused(monkeypatch):
+    captured = []
+    grant = SimpleNamespace(
+        canonical_path = Path("C:/models/model.gguf"),
+        display_label = "model.gguf",
+    )
+
+    async def load(req, fastapi_request, subject, **kwargs):
+        captured.append(kwargs["native_grant"])
+        return response(req.model_path)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    monkeypatch.setattr(
+        inference_route,
+        "_verify_native_path_lease_for_request",
+        lambda req, operation: grant,
+    )
+    monkeypatch.setattr(keepwarm, "acquire_inference_lifecycle_gate_nowait", lambda: True)
+    monkeypatch.setattr(keepwarm, "release_inference_lifecycle_gate", lambda: None)
+
+    async def scenario():
+        native_request = request(async_load = True).model_copy(
+            update = {"native_path_lease": "signed-lease"}
+        )
+        accepted = await inference_route.load_model(native_request, object(), "subject")
+        assert accepted.model == "unsloth/test"
+        await inference_route._pending_async_load.task
+
+    run(scenario())
+    assert captured == [grant]
 
 
 def test_async_load_preserves_active_generation_callback(monkeypatch):
