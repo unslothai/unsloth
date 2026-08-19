@@ -1122,7 +1122,12 @@ function ProjectLanding({
   // is off-route (e.g. behind another tab).
   const active = useChatActive();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const initialActiveThreadRef = useRef<string | null>(null);
+  // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch
+  // is an earlier sibling of this subtree, so its mount effect blanks the store's
+  // activeThreadId first and an effect here would only ever read back null.
+  const [initialActiveThreadId] = useState(
+    () => useChatRuntimeStore.getState().activeThreadId,
+  );
   // Land on Sources when the project was just created with dropped files.
   const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
@@ -1204,8 +1209,6 @@ function ProjectLanding({
   }
 
   useEffect(() => {
-    initialActiveThreadRef.current =
-      useChatRuntimeStore.getState().activeThreadId;
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     setPendingNewThreadId(null);
@@ -1381,7 +1384,7 @@ function ProjectLanding({
       }
       return;
     }
-    if (activeThreadId === initialActiveThreadRef.current) {
+    if (activeThreadId === initialActiveThreadId) {
       return;
     }
     // Hand the composer's attach choice to the chat it just created: setting
@@ -1397,7 +1400,13 @@ function ProjectLanding({
         captured?.nonce === newThreadNonce ? captured.claim : NO_SUCH_CLAIM,
       );
     setPendingNewThreadId(activeThreadId);
-  }, [activeThreadId, pendingNewThreadId, newThreadNonce, rotateNewThreadNonce]);
+  }, [
+    activeThreadId,
+    initialActiveThreadId,
+    pendingNewThreadId,
+    newThreadNonce,
+    rotateNewThreadNonce,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2495,6 +2504,23 @@ export function ChatPage({
     view.mode === "single" && !search.thread && !search.new && !search.project
       ? "single:implicit"
       : artifactViewKey;
+
+  // Compare replaces the shared provider on screen, so the base view is kept
+  // mounted behind it (hidden + inert) rather than unmounted: unmounting runs
+  // useLocalRuntime's detach(), the backend cancels on the disconnect, and a run
+  // left going in a project chat would die the moment a compare chat is opened.
+  // Frozen to the last non-compare view so the provider's props don't churn.
+  const keptBaseViewRef = useRef<{
+    view: Exclude<ChatView, { mode: "compare" }>;
+    attachmentTargetKey: string;
+  } | null>(null);
+  if (view.mode !== "compare") {
+    keptBaseViewRef.current = { view, attachmentTargetKey: artifactViewKey };
+  }
+  const baseView = keptBaseViewRef.current?.view ?? null;
+  const baseAttachmentTargetKey =
+    keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
+  const baseBackgrounded = view.mode === "compare";
 
   useEffect(() => {
     clearAutoOpenedArtifacts();
@@ -3664,40 +3690,65 @@ export function ChatPage({
           </div>
         </div>
 
-        {view.mode !== "compare" ? (
-          <ChatRuntimeProvider
-            modelType="base"
-            projectId={view.projectId}
-            initialThreadId={view.mode === "single" ? view.threadId : undefined}
-            newThreadNonce={
-              view.mode === "project"
-                ? projectNewThreadNonce
-                : view.newThreadNonce
+        {/* One provider shared by the project and single views, never keyed on
+            thread / nonce / project. Switching between them (open an old chat
+            mid-run in a project, come back) therefore reattaches the live run
+            instead of remounting the runtime and aborting generation (#8908);
+            assistant-ui keeps every alive thread's runtime mounted. Re-adding
+            any key here brings the bug straight back. Compare renders as a
+            sibling, not in its place, so entering compare hides this rather
+            than unmounting it -- ComparePane builds its own providers and
+            useRemoteThreadListRuntime throws when they nest. */}
+        {baseView ? (
+          <div
+            className={
+              baseBackgrounded
+                ? "hidden"
+                : "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
             }
-            listThreads={false}
+            inert={baseBackgrounded || undefined}
           >
-            {view.mode === "project" ? (
-              <ProjectLanding
-                key={view.projectId}
-                projectId={view.projectId}
-                projectName={currentProject?.name ?? "Project"}
-                items={currentProjectItems}
-                newThreadNonce={projectNewThreadNonce}
-                rotateNewThreadNonce={rotateProjectNewThreadNonce}
-              />
-            ) : (
-              <NativeAttachmentTargetContext.Provider value={artifactViewKey}>
-                <SingleContent
-                  key={view.projectId ?? "single"}
-                  threadId={view.threadId}
-                  artifact={selectedArtifact}
-                  artifactSurface={artifactSurface}
-                  onCloseArtifact={closeArtifactSurface}
-                />
-              </NativeAttachmentTargetContext.Provider>
-            )}
-          </ChatRuntimeProvider>
-        ) : (
+            <ChatActiveContext.Provider value={active && !baseBackgrounded}>
+              <ChatRuntimeProvider
+                modelType="base"
+                projectId={baseView.projectId}
+                initialThreadId={
+                  baseView.mode === "single" ? baseView.threadId : undefined
+                }
+                newThreadNonce={
+                  baseView.mode === "project"
+                    ? projectNewThreadNonce
+                    : baseView.newThreadNonce
+                }
+                listThreads={false}
+                backgrounded={baseBackgrounded}
+              >
+                {baseView.mode === "project" ? (
+                  <ProjectLanding
+                    key={baseView.projectId}
+                    projectId={baseView.projectId}
+                    projectName={currentProject?.name ?? "Project"}
+                    items={currentProjectItems}
+                    newThreadNonce={projectNewThreadNonce}
+                    rotateNewThreadNonce={rotateProjectNewThreadNonce}
+                  />
+                ) : (
+                  <NativeAttachmentTargetContext.Provider
+                    value={baseAttachmentTargetKey}
+                  >
+                    <SingleContent
+                      threadId={baseView.threadId}
+                      artifact={selectedArtifact}
+                      artifactSurface={artifactSurface}
+                      onCloseArtifact={closeArtifactSurface}
+                    />
+                  </NativeAttachmentTargetContext.Provider>
+                )}
+              </ChatRuntimeProvider>
+            </ChatActiveContext.Provider>
+          </div>
+        ) : null}
+        {view.mode === "compare" ? (
           <CompareContent
             key={view.pairId}
             pairId={view.pairId}
@@ -3711,7 +3762,7 @@ export function ChatPage({
             deleteDisabled={modelOperationInProgress}
             onExitCompare={exitCompare}
           />
-        )}
+        ) : null}
 
         {active && showArtifactOverlay && selectedArtifact ? (
           <ArtifactSurface

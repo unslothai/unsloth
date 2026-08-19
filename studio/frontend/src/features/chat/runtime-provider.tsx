@@ -1629,7 +1629,8 @@ function ThreadAutoSwitch({
 
 function ThreadNewChatSwitch({
   nonce,
-}: { nonce: string }): ReactElement | null {
+  paused,
+}: { nonce: string; paused: boolean }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1639,10 +1640,31 @@ function ThreadNewChatSwitch({
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
+  // What the switch below last ran for, so re-running the effect for any other
+  // reason -- isLoading settling, compare releasing the pause -- is a no-op
+  // rather than a second switch that would drop the user out of a live chat.
+  const switchedNonceRef = useRef<string | null>(null);
   // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
-    if (isLoading) {
+    if (isLoading || paused) {
       return;
+    }
+    const previousNonce = switchedNonceRef.current;
+    if (previousNonce === nonce) {
+      return;
+    }
+    switchedNonceRef.current = nonce;
+    // switchToNewThread() reuses the uninitialized new thread rather than minting
+    // one, and its composer is therefore the same one the last New Chat used. A
+    // staged-but-unsent attachment would otherwise follow the user into the next
+    // project's landing and be filed there. Text needs no help: the composer
+    // remounts with the view and restores its own draft.
+    if (previousNonce !== null) {
+      try {
+        void aui.composer().clearAttachments();
+      } catch {
+        // No thread mounted yet, so there is no composer to carry anything over.
+      }
     }
     // Saved chats keep running in the background. A temporary chat is never
     // persisted, so abandoning it must also discard its otherwise unreachable
@@ -1652,7 +1674,7 @@ function ThreadNewChatSwitch({
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
-  }, [aui, isLoading, nonce]);
+  }, [aui, isLoading, nonce, paused]);
 
   // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
   // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
@@ -1660,6 +1682,7 @@ function ThreadNewChatSwitch({
   useEffect(() => {
     if (
       isLoading ||
+      paused ||
       modelLoading ||
       runActive ||
       !checkpoint ||
@@ -1674,7 +1697,15 @@ function ThreadNewChatSwitch({
     // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
     // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
-  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
+  }, [
+    checkpoint,
+    ggufContextLength,
+    isLoading,
+    modelLoading,
+    nonce,
+    paused,
+    runActive,
+  ]);
 
   return null;
 }
@@ -2153,6 +2184,7 @@ export function ChatRuntimeProvider({
   newThreadNonce,
   syncActiveThreadId = true,
   listThreads = true,
+  backgrounded = false,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -2162,6 +2194,11 @@ export function ChatRuntimeProvider({
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
   listThreads?: boolean;
+  // Mounted only to keep an in-flight run attached while another view is on
+  // screen. The runtime stays alive; everything that drives the shared
+  // single-chat state (active thread, context bar, thread-scoped settings)
+  // stands down so it can't fight the view the user is actually looking at.
+  backgrounded?: boolean;
 }): ReactElement {
   const runtimeHook = useMemo(
     () => createRuntimeHook(modelType, pairId),
@@ -2185,22 +2222,29 @@ export function ChatRuntimeProvider({
             modelType === "base" &&
             !pairId &&
             !newThreadNonce &&
-            !initialThreadId
+            !initialThreadId &&
+            !backgrounded
           }
         />
-        <ThreadScopedSettingsSync enabled={modelType === "base" && !pairId} />
-        <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
-        <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
+        <ThreadScopedSettingsSync
+          enabled={modelType === "base" && !pairId && !backgrounded}
+        />
+        <ActiveBranchRegistrar
+          enabled={modelType === "base" && !pairId && !backgrounded}
+        />
+        <ThreadContextUsageRecount
+          enabled={modelType === "base" && !pairId && !backgrounded}
+        />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
         {initialThreadId && (
           <ThreadAutoSwitch
             threadId={initialThreadId}
-            syncActiveThreadId={syncActiveThreadId}
+            syncActiveThreadId={syncActiveThreadId && !backgrounded}
           />
         )}
         {!initialThreadId && newThreadNonce && (
-          <ThreadNewChatSwitch nonce={newThreadNonce} />
+          <ThreadNewChatSwitch nonce={newThreadNonce} paused={backgrounded} />
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run
             stays attached and the stream alive; unmounting aborts generation. */}
