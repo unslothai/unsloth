@@ -3268,9 +3268,9 @@ def test_two_sequential_tool_rounds_replay_as_two_exchanges():
     # The text before the second call rides ON it, exactly as the flush builds it.
     second = conversation_archive._normalise(conversation_archive._probe_text(wire[2]))
     assert "pytest" in second and "Now the tests." in second
-    assert conversation_archive._normalise(
-        conversation_archive._probe_text(wire[4])
-    ) == "All green."
+    assert (
+        conversation_archive._normalise(conversation_archive._probe_text(wire[4])) == "All green."
+    )
 
 
 def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn):
@@ -3309,6 +3309,8 @@ def test_an_in_flight_tool_group_does_not_take_the_live_user_turn_s_number(conn)
 
     assert len(set(numbered.values())) == len(numbered), numbered
     assert numbered["earlier turn (user + assistant)"] < numbered["earlier turn (assistant + tool)"]
+
+
 def test_an_answer_corrected_only_in_case_retires_the_archived_copy(conn):
     """Lowercasing the comparison made a case-only correction invisible.
 
