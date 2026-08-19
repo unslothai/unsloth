@@ -6720,14 +6720,15 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
 def _is_embedding_gguf(config: ModelConfig) -> bool:
     """Whether this GGUF's pooling type makes llama-server launch with --embedding.
 
-    False whenever the header cannot be read, which keeps every caller doing what it
-    did before the check existed: this only ever relaxes a refusal, and relaxing one
-    on a guess is how a load reaches the abort the refusal exists to prevent.
+    Before an uncached remote GGUF has a readable header, use the same local identifier
+    basename hints as the eventual loader. Generic names remain unclassified, so this
+    only relaxes the batch refusal for models the loader will launch in embedding mode.
     """
     try:
         main = _local_gguf_main_path(config)
         if not main:
-            return False
+            from utils.models.gguf_metadata import is_gguf_embedding_model
+            return is_gguf_embedding_model("", model_identifier = getattr(config, "identifier", None))
         probe = LlamaCppBackend()
         probe._model_identifier = config.identifier
         probe._gguf_path = main
