@@ -691,22 +691,27 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
-def _EMPTY_TOOL_RESULT() -> str:
-    """The serializer's sentinel for a legitimately empty tool output."""
-    return json.dumps({"result": ""})
+# `JSON.stringify({ result: "" })` byte for byte. `json.dumps` puts a space after the
+# colon and `JSON.stringify` does not, so the obvious spelling reconstructs a message that
+# never equals the archived one: every comparison downstream is exact (`_occurrences`
+# compares with `==`, `_scan_probes` with `find`) and `_normalise` collapses whitespace
+# RUNS, not a single space after a colon. Emitting the message and still failing the match
+# is worse than not emitting it, because it looks fixed.
+_EMPTY_TOOL_RESULT = '{"result":""}'
 
 
 def _tool_result_content(result) -> str:
     """A persisted tool result in the string the replay serializer would have sent.
 
-    An empty string becomes `{"result": ""}` there, because the backend's ChatMessage
-    validator rejects a `tool` message with empty content; containers are JSON. Rendering
-    it any other way makes the reconstructed message differ from the one that was actually
-    archived, which is the whole point of this module comparing the two.
+    An empty string becomes the sentinel above, because the backend's ChatMessage
+    validator rejects a `tool` message with empty content; everything else is JSON with
+    JavaScript's separators. Rendering it any other way makes the reconstructed message
+    differ from the one that was actually archived, which is the whole point of this
+    module comparing the two.
     """
     if isinstance(result, str):
-        return result if result else _EMPTY_TOOL_RESULT()
-    return json.dumps(result)
+        return result if result else _EMPTY_TOOL_RESULT
+    return json.dumps(result, separators = (",", ":"))
 
 
 def _as_wire(messages: list[dict]) -> list[dict]:

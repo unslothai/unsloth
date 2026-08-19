@@ -3377,7 +3377,12 @@ def test_an_empty_tool_result_still_produces_a_tool_message():
     """
 
     def _row(result, *, present = True):
-        call = {"type": "tool-call", "toolCallId": "c1", "toolName": "terminal", "args": {}}
+        call = {
+            "type": "tool-call",
+            "toolCallId": "c1",
+            "toolName": "terminal",
+            "args": {"command": "true"},
+        }
         if present:
             call["result"] = result
         return [{"role": "assistant", "content": [call]}]
@@ -3390,16 +3395,41 @@ def test_an_empty_tool_result_still_produces_a_tool_message():
         ]
         for result in ("", "ok")
     }
-    assert emitted[""] == ['{"result": ""}']
+    # Byte for byte what `JSON.stringify({ result: "" })` produces: no space after the
+    # colon. `json.dumps` adds one, and every comparison downstream is exact, so the
+    # spaced spelling emits the message and still fails the match.
+    assert emitted[""] == ['{"result":""}']
     assert emitted["ok"] == ["ok"]
 
-    for container, expected in (({}, "{}"), ([], "[]")):
+    for container, expected in (({}, "{}"), ([], "[]"), ({"a": 1}, '{"a":1}')):
         wire = conversation_archive._as_wire(_row(container))
         assert [message["content"] for message in wire if message["role"] == "tool"] == [expected]
 
     # A result that is genuinely not there stays not there, matching the serializer.
     for row in (_row(None), _row(None, present = False)):
-        assert [message for message in conversation_archive._as_wire(row) if message["role"] == "tool"] == []
+        assert [
+            message for message in conversation_archive._as_wire(row) if message["role"] == "tool"
+        ] == []
+
+    # And the reconstructed row actually matches the document archived from the request,
+    # which is the point: emitting the message and still failing the match looks fixed.
+    wire = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command":"true"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": '{"result":""}'},
+    ]
+    rendered = conversation_archive.render_turn(wire)
+    document = rendered[1] if isinstance(rendered, tuple) else rendered
+    reconstructed = conversation_archive.branch_message_texts(
+        conversation_archive._as_wire(_row(""))
+    )
+
+    assert conversation_archive._on_live_branch(document, reconstructed) is True
 
 
 def test_a_bare_identifier_query_also_reaches_past_the_cap(conn):
