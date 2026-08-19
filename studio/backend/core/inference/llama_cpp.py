@@ -17400,7 +17400,7 @@ class LlamaCppBackend:
                     if intent.cpu_fallback:
                         inference_backend = None
                     gpu_fallback_warning = _kv_cache_gpu_fallback_warning(
-                        cache_type_kv,
+                        intent.cache_type_kv,
                         gpu_memory_mode,
                         gpu_layers,
                         inference_backend,

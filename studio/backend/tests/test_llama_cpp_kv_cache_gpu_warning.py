@@ -57,7 +57,10 @@ def test_manual_zero_and_cpu_fallback_are_silent(backend):
 def test_load_model_uses_scalar_intent_and_preserves_command_path():
     source = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     assert "_kv_cache_gpu_fallback_warning(" in source
-    assert "cache_type_kv" in source
+    warning_start = source.index("gpu_fallback_warning = _kv_cache_gpu_fallback_warning(")
+    warning_block = source[warning_start : warning_start + 260]
+    assert "intent.cache_type_kv" in warning_block
+    assert "\n                    cache_type_kv," not in warning_block
     assert "intent.gpu_memory_mode" in source
     assert "intent.gpu_layers" in source
     assert "intent.gpu_ids" not in source[source.find("_kv_cache_gpu_fallback_warning") :]

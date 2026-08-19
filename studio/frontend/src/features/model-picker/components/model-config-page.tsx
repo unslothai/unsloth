@@ -967,6 +967,7 @@ function GgufAdvancedSettings({
     ((config.gpuMemoryMode ?? "auto") === "manual" &&
       (config.gpuLayers == null || config.gpuLayers < 0 || config.gpuLayers > 0));
   const kvCacheGpuWarning =
+    !isDiffusion &&
     (inferenceGpu.backend === "cuda" ||
       inferenceGpu.backend === "rocm" ||
       inferenceGpu.backend === "hip") &&
