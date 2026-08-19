@@ -3242,9 +3242,36 @@ def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
     assert mlx_native_context_length(vlm) == 131072
 
 
-class _CountTokensBackend:
+# Templates real enough for the capability classifier to read, so a count test says what a
+# real model's template would make the route do. A named template is the shape that made
+# classifying without tools wrong: its tool markup lives only in the tool_use branch.
+_PLAIN_TEMPLATE = "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+_TOOL_TEMPLATE = (
+    "{% if tools %}{% for t in tools %}{{ t.function.name }}{% endfor %}{% endif %}"
+    "{% for m in messages %}{{ m['content'] }}"
+    "{% if m.tool_calls %}<tool_call>{{ m.tool_calls[0].function.name }}</tool_call>{% endif %}"
+    "{% endfor %}"
+)
+_NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
+
+
+def _mirror(template = None):
+    """The parent's view of a worker-held MLX model, including the template it forwards."""
+    return {
+        "mlx/model": {
+            "is_mlx": True,
+            "is_vision": False,
+            "is_audio": False,
+            "chat_template_info": {"template": template},
+        }
+    }
+
+
+class _RenderRecordingBackend:
     active_model_name = "mlx/model"
-    models = {"mlx/model": {"is_mlx": True, "is_vision": False, "is_audio": False}}
+
+    def __init__(self):
+        self.messages = self.system = self.tools = None
 
     def count_chat_tokens(
         self,
@@ -3252,25 +3279,111 @@ class _CountTokensBackend:
         system_prompt = "",
         **kwargs,
     ):
+        self.messages, self.system = messages, system_prompt
+        self.tools = kwargs.get("tools")
         return 11, "mlx/model"
 
 
-def test_count_tokens_serves_an_mlx_count_with_llama_cpp_unloaded(monkeypatch):
-    """llama.cpp not being loaded used to be the whole answer, leaving the usage bar empty
-    until a completion reported its own usage."""
+def _count_route(
+    monkeypatch,
+    backend,
+    template = _TOOL_TEMPLATE,
+    models = None,
+    **fields,
+):
+    """Drive the endpoint against `backend`, classifying capabilities from a real template."""
     backend_dir = str(Path(__file__).resolve().parent.parent)
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     from routes import inference as route
 
-    monkeypatch.setattr(route, "get_inference_backend", _CountTokensBackend)
+    backend.models = models or _mirror(template)
+    monkeypatch.setattr(route, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
     monkeypatch.setattr(route.active_generations, "count", lambda: 0)
-    payload = route.ChatCountTokensRequest(messages = [{"role": "user", "content": "hello"}])
+    return asyncio.run(
+        route.chat_count_tokens(route.ChatCountTokensRequest(**fields), current_subject = "tester")
+    )
 
-    response = asyncio.run(route.chat_count_tokens(payload, current_subject = "tester"))
 
-    assert json.loads(response.body) == {"input_tokens": 11, "model": "mlx/model"}
+def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
+    """llama.cpp not being loaded used to be the whole answer, for vision models too."""
+    from fastapi import HTTPException
+
+    hello = [{"role": "user", "content": "hello"}]
+    served = _count_route(monkeypatch, _RenderRecordingBackend(), messages = hello)
+    assert json.loads(served.body) == {"input_tokens": 11, "model": "mlx/model"}
+    served = _count_route(
+        monkeypatch,
+        _RenderRecordingBackend(),
+        messages = hello,
+        models = {"mlx/model": {"is_mlx": True, "is_vision": True, "is_audio": False}},
+    )
+    assert json.loads(served.body)["input_tokens"] == 11
+
+    with pytest.raises(HTTPException) as refused:
+        _count_route(monkeypatch, _RenderRecordingBackend(), messages = [])
+    assert refused.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "template, expected_tools",
+    [
+        (_PLAIN_TEMPLATE, None),
+        (_TOOL_TEMPLATE, ["web_search"]),
+        # Tool markup only in the tool_use branch: classifying with no tools reads `default`.
+        (_NAMED_TOOL_TEMPLATE, ["web_search"]),
+    ],
+    ids = ["renders-none", "renders-tools", "renders-tools-in-a-named-branch"],
+)
+def test_an_mlx_count_prices_the_tools_the_completion_would_render(
+    monkeypatch, template, expected_tools
+):
+    """`unsloth studio run` defaults tools on, so a count naming none inherits that. That cost
+    is mostly the nudge's length; stale markup the completion strips is not."""
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        template = template,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "sure <tool_call>{}</tool_call> done"},
+        ],
+        enabled_tools = ["web_search"],
+    )
+    names = None if backend.tools is None else [t["function"]["name"] for t in backend.tools]
+    assert names == expected_tools, "the count must render what the completion would"
+    if expected_tools is None:
+        assert not backend.system, "no tools rendered, so no nudge either"
+        return
+
+    from routes.inference import _apply_rag_nudge, _build_tool_action_nudge
+
+    plain = _build_tool_action_nudge(tools = backend.tools, model_name = "mlx/model", full_access = False)
+    assert backend.system == _apply_rag_nudge(plain, backend.tools, rag_scope = None)
+    assert backend.messages[-1]["content"] == "sure  done", "stale markup the completion removes"
+
+
+def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
+    """A request the tool loop declines but carrying tool history goes to the relay, which
+    keeps the structured tool_calls the extraction flattens away."""
+    fn = {"name": "web_search", "arguments": '{"q": "x"}'}
+    call = {"id": "c1", "type": "function", "function": fn}
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "a result"},
+    ]
+
+    backend = _RenderRecordingBackend()
+    _count_route(monkeypatch, backend, messages = history, enable_tools = False)
+    assert backend.messages[1].get("tool_calls"), "the relay renders structured calls, not prose"
+    assert backend.messages[1]["tool_calls"][0]["function"]["arguments"] == {"q": "x"}
+    assert backend.tools is None, "the loop declined it, so no server catalog is rendered"
 
 
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():

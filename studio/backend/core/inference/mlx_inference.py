@@ -1451,6 +1451,14 @@ def _mlx_sampling_processors(
         processors.append(_make_mlx_frequency_penalty_processor(float(frequency_penalty)))
     return processors or None
 
+# The families the mlx_vlm releases from before should_add_special_tokens existed inlined into
+# their generation path: their chat template emits the special markers, so tokenization must not
+# add them again. Deliberately not the current helper's list, which also carries laguna -- laguna
+# models run on 0.6.0 onward but only 0.6.9 stopped tokenizing them with the markers, and 0.6.0
+# through 0.6.8 are what this stands in for. A family that arrived with its list entry is safe to
+# keep here, since a release without the entry cannot load the model either.
+_VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
+
 
 class MLXInferenceBackend:
     def __init__(self):
@@ -2050,12 +2058,36 @@ class MLXInferenceBackend:
         """
         if self._model is None:
             raise RuntimeError("No model loaded")
-        if self._is_vlm:
-            # A vision model renders through its processor, which recovers from template
-            # failures by rewriting the conversation; the text renderer would not.
-            raise RuntimeError("Counting is not supported for vision models")
-
         full_messages = self._with_system_prompt(messages, system_prompt)
+
+        if self._is_vlm:
+            # Through the processor, which is what a vision generation renders with; the
+            # text renderer would not recover the template failures it recovers from.
+            # images=None: an image anywhere in the conversation makes the structured-item
+            # check raise, and the caller declines rather than pricing a prompt without it.
+            prompt, _ = self._render_vlm_prompt(
+                full_messages,
+                None,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
+            # Whether the markers belong to the template or to tokenization is a per-model
+            # answer mlx_vlm makes for every generation; ask it rather than guess, or the
+            # count is off by whatever the generation's own choice would have added.
+            _model_type = getattr(getattr(self._model, "config", None), "model_type", None)
+            try:
+                from mlx_vlm.utils import should_add_special_tokens
+                add_special = should_add_special_tokens(_model_type, self._processor)
+            except Exception:
+                # The rule those releases inline, which Studio's runtime gate still accepts.
+                add_special = (
+                    getattr(self._processor, "chat_template", None) is None
+                    if _model_type in _VLM_INLINE_SPECIAL_TOKEN_FAMILIES
+                    else True
+                )
+            return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -2390,17 +2422,10 @@ class MLXInferenceBackend:
         if stopped:
             self._mark_stopped()
 
-    def _generate_vlm(
+    def _render_vlm_prompt(
         self,
         messages,
-        image,
-        temperature,
-        top_p,
-        top_k,
-        min_p,
-        max_new_tokens,
-        repetition_penalty,
-        cancel_event,
+        images,
         *,
         tools = None,
         enable_thinking = None,
@@ -2414,8 +2439,11 @@ class MLXInferenceBackend:
         _adapter_state = None,
         stop = None,
     ):
-        from mlx_vlm import stream_generate as vlm_stream
+        """Render the prompt a vision generation sends, and the target that rendered it.
 
+        Shared with counting, as _render_text_prompt is for text models, so a count cannot
+        price a prompt the model never sees. A text-only conversation passes images=None.
+        """
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             chat_render_target,
@@ -2427,8 +2455,6 @@ class MLXInferenceBackend:
         # to authorize against the same template this line selects (#7066).
         chat_target = chat_render_target(self._processor)
 
-        # mlx_vlm's stream_generate handles pixel_values (None for text-only)
-        images = [image] if image is not None else None
         attached_images = 0 if images is None else len(images)
         structured_images = sum(
             _count_vlm_images(message.get("content"))
@@ -2510,6 +2536,40 @@ class MLXInferenceBackend:
             prompt = recovered_prompt
         elif prompt_issue:
             raise RuntimeError(f"VLM chat template returned {prompt_issue}.") from prompt_error
+        return prompt, chat_target
+
+    def _generate_vlm(
+        self,
+        messages,
+        image,
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+        presence_penalty = 0.0,
+        _adapter_state = None,
+    ):
+        from mlx_vlm import stream_generate as vlm_stream
+
+        images = [image] if image is not None else None
+        prompt, chat_target = self._render_vlm_prompt(
+            messages,
+            images,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+        )
 
         from core.inference.chat_template_helpers import detect_think_prefill
 

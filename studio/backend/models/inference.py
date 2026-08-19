@@ -2571,10 +2571,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "
-        "the prompt: it swaps the python/terminal descriptions for the unsandboxed pair and adds a "
-        "sentence to the tool nudge, so a count that omits it prices a prompt the completion will "
-        "not send.",
+        description = "[x-unsloth] Permission level the completion would send. 'full' swaps the "
+        "python/terminal descriptions for the unsandboxed pair and adds a sentence to the tool "
+        "nudge; 'ask' holds the tool loop's first-pass retrieval behind its confirmation gate, so "
+        "a pending turn under a retrieval scope is countable. A count that omits this prices a "
+        "prompt the completion will not send, or declines one it could have priced.",
     )
     bypass_permissions: Optional[bool] = Field(
         None,
@@ -2582,10 +2583,28 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
     )
 
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Whether the completion's tool loop would gate each call. "
+        "Declared so it is typed and folded into permission_mode as it is on a completion.",
+    )
+    max_tool_calls_per_message: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "[x-unsloth] Tool-call budget the completion would send. Zero suppresses the "
+        "tool loop, so a count that never sees it prices a catalog the relay does not render.",
+    )
+
     @field_validator("permission_mode", mode = "before")
     @classmethod
     def _coerce_permission_mode(cls, value: Any) -> Any:
         return _normalize_permission_mode(value)
+
+    # The very function the completion request runs, not a copy: a count renders replayed
+    # tool history through the same templates, which read the id off the result message.
+    _resolve_missing_tool_call_ids = model_validator(mode = "after")(
+        ChatCompletionRequest._resolve_missing_tool_call_ids
+    )
 
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
@@ -2595,6 +2614,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             self.bypass_permissions = True
         elif self.bypass_permissions:
             self.permission_mode = "full"
+        elif self.permission_mode is None and self.confirm_tool_calls is True:
+            # The same reading a completion gives it: gating every call is the
+            # pre-permission-mode way of asking for "ask", and the loop's retrieval
+            # gate turns on that. No provider clause -- this endpoint is local only.
+            self.permission_mode = "ask"
         return self
 
 

@@ -3612,8 +3612,9 @@ def _permission_mode_confirm(payload) -> bool:
     health checks keep working. Used at the pre-switch guard and the per-backend
     tool paths so a forced tool loop (CLI --enable-tools) still gates streaming.
     """
-    if payload.confirm_tool_calls is not None:
-        return bool(payload.confirm_tool_calls)
+    _confirm = getattr(payload, "confirm_tool_calls", None)
+    if _confirm is not None:
+        return bool(_confirm)
     mode = getattr(payload, "permission_mode", None)
     if mode in ("ask", "auto"):
         return True
@@ -27012,35 +27013,194 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
 
 
 async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
-    """Count with the resident MLX model's tokenizer, or None if MLX is not serving one."""
+    """Count with the resident MLX model's tokenizer, or None if MLX is not serving one.
+
+    This has to answer the question the safetensors completion answers -- which of its two
+    paths claims the request, and what each renders -- because a count that decides any of
+    it differently prices a prompt the model never sees. Where a helper carries a decision
+    it is called rather than restated; the admission conditions themselves are restated,
+    so they have to be kept in step with the completion above.
+    """
     backend = get_inference_backend()
     active = getattr(backend, "active_model_name", None)
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
-    # A completion for either is routed away from the text chat path entirely, so a text
-    # render prices nothing that is ever sent.
-    if not entry.get("is_mlx") or entry.get("is_vision") or entry.get("is_audio"):
+    # An audio completion is routed away from the chat path entirely, so a text render
+    # prices nothing that is ever sent. A vision model is not: it serves text turns
+    # through the same processor render counting now shares, and an image anywhere in the
+    # request was already declined above.
+    if not entry.get("is_mlx") or entry.get("is_audio"):
         return None
-
-    # Only the plain relay is counted: a request carrying tools takes the completion's
-    # tool branch, which rebuilds the conversation and renders schemas besides. Broader
-    # than that branch's own admission, since refusing a few extra leaves the usage bar
-    # empty, as it is today.
-    if (
-        payload.tools
-        or _has_openai_tool_history(payload.messages)
-        or _effective_enable_tools(payload)
-        or getattr(payload, "mcp_enabled", False)
-    ):
-        raise HTTPException(
-            status_code = 503,
-            detail = "Cannot count tokens for this model for a request that carries tools.",
-        )
 
     # The same helper the completion path derives these with; rebuilding either here is
     # how a count comes to price a prompt nobody sends.
     system_prompt, messages, _image = _extract_content_parts(payload.messages)
+
+    from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
+
+    _tools_on = bool(_effective_enable_tools(payload))
+    # The launcher's tools-on default answers a request that said nothing about tools; a
+    # request that stated its own intent withdrew the question, and the completion hands
+    # such a request to the passthrough rather than the tool loop.
+    if (
+        _tools_on
+        and _tools_on_by_launcher_default_only(payload)
+        and _request_states_tool_intent(payload)
+    ):
+        _tools_on = False
+    _mcp_on = bool(getattr(payload, "mcp_enabled", False)) and _get_tool_policy_mlx() is not False
+
+    # Whether this model renders tools at all, classified from its own template the way
+    # the completion classifies it. A named template exposes tool markup only in its
+    # tool_use branch, and which branch the classifier reads depends on the tools handed
+    # to it -- so hand it what the completion hands it, a placeholder standing in for the
+    # server-side schemas selected below. Classifying without them reads the plain branch
+    # and reports a tool-capable model as tool-less, which prices away the whole catalog.
+    _tpl = (entry.get("chat_template_info") or {}).get("template")
+    _template_tools = payload.tools if getattr(payload, "tool_choice", None) != "none" else None
+    if not _template_tools and (_tools_on or _explicit_studio_tool_loop_requested(payload)):
+        _template_tools = ({},)
+    _takes_tools = bool(
+        _detect_safetensors_features(backend, _tpl, tools = _template_tools).get(
+            "supports_tools", False
+        )
+    )
+    # A budget of zero never enters the loop, so the relay is what renders.
+    _budget = getattr(payload, "max_tool_calls_per_message", None)
+    _tools_to_use = None
+    if _takes_tools and (_tools_on or _mcp_on) and (_budget is None or _budget > 0):
+        # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers and blocks
+        # on a probe timeout, so schemas come from the cache the completion path fills and
+        # an incomplete view is declined rather than undercounted. mcp_allowed stays False
+        # for the same reason -- it is the flag that reaches the network.
+        _mcp_tools: list[dict] = []
+        if _mcp_on:
+            from core.inference.tools import cached_mcp_tools
+
+            # Off the loop with the store check below: reading which servers are enabled
+            # is a database read.
+            _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
+            if not _mcp_complete:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = "Cannot count tokens until enabled MCP tools have been discovered.",
+                )
+        _tools_to_use = (
+            await _select_request_tools(payload, tools_on = _tools_on, mcp_allowed = False)
+        ) + _mcp_tools
+        # Nothing surviving the selection means the completion skips the tool loop, so the
+        # count follows it back to the plain render rather than passing an empty catalog.
+        if not _tools_to_use:
+            _tools_to_use = None
+
+    if (
+        not _tools_to_use
+        and _takes_tools
+        and not _tools_on
+        and (payload.tools or _has_openai_tool_history(payload.messages))
+    ):
+        # The relay claims a request the tool loop did not, and renders it from a message list
+        # rebuilt to keep the structured tool_calls the shared extraction flattens away, with
+        # the caller's own catalog and no separate system prompt. Counting the flattened
+        # conversation instead priced a shorter prompt than the one that gets sent.
+        _tool_choice = getattr(payload, "tool_choice", None)
+        _forced = (
+            _tool_choice["function"].get("name")
+            if isinstance(_tool_choice, dict) and isinstance(_tool_choice.get("function"), dict)
+            else None
+        )
+        if _tool_choice == "none":
+            _tools_to_use = None
+        elif isinstance(_forced, str):
+            _tools_to_use = [
+                _tool
+                for _tool in payload.tools or []
+                if isinstance(_tool, dict)
+                and isinstance(_tool.get("function"), dict)
+                and _tool["function"].get("name") == _forced
+            ] or None
+        else:
+            _tools_to_use = payload.tools or None
+        messages = _set_or_prepend_system_message(
+            _structured_tool_history_for_local_template(
+                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+            ),
+            system_prompt,
+        )
+        system_prompt = ""
+    elif _tools_to_use:
+        # A PENDING turn is the shape this loop answers from exactly these messages, splicing
+        # in whatever build_rag_autoinject retrieves -- thousands of tokens this never sees.
+        # Only the loop retrieves: the relay above never does, so a request that never reaches
+        # the loop is counted rather than refused. "ask" without a bypass is the one mode that
+        # holds retrieval behind the confirm gate, so the loop skips it and the count stands.
+        _asks_first = (
+            payload.permission_mode is not None
+            and payload.permission_mode not in ("auto", "off", "full")
+            and not payload.bypass_permissions
+            and _permission_mode_confirm(payload)
+        )
+        # Only where the answer can change this one, because answering it opens the database,
+        # loads the vec0 extension and creates the schema, and this runs on every keystroke.
+        if not _asks_first and messages and messages[-1].get("role") in ("user", "tool"):
+            from core.inference.tools import rag_autoinject_reaches_retrieval
+
+            # Retrieval that never reaches the store leaves the loop rendering exactly these
+            # messages, so the scope alone is not the question. Where it does reach the store
+            # it may still find nothing, but this cannot run it to find out, so the turn is
+            # declined rather than priced short. Off the loop, since it waits out a busy
+            # timeout under a concurrent ingest.
+            _retrieves, _whole_doc = await asyncio.to_thread(
+                rag_autoinject_reaches_retrieval, messages, payload.rag_scope
+            )
+            if _retrieves or _whole_doc:
+                raise HTTPException(
+                    status_code = 503,
+                    detail = "Cannot count tokens for a pending turn that would retrieve documents.",
+                )
+
+        # Schemas are not the whole cost of turning tools on: the completion appends an
+        # action nudge to the system prompt and strips stale call markup out of replayed
+        # assistant turns before it renders. Counting without either prices a prompt that
+        # is both short a nudge and long the markup.
+        _nudge = _apply_rag_nudge(
+            _build_tool_action_nudge(
+                tools = _tools_to_use,
+                model_name = public_model_id(active) or payload.model,
+                full_access = bool(payload.bypass_permissions),
+            ),
+            _tools_to_use,
+            rag_scope = payload.rag_scope,
+        )
+        if _nudge:
+            system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
+        _auto_heal = (
+            payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+        )
+        _name_gate = _display_tool_name_gate(_tools_to_use)
+        messages = [
+            {
+                **_msg,
+                "content": _strip_tool_xml_for_display(
+                    _msg["content"],
+                    auto_heal_tool_calls = _auto_heal,
+                    enabled_tool_names = _name_gate,
+                ).strip(),
+            }
+            if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str)
+            else _msg
+            for _msg in messages
+        ]
+
+    # Nothing to price: the template would render its generation marker alone and the
+    # total would describe a conversation nobody has started (#8882). The GGUF branch
+    # refuses the same shape after resolving its own prompt.
+    if not messages and not system_prompt and not _tools_to_use:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for an empty prompt.",
+        )
     # The same lift the completion applies before it renders.
     enable_thinking = payload.enable_thinking
     if enable_thinking is None:
@@ -27050,6 +27210,7 @@ async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
             backend.count_chat_tokens,
             messages,
             system_prompt or "",
+            tools = _tools_to_use,
             enable_thinking = enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             preserve_thinking = payload.preserve_thinking,
