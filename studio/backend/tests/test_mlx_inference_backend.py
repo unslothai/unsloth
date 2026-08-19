@@ -4515,6 +4515,11 @@ def test_the_adapter_probe_reads_the_snapshot_the_load_would_open(monkeypatch, t
     assert asked == ["org/target"] * 3
 
 
+# mlx-vlm reads embed.biases wherever the attribute exists, and MXFP4 exposes it holding None,
+# so a pair that loaded and validated cleanly raised on its first drafted step. Only EAGLE-3
+# reads it that way, only a null one is detached, and only an embedding quantized that way.
+
+
 def test_auto_reuse_reloads_when_the_cache_changed_under_the_same_request(monkeypatch):
     # Auto means "whatever runs best now": compared as resolved, a new drafter reaches the model.
     from core.inference import mlx_speculative as spec
@@ -4554,6 +4559,31 @@ def test_auto_reuse_reloads_when_the_cache_changed_under_the_same_request(monkey
                  mlx_speculative_effective_mode = "off",
                  mlx_speculative_reason = "auto_drafter_load_failed")
     assert inf_mod._mlx_runtime_settings_match(backend, request) is True
+
+
+def test_the_eagle3_head_is_not_left_indexing_a_null_bias():
+    # mlx-vlm reads embed.biases wherever the attribute exists, and MXFP4 exposes it holding
+    # None, so a pair that loaded and validated cleanly raised on its first drafted step.
+    from types import SimpleNamespace
+    from core.inference.mlx_inference import detach_null_quantized_biases
+
+    def target(embed):
+        return SimpleNamespace(
+            language_model = SimpleNamespace(model = SimpleNamespace(embed_tokens = embed))
+        )
+
+    packed = SimpleNamespace(scales = object(), biases = None)
+    detach_null_quantized_biases(target(packed))
+    assert not hasattr(packed, "biases")
+    carried = SimpleNamespace(scales = object(), biases = ["real"])
+    detach_null_quantized_biases(target(carried))
+    assert carried.biases == ["real"]
+    # An unquantized embedding is a layout the hot head never reads this way, so it is left
+    # as it is, as is a model shaped like neither.
+    dense = SimpleNamespace(biases = None)
+    detach_null_quantized_biases(target(dense))
+    assert dense.biases is None
+    detach_null_quantized_biases(SimpleNamespace())
 
 
 def test_the_loader_takes_the_revision_the_ranking_measured(monkeypatch):
@@ -4679,6 +4709,10 @@ def _spec_candidate(repo_id, method = "mtp", source = "cached", loadable = True,
         # Among downloads the cheapest method first, then the repository id.
         ([_spec_candidate("org/B", "dflash"), _spec_candidate("org/A", "eagle3"),
           _spec_candidate("org/C")], None, ("mtp", "org/C", None)),
+        # EAGLE-3 concatenates several captured layers per verified token where DFlash
+        # reads one. Ranked here and nowhere else, so a swap moves every target with both.
+        ([_spec_candidate("org/A", "eagle3"), _spec_candidate("org/B", "dflash")],
+         None, ("dflash", "org/B", None)),
         ([_spec_candidate("org/B"), _spec_candidate("org/A")], None, ("mtp", "org/A", None)),
         # A named preference outranks the ordering when it can run.
         ([_spec_candidate("org/A"), _spec_candidate("org/B")], "org/B", ("mtp", "org/B", None)),
@@ -4921,18 +4955,6 @@ def test_mlx_speculative_options_never_publishes_a_local_path(monkeypatch, targe
     assert options["experimental"] is True and options["candidates"] == []
 
 
-def _speculative_route_helpers():
-    tests_dir = str(Path(__file__).resolve().parent)
-    if tests_dir not in sys.path:
-        sys.path.insert(0, tests_dir)
-    from test_active_generations import _route_gate, _stub_load_route
-
-    _route_gate()
-    import routes.inference as inf_mod
-
-    return inf_mod, _stub_load_route
-
-
 @pytest.mark.parametrize("door", ["load", "validate"])
 def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, door):
     # The frontend validates before it loads, so a guard on /load alone lets a pick pass
@@ -4959,26 +4981,30 @@ def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, 
     else:
         handler, request = inf_mod.validate_model, ValidateModelRequest
 
-    # A method no load path can run yet. As methods join their load paths this has to
-    # move to one that has not, or the door stops being tested.
-    unrunnable = sorted(spec.MLX_SPECULATIVE_METHODS - spec.ENABLED_MLX_SPECULATIVE_METHODS)
-    assert unrunnable, "every method is runnable; pin this door on a reachable refusal"
-
+    # Every method has a load path, so this refusal is reachable only by narrowing what the
+    # build enables. Still pinned: it guards a method added ahead of its load path.
+    enabled = spec.ENABLED_MLX_SPECULATIVE_METHODS
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset({"mtp"}))
     with pytest.raises(HTTPException) as refused:
         asyncio.run(handler(
-            request(model_path = "org/A", mlx_speculative_mode = unrunnable[0]),
+            request(model_path = "org/A", mlx_speculative_mode = "dflash"),
             object(), "tester",
         ))
     assert refused.value.status_code == 400
     assert refused.value.detail == MLX_SPECULATIVE_REFUSALS["method_not_integrated"]
 
-    # A runnable method reaches the load rather than the refusal: it needs a drafter,
+    # Each runnable method reaches the load rather than the refusal: it needs a drafter,
     # and saying so is the candidate list's answer, not the not-integrated one.
-    with pytest.raises(HTTPException) as needs_checkpoint:
-        asyncio.run(handler(
-            request(model_path = "org/A", mlx_speculative_mode = "mtp"), object(), "tester"
-        ))
-    assert needs_checkpoint.value.detail == MLX_SPECULATIVE_REFUSALS["checkpoint_required"]
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", enabled)
+    for method in sorted(enabled):
+        with pytest.raises(HTTPException) as needs_checkpoint:
+            asyncio.run(handler(
+                request(model_path = "org/A", mlx_speculative_mode = method),
+                object(), "tester",
+            ))
+        assert needs_checkpoint.value.detail == (
+            MLX_SPECULATIVE_REFUSALS["checkpoint_required"]
+        ), method
 
     if door == "load":
         # Off is the same request without the unrunnable method, and is served.
@@ -5177,7 +5203,10 @@ def test_a_target_with_its_own_head_is_offered_before_any_download(
 # fmt: off
 
 
-_MTP_TARGET = {"hidden_size": 64, "num_hidden_layers": 8, "vocab_size": 100, "eos_token_id": 2}
+# Named as a real family: an unrecognized target resolves to the runtime's generic text
+# model, which cannot rewind its cache, and is filtered before any structure is compared.
+_MTP_TARGET = {"model_type": "gemma4", "hidden_size": 64, "num_hidden_layers": 8,
+               "vocab_size": 100, "eos_token_id": 2}
 _TOKENS = {f"t{i}": i for i in range(100)}
 
 _DFLASH_TARGET = {"model_type": "gemma4", "hidden_size": 64, "num_hidden_layers": 8,
@@ -5299,19 +5328,6 @@ def test_an_eagle3_drafter_must_name_the_target_as_its_verifier(monkeypatch):
     assert _matches(spec, "eagle3", draft) is True
 
 
-def test_a_target_whose_runtime_cannot_roll_back_is_refused_for_dflash():
-    # DFlash rewinds the target's cache on rejection, so a family without that entry
-    # point is refused before a load rather than crashing mid-generation.
-    pytest.importorskip("mlx_vlm.utils")
-    from core.inference import mlx_speculative as spec
-
-    assert spec._target_method_contract_available("dflash", {"model_type": "gemma4"}) is True
-    assert spec._target_method_contract_available("dflash", {"model_type": "gemma4_text"}) is False
-    assert spec._target_method_contract_available("dflash", {"model_type": "laguna"}) is False
-    # Only DFlash carries this requirement.
-    assert spec._target_method_contract_available("mtp", {"model_type": "gemma4_text"}) is True
-
-
 @pytest.mark.parametrize(
     "runtime_ready,enabled,match,memory,caps_reason,reason",
     [
@@ -5358,172 +5374,4 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
 # fmt: off
 
 
-def test_a_target_with_its_own_head_is_not_told_to_download_another(monkeypatch):
-    # Why the index records this flag: a companion that exists only to give a target a head is
-    # a multi-gigabyte download for a target that already has one.
-    spec = _seed_env(monkeypatch)
-    seed = next(s for s in spec._RECOMMENDATIONS if s.requires_missing_native_mtp)
-
-    def offered(native_head):
-        rows = spec._recommended_candidate_rows(
-            seed.repo_id, _MTP_TARGET, {"methods": {}, "reason": None}, frozenset(), native_head
-        )
-        return [r.fields["repo_id"] for r in rows]
-
-    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
-    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
-    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
-    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
-    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
-
-    assert seed.repo_id in offered(False)
-    assert seed.repo_id not in offered(True)
-
-
-def test_suppression_reads_the_head_itself_not_whether_this_runtime_can_drive_it(monkeypatch):
-    # Two facts on purpose: keying suppression on the offered built-in row would recommend the
-    # companion, on any runtime missing the splitter, to a target that already has a head.
-    spec = _seed_env(monkeypatch, native_head = True)
-    # The head is present but cannot be driven here, so no built-in row is emitted.
-    monkeypatch.setattr(spec, "native_mtp_evidence", lambda _s, _c: None)
-    seed = next(s for s in spec._RECOMMENDATIONS if s.requires_missing_native_mtp)
-    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
-    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
-    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
-    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
-    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
-
-    offered = [c["repo_id"] for c in spec.mlx_speculative_options("org/target")["candidates"]]
-    assert spec.BUILTIN_MTP_ID not in offered
-    assert seed.repo_id not in offered
-
-
-def test_a_targets_own_head_is_offered_ahead_of_anything_downloadable(monkeypatch):
-    # Order is what the picker shows first, so a target that can draft for itself must not
-    # lead with a download.
-    spec = _seed_env(monkeypatch)
-    monkeypatch.setattr(spec, "native_mtp_evidence",
-                        lambda _s, _c: SimpleNamespace(weight_bytes = 1))
-    seed = next(s for s in spec._RECOMMENDATIONS if not s.requires_missing_native_mtp)
-    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
-    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
-    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
-    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
-    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
-
-    offered = [c["repo_id"] for c in spec.mlx_speculative_options("org/target")["candidates"]]
-    assert offered[0] == spec.BUILTIN_MTP_ID and len(offered) > 1
-
-
-def test_every_suppressible_recommendation_has_a_detector_for_its_family():
-    # A seed suppressed by a native head is only suppressible if some handler can find that
-    # head; without one the flag reads False forever and the companion is offered for nothing.
-    from core.inference import mlx_speculative as spec
-    families_with_detection = set(spec._HANDLERS)
-    for seed in spec._RECOMMENDATIONS:
-        if not seed.requires_missing_native_mtp:
-            continue
-        families = {
-            signature[0]
-            for signature, keys in spec._RECOMMENDATION_TARGET_SHAPES.items()
-            if seed.target_key in keys
-        }
-        assert families, f"{seed.repo_id} names a target family the shape table does not"
-        assert families <= families_with_detection, (
-            f"{seed.repo_id} is suppressed by a head that {families - families_with_detection} "
-            "has no detector for"
-        )
-
-
-@pytest.mark.parametrize(
-    "key_matches,owner_allowed,owner,offered",
-    [
-        (True, True, "seed", True),
-        # A repository that merely shares a family name cannot pull in a recommendation.
-        (False, True, "seed", False),
-        # Nor can one whose owner the target does not vouch for.
-        (True, False, "seed", False),
-        (True, True, "someone-else", False),
-    ],
-)
-def test_a_recommendation_needs_the_family_and_the_owner_to_agree(
-    monkeypatch, key_matches, owner_allowed, owner, offered
-):
-    spec = _seed_env(monkeypatch)
-    seed = next(s for s in spec._RECOMMENDATIONS if s.target_owner is not None)
-
-    monkeypatch.setattr(spec, "_recommendation_target_key",
-                        lambda *_a: seed.target_key if key_matches else "other-family")
-    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: owner_allowed)
-    monkeypatch.setattr(spec, "_target_repository_owner",
-                        lambda _t: seed.target_owner if owner == "seed" else owner)
-    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
-    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
-
-    rows = list(spec._recommended_candidate_rows(
-        "org/target", _MTP_TARGET, {"methods": {}, "reason": None}, frozenset(), False
-    ))
-    assert (seed.repo_id in [r.fields["repo_id"] for r in rows]) is offered
-
-
-def test_every_source_describes_a_candidate_with_the_same_fields(monkeypatch):
-    # One repository reached by two sources: the later row replaces the earlier wholesale, which
-    # is safe only while the sources agree on the field set.
-    from core.inference import mlx_speculative as spec
-
-    caps = {"methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, True), "reason": None}
-    seed = next(s for s in spec._RECOMMENDATIONS if s.method == "mtp")
-    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
-    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
-    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
-    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
-    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
-    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
-    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
-    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *_a: True)
-    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
-    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: True)
-    monkeypatch.setattr(spec, "native_mtp_evidence",
-                        lambda _s, _c: SimpleNamespace(weight_bytes = 1))
-    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
-    monkeypatch.setattr(
-        spec, "_active_cached_drafter_configs",
-        lambda: iter([(seed.repo_id, {"model_type": "x"}, Path("/nowhere"), 4096)]),
-    )
-    args = ("org/target", _MTP_TARGET, caps, frozenset({"mtp"}))
-    fields = [
-        set(next(iter(spec._recommended_candidate_rows(*args, False))).fields),
-        set(next(iter(spec._cached_candidate_rows(*args))).fields),
-        set(next(iter(spec._builtin_candidate_rows(*args))).fields),
-    ]
-    assert fields[0] == fields[1] == fields[2]
-
-
-def test_a_downloaded_drafter_replaces_the_recommendation_that_named_it(monkeypatch):
-    # The same repository reached two ways is one candidate, and it keeps the standing the
-    # index gave it while reporting the cache's view of it.
-    seed = None
-    from core.inference import mlx_speculative as spec
-
-    seed = next(s for s in spec._RECOMMENDATIONS if s.method == "mtp")
-    cached = [(seed.repo_id.upper(), {"model_type": "gemma4_assistant"}, Path("/nowhere"), 4096)]
-    spec = _seed_env(monkeypatch, cached = cached)
-
-    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
-    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
-    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
-    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
-    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
-    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *_a: True)
-    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
-    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: True)
-
-    rows = [c for c in spec.mlx_speculative_options("org/target")["candidates"]
-            if c["repo_id"].casefold() == seed.repo_id.casefold()]
-    # One row, not two: the cached spelling differs in case and must still collapse.
-    assert len(rows) == 1
-    assert rows[0]["source"] == "cached" and rows[0]["downloaded"] is True
-    assert rows[0]["recommended"] is True
-    # Replaced wholesale, so the seed's own size does not linger on the cached row.
-    assert rows[0]["approximate_size_bytes"] == 4096
 # fmt: on

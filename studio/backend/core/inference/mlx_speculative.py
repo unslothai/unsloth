@@ -25,7 +25,7 @@ MLX_SPECULATIVE_MODES = MLX_SPECULATIVE_METHODS | {"auto"}
 
 # Each method joins this set with the load path that can run it, so a request for a
 # method the worker cannot execute is refused before the active model is torn down.
-ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset({"mtp"})
+ENABLED_MLX_SPECULATIVE_METHODS: frozenset[str] = frozenset({"mtp", "dflash", "eagle3"})
 
 # Refusals reach the client as prose, while the codes stay the vocabulary the response
 # schema will use to say why a resolved method differs from the one requested.
@@ -696,8 +696,11 @@ def _drafter_architecture_available(config: dict[str, Any]) -> bool:
 
 
 def _target_method_contract_available(method: str, config: dict[str, Any]) -> bool:
-    if method != "dflash":
-        return True
+    """Every method rewinds the target's cache, so a model class without that entry point is
+    filtered during discovery rather than refused once both models are resident. An
+    unrecognized target resolves to the generic text model, which lacks it too.
+    """
+    del method
     try:
         from mlx_vlm.utils import get_model_and_args
 
@@ -1680,11 +1683,12 @@ def native_mtp_tensors_present(snapshot: Path, config: dict[str, Any]) -> bool:
 
 
 def _builtin_candidate_rows(target_id, target_config, caps, enabled):
-    """A row for the target's own MTP head, when it carries a complete one.
-
-    A target that can draft for itself needs no companion checkpoint, so this is
-    emitted before any downloadable candidate.
+    """A target that drafts for itself needs no companion, so this precedes every
+    downloadable candidate. Carrying a head is not enough: one whose model class cannot
+    rewind its cache is filtered here rather than refused at load.
     """
+    if not _target_method_contract_available("mtp", target_config):
+        return
     try:
         snapshot = mlx_target_snapshot_path(target_id)
     except (OSError, RuntimeError, ValueError):

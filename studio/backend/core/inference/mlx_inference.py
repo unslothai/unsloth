@@ -499,25 +499,45 @@ def materialize_mtp_masked_embedding(draft_model: Any) -> int:
     return int(dense.nbytes)
 
 
-def validate_speculative_target_contract(target_model, draft_model) -> None:
-    """Fail before publication when a loaded pair lacks required runtime hooks.
+def detach_null_quantized_biases(target_model: Any) -> None:
+    """Detach the null MXFP4 bias attribute the EAGLE-3 hot head indexes without checking.
 
-    Resets the drafter against the target as its last step, so a pair that passes is
-    left ready to generate rather than merely checked.
+    mlx-vlm builds that head from ``embed.biases`` whenever the attribute exists, and MXFP4
+    exposes it holding None, so the first speculative step raises. Removing it leaves the
+    same None the dequantization beside it already expects. A checkpoint whose embedding
+    carries real biases, or none at all, is untouched.
+    """
+    lm = getattr(target_model, "language_model", target_model)
+    embed = getattr(getattr(lm, "model", None), "embed_tokens", None)
+    if embed is None or not hasattr(embed, "scales"):
+        return
+    if getattr(embed, "biases", False) is None:
+        del embed.biases
+
+
+def validate_speculative_target_contract(target_model, draft_model, method) -> None:
+    """Fail before publication when a loaded pair lacks the hooks ``method`` needs.
+
+    Rewinding the target's cache and resetting the drafter are needed by every method. The
+    two capture keywords below are MTP's alone: DFlash and EAGLE-3 ask for layer captures
+    instead, so requiring MTP's pair of them would refuse targets over arguments those
+    methods never pass. Resets the drafter against the target as its last step, so a pair
+    that passes is left ready to generate rather than merely checked.
     """
     lm = getattr(target_model, "language_model", target_model)
     if not callable(getattr(lm, "rollback_speculative_cache", None)):
         raise RuntimeError("mlx_speculative_target_rollback_missing")
 
-    try:
-        parameters = inspect.signature(lm.__call__).parameters
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("mlx_speculative_target_signature_unavailable") from exc
-    accepts = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
-    ) or all(name in parameters for name in ("return_hidden", "return_shared_kv"))
-    if not accepts:
-        raise RuntimeError("mlx_speculative_target_capture_missing")
+    if method == "mtp":
+        try:
+            parameters = inspect.signature(lm.__call__).parameters
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("mlx_speculative_target_signature_unavailable") from exc
+        accepts = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ) or all(name in parameters for name in ("return_hidden", "return_shared_kv"))
+        if not accepts:
+            raise RuntimeError("mlx_speculative_target_capture_missing")
 
     reset = getattr(draft_model, "reset", None)
     if not callable(reset):
@@ -1798,8 +1818,10 @@ class MLXInferenceBackend:
         if resolved_kind != mode:
             raise RuntimeError("mlx_speculative_kind_mismatch")
         materialized = materialize_mtp_masked_embedding(draft_model) if mode == "mtp" else 0
+        if mode == "eagle3":
+            detach_null_quantized_biases(self._model)
         validate_drafter_compatibility(self._model, draft_model, resolved_kind)
-        validate_speculative_target_contract(self._model, draft_model)
+        validate_speculative_target_contract(self._model, draft_model, resolved_kind)
         self._draft_model = draft_model
         self._draft_kind = resolved_kind
         self._draft_repo_id = repo_id
