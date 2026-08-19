@@ -775,6 +775,17 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     )
     assert ".unsloth\\temp" not in roots
 
+    # The GetFolderPath fallback is the whole point of the second root: LOCALAPPDATA
+    # is dropped in service and CI contexts. The uninstaller has to resolve the data
+    # dir the same way, or the tree it places there survives an uninstall on exactly
+    # the hosts that needed the fallback.
+    assert '[Environment]::GetFolderPath("LocalApplicationData")' in roots
+    assert "$defaultDataRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'" in uninstall
+    assert (
+        '$defaultDataDir = if ($defaultDataRoot) { Join-Path $defaultDataRoot "Unsloth Studio" }'
+        in uninstall
+    )
+
 
 def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
     source = INSTALL_PS1.read_text(encoding = "utf-8")

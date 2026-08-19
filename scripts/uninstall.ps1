@@ -507,7 +507,12 @@ Environment:
 
     # Default install root + default data dir.
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
-    $defaultDataDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth Studio" } else { $null }
+    # _AppDataRoot, not $env:LOCALAPPDATA alone: the variable is dropped in service
+    # and CI contexts, and install.ps1 falls back to the same known folder when it
+    # places its private temp under "Unsloth Studio\temp". Reading only the variable
+    # here left that tree behind on exactly the hosts that needed the fallback.
+    $defaultDataRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'
+    $defaultDataDir = if ($defaultDataRoot) { Join-Path $defaultDataRoot "Unsloth Studio" } else { $null }
     # Default-mode ~/.unsloth holds a SHARED llama.cpp build + .cache that are
     # siblings of studio (not under it), so deleting <studio> misses them -- handle
     # explicitly. No-op in env/custom mode (nested under the custom root, removed
