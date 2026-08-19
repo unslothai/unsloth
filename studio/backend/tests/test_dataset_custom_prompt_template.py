@@ -121,9 +121,7 @@ def test_one_bad_template_reports_one_error_not_one_per_row():
     )
     info = dict(_dataset_info(), dataset = dataset)
 
-    result = apply_chat_template_to_dataset(
-        info, _Tokenizer(), custom_prompt_template = "{answer}"
-    )
+    result = apply_chat_template_to_dataset(info, _Tokenizer(), custom_prompt_template = "{answer}")
 
     assert result["success"] is False
     assert len(result["errors"]) == 1
@@ -142,4 +140,6 @@ def test_a_custom_template_is_not_applied_to_a_chatml_dataset_silently():
         info, _Tokenizer(), custom_prompt_template = "### Q: {instruction}"
     )
 
-    assert any("only applied to the alpaca format" in w for w in result["warnings"]), result["warnings"]
+    assert any("only applied to the alpaca format" in w for w in result["warnings"]), result[
+        "warnings"
+    ]
