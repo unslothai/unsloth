@@ -3138,7 +3138,18 @@ _has_intel_xpu_gpu() {
             return 0
         fi
     fi
-    if [ -d /sys/bus/pci/devices ]; then
+    _intel_dri_accessible=false
+    for _render_node in /dev/dri/renderD*; do
+        [ -r "$_render_node" ] && [ -w "$_render_node" ] || continue
+        _render_vendor="/sys/class/drm/${_render_node##*/}/device/vendor"
+        [ -r "$_render_vendor" ] || continue
+        read -r _render_vendor_id < "$_render_vendor" 2>/dev/null || continue
+        if [ "$_render_vendor_id" = "0x8086" ]; then
+            _intel_dri_accessible=true
+            break
+        fi
+    done
+    if [ "$_intel_dri_accessible" = true ] && [ -d /sys/bus/pci/devices ]; then
         for _pci_dev in /sys/bus/pci/devices/*; do
             [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] && [ -r "$_pci_dev/device" ] || continue
             read -r _v < "$_pci_dev/vendor" 2>/dev/null || continue

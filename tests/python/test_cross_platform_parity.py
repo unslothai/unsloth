@@ -423,6 +423,15 @@ class TestCudaLeafDigitParity:
         assert 'echo "$_base/cpu"; return' in branch
         assert "_fallback_to_intel_or_cpu" not in branch
 
+    def test_intel_pci_fallback_requires_an_accessible_render_node(self):
+        for path in (INSTALL_SH, REPO_ROOT / "studio" / "setup.sh"):
+            text = path.read_text(encoding = "utf-8")
+            body = text[text.index("_has_intel_xpu_gpu() {") :]
+            body = body[: body.index("\n}")]
+            assert "/dev/dri/renderD*" in body
+            assert "device/vendor" in body
+            assert '"0x8086"' in body
+
     def test_install_sh_lowercases_backend_leaf(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # The leaf feeding both the backend case and the 2.11 floor case must be
