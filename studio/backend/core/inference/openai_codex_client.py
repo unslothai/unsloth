@@ -395,10 +395,18 @@ async def list_subscription_models(
                     force_refresh = True,
                     expected_access_token = access_token,
                 )
-            except Exception as exc:
+            except CodexReauthorizationRequired as exc:
                 raise CodexReauthorizationError(
                     "ChatGPT authorization expired. Reconnect this connection.",
                     status = 401,
+                ) from exc
+            except Exception as exc:
+                # The refresh did not get an answer, which is retryable. Calling it a
+                # reauthorization would send the user to reconnect a connection whose
+                # credentials are probably fine, and the responses transport treats the
+                # same failure as transient.
+                raise CodexTransportError(
+                    "Could not refresh ChatGPT authorization."
                 ) from exc
             response = await client.get(
                 url,

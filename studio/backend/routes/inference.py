@@ -12538,6 +12538,16 @@ async def _proxy_to_external_provider(
             access_token, account_id = await resolve_access(payload.provider_id)
         except CodexAuthError as exc:
             raise HTTPException(status_code = 401, detail = str(exc)) from exc
+        if not subscription_catalog_matches_account(payload.provider_id, account_id):
+            # Another worker rebound the connection between the gate and here, so the
+            # model was judged against an account these credentials do not belong to.
+            # Drop that catalog and re-judge before anything is sent under them.
+            forget_subscription_models(payload.provider_id)
+            mark_subscription_catalog_stale(payload.provider_id)
+            if model not in _allowed_codex_models():
+                raise HTTPException(
+                    status_code = 400, detail = "Choose a curated Codex model."
+                )
         chat_messages = _build_external_messages(
             payload.messages,
             model_supports_vision,

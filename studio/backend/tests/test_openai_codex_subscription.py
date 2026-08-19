@@ -2120,3 +2120,59 @@ def test_a_second_catalog_401_asks_for_reconnection(monkeypatch):
             asyncio.run(list_subscription_models("provider-12", "stale-token", "acct-1"))
     finally:
         forget_subscription_models("provider-12")
+
+
+def test_a_refresh_that_cannot_be_reached_stays_retryable(monkeypatch):
+    """An unanswered refresh is not a rejected credential.
+
+    resolve_access raises the permanent variant only when the refresh token itself was
+    rejected, so anything else has to stay transient or the user is sent to reconnect a
+    connection whose credentials are fine.
+    """
+    import httpx
+
+    forget_subscription_models("provider-13")
+
+    class Rejecting:
+        async def get(self, _url, headers = None, params = None):
+            return httpx.Response(401, json = {"detail": "expired"})
+
+        async def aclose(self):
+            return None
+
+    async def _unreachable(_provider_id, force_refresh = False, expected_access_token = None):
+        raise codex_auth.CodexAuthError("token endpoint unreachable")
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Rejecting())
+    monkeypatch.setattr(codex_auth, "resolve_access", _unreachable)
+    try:
+        with pytest.raises(CodexTransportError) as excinfo:
+            asyncio.run(list_subscription_models("provider-13", "stale", "acct-1"))
+        assert not isinstance(excinfo.value, CodexReauthorizationError)
+    finally:
+        forget_subscription_models("provider-13")
+
+
+def test_a_rejected_refresh_credential_is_a_reauthorization(monkeypatch):
+    """The permanent variant still means reconnect."""
+    import httpx
+
+    forget_subscription_models("provider-14")
+
+    class Rejecting:
+        async def get(self, _url, headers = None, params = None):
+            return httpx.Response(401, json = {"detail": "expired"})
+
+        async def aclose(self):
+            return None
+
+    async def _rejected(_provider_id, force_refresh = False, expected_access_token = None):
+        raise codex_auth.CodexReauthorizationRequired("refresh token rejected")
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Rejecting())
+    monkeypatch.setattr(codex_auth, "resolve_access", _rejected)
+    try:
+        with pytest.raises(CodexReauthorizationError):
+            asyncio.run(list_subscription_models("provider-14", "stale", "acct-1"))
+    finally:
+        forget_subscription_models("provider-14")
