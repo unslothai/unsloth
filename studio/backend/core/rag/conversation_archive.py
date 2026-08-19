@@ -318,9 +318,15 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     # Imported lazily because the inference layer imports this module.
     from core.inference.context_window import group_turns
 
+    # Each entry is the archivable messages AND the span of the turn they came from. The
+    # two differ whenever `_archivable` drops something: an assistant batch that called
+    # `search_conversation` alongside an ordinary tool archives three messages while the
+    # live transcript still holds four, and `archive_messages` bounds the branch check's
+    # run. Bounded by the shorter figure, a perfectly valid ordinary-tool exchange and its
+    # answer were rejected as off-branch and could never be recalled.
     groups = [
-        archivable
-        for archivable in (_archivable(group) for group in group_turns(evicted))
+        (archivable, len(group))
+        for group, archivable in ((group, _archivable(group)) for group in group_turns(evicted))
         if archivable
     ]
     if not groups:
@@ -341,7 +347,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
         # compaction of a long chat ran dozens of one-item embedding jobs back to back
         # before the reply could start, and both backends serialise them.
         pending = []
-        for group in groups:
+        for group, span in groups:
             text = render_turn(group)
             if not text:
                 continue
@@ -355,19 +361,19 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 count = count,
             )
             if chunks:
-                pending.append((group, digest, chunks))
+                pending.append((group, span, digest, chunks))
         if not pending:
             return 0
 
         # Identity from the encode that produced these vectors: a concurrent embedder
         # swap would otherwise label them with a space they were never in.
         vectors, identity = embeddings.encode_with_identity(
-            [chunk.text for group_chunks in pending for chunk in group_chunks[2]],
+            [chunk.text for entry in pending for chunk in entry[3]],
             model_name = model,
             normalize = True,
         )
         offset = 0
-        for group, digest, chunks in pending:
+        for group, span, digest, chunks in pending:
             group_vectors = vectors[offset : offset + len(chunks)]
             offset += len(chunks)
             roles = " + ".join(
@@ -405,10 +411,12 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 sha256 = digest,
                 status = "completed",
                 embedding_model = identity,
-                # The turn's real size, so the branch check can bound its run exactly.
-                # Counting role labels only approximates it, since a pasted transcript
-                # writes lines that look exactly like the renderer's own.
-                archive_messages = len(group),
+                # The turn's real size in the TRANSCRIPT, so the branch check can bound
+                # its run exactly. Counting role labels only approximates it, since a
+                # pasted transcript writes lines that look exactly like the renderer's
+                # own, and counting the archived messages undercounts whenever
+                # `_archivable` dropped one.
+                archive_messages = span,
                 commit = False,
             )
             try:
