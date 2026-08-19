@@ -3927,7 +3927,7 @@ def test_a_topped_up_copy_keeps_the_transcript_span(conn):
 
 
 def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
-    """"Let me check" ahead of a tool call is the ordinary agent turn, not an edge case.
+    """ "Let me check" ahead of a tool call is the ordinary agent turn, not an edge case.
 
     `_probe_text` offers BOTH JSON spellings of the stored arguments, and that second
     spelling lands between the arguments and whatever followed them, so the live render
