@@ -132,8 +132,8 @@ def managed_node_usable() -> bool:
 
 def path_with_managed_node(base_path: str | None = None) -> str:
     """``base_path`` (default: this process's PATH) with the managed Node bin dir
-    prepended, unchanged when it is unusable or already there. The installer puts the
-    isolated Node on PATH for setup only, so subprocesses must be handed it."""
+    moved to the front, unchanged when it is unusable or the PATH already resolves a
+    runtime. The installer puts it on PATH for setup only, so subprocesses need it."""
     current = os.environ.get("PATH", "") if base_path is None else base_path
     bin_dir = managed_node_bin_dir()
     if bin_dir is None:
@@ -147,9 +147,14 @@ def path_with_managed_node(base_path: str | None = None) -> str:
     # An empty component means the working directory on POSIX; dropping it loses it.
     entries = current.split(os.pathsep) if current else []
     normalized = os.path.normcase(os.path.normpath(bin_str))
-    if any(entry and os.path.normcase(os.path.normpath(entry)) == normalized for entry in entries):
-        return current
-    return os.pathsep.join([bin_str, *entries])
+    # Drop any existing occurrence rather than keep it: we only get here when the PATH
+    # resolves no usable runtime, so a managed dir sitting behind a stale one must move up.
+    kept = [
+        entry
+        for entry in entries
+        if not (entry and os.path.normcase(os.path.normpath(entry)) == normalized)
+    ]
+    return os.pathsep.join([bin_str, *kept])
 
 
 def _node_version_ok(executable: str) -> bool:

@@ -274,3 +274,23 @@ def test_complete_system_runtime_is_not_shadowed(managed_node_install, monkeypat
     sysbin = _system_node_dir(tmp_path)
     monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable: True)
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
+
+
+def test_shadowed_managed_dir_moves_to_front(managed_node_install, monkeypatch, tmp_path):
+    """Already on PATH but behind a stale runtime: it has to move up, not stay put."""
+    stale = _system_node_dir(tmp_path)
+    monkeypatch.setattr(
+        node_runtime, "_node_version_ok", lambda executable: "sysbin" not in str(executable)
+    )
+    configured = f"{stale}{os.pathsep}{managed_node_install}"
+    expected = f"{managed_node_install}{os.pathsep}{stale}"
+    assert node_runtime.path_with_managed_node(configured) == expected
+
+
+def test_managed_dir_already_first_is_unchanged(managed_node_install, monkeypatch, tmp_path):
+    stale = _system_node_dir(tmp_path)
+    monkeypatch.setattr(
+        node_runtime, "_node_version_ok", lambda executable: "sysbin" not in str(executable)
+    )
+    configured = f"{managed_node_install}{os.pathsep}{stale}"
+    assert node_runtime.path_with_managed_node(configured) == configured
