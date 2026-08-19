@@ -22,6 +22,7 @@ import {
   saveChatThread,
   syncChatMessages,
   updateChatProject,
+  type ChatThreadWritePatch,
   updateChatThread,
 } from "../api/chat-api";
 import { DEXIE_DB_NAME, db } from "../db";
@@ -574,6 +575,7 @@ export type StoredChatThreadReadResult = {
 
 export async function getStoredChatThreadReadResult(
   threadId: string,
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<StoredChatThreadReadResult> {
   // Incognito threads are never stored, so the lookup can only come back
   // empty -- short-circuit it instead of doing a Dexie read + backend GET.
@@ -586,7 +588,14 @@ export async function getStoredChatThreadReadResult(
   const legacyThread = await db.threads.get(threadId);
   let backendThread: ThreadRecord | null;
   try {
-    backendThread = await getChatThread(threadId);
+    // Bounded for a caller that is gating the UI on this read: an unbounded GET that
+    // never answers leaves the request open for the life of the page, and every retry
+    // opens another.
+    backendThread = await getChatThread(threadId, {
+      bounded: options.bounded,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
   } catch (error) {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
       return { thread: legacyThread, cacheable: false };
@@ -618,6 +627,7 @@ export async function getStoredChatThread(
 export async function ensureStoredChatThread(
   threadId: string,
   fallback?: ThreadRecord,
+  options: { bounded?: boolean; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   // An incognito thread is never persisted, so there's genuinely nothing
   // to ensure -- skip the backend round-trips this would otherwise make
@@ -630,7 +640,13 @@ export async function ensureStoredChatThread(
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
-    backendThread = await getChatThread(threadId);
+    // Bounded for a caller whose own request carries a deadline: this read runs BEFORE
+    // it, so an unbounded one here means neither the caller's signal nor the write
+    // timeout ever applies and the write chain behind it never settles.
+    backendThread = await getChatThread(threadId, {
+      bounded: options.bounded,
+      signal: options.signal,
+    });
   } catch (error) {
     if (!legacyThread || isChatThreadDeleted(legacyThread.id)) {
       throw error;
@@ -913,12 +929,19 @@ export async function saveStoredChatThread(
 
 export async function updateStoredChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
-  const thread = await ensureStoredChatThread(threadId);
+  // Same bound and same signal as the write it precedes: a stall here left the settings
+  // write chain pending for the life of the page, and reopening or forking that chat
+  // waits on that chain.
+  const thread = await ensureStoredChatThread(threadId, undefined, {
+    bounded: true,
+    signal: options.signal,
+  });
   if (!thread) return undefined;
-  return updateChatThread(threadId, patch);
+  return updateChatThread(threadId, patch, options);
 }
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */
@@ -987,13 +1010,17 @@ export interface ClearStoredChatsResult {
 
 let clearStoredChatsPromise: Promise<ClearStoredChatsResult> | null = null;
 
-export function clearStoredChats(): Promise<ClearStoredChatsResult> {
+export function clearStoredChats(
+  options: { deleteFiles?: boolean } = {},
+): Promise<ClearStoredChatsResult> {
+  // A clear already in flight wins: the dedupe is what keeps two clears from
+  // racing, and only one caller can start one.
   if (clearStoredChatsPromise) return clearStoredChatsPromise;
 
   threadRecordClearEpoch += 1;
   failedThreadRecordByThreadId.clear();
   const reopenAdmission = threadRecordWrites.closeAdmission();
-  const operation = clearStoredChatsWithAdmissionClosed();
+  const operation = clearStoredChatsWithAdmissionClosed(options);
   const tracked = operation.finally(() => {
     reopenAdmission();
     if (clearStoredChatsPromise === tracked) {
@@ -1004,7 +1031,9 @@ export function clearStoredChats(): Promise<ClearStoredChatsResult> {
   return tracked;
 }
 
-async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsResult> {
+async function clearStoredChatsWithAdmissionClosed(
+  options: { deleteFiles?: boolean },
+): Promise<ClearStoredChatsResult> {
   // Admission is closed before this one-shot fence snapshot.
   const pendingThreadIds = threadRecordWrites.idsRequiringFence();
   const operationId = crypto.randomUUID();
@@ -1026,6 +1055,7 @@ async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsRe
     clearBackendChats({
       notify: false,
       operationId,
+      deleteFiles: options.deleteFiles,
       // the transaction finds existing rows itself; these ids additionally fence legacy rows and
       // writes that have not committed yet
       tombstoneThreadIds: idsToFence,

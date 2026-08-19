@@ -582,6 +582,7 @@ def _scan_cached_gguf(
                     # GGUF row-level transport is ambiguous (variants may differ);
                     # per-variant detail lives on GgufVariantDetail.
                     "partial_transport": None,
+                    "partial_resumable": False,
                 }
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
@@ -1085,6 +1086,15 @@ def _scan_cached_models(
                         # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
                         if download_partial
                         else None
+                    ),
+                    "partial_resumable": (
+                        hf_cache_scan.partial_resume_available(
+                            "model",
+                            repo_id,
+                            repo_cache_dir = repo_path,
+                        )
+                        if download_partial
+                        else False
                     ),
                     # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as
                     # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row. Read from the

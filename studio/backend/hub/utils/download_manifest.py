@@ -904,8 +904,8 @@ def write_cancel_marker(
     """Record that this triple was cancelled. Idempotent across repeated cancels.
 
     ``transport`` ("http"/"xet") is surfaced via partial_transport on
-    inventory rows so the UI labels HTTP retries as continuable and XET
-    retries as full redownloads. None is accepted for forward-compat.
+    inventory rows so the UI only offers a byte-resume for an HTTP partial.
+    None is accepted for forward-compat.
     """
     recorded_hub_cache = _canonical_hub_cache(hub_cache)
     path = marker_path(

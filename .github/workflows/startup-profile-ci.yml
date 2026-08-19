@@ -9,8 +9,27 @@
 # the server can bind, dominated by eager module-level imports pulled in by routes:
 # torch ~1.9s self, unsloth_zoo ~0.8s, routes ~0.6s, transformers ~0.5s.
 #
-# Not a gate yet: --max-healthz-seconds exists, but a budget should come from
-# observed numbers rather than a guess.
+# Now a gate. The budgets below come from this workflow's own history rather than a
+# guess: 33 completed runs, 99 profiles, 297 launches, no failed launch. Median time to
+# a healthy port was 3.24s on ubuntu, 3.02s on macos, 5.11s on windows.
+#
+# Sized for a slow runner, not for the median one. A hosted runner can be slow for a
+# whole run: macos-15 in run 31932608086 came in at 5.03/5.52/5.66s, 1.8x its own
+# median, on a PR that changed nothing here. So each budget is 2x the observed median
+# rounded up to the next half second, floored at 1.4x the slowest median seen. Anything
+# tighter fails unrelated PRs on runner luck.
+#
+# What that catches is a torch-sized regression, about 5s, not a 1-2s one. A 2.2s
+# regression of the pandas kind shows up in the import table in the job summary, which
+# is what found it; the gate is here to stop the catastrophic case, not to measure.
+#
+# Raise a budget in the same PR as the import that needed it, with the run that shows
+# it, exactly as with the frontend startup budget.
+#
+# Do not make this a required status check while it is filtered by paths. A workflow
+# skipped by path filtering never reports, so a required check on it sits Pending and
+# blocks every PR that does not touch the list below:
+# https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks
 
 name: Startup profile
 
@@ -60,11 +79,18 @@ jobs:
     name: startup ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        # Per the header rule. Slowest median seen in 33 runs, which is what the 1.4x
+        # floor is taken from: ubuntu 3.52s, macos 5.52s, windows 5.55s.
+        include:
+          - os: ubuntu-latest
+            max_healthz_seconds: '6.5'
+          - os: macos-15
+            max_healthz_seconds: '8.0'
+          - os: windows-latest
+            max_healthz_seconds: '10.5'
 
     env:
       UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
@@ -94,6 +120,11 @@ jobs:
       - name: Profile startup
         shell: bash
         run: |
+          # Explicit rather than load-bearing: `shell: bash` already runs
+          # `bash --noprofile --norc -eo pipefail {0}`. Written out because the gate's
+          # exit code reaches this step only through the pipe into tee, so it has to
+          # survive the shell key being dropped or changed to `bash {0}`.
+          set -o pipefail
           BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/unsloth.exe"
           [ -x "$BIN" ] || BIN=""
@@ -105,6 +136,7 @@ jobs:
             --python "$PY" \
             ${BIN:+--bin "$BIN"} \
             --repeats "${{ inputs.repeats || '3' }}" \
+            --max-healthz-seconds "${{ matrix.max_healthz_seconds }}" \
             --json "startup-${{ matrix.os }}.json" 2>&1 | tee logs/profile.log
 
       - name: Summary

@@ -67,6 +67,7 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    mcp_display_parts,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -352,6 +353,9 @@ class _Turn:
 
     by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
     order: list[Any] = field(default_factory = list)
+    # call key each delta index maps to: the index itself until a second call
+    # forks off it, then (index, call_id).
+    open_key_by_index: dict[int, Any] = field(default_factory = dict)
     last_index: int | None = None
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
@@ -466,15 +470,23 @@ class _Turn:
                 # continue the call that is already open instead.
                 index = self.last_index if self.last_index is not None else len(self.order)
             call_id = raw_call.get("id")
-            key: Any = index
+            # continue whichever call owns this index now: index restarts at 0
+            # for every tool round, so after a fork the bare argument fragments
+            # belong to the newer call.
+            key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
-                open_id = self.by_index.get(index, {}).get("id")
+                open_id = self.by_index.get(key, {}).get("id")
                 if open_id and open_id != call_id:
                     # Two distinct calls reported at the same index. Merging them
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
-                    key = (index, call_id)
+                    # A fragment that names the call this index opened first goes
+                    # back to it: an id beats the latest-index mapping, which only
+                    # exists to place the fragments that carry no id.
+                    first_id = self.by_index.get(index, {}).get("id")
+                    key = index if first_id == call_id else (index, call_id)
             self.last_index = index
+            self.open_key_by_index[index] = key
             if key not in self.by_index:
                 self.by_index[key] = {
                     "id": "",
@@ -551,6 +563,16 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     new_payload = {key: value for key, value in payload.items() if key != "choices"}
     new_payload["choices"] = [new_choice] + list(payload.get("choices", [])[1:])
     return _sse(new_payload)
+
+
+def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
+    """Provenance for a hand-built unrun card; carries the MCP display name so a
+    budget-exhausted or truncated MCP call never shows the internal server id."""
+    provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        provenance["mcp_server"] = mcp[0]
+    return provenance
 
 
 def _unrun_call_card(
@@ -971,7 +993,7 @@ async def stream_with_studio_tools(
                     # well formed to show; the result says what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
-                    provenance = {"source": "local", "round_id": round_id + 1},
+                    provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
         # tool_choice "none" is an instruction, and a provider that emits a call
@@ -1043,7 +1065,7 @@ async def stream_with_studio_tools(
                     tool_call_id = call.get("stream_id") or call["id"],
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = {"source": "local", "round_id": round_id},
+                    provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the

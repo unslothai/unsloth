@@ -72,14 +72,6 @@ const MCP_PRESETS: readonly McpPreset[] = [
     label: "Context7 (Realtime Docs)",
   },
   {
-    id: "exa",
-    displayName: "Exa",
-    url: "https://mcp.exa.ai/mcp",
-    label: "Exa (Semantic Search)",
-    hint: "Enabling Exa will disable default search",
-    disablesWebSearch: true,
-  },
-  {
     id: "huggingface",
     displayName: "Hugging Face",
     url: "https://huggingface.co/mcp",
@@ -169,7 +161,7 @@ export function McpComposerButton({
           });
         }
         setMcpEnabledForChat(true);
-        // Exa is a search server; turn off the built-in Web Search to avoid overlap.
+        // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
         await updateMcpServer(args.existing.id, { isEnabled: false });
