@@ -425,6 +425,13 @@ async def list_subscription_models(
                 params = {"client_version": OPENAI_CODEX_CLIENT_VERSION},
             )
         if response.status_code == 401:
+            # A freshly refreshed token was rejected too, so the connection really is
+            # done. Record it against that token the way the streaming path does, or
+            # auth_status keeps reporting connected, the editor never offers Reconnect
+            # and every later catalog load repeats this.
+            codex_auth.mark_reauthorization_required(
+                provider_id, expected_access_token = access_token
+            )
             raise CodexReauthorizationError(
                 "ChatGPT authorization expired. Reconnect this connection.",
                 status = 401,
@@ -451,6 +458,11 @@ async def list_subscription_models(
         for model in (_normalize_subscription_model(item) for item in raw or [])
         if model is not None
     ]
+    if not any(model.get("listed") for model in models):
+        # Nothing offerable came back. The route answers with the curated seed for this,
+        # so committing it as a known catalog would leave the picker offering models that
+        # validation and chat, reading that same empty catalog, would then refuse.
+        return models
     if _catalog_requests.get(provider_id) != ticket:
         # Overtaken while this request was out. Committing now would reinstate a catalog
         # for an account this connection may no longer be on, and clear the mark that

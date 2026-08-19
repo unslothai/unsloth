@@ -2505,3 +2505,57 @@ def test_recording_the_proof_never_overwrites_newer_credentials(monkeypatch):
     assert saved[0]["access_token"] == "rotated"
     assert saved[0]["refresh_token"] == "refresh-2"
     assert saved[0]["catalog_account_id"] == "acct-1"
+
+
+def test_a_second_catalog_401_is_recorded_on_the_connection(monkeypatch):
+    """Raising alone leaves auth_status saying connected, so nothing offers Reconnect."""
+    import httpx
+
+    forget_subscription_models("provider-22")
+    marked = []
+
+    class AlwaysRejecting:
+        async def get(self, _url, headers = None, params = None):
+            return httpx.Response(401, json = {"detail": "expired"})
+
+        async def aclose(self):
+            return None
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "fresh-token", "acct-1"
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: AlwaysRejecting())
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(
+        codex_auth,
+        "mark_reauthorization_required",
+        lambda provider_id, expected_access_token = None: marked.append(
+            (provider_id, expected_access_token)
+        ),
+    )
+    try:
+        with pytest.raises(CodexReauthorizationError):
+            asyncio.run(list_subscription_models("provider-22", "stale", "acct-1"))
+        # Recorded against the refreshed token, not the stale one it started with.
+        assert marked == [("provider-22", "fresh-token")]
+    finally:
+        forget_subscription_models("provider-22")
+
+
+def test_a_catalog_with_nothing_offerable_is_not_committed(monkeypatch):
+    """The route answers such a catalog with the seed, so the two must not disagree.
+
+    Committing it would leave the picker offering seeds while validation and chat read
+    the same empty catalog and refuse them.
+    """
+    fake = _models_response(
+        {"models": [{"slug": "codex-auto-review", "visibility": "hide"}]}
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("provider-23")
+    try:
+        models = asyncio.run(list_subscription_models("provider-23", "token", "acct-1"))
+        assert [model["id"] for model in models] == ["codex-auto-review"]
+        assert codex_client.subscription_catalog_known("provider-23") is False
+    finally:
+        forget_subscription_models("provider-23")
