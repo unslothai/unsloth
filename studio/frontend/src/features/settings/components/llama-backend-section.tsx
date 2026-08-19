@@ -12,7 +12,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatBytes } from "@/features/hub";
-import { FolderBrowser } from "@/features/model-picker";
+import {
+  FolderBrowser,
+  invalidateLlamaFlagCatalog,
+} from "@/features/model-picker";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect, useState } from "react";
@@ -306,7 +309,12 @@ export function LlamaBackendSection() {
         </div>
       </SettingsRow>
 
-      <LlamaCppPathRow onChanged={() => void refresh(true)} />
+      <LlamaCppPathRow
+        onChanged={() => {
+          invalidateLlamaFlagCatalog();
+          void refresh(true);
+        }}
+      />
 
       {running ? (
         <div className="pb-3" data-testid="llama-backend-progress">

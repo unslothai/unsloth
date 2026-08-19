@@ -445,6 +445,9 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
         b._process = _FakeProc(alive = True)
         # _current() now also checks the served repo, so mark it current.
         b._model_repo = config.effective_gguf_repo()
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+        b._binary_path_revision = custom_llama_cpp_path_revision()
 
     monkeypatch.setattr(b, "_spawn", fake_spawn)
     b._ensure_ready()
@@ -453,6 +456,31 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     # Already alive -> no second spawn.
     b._ensure_ready()
     assert spawned["n"] == 1
+
+
+def test_path_save_restarts_embedder_with_new_binary(monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    backend = LlamaServerBackend()
+    backend._process = _FakeProc(alive = True)
+    backend._model_repo = config.effective_gguf_repo()
+    backend._binary = "/old/llama-server"
+    backend._binary_path_revision = llama_cpp_path_settings.custom_llama_cpp_path_revision()
+    monkeypatch.setattr(llama_cpp_path_settings, "_path_revision", backend._binary_path_revision + 1)
+    spawned = []
+
+    def fake_spawn():
+        spawned.append(backend._binary)
+        backend._process = _FakeProc(alive = True)
+        backend._model_repo = config.effective_gguf_repo()
+        backend._binary = "/new/llama-server"
+        backend._binary_path_revision = llama_cpp_path_settings.custom_llama_cpp_path_revision()
+
+    monkeypatch.setattr(backend, "_spawn", fake_spawn)
+    backend._ensure_ready()
+
+    assert spawned == [None]
+    assert backend._binary == "/new/llama-server"
 
 
 def test_post_restarts_once_on_connect_error(monkeypatch):

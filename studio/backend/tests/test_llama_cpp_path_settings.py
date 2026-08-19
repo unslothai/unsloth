@@ -73,6 +73,7 @@ def test_supported_build_layouts_resolve(tmp_path, platform, layout):
 def test_setting_round_trip_and_reset(settings_store, tmp_path):
     root = tmp_path / "custom llama.cpp"
     binary = _binary(root)
+    initial_revision = path_settings.custom_llama_cpp_path_revision()
 
     selected = path_settings.set_custom_llama_cpp_path(str(root))
     status = path_settings.custom_llama_cpp_path_status()
@@ -87,10 +88,12 @@ def test_setting_round_trip_and_reset(settings_store, tmp_path):
         "resolved_binary": str(binary),
         "environment_variable": None,
     }
+    assert path_settings.custom_llama_cpp_path_revision() == initial_revision + 1
 
     assert path_settings.set_custom_llama_cpp_path(None) is None
     assert settings_store[path_settings.CUSTOM_LLAMA_CPP_PATH_SETTING_KEY] is None
     assert path_settings.custom_llama_cpp_path_status()["source"] == "default"
+    assert path_settings.custom_llama_cpp_path_revision() == initial_revision + 2
 
 
 def test_setting_rejects_missing_folder_and_folder_without_server(settings_store, tmp_path):

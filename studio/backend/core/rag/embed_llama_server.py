@@ -108,6 +108,7 @@ class LlamaServerBackend:
         # makes it stale, forcing a re-resolve + respawn (see _ensure_ready).
         self._model_repo: str | None = None
         self._binary: str | None = None
+        self._binary_path_revision: int | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
         # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
@@ -124,7 +125,9 @@ class LlamaServerBackend:
         if self._binary is not None:
             return self._binary
         from core.inference.llama_cpp import LlamaCppBackend
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
 
+        path_revision = custom_llama_cpp_path_revision()
         binary = LlamaCppBackend._find_llama_server_binary()
         if not binary:
             raise RuntimeError(
@@ -137,6 +140,7 @@ class LlamaServerBackend:
         binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
+        self._binary_path_revision = path_revision
         return binary
 
     @staticmethod
@@ -650,7 +654,13 @@ class LlamaServerBackend:
     def _current(self) -> bool:
         """Alive AND serving the effective repo (a Settings model change makes a
         live server stale)."""
-        return self._process_alive() and self._model_repo == config.effective_gguf_repo()
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+        return (
+            self._process_alive()
+            and self._model_repo == config.effective_gguf_repo()
+            and self._binary_path_revision == custom_llama_cpp_path_revision()
+        )
 
     def _ensure_ready(self) -> None:
         """Guarantee a live server on the effective model, (re)spawning if needed.
@@ -662,6 +672,11 @@ class LlamaServerBackend:
             if self._current():
                 return
             self._kill_process()
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+            if self._binary_path_revision != custom_llama_cpp_path_revision():
+                self._binary = None
+                self._binary_path_revision = None
             self._spawn()
 
     def _restart(self) -> None:

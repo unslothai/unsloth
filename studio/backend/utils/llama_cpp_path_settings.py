@@ -17,6 +17,7 @@ MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH = 32767
 MANAGED_LLAMA_CPP_PATH_MARKER = "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"
 
 _settings_lock = threading.RLock()
+_path_revision = 0
 
 
 def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
@@ -149,6 +150,7 @@ def _canonical_directory(value: str) -> Path:
 
 def set_custom_llama_cpp_path(value: Optional[str]) -> Optional[Path]:
     """Store a validated directory. ``None`` restores automatic discovery."""
+    global _path_revision
     env_path, variable, _direct = _environment_override()
     if env_path is not None:
         raise RuntimeError(f"The llama.cpp path is managed by the {variable} environment variable.")
@@ -158,7 +160,14 @@ def set_custom_llama_cpp_path(value: Optional[str]) -> Optional[Path]:
         upsert_app_settings(
             {CUSTOM_LLAMA_CPP_PATH_SETTING_KEY: (str(directory) if directory is not None else None)}
         )
+        _path_revision += 1
     return directory
+
+
+def custom_llama_cpp_path_revision() -> int:
+    """In-process revision used to retire sidecars launched before a path save."""
+    with _settings_lock:
+        return _path_revision
 
 
 def custom_llama_cpp_path_status() -> dict:
