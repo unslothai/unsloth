@@ -1210,6 +1210,36 @@ def test_a_pin_is_charged_for_everything_it_holds():
     }
 
 
+def test_a_pin_charges_token_dense_text_at_its_real_rate():
+    """The ceiling is only a ceiling if the turn is charged what it really costs.
+
+    Four characters per token undercharges CJK and emoji by roughly 2x or more, so a turn
+    that really costs 1056 tokens was charged 276 and cleared a 1024 ceiling it was nowhere
+    near. The pin then held far more than the budget allows and the fitter evicted recent
+    turns to pay for it, which is the failure the budget exists to prevent.
+    """
+    from core.inference import instruction_pin
+
+    dense_instruction = {
+        "role": "user",
+        "content": "必ず表形式で回答し、末尾に STATUS を付けてください。" * 40,
+    }
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        dense_instruction,
+        {"role": "assistant", "content": "承知しました。" * 20},
+        {"role": "user", "content": "continue"},
+    ]
+
+    # Its real cost is over the ceiling, so it is not pinned at all rather than partially.
+    assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
+    # A ceiling that can actually afford it still pins it, so this is a charge and not a
+    # blanket refusal of dense text.
+    assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096) == {
+        id(dense_instruction)
+    }
+
+
 def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
     """A trailing tool exchange is its own group, and `truncate_oldest_messages` skips a
     protected group BEFORE the `starts_user_turn` expansion, so that group stays an

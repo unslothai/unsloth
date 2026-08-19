@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import re
 
-from core.inference.context_window import estimate_messages_tokens, group_turns
+from core.inference.context_window import estimate_messages_tokens_dense, group_turns
 
 # 80 characters. Objective, and there is no way to trip it accidentally in either
 # direction that a reasonable person would argue with: someone who typed a paragraph
@@ -219,7 +219,12 @@ def _protected_cost(turns: list[list[dict]], index: int) -> int:
     small instruction its pin over tokens the pin never keeps -- which is the case the pin
     exists for, since an agent run is exactly where the filler follow-up appears.
     """
-    return estimate_messages_tokens(turns[index])
+    # Dense, because this decides whether a turn may be pinned at all. Four characters
+    # per token undercharges CJK and emoji by roughly 2x or more, so a turn that really
+    # costs 1056 was charged 276 and cleared a 1024 ceiling it was nowhere near: the pin
+    # then held far more than the budget allows and the fitter evicted recent turns to pay
+    # for it. Over-charging only ever refuses the pin, which is the safe direction here.
+    return estimate_messages_tokens_dense(turns[index])
 
 
 def pinned_instruction_ids(
