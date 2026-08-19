@@ -1474,9 +1474,7 @@ async def start_training(
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
             "train_on_completions": request.train_on_completions,
-            "reward_functions": [
-                selection.model_dump() for selection in request.reward_functions
-            ],
+            "reward_functions": [selection.model_dump() for selection in request.reward_functions],
             "num_generations": request.num_generations,
             "max_prompt_length": request.max_prompt_length,
             "max_completion_length": request.max_completion_length,
@@ -2010,7 +2008,6 @@ async def get_reward_function_presets(current_subject: str = Depends(get_current
     List the built-in GRPO reward functions the Train page can select and weight.
     """
     from core.training.grpo_rewards import reward_preset_catalog
-
     return RewardFunctionPresetsResponse(presets = reward_preset_catalog())
 
 

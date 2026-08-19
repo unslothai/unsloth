@@ -3247,9 +3247,7 @@ class UnslothTrainer:
 
                 n = len(prepared.dataset) if hasattr(prepared.dataset, "__len__") else None
                 n_display = f"{n:,}" if isinstance(n, int) else "streaming"
-                self._update_progress(
-                    status_message = f"Dataset ready ({n_display} prompts, GRPO)"
-                )
+                self._update_progress(status_message = f"Dataset ready ({n_display} prompts, GRPO)")
                 logger.info(f"Prompt-only dataset ready ({n_display} prompts)\n")
 
                 # No eval split: GRPO scores its own rollouts, so an eval pass has

@@ -25,9 +25,7 @@ _REASONING_FORMAT_RE = re.compile(
     rf"{re.escape(SOLUTION_START)}.*?{re.escape(SOLUTION_END)}\s*$",
     re.DOTALL,
 )
-_SOLUTION_RE = re.compile(
-    rf"{re.escape(SOLUTION_START)}(.*?){re.escape(SOLUTION_END)}", re.DOTALL
-)
+_SOLUTION_RE = re.compile(rf"{re.escape(SOLUTION_START)}(.*?){re.escape(SOLUTION_END)}", re.DOTALL)
 _NUMBER_RE = re.compile(r"-?\d+(?:[\d,]*\d)?(?:\.\d+)?")
 
 
