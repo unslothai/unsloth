@@ -46,7 +46,8 @@ export type {
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   type MonitorFrame,
-  STACK_SHADOW_GUTTER,
+  STACK_SHADOW_GUTTER_BOTTOM,
+  STACK_SHADOW_GUTTER_TOP,
   type StackGeometry,
   railBottomOffset,
   railCardsHeight,

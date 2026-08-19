@@ -413,7 +413,7 @@ function TauriUpdateLayer({
       // costs it its scrollbar, and only the cards opt back in, so nothing
       // would drag the ones below the fold into view.
       className={cn(
-        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4",
+        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4 pt-2",
         stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
       )}
       style={{
@@ -710,7 +710,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // costs it its scrollbar, and only the cards opt back in, so nothing
           // would drag the ones below the fold into view.
           className={cn(
-            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4",
+            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4 pt-2",
             stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
           )}
           style={{

@@ -249,6 +249,7 @@ test("the rail scrolls rather than spilling its cards", () => {
     // downwards, so flush against the clip edge the card loses all of it and
     // reads as cut off, which is how the llama.cpp toast was reported.
     assert.match(rules, /\bpb-4\b/, "the rail clips the bottom card's shadow");
+    assert.match(rules, /\bpt-2\b/, "the rail clips the top card's shadow");
     // scrollHeight spans that padding, so the gutter has to be discounted or the
     // stack asks for room it does not occupy and lifts over the composer for
     // nothing. The cap stays on this node, since measure() lifts it here.

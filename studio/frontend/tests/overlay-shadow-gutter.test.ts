@@ -13,41 +13,43 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  STACK_SHADOW_GUTTER,
+  STACK_SHADOW_GUTTER_BOTTOM,
+  STACK_SHADOW_GUTTER_TOP,
   railBottomOffset,
   railCardsHeight,
   railMaxHeight,
   stackGeometry,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
+const GUTTER = STACK_SHADOW_GUTTER_BOTTOM + STACK_SHADOW_GUTTER_TOP;
+
 const INSET = 16;
 
-test("the gutter clears the deepest shadow the rail carries", () => {
-  // Dark theme, 0 8px 28px -6px, reaches 8 + 28/2 - 6 below the card. Light
-  // reaches 4; neither reaches above the top edge.
-  assert.ok(
-    STACK_SHADOW_GUTTER >= 8 + 28 / 2 - 6,
-    "the dark theme's shadow is still clipped",
-  );
+test("the gutters clear the shadows the rail carries", () => {
+  // Measured off the rendered blur: the light shadow is down to one level of
+  // white 8px below the card and gone 6px above it, and the dark one is down to
+  // one level of #181818 16px below and 8px above.
+  assert.ok(STACK_SHADOW_GUTTER_BOTTOM >= 16, "the shadow below is clipped");
+  assert.ok(STACK_SHADOW_GUTTER_TOP >= 8, "the shadow above is clipped");
 });
 
 test("the rail's edge drops by the gutter, so the cards keep their inset", () => {
   // Offset plus padding is where the cards land.
   assert.equal(
-    railBottomOffset(INSET) + STACK_SHADOW_GUTTER,
+    railBottomOffset(INSET) + STACK_SHADOW_GUTTER_BOTTOM,
     INSET,
     "the bottom card moved",
   );
   // A lifted placement keeps it too.
-  assert.equal(railBottomOffset(148) + STACK_SHADOW_GUTTER, 148);
+  assert.equal(railBottomOffset(148) + STACK_SHADOW_GUTTER_BOTTOM, 148);
 });
 
-test("the cap grows by the gutter, so the cards' band is unchanged", () => {
+test("the cap grows by both gutters, so the cards' band is unchanged", () => {
   for (const room of [0, 56, 137, 468]) {
     assert.equal(
-      railMaxHeight(room) - STACK_SHADOW_GUTTER,
+      railMaxHeight(room) - GUTTER,
       room,
-      "the gutter is being taken out of the cards",
+      "a gutter is being taken out of the cards",
     );
   }
 });
@@ -63,14 +65,11 @@ test("the clip box holds a card the cap is a little short of", () => {
   assert.ok(railMaxHeight(card - 40) < card);
 });
 
-test("the measured height discounts the gutter the rail carries", () => {
+test("the measured height discounts the gutters the rail carries", () => {
   const card = 137;
-  assert.equal(
-    railCardsHeight(card + STACK_SHADOW_GUTTER, STACK_SHADOW_GUTTER),
-    card,
-  );
+  assert.equal(railCardsHeight(card + GUTTER, GUTTER), card);
   // An empty rail is padding alone, and asks for nothing.
-  assert.equal(railCardsHeight(STACK_SHADOW_GUTTER, STACK_SHADOW_GUTTER), 0);
+  assert.equal(railCardsHeight(GUTTER, GUTTER), 0);
   // Never negative, whatever scrollHeight rounds to.
   assert.equal(railCardsHeight(15, 16), 0);
 });
@@ -87,10 +86,7 @@ test("a discounted measurement places the rail as an unpadded one did", () => {
     bottom: H,
     coverable: true,
   };
-  const measured = railCardsHeight(
-    card + STACK_SHADOW_GUTTER,
-    STACK_SHADOW_GUTTER,
-  );
+  const measured = railCardsHeight(card + GUTTER, GUTTER);
   assert.deepEqual(
     stackGeometry([composer], W, H, measured, measured),
     stackGeometry([composer], W, H, card, card),
