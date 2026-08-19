@@ -210,9 +210,10 @@ class _CpuFallbackRuntime(NamedTuple):
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
-    "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
-    "installed. Run `unsloth studio setup` to download the prebuilt runtime, "
-    "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
+    "This is a GGUF model, but no executable llama.cpp runtime (llama-server) "
+    "is available. Run `unsloth studio setup` to download the prebuilt runtime, "
+    "then try again. If you selected a custom runtime, restore its execute "
+    "permission first (for example, `chmod +x llama-server` on Unix)."
 )
 
 # Shared by the pre-teardown and post-metadata rejections (#7205).
@@ -416,8 +417,9 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
     version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
     The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
-    system HIP/ROCR risks missing symbols. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure
-    bundle (for a host whose system ROCm lacks this arch); no-op on WSL / non-Linux.
+    system HIP/ROCR risks missing symbols, and when it does load_model retries once
+    with the bundle only. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 skips the prepend up front,
+    for a host whose system ROCm lacks this arch. No-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
@@ -1043,6 +1045,11 @@ _TOOL_TEMPLATE_MARKERS = (
 # actually understands.
 _REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
+# Match a Qwen3.8 path/repo segment without treating future names such as
+# Qwen3.80 as part of the family. Official ids continue after the version with
+# a dash (for example Qwen3.8-27B-GGUF).
+_QWEN38_MODEL_RE = re.compile(r"(?:^|[^a-z0-9])qwen3\.8(?:$|[-_/\\])", re.IGNORECASE)
+
 
 def _extract_reasoning_effort_levels(chat_template: str) -> list:
     """Return the reasoning_effort levels a template references, in canonical
@@ -1067,11 +1074,12 @@ def detect_reasoning_flags(
 ) -> dict:
     """Classify a chat template's reasoning and tool-calling capabilities.
 
-    Returns the same six keys as the GGUF sniffer: ``supports_reasoning``,
+    Returns the same seven keys as the GGUF sniffer: ``supports_reasoning``,
     ``reasoning_style`` (``"enable_thinking"`` | ``"reasoning_effort"`` |
     ``"enable_thinking_effort"``), ``reasoning_always_on``,
     ``reasoning_effort_levels``, ``supports_preserve_thinking``,
-    ``supports_tools``. A falsy ``chat_template`` yields the all-default dict.
+    ``preserve_thinking_default``, ``supports_tools``. A falsy
+    ``chat_template`` yields the all-default dict.
     Used by both the llama-server backend at load time and the
     safetensors/transformers paths in ``routes/inference`` so they agree on
     what the frontend sees.
@@ -1082,6 +1090,7 @@ def detect_reasoning_flags(
         "reasoning_always_on": False,
         "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
+        "preserve_thinking_default": False,
         "supports_tools": False,
     }
     if not chat_template:
@@ -1162,6 +1171,10 @@ def detect_reasoning_flags(
     # keeps historical <think> blocks in prior assistant turns.
     if "preserve_thinking" in tpl:
         flags["supports_preserve_thinking"] = True
+        # Qwen3.8 deliberately changed the family default from the off behavior
+        # used by Qwen3.6 and Gemma 4. Keep the product override family-scoped:
+        # other templates that happen to expose the same kwarg stay off.
+        flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         logger.info(f"{prefix}model supports preserve_thinking")
 
     if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
@@ -3706,6 +3719,11 @@ class LlamaCppBackend:
         # Which llama-server file this load ran. `unsloth studio update` replaces it
         # in place, so a stand-down blamed on the binary can spot a real update.
         self._launch_binary_revision: tuple = ()
+        # Binary a load has selected but not necessarily spawned yet. None means
+        # no load is pending; the settings route compares a populated revision
+        # before is_active becomes true so a concurrent path save cannot hide a
+        # required reload.
+        self._binary_revision_pending: Optional[tuple] = None
         # Set after an auto-Vulkan crash recovers with all devices disabled.
         self._cpu_fallback_reason: Optional[str] = None
         self._cpu_fallback_runtime: Optional[_CpuFallbackRuntime] = None
@@ -3751,6 +3769,7 @@ class LlamaCppBackend:
         self._reasoning_style: str = "enable_thinking"
         self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
+        self._preserve_thinking_default: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
@@ -4045,12 +4064,16 @@ class LlamaCppBackend:
         # path string, and on macOS the launch resolves a managed entrypoint to
         # its target, so comparing an unresolved discovery path against it would
         # differ for the same unchanged file and reload the model on every Apply.
+        return self._binary_changed_since_revision(self._launch_binary_revision)
+
+    def _binary_changed_since_revision(self, revision: tuple) -> bool:
+        """Whether the current selection differs from a captured binary."""
         current = self._binary_revision(
             self._exec_path_for_launch(self._find_llama_server_binary())
         )
-        if not current or not self._launch_binary_revision:
+        if not current or not revision:
             return False
-        return current != self._launch_binary_revision
+        return current != revision
 
     def spec_binary_fallback_can_retry(self) -> bool:
         """Whether the binary has since gained what the last load stood down for.
@@ -4339,6 +4362,10 @@ class LlamaCppBackend:
     @property
     def supports_preserve_thinking(self) -> bool:
         return self._supports_preserve_thinking
+
+    @property
+    def preserve_thinking_default(self) -> bool:
+        return self._preserve_thinking_default
 
     @property
     def reasoning_default(self) -> bool:
@@ -4878,24 +4905,30 @@ class LlamaCppBackend:
         Search order:
         1.  LLAMA_SERVER_PATH environment variable (direct path to binary)
         1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
-        2.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
-        3.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
-        4.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
-        5.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
-        6.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
-        7.  llama-server on PATH                     (system install)
-        8.  ./bin/llama-server                       (legacy: extracted binary)
+        2.  Studio's custom llama.cpp folder setting
+        3.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
+        4.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
+        5.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
+        6.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
+        7.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
+        8.  llama-server on PATH                     (system install)
+        9.  ./bin/llama-server                       (legacy: extracted binary)
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         def _file_status(p: Path) -> str:
-            # "file", "absent", or "denied" (exists but stays access-denied
-            # across a short retry: Windows AV/ACL or an install replace in
-            # flight). is_file() raises PermissionError (WinError 5) instead of
-            # returning False for the locked case, so never treat it as missing.
+            # "file", "absent", "non_executable", or "denied". A denied
+            # file stays access-denied across a short retry (Windows AV/ACL or
+            # an install replace in flight). is_file() raises PermissionError
+            # (WinError 5) instead of returning False for the locked case, so
+            # never treat it as missing.
             for _ in range(5):
                 try:
-                    return "file" if p.is_file() else "absent"
+                    if not p.is_file():
+                        return "absent"
+                    if sys.platform != "win32" and not os.access(p, os.X_OK):
+                        return "non_executable"
+                    return "file"
                 except PermissionError:
                     time.sleep(0.2)
                 except OSError:
@@ -4906,33 +4939,43 @@ class LlamaCppBackend:
             return _file_status(p) == "file"
 
         def _layout_candidates(d: Path) -> list:
-            # build layouts probed under a llama.cpp dir, highest priority first
-            cands = [d / binary_name, d / "build" / "bin" / binary_name]
-            if sys.platform == "win32":
-                cands.append(d / "build" / "bin" / "Release" / binary_name)
-            return cands
+            # Keep Settings validation and runtime discovery on one layout
+            # contract so a folder accepted by the UI is always launchable.
+            from utils.llama_cpp_path_settings import llama_server_candidates
+            return list(llama_server_candidates(d))
 
         def _unavailable(p: object) -> None:
             # a pinned or managed binary that exists but is access-denied: report
             # it instead of silently downgrading to a lower-priority llama-server
             logger.warning(
-                f"llama-server at {p} exists but is access-denied (antivirus or "
-                "an in-flight install); not falling back to another binary, "
-                "retry once it is released"
+                f"llama-server at {p} is not executable or is access-denied "
+                "(permissions, antivirus, or an in-flight install); not falling "
+                "back to another binary, retry once it is available"
             )
             return None
 
         def _scan_pinned(paths: list):
-            # first existing candidate wins -> (path, None); a present-but-denied
-            # one -> (None, denied_path) so the caller reports it rather than
-            # skipping to a lower-priority location. include_denied returns the
-            # locked path instead: diffusion asset lookup only needs its dir.
+            # First executable candidate wins. A genuinely access-denied one
+            # stops immediately; a known non-executable candidate is remembered
+            # while sibling build layouts are checked. include_denied returns an
+            # unavailable path instead: diffusion asset lookup only needs its dir.
+            non_executable = None
             for p in paths:
                 st = _file_status(p)
                 if st == "file":
                     return str(p), None
                 if st == "denied":
                     return (str(p), None) if include_denied else (None, p)
+                if st == "non_executable" and non_executable is None:
+                    # A source checkout may leave a stale root entrypoint beside a
+                    # valid CMake build. Keep looking within this pinned layout,
+                    # but do not fall through to a different runtime if none works.
+                    non_executable = p
+            if non_executable is not None:
+                # include_denied is used only to preserve genuinely transient
+                # access-denied paths. A missing execute bit needs repair, not a
+                # retry, and must not pass the download preflight as available.
+                return (None, None) if include_denied else (None, non_executable)
             return None, None
 
         # 1. Env var: direct path to binary
@@ -4946,14 +4989,37 @@ class LlamaCppBackend:
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-        if custom_llama_cpp:
+        managed_path_marker = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
+        if custom_llama_cpp and not managed_path_marker:
             hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
                 return hit
 
-        # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
+        # 2. Studio setting: a deliberate pin, so a missing or inaccessible
+        # selected build must not silently fall through to the bundled runtime.
+        # The user would otherwise see their custom path selected while another
+        # llama-server actually ran.
+        try:
+            from utils.llama_cpp_path_settings import get_stored_custom_llama_cpp_path
+            studio_custom_llama_cpp = get_stored_custom_llama_cpp_path()
+        except Exception:
+            studio_custom_llama_cpp = None
+        if studio_custom_llama_cpp is not None:
+            hit, locked = _scan_pinned(_layout_candidates(studio_custom_llama_cpp))
+            if locked is not None:
+                return _unavailable(locked)
+            if hit:
+                return hit
+            logger.warning(
+                "The custom llama.cpp folder selected in Studio no longer contains "
+                "%s; not falling back to another runtime",
+                binary_name,
+            )
+            return None
+
+        # 3-5. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
         legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
         _resolved_sr, _is_legacy = LlamaCppBackend._resolved_studio_root_and_is_legacy()
@@ -7717,8 +7783,14 @@ class LlamaCppBackend:
         return path_dirs
 
     @staticmethod
-    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
-        """Build a subprocess env that lets llama-server resolve native libs."""
+    def _llama_server_env_for_binary(
+        binary: str, *, use_system_rocm: bool = True
+    ) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs.
+
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        WSL's librocdxg prepend is independent and is not gated by this flag.
+        """
         env = child_env_without_native_path_secret()
         # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
         binary_dir = str(_llama_lib_dir(binary))
@@ -7760,8 +7832,9 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver.
-            lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+            # which can be incompatible with the host amdkfd driver (#7233).
+            if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
+                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -9364,6 +9437,7 @@ class LlamaCppBackend:
         self._reasoning_effort_levels = []
         self._reasoning_default = True
         self._supports_preserve_thinking = False
+        self._preserve_thinking_default = False
         self._supports_tools = False
         self._n_layers = None
         self._n_experts = None
@@ -9637,6 +9711,7 @@ class LlamaCppBackend:
                 self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                 self._reasoning_always_on = flags["reasoning_always_on"]
                 self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._preserve_thinking_default = flags["preserve_thinking_default"]
                 self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
@@ -11335,11 +11410,16 @@ class LlamaCppBackend:
         if not binary:
             return True
         try:
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
             from utils.llama_cpp_update import (
                 _active_install_is_local_link,
                 _llama_install_root,
             )
 
+            # A Settings-selected checkout is user-owned even when its ordinary
+            # `llama.cpp` directory name or prebuilt marker resembles our tree.
+            if custom_llama_cpp_path_source() == "studio":
+                return False
             # A --with-llama-cpp-dir tree is the user's own checkout reached
             # through a symlinked llama.cpp dir. The updater refuses to write
             # through that link, so it cannot repair the binary either, and its
@@ -11473,7 +11553,12 @@ class LlamaCppBackend:
         if not binary or sys.platform != "darwin":
             return binary
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
-            return binary
+            try:
+                from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
+                if custom_llama_cpp_path_source() != "studio":
+                    return binary
+            except Exception:
+                return binary
         if not _is_installer_entrypoint(binary):
             return binary
         # template_only: the outer entrypoint being ours says nothing about
@@ -12018,6 +12103,18 @@ class LlamaCppBackend:
         # LLAMA_SERVER_PATH), and what a "symbol lookup error" from a mismatched
         # runtime exits with. Name both causes instead of blaming a distro
         # package -- but still keep it off the GGUF and off memory.
+        # A ROCm symbol lookup is also 127, but the generic text below would send
+        # the user to reinstall a binary Vulkan and a shell launch both run fine.
+        _rocm_miss = LlamaCppBackend._bundled_hip_symbol_miss(output or "")
+        if _rocm_miss:
+            _miss_obj, _miss_sym = _rocm_miss
+            return (
+                f"llama-server could not start: bundled {_short(os.path.basename(_miss_obj))} "
+                f"looked up {_short(_miss_sym)} in a different ROCm than it was built "
+                "against. That is a HIP/ROCR version mix, not a missing "
+                "binary and not out of VRAM. Try the Vulkan backend, or "
+                f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
         if returncode == 127:
             # Same provenance split as the library branches: the updater cannot
             # touch a pinned binary, so do not send its owner there.
@@ -12671,6 +12768,59 @@ class LlamaCppBackend:
             return False
         # the split-axis enum token, unique to this assert (not the source file).
         return "split_axis" in text
+
+    # The prepend covers the whole system ROCm dir, so any lib in it can be the
+    # one that fails to resolve, not just HIP. Matched on the basename so a path
+    # component (/opt/librocm-custom/...) cannot stand in for the object.
+    _ROCM_OBJECT_HINTS = ("libamdhip", "libamd_comgr", "libhsa-runtime", "libhip", "libroc")
+
+    # Build dirs where a bundle-only launch has come up healthy after the mix
+    # crashed, paired with the binary revision that proved it. The installer
+    # swaps a new runtime into the same path, so the revision prevents an old
+    # proof from suppressing the system ROCm prepend for the new build.
+    _bundle_only_rocm_dirs: dict[str, tuple] = {}
+    _bundle_only_rocm_lock = threading.Lock()
+
+    @staticmethod
+    def _remember_bundle_only_rocm(binary: str) -> None:
+        resolved = _resolve_llama_binary(binary)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._bundle_only_rocm_lock:
+            LlamaCppBackend._bundle_only_rocm_dirs[str(resolved.parent)] = revision
+
+    @staticmethod
+    def _prefers_bundle_only_rocm(binary: str) -> bool:
+        resolved = _resolve_llama_binary(binary)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._bundle_only_rocm_lock:
+            return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
+
+    @staticmethod
+    def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
+        """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
+
+        glibc prints ``symbol lookup error: <object>: undefined symbol: <sym>[,
+        version <v>]``. A ggml symbol, or an absent .so (``error while loading
+        shared libraries``), is a different failure. The object is echoed
+        verbatim, so split on the ": undefined symbol:" that follows it rather
+        than on whitespace, the same way the missing-library branch above keeps
+        "/opt/My Runtime/libfoo.so" whole.
+        """
+        match = re.search(
+            r"symbol lookup error:[ \t]*([^\r\n]{1,4096}?):"
+            r"[ \t]*undefined symbol:[ \t]*([^\s,]+)",
+            output or "",
+        )
+        if not match:
+            return None
+        obj = os.path.basename(match.group(1)).lower()
+        if not obj.startswith(LlamaCppBackend._ROCM_OBJECT_HINTS):
+            return None
+        return match.group(1), match.group(2)
+
+    @staticmethod
+    def _is_bundled_hip_rocr_mismatch(output: str) -> bool:
+        return LlamaCppBackend._bundled_hip_symbol_miss(output) is not None
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
@@ -13580,7 +13730,7 @@ class LlamaCppBackend:
 
     @contextlib.contextmanager
     def _serial_load_scope(self):
-        """Hold the serial load lock, and release the pending budget with it.
+        """Hold the serial load lock and release pending launch state with it.
 
         The pending fraction is armed before the download, so every exit ahead of
         the spawn has to give it back or the settings route, which reads it before
@@ -13595,6 +13745,7 @@ class LlamaCppBackend:
                 yield
             finally:
                 self._vram_fraction_pending = None
+                self._binary_revision_pending = None
 
     @_with_gguf_load_marker
     def load_model(
@@ -13801,19 +13952,27 @@ class LlamaCppBackend:
 
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
-            binary = self._find_llama_server_binary()
-            # macOS: launch the resolved server, never a shell entrypoint. SIP
-            # purges DYLD_* while starting the protected /bin/sh a wrapper
-            # entrypoint runs under, so the loader path built for the child
-            # would not survive the wrapper's own exec (#8566). The installer
-            # writes a wrapper only when it cannot symlink, and that wrapper
-            # does nothing but exec the target with "$@", so this is the same
-            # launch minus the shell hop. The resolved path stays inside the
-            # managed install, so provenance-aware advice is unaffected.
-            # Resolved here rather than at the later reset so every consumer of
-            # `binary` below (capability probe, revision stamp) shares one path
-            # space; `_binary_changed_since_launch` compares against this one.
-            binary = self._exec_path_for_launch(binary)
+            # Serialize this snapshot with settings writes. If a save wins the
+            # guard, this load sees the new folder; if the load wins, the save
+            # response compares against this pending old revision and asks for a
+            # reload even before Popen makes is_active true.
+            from utils.llama_cpp_path_settings import llama_cpp_path_selection_guard
+
+            with llama_cpp_path_selection_guard():
+                binary = self._find_llama_server_binary()
+                # macOS: launch the resolved server, never a shell entrypoint. SIP
+                # purges DYLD_* while starting the protected /bin/sh a wrapper
+                # entrypoint runs under, so the loader path built for the child
+                # would not survive the wrapper's own exec (#8566). The installer
+                # writes a wrapper only when it cannot symlink, and that wrapper
+                # does nothing but exec the target with "$@", so this is the same
+                # launch minus the shell hop. The resolved path stays inside the
+                # managed install, so provenance-aware advice is unaffected.
+                # Resolved here rather than at the later reset so every consumer of
+                # `binary` below (capability probe, revision stamp) shares one path
+                # space; `_binary_changed_since_launch` compares against this one.
+                binary = self._exec_path_for_launch(binary)
+                self._binary_revision_pending = self._binary_revision(binary)
 
             # Every capability answer shaping this launch, latching whether any was a
             # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
@@ -16747,6 +16906,7 @@ class LlamaCppBackend:
                     self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                     self._reasoning_always_on = flags["reasoning_always_on"]
                     self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                    self._preserve_thinking_default = flags["preserve_thinking_default"]
                     self._supports_tools = flags["supports_tools"]
 
                     self._chat_template_file = tempfile.NamedTemporaryFile(
@@ -16789,13 +16949,12 @@ class LlamaCppBackend:
                                 thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
-                    # preserve_thinking is an independent kwarg. Default it OFF
-                    # at launch so direct OpenAI-compatible callers that omit the
-                    # field match the UI's default-off behavior (the bundled
-                    # gemma-4 template also defaults it false; the frontend sends
-                    # preserve_thinking per request once toggled on).
+                    # preserve_thinking is independent of the thinking gate.
+                    # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
+                    # supporting family keep the existing off default. The
+                    # frontend receives the same resolved value via load/status.
                     if self._supports_preserve_thinking:
-                        reasoning_kw["preserve_thinking"] = False
+                        reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
                     cmd.extend(
                         [
                             "--chat-template-kwargs",
@@ -17441,20 +17600,27 @@ class LlamaCppBackend:
                 # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
                 _spawn_cwd: Optional[str] = None
+                # Load-scoped, not per call: the correction edits the shared env,
+                # so it outlives this spawn, and the launch that finally comes up
+                # healthy is often a later one (drafterless, no-flash, arch
+                # fallback). A per-call flag left those successes unrecorded.
+                _did_rocm_retry = False
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
-                    Retries once with --fit off when the first attempt
-                    crashes during startup and run_cmd is eligible (see
-                    _fit_off_retry_eligible).
+                    Up to three launches: the first, one ROCm env correction,
+                    and one --fit recovery. Separate flags, so a library mix
+                    does not spend the fit slot and a VRAM crash after the
+                    correction can still fit-retry.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
-                    nonlocal _last_spawn_cmd, _mem_host_resident
+                    nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
-                    for _spawn_attempt in (0, 1):
+                    _did_fit_retry = False
+                    for _spawn_attempt in (0, 1, 2):
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
@@ -17511,20 +17677,52 @@ class LlamaCppBackend:
                         )
                         self._stdout_thread.start()
                         if self._wait_for_health(timeout = 600.0):
+                            if _did_rocm_retry:
+                                # Proved on this host: every later child skips the
+                                # prepend instead of crashing into it first.
+                                self._remember_bundle_only_rocm(binary)
                             return True
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
                         # A split-axis abort (#6415) is fit-independent: skip the
                         # --fit off retry and let the caller latch it.
-                        _split_axis_crash = self._is_tensor_split_assert(
-                            "\n".join(self._stdout_lines[-50:])
-                        )
+                        _startup_output = "\n".join(self._stdout_lines[-50:])
+                        _split_axis_crash = self._is_tensor_split_assert(_startup_output)
+                        _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         if (
-                            _spawn_attempt == 0
+                            not _did_rocm_retry
+                            and _startup_crashed
+                            and not _split_axis_crash
+                            and _hip_rocr_mismatch
+                        ):
+                            # The prepend is what a shell launch does not do, which
+                            # is why the same binary runs from a terminal. Drop
+                            # those dirs only: the rest of env holds the pooling
+                            # and memory scrubs.
+                            _bundle_only = self._llama_server_env_for_binary(
+                                binary, use_system_rocm = False
+                            )
+                            _retry_ld = _bundle_only.get("LD_LIBRARY_PATH", "")
+                            # "" on a host that never had the var: nothing to undo.
+                            if _retry_ld and _retry_ld != env.get("LD_LIBRARY_PATH"):
+                                logger.warning(
+                                    "llama-server crashed during startup (exit code %s) "
+                                    "because a bundled ROCm library could not resolve a "
+                                    "symbol against the system ROCm; retrying once "
+                                    "with the bundled runtime only. Crash log: %s",
+                                    self._process.returncode,
+                                    self._llama_log_path,
+                                )
+                                env["LD_LIBRARY_PATH"] = _retry_ld
+                                _did_rocm_retry = True
+                                continue
+                        if (
+                            not _did_fit_retry
                             and fully_gpu_offloaded
                             and _startup_crashed
                             and not _split_axis_crash
+                            and not _hip_rocr_mismatch
                         ):
                             # We forced --fit off because Unsloth's (conservative) VRAM
                             # math placed the model fully on GPU. A startup crash here
@@ -17568,12 +17766,14 @@ class LlamaCppBackend:
                                 )
                             run_cmd = _run
                             self._memory_state = resolve_effective_memory_state(_run, env)
+                            _did_fit_retry = True
                             continue
                         if (
-                            _spawn_attempt == 0
+                            not _did_fit_retry
                             and _fit_retry_allowed
                             and _startup_crashed
                             and not _split_axis_crash
+                            and not _hip_rocr_mismatch
                         ):
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
@@ -17617,6 +17817,7 @@ class LlamaCppBackend:
                                         "the --fit off retry; it offloads every layer."
                                     )
                                 self._memory_state = resolve_effective_memory_state(run_cmd, env)
+                            _did_fit_retry = True
                             continue
                         return False
 
@@ -19147,6 +19348,11 @@ class LlamaCppBackend:
         """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
             return False
+        # A custom-path save leaves the model intent unchanged, but the
+        # resident process still belongs to the previously selected runtime.
+        if self._binary_changed_since_launch():
+            logger.info("llama-server selection changed since launch; forcing a reload")
+            return False
         intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
         # the CPU-pinned rewrite, not the request. Apply the same rewrite here
@@ -19395,6 +19601,7 @@ class LlamaCppBackend:
             self._reasoning_effort_levels = []
             self._reasoning_default = True
             self._supports_preserve_thinking = False
+            self._preserve_thinking_default = False
             self._supports_tools = False
             self._cache_type_kv = None
             # GPU-pin state describes the active runner only; clear it so an explicit

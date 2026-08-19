@@ -4543,7 +4543,7 @@ def is_always_safe_tool(name: str) -> bool:
 
 # Tools whose provisional card is only a text preview of the arguments, so it can stream
 # while awaiting approval.
-_TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal"})
+_TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal", "edit_file"})
 
 
 def has_text_only_provisional_card(name: str) -> bool:
@@ -4606,6 +4606,11 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
     if name == "python":
         return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    # Always writes, and python's open(..., "w") already prompts, so the cheaper
+    # tool must not become the quiet way around that. Stated rather than left to
+    # the fail-closed default, so a later clause cannot drop it.
+    if name == "edit_file":
+        return True
     return True
 
 
@@ -8883,6 +8888,466 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
+# edit_file
+#
+# Without it, changing a file means a whole-file `cat > f <<'EOF'` or
+# open(...).write(...): ~7.7k output tokens to rewrite a 500-line file that a
+# patch does in ~45, and anything the model fails to retype is lost.
+#
+# Exact-string replacement, not a unified diff: models corrupt @@ hunk headers
+# far more often than they mis-copy a literal snippet, and a bad header patches
+# the wrong place instead of failing. A missing or non-unique old_string is a
+# hard error naming the match count, so the retry is "add context".
+
+# The whole text is read to find the match, so the cap is on the file.
+_EDIT_FILE_MAX_BYTES = _env_int("UNSLOTH_STUDIO_EDIT_FILE_MAX_BYTES", 16 * 1024 * 1024)
+
+# Bounded receipt: lines alone are no bound, since one line of minified JS can
+# be the whole file, so characters are capped per line and over the receipt.
+_EDIT_FILE_DIFF_LINES = 40
+_EDIT_FILE_DIFF_LINE_CHARS = 200
+_EDIT_FILE_DIFF_CHARS = 4000
+# Lines either side of the first change that are handed to difflib. Diffing the
+# whole file would split it into one str per line: 8M of them at the 16MB cap.
+_EDIT_FILE_DIFF_WINDOW_LINES = 120
+
+
+def _edit_file_resolve(
+    raw_path: str, session_id: "str | None", disable_sandbox: bool
+) -> "tuple[str | None, str]":
+    """Resolve the model's path the way python/terminal resolve theirs.
+
+    Same rules as the sitecustomize shim: a code-interpreter habit prefix
+    (/mnt/data, /workspace, ...) keeps its suffix under the workdir, everything
+    else is relative to it. Containment is checked on the realpath, so a symlink
+    planted inside cannot reach out.
+    """
+    raw = (raw_path or "").strip()
+    if not raw:
+        return None, "Error: 'path' is required."
+    workdir = _get_workdir(session_id)
+    candidate = raw
+    # An absolute path already inside the workdir is a real path, not a habit
+    # one: a project rooted at /workspace/repo would otherwise have its own
+    # prefix stripped and be rejoined onto itself.
+    already_inside = os.path.isabs(raw) and not _is_outside_workdir(raw, workdir)
+    if not disable_sandbox and not already_inside:
+        for prefix in _MISSING_PATH_PREFIXES:
+            if candidate == prefix or candidate.startswith(prefix + "/"):
+                candidate = candidate[len(prefix) :].lstrip("/")
+                break
+    if not candidate:
+        return None, "Error: 'path' is required."
+    target = candidate if os.path.isabs(candidate) else os.path.join(workdir, candidate)
+    try:
+        target = os.path.realpath(target)
+    except (OSError, ValueError):
+        return None, f"Error: cannot resolve path '{raw}'."
+    # Full access runs python/terminal unsandboxed already; holding this one
+    # tool to the workdir would just push the model back to cat.
+    if not disable_sandbox and _is_outside_workdir(target, workdir):
+        return None, (
+            f"Error: '{raw}' is outside this conversation's working directory, "
+            "which is the only place edit_file can write. Use a relative path "
+            f"(for example '{os.path.basename(raw) or 'file.py'}')."
+        )
+    return target, ""
+
+
+def _edit_file_decode(data: bytes, path: str) -> "tuple[str, str, str, str]":
+    """Decode file bytes into (text, newline, bom, error).
+
+    ``text`` is normalized to \\n so an old_string with plain newlines still
+    matches a CRLF file; matching raw bytes would fail every edit of a
+    Windows-authored source. The original convention is returned so the write
+    puts it back instead of converting every line ending in the file.
+    """
+    bom = ""
+    if data.startswith(codecs.BOM_UTF8):
+        bom = codecs.BOM_UTF8.decode("utf-8")
+        data = data[len(codecs.BOM_UTF8) :]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "", "\n", "", f"Error: '{os.path.basename(path)}' is not UTF-8 text."
+    if "\x00" in text:
+        return "", "\n", "", f"Error: '{os.path.basename(path)}' is a binary file."
+    crlf = text.count("\r\n")
+    # Judged against the total so a file with a couple of stray CRs is still
+    # written back as LF; a mixed file is normalized to whichever dominates.
+    newline = "\r\n" if crlf and crlf * 2 >= text.count("\n") else "\n"
+    return text.replace("\r\n", "\n"), newline, bom, ""
+
+
+def _edit_file_write(
+    path: str,
+    text: str,
+    newline: str,
+    bom: str,
+    *,
+    expect: "bytes | None" = None,
+    workdir: "str | None" = None,
+) -> str:
+    """Write the new content, replacing the file atomically.
+
+    Sibling temp file then rename: an interrupted write must not leave a source
+    file half-replaced. The mode is carried over so an edit keeps the
+    executable bit.
+
+    ``expect`` are the bytes the edit was computed from, compared again here so
+    a file another chat rewrote meanwhile is not reverted to this call's stale
+    copy. ``workdir`` re-checks containment just before the rename, so a parent
+    swapped for a symlink after the path was resolved is caught.
+    """
+    payload = (bom + text.replace("\n", newline)).encode("utf-8")
+    directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok = True)
+    except OSError as exc:
+        return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
+    tmp = ""
+    try:
+        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        try:
+            shutil.copymode(path, tmp)
+        except OSError:
+            pass  # new file, or a mode we cannot read; the default is fine
+        if workdir is not None and _is_outside_workdir(path, workdir):
+            return (
+                f"Error: '{os.path.basename(path)}' moved outside the working "
+                "directory while the edit was being prepared; nothing was written."
+            )
+        if expect is not None:
+            try:
+                with open(path, "rb") as fh:
+                    current = fh.read(len(expect) + 1)
+            except OSError:
+                current = None
+            if current != expect:
+                return (
+                    f"Error: '{os.path.basename(path)}' changed while this edit "
+                    "was being prepared; nothing was written. Read it again and "
+                    "redo the edit against the current contents."
+                )
+        os.replace(tmp, path)
+        tmp = ""
+    except OSError as exc:
+        return f"Error: cannot write '{os.path.basename(path)}': {exc}"
+    finally:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+    return ""
+
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@")
+
+
+def _edit_file_shift_hunk(line: str, offset: int) -> str:
+    """Add ``offset`` to both line numbers in a @@ hunk header."""
+    match = _HUNK_HEADER_RE.match(line)
+    if not match:
+        return line
+    before_span = match.group(2) or ""
+    after_span = match.group(4) or ""
+    shifted = (
+        f"@@ -{int(match.group(1)) + offset}{before_span} "
+        f"+{int(match.group(3)) + offset}{after_span} @@"
+    )
+    return shifted + line[match.end() :]
+
+
+def _edit_file_line_window(text: str, index: int, lines: int) -> "tuple[int, int]":
+    """Offsets of a window of ``lines`` lines either side of ``index``."""
+    start = index
+    for _ in range(lines):
+        newline = text.rfind("\n", 0, start)
+        if newline == -1:
+            start = 0
+            break
+        start = newline
+    if start and text[start : start + 1] == "\n":
+        start += 1
+    end = index
+    for _ in range(lines):
+        newline = text.find("\n", end)
+        if newline == -1:
+            end = len(text)
+            break
+        end = newline + 1
+    return start, max(end, index)
+
+
+def _edit_file_receipt(
+    before: str,
+    old: str,
+    new: str,
+    name: str,
+    count: int,
+    change_at: int = 0,
+) -> str:
+    """A bounded unified diff of what changed.
+
+    Line-numbered so the model can confirm the edit landed where it meant. Two
+    separate bounds, because either alone leaks: difflib sees only a window
+    around the first change, and the generator is consumed lazily.
+    """
+    import difflib
+    import itertools
+
+    window_start, window_end = _edit_file_line_window(
+        before, change_at, _EDIT_FILE_DIFF_WINDOW_LINES
+    )
+    # The window is cut out of the old text and the replacement replayed on it,
+    # rather than a second window of the same LINE COUNT cut out of the new one.
+    # An edit that adds or removes lines shifts everything after it, so equal
+    # windows end on different text and difflib calls that a second hunk --
+    # deletions the edit never made, a window away from anything that changed.
+    window_end = max(window_end, change_at + len(old))  # keep the match whole
+    before_window = before[window_start:window_end]
+    # Right in both modes: without replace_all the file held exactly one match.
+    after_window = before_window.replace(old, new)
+    first_line = before.count("\n", 0, window_start) + 1
+    stream = difflib.unified_diff(
+        before_window.split("\n"),
+        after_window.split("\n"),
+        lineterm = "",
+        n = 2,
+    )
+    # drop the ---/+++ headers; the name is on the summary line
+    taken = list(itertools.islice(stream, 2 + _EDIT_FILE_DIFF_LINES + 1))[2:]
+    plural = "" if count == 1 else "s"
+    head = f"Edited {name} ({count} replacement{plural})"
+    if not taken:
+        return head
+    if len(taken) > _EDIT_FILE_DIFF_LINES:
+        # An exact remaining count would cost the full diff this avoids.
+        diff = taken[:_EDIT_FILE_DIFF_LINES] + ["... (more diff lines)"]
+    else:
+        diff = taken
+    diff = [
+        line
+        if len(line) <= _EDIT_FILE_DIFF_LINE_CHARS
+        else f"{line[:_EDIT_FILE_DIFF_LINE_CHARS]}... (+{len(line) - _EDIT_FILE_DIFF_LINE_CHARS} chars)"
+        for line in diff
+    ]
+    # difflib numbered the hunks against the window, so shift them back to real
+    # file lines; line 3 of a 9000-line file is worse than no numbers at all.
+    if first_line > 1:
+        diff = [_edit_file_shift_hunk(line, first_line - 1) for line in diff]
+    body = "\n".join(diff)
+    if len(body) > _EDIT_FILE_DIFF_CHARS:
+        body = body[:_EDIT_FILE_DIFF_CHARS] + "\n... (receipt truncated)"
+    return head + "\n" + body
+
+
+def _edit_file_replace_all(value: object) -> "bool | None":
+    """Read replace_all strictly; None means "not a boolean".
+
+    bool("false") is True, and models do emit the JSON string. Coercing it that
+    way turns the multi-match guard off and rewrites every occurrence.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no", ""):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _edit_file_create(
+    target: str,
+    new: str,
+    name: str,
+    newline: str,
+    workdir: "str | None" = None,
+) -> str:
+    """Handle the empty-old_string case: create a file, never clobber one.
+
+    A zero-byte file is writable here on purpose: refusing every existing target
+    would strand the model, since an empty old_string would be refused and no
+    other old_string can match an empty file.
+
+    The absent case is created with O_EXCL rather than checked and then written:
+    two chats sharing a workspace can both pass a lexists() check and the later
+    rename drops the earlier file. O_EXCL also gives the new file the usual
+    umask-derived mode, where a mkstemp temp file would leave it 0600.
+    """
+    payload = (new.replace("\n", newline)).encode("utf-8")
+    if not os.path.lexists(target):
+        directory = os.path.dirname(target) or "."
+        try:
+            os.makedirs(directory, exist_ok = True)
+        except OSError as exc:
+            return f"Error: cannot create directory for '{name}': {exc}"
+        if workdir is not None and _is_outside_workdir(target, workdir):
+            return (
+                f"Error: '{name}' moved outside the working directory while the "
+                "edit was being prepared; nothing was written."
+            )
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        # Never follow a symlink planted at the final component in the meantime.
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(target, flags, 0o666)
+        except FileExistsError:
+            return (
+                f"Error: '{name}' was created by something else while this call "
+                "was preparing it; nothing was written."
+            )
+        except OSError as exc:
+            return f"Error: cannot write '{name}': {exc}"
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+        except OSError as exc:
+            # ENOSPC partway through leaves the bytes that fit -- a file
+            # truncated mid-token -- and the retry the message asks for cannot
+            # clear it, since an empty old_string refuses a non-empty target.
+            # Removing the inode puts the retry back on the create path.
+            with contextlib.suppress(OSError):
+                os.remove(target)
+            return f"Error: cannot write '{name}': {exc}"
+        return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
+    try:
+        st = os.stat(target)
+    except OSError:
+        st = None
+    # Refused rather than measured: a FIFO reports st_size 0, so it fell into
+    # the zero-byte branch below, whose write reopens the target -- and open()
+    # on a FIFO with no writer blocks for ever.
+    if st is None or not S_ISREG(st.st_mode) or st.st_size:
+        return (
+            f"Error: '{name}' already exists. An empty 'old_string' only "
+            "creates a new file; to change this one, pass the exact text to "
+            "replace."
+        )
+    # Guarded like any other edit, so a chat that filled it in is not clobbered.
+    error = _edit_file_write(target, new, newline, "", expect = b"", workdir = workdir)
+    if error:
+        return error
+    return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
+
+
+def _edit_file(
+    arguments: dict,
+    session_id: "str | None" = None,
+    disable_sandbox: bool = False,
+) -> str:
+    """Replace an exact string in a file. See the notes above."""
+    old = arguments.get("old_string")
+    new = arguments.get("new_string")
+    # Checked, not coerced: str(None) would write the literal "None" into a file.
+    if not isinstance(old, str) or not isinstance(new, str):
+        return "Error: 'old_string' and 'new_string' must both be strings."
+    # A truncated emoji escape ("\ud83d") survives json.loads as a lone surrogate
+    # that cannot be encoded, and the UnicodeEncodeError the write raises is
+    # swallowed upstream into "Unknown tool: edit_file" -- the one answer that
+    # sends the model back to the whole-file rewrite. old_string needs no check,
+    # being only ever compared.
+    try:
+        new.encode("utf-8")
+    except UnicodeEncodeError:
+        return (
+            "Error: 'new_string' contains unpaired surrogate characters, usually "
+            "a half-written emoji; nothing was written. Send it again as plain text."
+        )
+    target, error = _edit_file_resolve(
+        str(arguments.get("path") or ""), session_id, disable_sandbox
+    )
+    if error:
+        return error
+    name = os.path.basename(target)
+    # Normalized for the same reason the file is, so the two can match.
+    old = old.replace("\r\n", "\n")
+    new = new.replace("\r\n", "\n")
+    replace_all = _edit_file_replace_all(arguments.get("replace_all"))
+    if replace_all is None:
+        return "Error: 'replace_all' must be true or false."
+    # Decided before the no-op check below, not after: both strings empty is the
+    # documented way to create __init__.py or .gitkeep, and read as "identical,
+    # nothing to change" it was refused, leaving no way to write a zero-byte
+    # file.
+    if not old:
+        return _edit_file_create(
+            target,
+            new,
+            name,
+            "\n",
+            workdir = None if disable_sandbox else _get_workdir(session_id),
+        )
+    if old == new:
+        return "Error: 'old_string' and 'new_string' are identical; nothing to change."
+    try:
+        st = os.stat(target)
+    except FileNotFoundError:
+        return f"Error: '{name}' does not exist. Pass an empty 'old_string' to create it."
+    except OSError as exc:
+        return f"Error: cannot read '{name}': {exc}"
+    if os.path.isdir(target):
+        return f"Error: '{name}' is a directory."
+    # A FIFO reads forever and a character device such as /dev/zero reads until
+    # memory runs out. Neither reports a useful st_size, and this path carries
+    # no timeout or cancel event, so the turn cannot be recovered.
+    if not S_ISREG(st.st_mode):
+        return f"Error: '{name}' is not a regular file."
+    if st.st_size > _EDIT_FILE_MAX_BYTES:
+        return (
+            f"Error: '{name}' is larger than "
+            f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB; edit it with python instead."
+        )
+    try:
+        with open(target, "rb") as fh:
+            data = fh.read(_EDIT_FILE_MAX_BYTES + 1)
+    except OSError as exc:
+        return f"Error: cannot read '{name}': {exc}"
+    before, newline, bom, error = _edit_file_decode(data, target)
+    if error:
+        return error
+    count = before.count(old)
+    if count == 0:
+        return (
+            f"Error: 'old_string' was not found in {name}. It must match the "
+            "file byte for byte, including indentation. Read the file and copy "
+            "the text to replace out of it."
+        )
+    if count > 1 and not replace_all:
+        return (
+            f"Error: 'old_string' matches {count} places in {name}. Include "
+            "surrounding lines to make it unique, or pass replace_all=true to "
+            f"change all {count}."
+        )
+    after = before.replace(old, new) if replace_all else before.replace(old, new, 1)
+    error = _edit_file_write(
+        target,
+        after,
+        newline,
+        bom,
+        expect = data,
+        workdir = None if disable_sandbox else _get_workdir(session_id),
+    )
+    if error:
+        return error
+    # Windowed around the first replacement, rather than diffing the whole file.
+    return _edit_file_receipt(
+        before,
+        old,
+        new,
+        name,
+        count if replace_all else 1,
+        change_at = max(before.find(old), 0),
+    )
+
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -9155,6 +9620,7 @@ TERMINAL_TOOL_FULL_ACCESS = {
     },
 }
 
+# edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
     "python": PYTHON_TOOL_FULL_ACCESS,
     "terminal": TERMINAL_TOOL_FULL_ACCESS,
@@ -9162,11 +9628,11 @@ _FULL_ACCESS_TOOL_BY_NAME = {
 
 
 def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
-    """Swap python/terminal for their Full access schemas.
+    """Swap python/terminal/edit_file for their Full access schemas.
 
-    Only the two sandboxed built-ins are touched; web_search, render_html,
+    Only the sandboxed built-ins are touched; web_search, render_html,
     search_knowledge_base and MCP tools are passed through untouched, and a list
-    without either built-in is returned as-is so callers can apply this
+    without any of them is returned as-is so callers can apply this
     unconditionally. The input list is never mutated -- ALL_TOOLS entries are
     module globals shared across requests.
     """
@@ -9184,6 +9650,71 @@ def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
             swapped = True
     return out if swapped else tools
 
+
+EDIT_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit_file",
+        # The description does the steering: given the tool but no preference,
+        # a model keeps writing heredocs because that is what it was trained on.
+        "description": (
+            "Change a file by replacing an exact string in it. Prefer this over "
+            "rewriting a file with python or a shell heredoc: it sends only the "
+            "lines that change, so editing a large file costs a fraction of the "
+            "tokens and cannot drop the parts you did not retype. Read the file "
+            "first and copy old_string out of it verbatim, including indentation. "
+            "old_string must match exactly one place unless replace_all is true; "
+            "if it matches none or several you get an error and nothing is "
+            "written. Paths are relative to the working directory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File to edit, relative to the working directory.",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": (
+                        "Exact text to replace, copied from the file. Pass an "
+                        "empty string to create a new file."
+                    ),
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Text to put in its place.",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": (
+                        "Replace every occurrence instead of requiring a unique "
+                        "match. Defaults to false."
+                    ),
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+}
+
+# Appended, not substituted: the sandboxed text never claims absolute paths
+# fail, so there is nothing false to rewrite, only a capability to add. A model
+# that thinks it cannot reach a real checkout falls back to the whole-file rewrite.
+_EDIT_FILE_FULL_ACCESS_CLAUSE = (
+    " The code sandbox is disabled, so an absolute path resolves as written and "
+    "edits the real file there, anywhere the Unsloth Studio process can reach."
+)
+
+EDIT_FILE_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **EDIT_FILE_TOOL["function"],
+        "description": EDIT_FILE_TOOL["function"]["description"] + _EDIT_FILE_FULL_ACCESS_CLAUSE,
+    },
+}
+
+_FULL_ACCESS_TOOL_BY_NAME["edit_file"] = EDIT_FILE_TOOL_FULL_ACCESS
 
 RENDER_HTML_TOOL = {
     "type": "function",
@@ -9245,6 +9776,7 @@ ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
+    EDIT_FILE_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
 ]
@@ -9547,6 +10079,15 @@ def execute_tool(
                 session_id,
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
+            )
+    # Same in-flight guard as the two above: it writes into the session workdir,
+    # so a chat deleted mid-call must not unlink it underneath.
+    if name == "edit_file":
+        with _session_in_flight(session_id):
+            return _edit_file(
+                arguments,
+                session_id = session_id,
+                disable_sandbox = disable_sandbox,
             )
     return f"Unknown tool: {name}"
 
