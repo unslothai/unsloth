@@ -1016,9 +1016,12 @@ def test_hip_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
     # A usage above the card's own capacity.
     assert join([("luid_0x00000000_0x00015369_phys_0", 20 * GB)], dev_meta) is None
     # And the resolvable case still resolves, so the declines above are the reason.
-    assigned, aggregate = join(SOLO_ADAPTERS, dev_meta)
+    assigned, aggregate, whole_adapter = join(SOLO_ADAPTERS, dev_meta)
     assert assigned[0] == pytest.approx(3 * GB)
     assert aggregate == pytest.approx(3 * GB)
+    # One ordinal owning every node its LUID names, so the engine counters for
+    # that LUID are this device's and nothing else's.
+    assert whole_adapter == [0x15369]
 
 
 def test_hip_luid_join_bounds_the_counter_by_the_carve_out(win_rocm, monkeypatch):
@@ -2175,3 +2178,63 @@ def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_roc
     assert devices[0]["total_gb"] == 16.9
     assert devices[0]["used_gb"] == pytest.approx(7.90, abs = 0.01)  # Dedicated alone
     assert aggregate == pytest.approx(7.90, abs = 0.01)
+
+
+# ----------------------------------------------------------------------------- #
+# GPU Engine utilization
+#
+# The engine counters are instanced per adapter, exactly like the memory ones,
+# so the unfiltered 3D sum is every adapter's work: the display iGPU's and the
+# Basic Render Driver's alongside the card being monitored.
+# ----------------------------------------------------------------------------- #
+def _engine_query(monkeypatch, adapters):
+    """Run the Train page's poll and hand back the GPU Engine counter path."""
+    seen = []
+    inner = _subprocess_run(adapter_output = _adapter_output(adapters))
+
+    def fake_run(cmd, *a, **k):
+        seen.append(" ".join(cmd) if isinstance(cmd, list) else str(cmd))
+        return inner(cmd, *a, **k)
+
+    monkeypatch.setattr(hw.subprocess, "run", fake_run)
+    devices = hw.get_gpu_utilization()["devices"]
+    (query,) = [c for c in seen if "GPU Engine" in c]
+    return devices, query
+
+
+def test_gpu_utilization_counts_only_this_adapters_engines(win_rocm, monkeypatch):
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0)))
+
+    (device,), engine_query = _engine_query(monkeypatch, SOLO_ADAPTERS)
+    assert device["gpu_utilization_pct"] == 12.0
+    assert "luid_0x00000000_0x00015369_" in engine_query
+
+
+def test_gpu_utilization_falls_back_to_every_engine(win_rocm, monkeypatch):
+    """Without HIP identity there is no LUID to narrow to, and the whole-host
+    sum is still better than no reading."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+
+    (device,), engine_query = _engine_query(monkeypatch, SOLO_ADAPTERS)
+    assert device["gpu_utilization_pct"] == 12.0
+    assert "luid_" not in engine_query
+
+
+def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, monkeypatch):
+    """A LUID covering a node this ordinal does not own would sum that node's
+    work in. The VRAM join is what establishes the device IS the whole adapter,
+    and here it does not: one ordinal holding one node of two."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0b01)))
+    linked = [
+        ("luid_0x00000000_0x00015369_phys_0", 3 * GB),
+        ("luid_0x00000000_0x00015369_phys_1", 5 * GB),
+    ]
+
+    (device,), engine_query = _engine_query(monkeypatch, linked)
+    assert device["vram_used_gb"] is None  # the VRAM join declined too
+    assert "luid_" not in engine_query
