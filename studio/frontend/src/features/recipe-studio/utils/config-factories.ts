@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import type {
   ExpressionConfig,
   LlmConfig,
@@ -406,7 +407,7 @@ export function makeSeedConfig(
     hf_split: "",
     hf_path: "",
     hf_token: "",
-    hf_endpoint: "https://huggingface.co",
+    hf_endpoint: getHfEndpoint(),
     local_file_name: "",
     ...(seedSourceType === "unstructured"
       ? { unstructured_upload_uid: makeUnstructuredUploadUid() }

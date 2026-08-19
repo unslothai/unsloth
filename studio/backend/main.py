@@ -354,6 +354,7 @@ from utils.cache_cleanup import (
 )
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
+from utils.hf_endpoint import get_hf_endpoint, get_hf_datasets_server
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -1673,6 +1674,12 @@ async def health_check(request: Request):
         # Opaque per-install id; launchers reject sibling Studios on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
+        # Non-sensitive routing info: mirrors the HF_ENDPOINT / HF_DATASETS_SERVER
+        # env vars so the frontend can route its Hub calls to the same endpoint the
+        # backend uses. Unauthenticated on purpose — an endpoint URL is not a host
+        # fingerprint, and the frontend needs it before a token exists.
+        "hf_endpoint": get_hf_endpoint(),
+        "hf_datasets_server": get_hf_datasets_server(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
