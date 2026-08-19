@@ -948,7 +948,7 @@ def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
 
     branch = conversation_archive.branch_message_texts(wire, ("assistant",))
 
-    assert conversation_archive.message_text(stored) == "section 3 noted."
+    assert conversation_archive.message_text(stored) == "Section 3 noted."
     assert conversation_archive.content_on_branch(stored, branch) is True
     # A reply that really is off-branch is still rejected.
     assert (
