@@ -553,6 +553,26 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download transport",
+        transportDescription:
+          "How model and dataset files come down from Hugging Face. HTTPS resumes where it stopped; Xet is often faster on a first download but starts the file again if you cancel.",
+        transportHint:
+          "HTTPS is plain TLS: every network, proxy and VPN allows it, a cancelled or dropped transfer resumes from the bytes already on disk, and memory use stays flat. Xet fetches deduplicated chunks, so a repo sharing data with one you already have can arrive much faster, but it needs hf_xet, uses more RAM, and a cancel discards the file in flight. Auto asks this machine: it weighs RAM and whether Xet has been stalling here, and falls back to HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard TLS. Resumes after a cancel, works on any network, steady memory use.",
+        xetHint:
+          "Deduplicated chunk transfer. Often faster on a fresh download, restarts the file if you cancel, needs more memory.",
+        autoHint:
+          "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
+        autoCurrently: "Auto is using {transport} on this machine.",
+        autoCurrentlyReason: "Auto is using {transport} on this machine ({reason}).",
+        xetMissing: "Xet is unavailable because hf_xet is not installed.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",

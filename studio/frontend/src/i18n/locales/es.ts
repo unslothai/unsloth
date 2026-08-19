@@ -566,6 +566,26 @@ export const es = {
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
+      downloads: {
+        sectionTitle: "Descargas",
+        transport: "Transporte de descarga",
+        transportDescription:
+          "Cómo llegan los archivos de modelos y conjuntos de datos desde Hugging Face. HTTPS retoma donde se detuvo; Xet suele ser más rápido en la primera descarga, pero reinicia el archivo si cancelas.",
+        transportHint:
+          "HTTPS es TLS normal: cualquier red, proxy o VPN lo permite, una transferencia cancelada o cortada continúa desde los bytes ya guardados y el uso de memoria se mantiene estable. Xet descarga bloques deduplicados, así que un repositorio que comparte datos con otro que ya tienes puede llegar mucho más rápido, pero necesita hf_xet, usa más RAM y una cancelación descarta el archivo en curso. Auto decide según la máquina: valora la RAM y si Xet se ha estado atascando aquí, y recurre a HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS estándar. Retoma tras una cancelación, funciona en cualquier red, uso de memoria estable.",
+        xetHint:
+          "Transferencia por bloques deduplicados. Suele ser más rápida en una descarga nueva, reinicia el archivo si cancelas y necesita más memoria.",
+        autoHint:
+          "Elige según la máquina y cambia a HTTPS si Xet se atasca o falla aquí.",
+        autoCurrently: "Auto está usando {transport} en esta máquina.",
+        autoCurrentlyReason: "Auto está usando {transport} en esta máquina ({reason}).",
+        xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+      },
       uploads: {
         sectionTitle: "Subidas",
         maxUploadSize: "Límite de subida del conjunto de datos de entrenamiento",

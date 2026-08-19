@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  loadDownloadTransportSettings,
+  subscribeDownloadTransportSettings,
+  updateDownloadTransportSettings,
+} from "@/features/settings";
 import { toast } from "@/lib/toast";
+import { useCallback, useEffect, useState } from "react";
 import {
   type DownloadTransportCapabilities,
   getDownloadTransportCapabilities,
 } from "./api";
 import {
-  DEFAULT_TRANSPORT_MODE,
   type TransportMode,
   isTransportMode,
+  pickTransportMode,
 } from "./constants";
 export type { TransportMode } from "./constants";
 
@@ -22,30 +27,59 @@ type TransportCapabilitiesState = {
   isLoading: boolean;
 };
 
-function readStored(): TransportMode {
+// The install's setting, so the choice follows the install rather than one browser. Cached
+// because the download path reads the preference synchronously.
+let installMode: TransportMode | null = null;
+let installModeInFlight: Promise<TransportMode | null> | null = null;
+
+/** This browser's own choice, or null when it has never made one. */
+function readStored(): TransportMode | null {
   if (typeof window === "undefined") {
-    return DEFAULT_TRANSPORT_MODE;
+    return null;
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    return isTransportMode(raw) ? raw : DEFAULT_TRANSPORT_MODE;
+    return isTransportMode(raw) ? raw : null;
   } catch {
-    return DEFAULT_TRANSPORT_MODE;
+    return null;
   }
 }
 
+function hydrateInstallMode(): Promise<TransportMode | null> {
+  installModeInFlight ??= loadDownloadTransportSettings()
+    .then((settings) => {
+      installMode = isTransportMode(settings.mode) ? settings.mode : null;
+      return installMode;
+    })
+    .catch(() => null)
+    .finally(() => {
+      installModeInFlight = null;
+    });
+  return installModeInFlight;
+}
+
+/** The preference as currently known, without waiting on the install setting. */
 export function getTransportMode(): TransportMode {
-  return readStored();
+  return pickTransportMode(readStored(), installMode);
+}
+
+/** The preference, waiting for the install setting when this browser has no choice of its own. */
+export async function resolveTransportMode(): Promise<TransportMode> {
+  const stored = readStored();
+  if (stored !== null) {
+    return stored;
+  }
+  return pickTransportMode(null, await hydrateInstallMode());
 }
 
 export function useTransportMode(): [
   TransportMode,
   (next: TransportMode) => void,
 ] {
-  const [mode, setMode] = useState<TransportMode>(readStored);
+  const [mode, setMode] = useState<TransportMode>(getTransportMode);
 
   useEffect(() => {
-    const handleLocal = () => setMode(readStored());
+    const handleLocal = () => setMode(getTransportMode());
     const handleStorage = (event: StorageEvent) => {
       if (event.storageArea !== window.localStorage) {
         return;
@@ -53,13 +87,22 @@ export function useTransportMode(): [
       if (event.key !== null && event.key !== STORAGE_KEY) {
         return;
       }
-      setMode(readStored());
+      setMode(getTransportMode());
     };
     window.addEventListener(CHANGE_EVENT, handleLocal);
     window.addEventListener("storage", handleStorage);
+    // Another surface saved it: adopt it unless this browser has its own choice.
+    const unsubscribe = subscribeDownloadTransportSettings((settings) => {
+      installMode = isTransportMode(settings.mode)
+        ? settings.mode
+        : installMode;
+      setMode(getTransportMode());
+    });
+    void hydrateInstallMode().then(() => setMode(getTransportMode()));
     return () => {
       window.removeEventListener(CHANGE_EVENT, handleLocal);
       window.removeEventListener("storage", handleStorage);
+      unsubscribe();
     };
   }, []);
 
@@ -76,6 +119,14 @@ export function useTransportMode(): [
     }
     setMode(next);
     window.dispatchEvent(new Event(CHANGE_EVENT));
+    // And the install's setting, so scripted callers and other browsers follow. A failure here
+    // leaves this browser on its own choice, which already applies.
+    void updateDownloadTransportSettings(next).catch((error) => {
+      console.warn(
+        "Couldn't save the download transport for this install.",
+        error,
+      );
+    });
   }, []);
 
   return [mode, set];

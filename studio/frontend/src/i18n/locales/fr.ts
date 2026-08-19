@@ -570,6 +570,26 @@ export const fr = {
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
+      downloads: {
+        sectionTitle: "Téléchargements",
+        transport: "Transport de téléchargement",
+        transportDescription:
+          "Comment les fichiers de modèles et de jeux de données arrivent depuis Hugging Face. HTTPS reprend là où il s'est arrêté ; Xet est souvent plus rapide au premier téléchargement mais recommence le fichier en cas d'annulation.",
+        transportHint:
+          "HTTPS, c'est du TLS classique : tous les réseaux, proxys et VPN l'autorisent, un transfert annulé ou coupé reprend à partir des octets déjà écrits et la mémoire reste stable. Xet récupère des blocs dédupliqués, donc un dépôt partageant des données avec un autre déjà présent peut arriver bien plus vite, mais il exige hf_xet, consomme plus de RAM, et une annulation jette le fichier en cours. Auto décide selon la machine : il pèse la RAM et les blocages récents de Xet ici, puis se rabat sur HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS standard. Reprend après une annulation, fonctionne sur tous les réseaux, mémoire stable.",
+        xetHint:
+          "Transfert par blocs dédupliqués. Souvent plus rapide sur un premier téléchargement, recommence le fichier si vous annulez, demande plus de mémoire.",
+        autoHint:
+          "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
+        autoCurrently: "Auto utilise {transport} sur cette machine.",
+        autoCurrentlyReason: "Auto utilise {transport} sur cette machine ({reason}).",
+        xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
+      },
       uploads: {
         sectionTitle: "Téléversements",
         maxUploadSize: "Limite de téléversement du jeu de données d'entraînement",

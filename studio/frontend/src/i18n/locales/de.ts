@@ -571,6 +571,26 @@ export const de = {
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download-Transport",
+        transportDescription:
+          "Wie Modell- und Datensatzdateien von Hugging Face geladen werden. HTTPS setzt an der Abbruchstelle fort; Xet ist beim ersten Download oft schneller, beginnt die Datei nach einem Abbruch aber neu.",
+        transportHint:
+          "HTTPS ist einfaches TLS: jedes Netzwerk, jeder Proxy und jedes VPN erlaubt es, ein abgebrochener Transfer setzt bei den bereits gespeicherten Bytes fort und der Speicherbedarf bleibt konstant. Xet lädt deduplizierte Blöcke, wodurch ein Repo mit bereits vorhandenen Daten viel schneller ankommt, benötigt aber hf_xet, mehr RAM, und ein Abbruch verwirft die laufende Datei. Auto entscheidet pro Rechner: es bewertet RAM und ob Xet hier ins Stocken gerät, und fällt auf HTTPS zurück.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard-TLS. Setzt nach einem Abbruch fort, funktioniert in jedem Netzwerk, gleichmäßiger Speicherbedarf.",
+        xetHint:
+          "Deduplizierte Blockübertragung. Beim ersten Download oft schneller, beginnt die Datei nach einem Abbruch neu, braucht mehr Speicher.",
+        autoHint:
+          "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
+        autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
+        autoCurrentlyReason: "Auto verwendet auf diesem Rechner {transport} ({reason}).",
+        xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Upload-Limit für Trainingsdatensätze",

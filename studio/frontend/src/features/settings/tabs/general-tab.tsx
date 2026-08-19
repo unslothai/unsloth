@@ -73,6 +73,7 @@ import {
 } from "../components/desktop-update-control";
 import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { LanguageSelect } from "../components/language-select";
+import { DownloadTransportRow } from "../components/download-transport-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -789,6 +790,10 @@ export function GeneralTab() {
             </span>
           </div>
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
+        <DownloadTransportRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>

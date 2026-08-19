@@ -9,8 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 // constants.ts only: transport-preference.ts reaches lib/toast -> a .tsx barrel node's type
-// stripping cannot load. It adds no decision logic (readStored() is exactly
-// `isTransportMode(raw) ? raw : DEFAULT_TRANSPORT_MODE`), so these two exports pin the contract.
+// stripping cannot load. The decision logic it adds is pinned in
+// download-transport-setting.test.ts, which reads it as source.
 const {
   DEFAULT_TRANSPORT_MODE,
   RESOLVED_TRANSPORTS,
@@ -22,7 +22,9 @@ const {
 
 test("auto is the default transport preference", () => {
   // The backend picks per machine (RAM, hf_xet build, recent Xet failures), and a user who never
-  // touches this control is the one who most needs that.
+  // touches this control is the one who most needs that. A floor now rather than the whole
+  // answer, since the install's setting arrives from /api/settings/download-transport, but the
+  // transport an untouched install runs on is what it always was.
   assert.equal(DEFAULT_TRANSPORT_MODE, TRANSPORT.AUTO);
 });
 
@@ -36,15 +38,19 @@ test("auto is a preference, not a transport a download can run on", () => {
   assert.ok(!isResolvedTransport("auto"));
 });
 
-test("a previously stored explicit preference is still valid", () => {
-  // Someone who pinned HTTP (or Xet) before this change must not be moved onto Auto:
-  // isTransportMode() accepting the old values is what keeps readStored() returning them.
+test("every previously stored preference is still valid", () => {
+  // Someone who pinned a transport before this change keeps it: readStored() returns whatever
+  // isTransportMode() accepts, and only an unset value falls through to the install setting.
   assert.ok(isTransportMode("http"));
   assert.ok(isTransportMode("xet"));
+  assert.ok(isTransportMode("auto"));
 });
 
-test("an unrecognised stored value is rejected, so readStored falls back to auto", () => {
+test("an unrecognised stored value is rejected, so readStored reports no choice", () => {
   for (const junk of ["ftp", "", "AUTO", null, undefined, 3]) {
-    assert.ok(!isTransportMode(junk), `${String(junk)} should not be a transport mode`);
+    assert.ok(
+      !isTransportMode(junk),
+      `${String(junk)} should not be a transport mode`,
+    );
   }
 });
