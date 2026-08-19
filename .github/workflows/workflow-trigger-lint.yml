@@ -120,6 +120,7 @@ jobs:
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
+            tests/studio/test_inference_smoke_http_diagnostics.py \
             tests/studio/test_install_phase_timing.py \
             tests/studio/test_mac_bundled_job_phases.py \
             tests/studio/test_mac_host_offload_optin.py \

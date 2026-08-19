@@ -679,7 +679,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -735,7 +747,19 @@ jobs:
                                   if delta.get("content"):
                                       parts.append(delta["content"])
                       return "".join(parts)
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # Text already streamed is a valid signal -- keep it
@@ -1121,7 +1145,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
