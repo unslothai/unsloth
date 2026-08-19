@@ -63,6 +63,7 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -1885,6 +1886,32 @@ function saveBool(key: string, value: boolean): void {
   persistSetting(key, value ? "true" : "false");
 }
 
+// The installation's own answer to the preserve-thinking switch, or null while it has
+// never given one. Hydration records the stored preference and the composer toggle
+// records the click; nothing else writes it.
+let storedPreserveThinking: boolean | null = null;
+
+/** Record the preference a stored value or a toggle just expressed. */
+function notePreserveThinkingPreference(value: boolean): void {
+  storedPreserveThinking = value;
+}
+
+/**
+ * The preserve-thinking value a model load or a status adoption should publish. The
+ * family default the backend resolves (on for Qwen3.8, off everywhere else) is a
+ * DEFAULT: it seeds the switch where the installation has never answered, and never
+ * replaces an answer it gave, the same rule resolveToolsEnabledOnLoad applies to the
+ * tool pills. That is also what makes a cold boot deterministic -- the settings GET and
+ * the inference status race each other, and a load write that cannot overwrite a stored
+ * preference leaves the same result whichever lands first.
+ */
+export function resolvePreserveThinkingOnLoad(resp: {
+  supports_preserve_thinking?: boolean | null;
+  preserve_thinking_default?: boolean | null;
+}): boolean {
+  return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
+}
+
 // The visibility flag shipped after the menu pins, so when it is absent,
 // profiles that had explicitly pinned Canvas keep it visible.
 function loadShowCanvasMenuItem(): boolean {
@@ -3417,6 +3444,11 @@ function getHydratedSettingsState(
       nextState.paramsByModel = { ...byModel, [left]: inherited };
     }
   }
+  // Recorded whether or not the fence below lets it through: either way the
+  // installation has expressed a preference, so no later load may seed over it.
+  if (settings.preserveThinking !== undefined) {
+    notePreserveThinkingPreference(settings.preserveThinking);
+  }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
     // Full access is session-only, so a stored level must not silently drop the
@@ -4480,6 +4512,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
+      notePreserveThinkingPreference(preserveThinking);
       return {
         preserveThinking,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,

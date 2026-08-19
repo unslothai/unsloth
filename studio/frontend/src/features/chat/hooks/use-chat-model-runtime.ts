@@ -54,6 +54,7 @@ import {
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -67,7 +68,6 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
-import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   residentRuntimeMatchesConfig,
   residentSpeculativeNeedsRepair,
@@ -1693,7 +1693,7 @@ export function useChatModelRuntime() {
               preserveThinking:
                 reloadingSameModel && supportsPreserveThinking
                   ? stateBeforeUnload.preserveThinking
-                  : preserveThinkingDefaultFromLoad(loadResponse),
+                  : resolvePreserveThinkingOnLoad(loadResponse),
               supportsTools,
               ...(reloadingSameModel && supportsTools
                 ? {
