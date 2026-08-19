@@ -491,6 +491,67 @@ def test_the_nt_device_prefix_becomes_a_usable_path(raw: str, expected: str):
 
 
 @requires_pwsh
+@pytest.mark.parametrize(
+    "tmp,expect_override",
+    [
+        ("   ", True),
+        ("\t", True),
+        ("", False),
+        (None, False),
+    ],
+    ids = ["whitespace-tmp", "tab-tmp", "empty-tmp", "absent-tmp"],
+)
+def test_a_whitespace_only_tmp_is_set_as_far_as_windows_is_concerned(
+    tmp_path: Path, tmp: str | None, expect_override: bool
+):
+    """GetTempPath takes the first of TMP/TEMP that is merely NON-empty.
+
+    So a whitespace-only TMP is the one Windows and every child process will use.
+    Reading it as "unset" probes a healthy TEMP, changes nothing, and leaves the
+    compile and every later download pointed at a path that cannot exist.
+    """
+    good = tmp_path / "good"
+    good.mkdir()
+    local_app_data = tmp_path / "localappdata"
+    local_app_data.mkdir()
+
+    env = os.environ.copy()
+    env.pop("TMP", None)
+    if tmp is not None:
+        env["TMP"] = tmp
+    env["TEMP"] = str(good)
+    env["LOCALAPPDATA"] = str(local_app_data)
+    env["USERPROFILE"] = str(tmp_path / "profile")
+
+    result = _run_powershell(
+        _script(
+            """
+Initialize-StudioTempEnvironment
+Write-Output "TMP:[$env:TMP]"
+""",
+            sabotage = False,
+            names = (
+                "Write-StudioLine",
+                "Test-StudioDirectoryUsable",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Set-StudioPrivateTempOwner",
+                "New-StudioPrivateTempDirectory",
+                "Initialize-StudioTempEnvironment",
+                "Restore-StudioTempEnvironment",
+            ),
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    got = _lines(result, "TMP:")[0][len("TMP:[") : -1]
+    if expect_override:
+        assert got not in ("", tmp)
+        assert "ust-" in got
+    else:
+        assert "ust-" not in got
+
+
+@requires_pwsh
 def test_final_normalization_keeps_a_volume_guid_rooted():
     """\\\\?\\C:\\x still names a drive once the prefix comes off. A volume GUID does not.
 

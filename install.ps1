@@ -476,8 +476,12 @@ function Install-UnslothStudio {
         if ($script:StudioTempChecked) { return }
         $script:StudioTempChecked = $true
         # TMP wins over TEMP, so an unusable TMP is enough on its own; only fall
-        # through to TEMP when TMP is unset.
-        $inherited = if (-not [string]::IsNullOrWhiteSpace($env:TMP)) { $env:TMP } else { $env:TEMP }
+        # through to TEMP when TMP is unset. IsNullOrEmpty, not IsNullOrWhiteSpace:
+        # GetTempPath takes the first of TMP/TEMP that is merely non-empty, so a
+        # whitespace-only TMP is what Windows and every child process will use.
+        # Reading it as "unset" would probe a healthy TEMP, change nothing, and
+        # leave the compile and every download pointed at a path that cannot exist.
+        $inherited = if (-not [string]::IsNullOrEmpty($env:TMP)) { $env:TMP } else { $env:TEMP }
         if (Test-StudioDirectoryUsable -Path $inherited) { return }
         $private = New-StudioPrivateTempDirectory
         if (-not $private) {
