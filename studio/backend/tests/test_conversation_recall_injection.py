@@ -1696,3 +1696,47 @@ def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
     ]
 
     assert llama_cpp._sticky_compaction_boundary("t1", shortened) == 1
+
+
+def test_the_anchor_is_bounded_so_a_pasted_prompt_is_not_persisted_per_turn():
+    """The anchor rides in every truncation event and every assistant turn's metadata.
+
+    While the boundary stays sticky that is one copy per reply, so returning a large
+    pasted message whole duplicated it across the thread's SSE payloads and history rows.
+    A head names the message just as well, and the read side only ever clamps the boundary
+    SHALLOWER, so two messages sharing a head cost one extra compaction, never a live turn.
+    """
+    from core.inference import llama_cpp
+
+    pasted = "PASTE " + "z" * 40_000
+    branch = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "evicted prompt"},
+        {"role": "assistant", "content": "evicted reply"},
+        {"role": "user", "content": pasted},
+        {"role": "assistant", "content": "noted"},
+        {"role": "user", "content": "the turn just sent"},
+    ]
+    conversation = [branch[0]] + branch[3:]
+
+    anchor = llama_cpp._branch_boundary_anchor(conversation, branch)
+
+    assert 0 < len(anchor) <= llama_cpp._ANCHOR_TEXT_CHARS
+    assert pasted.startswith(anchor)
+
+
+def test_any_room_at_all_is_worth_one_recall_attempt():
+    """`CHUNK_TOKENS` is a ceiling, not the size of a turn.
+
+    Flooring the budget by it returned zero for every window with less than a full chunk
+    to spare, so automatic recall was disabled on exactly the tight contexts it exists
+    for, even though most archived turns are far smaller. The exact recount downstream is
+    what decides admission, and it rejects a chunk that truly does not fit.
+    """
+    from core.inference import llama_cpp
+    from core.rag import config as rag_config
+
+    assert llama_cpp._recall_top_k(0) == 0
+    assert llama_cpp._recall_top_k(-5) == 0
+    assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS - 1) == 1
+    assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS * 2) >= 2
