@@ -34,6 +34,7 @@ on:
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
 
@@ -53,7 +54,11 @@ jobs:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
     # Two browser smokes (~50s) plus the Chromium install now sit inside this.
-    timeout-minutes: 20
+    # 20 was not a budget, it was the bound on the Chromium install: the step had
+    # none of its own, so the job timeout was what eventually stopped it, and it
+    # stopped everything after it too. That step is bounded at 16 now, so this can
+    # be sized for the work plus that worst case.
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: studio/frontend
@@ -196,11 +201,22 @@ jobs:
       # Smokes go last: every step carries an implicit success(), so running them ahead of
       # the build gates let one red smoke skip the build and all three bundle assertions.
       # Costs nothing here, since each smoke starts its own vite server and reads no dist/.
+      # `--with-deps` shells out to apt, so this is an apt step wearing a different
+      # name and it fails the same way. On 2026-08-19 it sat here for 16m38s, the
+      # job hit `timeout-minutes: 20`, and the run was reported as "cancelled" with
+      # the browser smokes and the lifecycle tests below simply skipped. Bounded at
+      # 2 x 420s because the browser download is genuinely large; a third attempt
+      # would not fit the budget and the first two already cover a mirror hiccup.
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
+        timeout-minutes: 17
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
         run: |
           python3 -m pip install 'playwright>=1.45,<2' pytest
-          python3 -m playwright install --with-deps chromium
+          bash .github/scripts/retry-with-apt-lock.sh \
+            python3 -m playwright install --with-deps chromium
 
       # Browserless, but imports the harnesses (hence playwright), so it sits after the
       # install. Covers the Windows teardown branch no runner here executes.

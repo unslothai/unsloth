@@ -445,6 +445,9 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
+    # like the run route so a value it would reject cannot be persisted and replayed.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
@@ -470,6 +473,24 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
+
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+    @field_validator("researchModelTimeoutSeconds")
+    @classmethod
+    def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:
+        # The run route takes 0 (unlimited) or at least 10, so a persisted 1..9 would hydrate
+        # and then 400 every later run with nothing pointing at this setting.
+        if value is not None and 0 < value < 10:
+            raise ValueError("researchModelTimeoutSeconds must be 0 (unlimited) or at least 10")
+        return value
 
 
 class ChatSettingsResponse(BaseModel):

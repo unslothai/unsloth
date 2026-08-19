@@ -86,6 +86,7 @@ test("settings that describe the installation stay out of the snapshot", () => {
     "ragOcrScanned",
     "ragCaptionFigures",
     "researchWebsitePolicy",
+    "researchModelTimeoutSeconds",
     "speculativeType",
     "gpuMemoryMode",
     "expandQuantizations",
