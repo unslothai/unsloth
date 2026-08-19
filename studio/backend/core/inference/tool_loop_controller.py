@@ -262,8 +262,7 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
     if tool_name == "edit_file":
-        # The name, not the patch: the badge is one line and the tool card
-        # below it already shows the edit.
+        # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
         name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
         return f"Editing: {name}" if name else "Editing file..."

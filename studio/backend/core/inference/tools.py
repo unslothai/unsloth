@@ -8895,23 +8895,20 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
 # patch does in ~45, and anything the model fails to retype is lost.
 #
 # Exact-string replacement, not a unified diff: models corrupt @@ hunk headers
-# far more often than they mis-copy a literal snippet, and a bad hunk header
-# patches the wrong place instead of failing. Here a missing or non-unique
-# old_string is a hard error naming the match count, so the retry is "add
-# context" rather than "recover a mangled file".
+# far more often than they mis-copy a literal snippet, and a bad header patches
+# the wrong place instead of failing. A missing or non-unique old_string is a
+# hard error naming the match count, so the retry is "add context".
 
 # The whole text is read to find the match, so the cap is on the file.
 _EDIT_FILE_MAX_BYTES = _env_int("UNSLOTH_STUDIO_EDIT_FILE_MAX_BYTES", 16 * 1024 * 1024)
 
-# Bounded receipt: the point of the tool is not sending the file twice. Lines
-# alone are not a bound -- one line of minified JS or single-line JSON can be
-# the whole file -- so characters are capped per line and over the receipt.
+# Bounded receipt: lines alone are no bound, since one line of minified JS can
+# be the whole file, so characters are capped per line and over the receipt.
 _EDIT_FILE_DIFF_LINES = 40
 _EDIT_FILE_DIFF_LINE_CHARS = 200
 _EDIT_FILE_DIFF_CHARS = 4000
 # Lines either side of the first change that are handed to difflib. Diffing the
-# whole file would split it into one str per line: at the 16MB cap that is 8M
-# objects and half a gigabyte to produce a 200-character receipt.
+# whole file would split it into one str per line: 8M of them at the 16MB cap.
 _EDIT_FILE_DIFF_WINDOW_LINES = 120
 
 
@@ -8923,7 +8920,7 @@ def _edit_file_resolve(
     Same rules as the sitecustomize shim: a code-interpreter habit prefix
     (/mnt/data, /workspace, ...) keeps its suffix under the workdir, everything
     else is relative to it. Containment is checked on the realpath, so a symlink
-    planted in the sandbox cannot reach a file outside it.
+    planted inside cannot reach out.
     """
     raw = (raw_path or "").strip()
     if not raw:
@@ -8931,8 +8928,8 @@ def _edit_file_resolve(
     workdir = _get_workdir(session_id)
     candidate = raw
     # An absolute path already inside the workdir is a real path, not a habit
-    # path. A project rooted under one of these prefixes (/workspace/repo) would
-    # otherwise have its own prefix stripped and be rejoined onto itself.
+    # one: a project rooted at /workspace/repo would otherwise have its own
+    # prefix stripped and be rejoined onto itself.
     already_inside = os.path.isabs(raw) and not _is_outside_workdir(raw, workdir)
     if not disable_sandbox and not already_inside:
         for prefix in _MISSING_PATH_PREFIXES:
@@ -8946,8 +8943,8 @@ def _edit_file_resolve(
         target = os.path.realpath(target)
     except (OSError, ValueError):
         return None, f"Error: cannot resolve path '{raw}'."
-    # Full access runs without the sandbox for python/terminal already; holding
-    # this one tool to the workdir there would just push the model back to cat.
+    # Full access runs python/terminal unsandboxed already; holding this one
+    # tool to the workdir would just push the model back to cat.
     if not disable_sandbox and _is_outside_workdir(target, workdir):
         return None, (
             f"Error: '{raw}' is outside this conversation's working directory, "
@@ -8962,9 +8959,8 @@ def _edit_file_decode(data: bytes, path: str) -> "tuple[str, str, str, str]":
 
     ``text`` is normalized to \\n so an old_string with plain newlines still
     matches a CRLF file; matching raw bytes would fail every edit of a
-    Windows-authored source for a reason the model cannot see. The original
-    convention is returned so the write puts it back instead of converting
-    every line ending in the file.
+    Windows-authored source. The original convention is returned so the write
+    puts it back instead of converting every line ending in the file.
     """
     bom = ""
     if data.startswith(codecs.BOM_UTF8):
@@ -8998,11 +8994,10 @@ def _edit_file_write(
     file half-replaced. The mode is carried over so an edit keeps the
     executable bit.
 
-    ``expect`` are the bytes the edit was computed from. They are compared again
-    here so a file another chat rewrote in the meantime is not silently reverted
-    to this call's stale copy. ``workdir`` re-checks containment immediately
-    before the rename, so a parent swapped for a symlink after the path was
-    resolved is caught rather than followed.
+    ``expect`` are the bytes the edit was computed from, compared again here so
+    a file another chat rewrote meanwhile is not reverted to this call's stale
+    copy. ``workdir`` re-checks containment just before the rename, so a parent
+    swapped for a symlink after the path was resolved is caught.
     """
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
     directory = os.path.dirname(path) or "."
@@ -9095,11 +9090,9 @@ def _edit_file_receipt(
 ) -> str:
     """A bounded unified diff of what changed.
 
-    Line-numbered so the model can confirm the edit landed where it meant and
-    aim the next one. Two separate bounds, because either alone leaks:
-    difflib is fed only a window around the first change, so a huge file is
-    never split into one str per line, and the generator is then consumed
-    lazily, so replace_all does not build every changed line to throw it away.
+    Line-numbered so the model can confirm the edit landed where it meant. Two
+    separate bounds, because either alone leaks: difflib sees only a window
+    around the first change, and the generator is consumed lazily.
     """
     import difflib
     import itertools
@@ -9108,15 +9101,13 @@ def _edit_file_receipt(
         before, change_at, _EDIT_FILE_DIFF_WINDOW_LINES
     )
     # The window is cut out of the old text and the replacement replayed on it,
-    # rather than a second window of the same LINE COUNT being cut out of the
-    # new one. Any edit that adds or removes lines shifts everything after it,
-    # so two windows of equal line count end on different text, and difflib
-    # reports that misalignment as a second hunk -- deletions the edit never
-    # made, a full window away from anything that changed.
+    # rather than a second window of the same LINE COUNT cut out of the new one.
+    # An edit that adds or removes lines shifts everything after it, so equal
+    # windows end on different text and difflib calls that a second hunk --
+    # deletions the edit never made, a window away from anything that changed.
     window_end = max(window_end, change_at + len(old))  # keep the match whole
     before_window = before[window_start:window_end]
-    # Replacing every occurrence is right in both modes: without replace_all the
-    # file held exactly one match, or this call would have been refused.
+    # Right in both modes: without replace_all the file held exactly one match.
     after_window = before_window.replace(old, new)
     first_line = before.count("\n", 0, window_start) + 1
     stream = difflib.unified_diff(
@@ -9132,8 +9123,7 @@ def _edit_file_receipt(
     if not taken:
         return head
     if len(taken) > _EDIT_FILE_DIFF_LINES:
-        # The exact remaining count would cost the full diff to compute, which
-        # is the allocation this avoids.
+        # An exact remaining count would cost the full diff this avoids.
         diff = taken[:_EDIT_FILE_DIFF_LINES] + ["... (more diff lines)"]
     else:
         diff = taken
@@ -9143,9 +9133,8 @@ def _edit_file_receipt(
         else f"{line[:_EDIT_FILE_DIFF_LINE_CHARS]}... (+{len(line) - _EDIT_FILE_DIFF_LINE_CHARS} chars)"
         for line in diff
     ]
-    # difflib numbered the hunks against the window it was given, so shift them
-    # back to real file lines; a receipt that points at line 3 of a 9000-line
-    # file is worse than no line numbers at all.
+    # difflib numbered the hunks against the window, so shift them back to real
+    # file lines; line 3 of a 9000-line file is worse than no numbers at all.
     if first_line > 1:
         diff = [_edit_file_shift_hunk(line, first_line - 1) for line in diff]
     body = "\n".join(diff)
@@ -9158,8 +9147,7 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     """Read replace_all strictly; None means "not a boolean".
 
     bool("false") is True, and models do emit the JSON string. Coercing it that
-    way turns the multi-match guard off and rewrites every occurrence, so the
-    two spellings a model actually produces are mapped and the rest refused.
+    way turns the multi-match guard off and rewrites every occurrence.
     """
     if value is None:
         return False
@@ -9185,17 +9173,14 @@ def _edit_file_create(
 ) -> str:
     """Handle the empty-old_string case: create a file, never clobber one.
 
-    A zero-byte file is writable here on purpose. Refusing every existing target
-    would strand the model: an empty old_string would be refused for existing,
-    and any other old_string cannot match an empty file, so nothing could ever
-    write to it. Nothing is lost either, since there are no contents, and the
-    mode is carried over by the write.
+    A zero-byte file is writable here on purpose: refusing every existing target
+    would strand the model, since an empty old_string would be refused and no
+    other old_string can match an empty file.
 
     The absent case is created with O_EXCL rather than checked and then written:
-    two chats sharing a project workspace can both pass a lexists() check and
-    the later rename then drops the earlier file. O_EXCL also gives the new file
-    the usual umask-derived mode, where a mkstemp temp file would leave it 0600
-    and lock out a group that reads generated files.
+    two chats sharing a workspace can both pass a lexists() check and the later
+    rename drops the earlier file. O_EXCL also gives the new file the usual
+    umask-derived mode, where a mkstemp temp file would leave it 0600.
     """
     payload = (new.replace("\n", newline)).encode("utf-8")
     if not os.path.lexists(target):
@@ -9225,15 +9210,10 @@ def _edit_file_create(
             with os.fdopen(fd, "wb") as fh:
                 fh.write(payload)
         except OSError as exc:
-            # O_EXCL published the name before the first byte, and the payload
-            # reaches the disk a buffer at a time, so ENOSPC or a quota partway
-            # through leaves the bytes that fit -- a file truncated mid-token.
-            # close() reports such a failure for data written earlier, so the
-            # error can arrive after most of the file is already there. The
-            # retry the message asks for cannot clear it either: an empty
-            # old_string refuses a non-empty target, and no other old_string is
-            # in a file the model never saw. Removing the inode this call just
-            # created puts the retry back on the create path.
+            # ENOSPC partway through leaves the bytes that fit -- a file
+            # truncated mid-token -- and the retry the message asks for cannot
+            # clear it, since an empty old_string refuses a non-empty target.
+            # Removing the inode puts the retry back on the create path.
             with contextlib.suppress(OSError):
                 os.remove(target)
             return f"Error: cannot write '{name}': {exc}"
@@ -9242,20 +9222,16 @@ def _edit_file_create(
         st = os.stat(target)
     except OSError:
         st = None
-    # Anything that is not an empty regular file is refused rather than
-    # measured. A FIFO reports st_size 0, so it fell into the zero-byte branch
-    # below, where the write re-reads the target to check nothing changed
-    # underneath -- and open() on a FIFO with no writer blocks for ever. This
-    # path carries no timeout or cancel event either, which is why the edit
-    # path already refuses anything that is not a regular file.
+    # Refused rather than measured: a FIFO reports st_size 0, so it fell into
+    # the zero-byte branch below, whose write reopens the target -- and open()
+    # on a FIFO with no writer blocks for ever.
     if st is None or not S_ISREG(st.st_mode) or st.st_size:
         return (
             f"Error: '{name}' already exists. An empty 'old_string' only "
             "creates a new file; to change this one, pass the exact text to "
             "replace."
         )
-    # Zero-byte and already there: guarded like any other edit, so a chat that
-    # filled it in between is not silently overwritten.
+    # Guarded like any other edit, so a chat that filled it in is not clobbered.
     error = _edit_file_write(target, new, newline, "", expect = b"", workdir = workdir)
     if error:
         return error
@@ -9274,12 +9250,10 @@ def _edit_file(
     if not isinstance(old, str) or not isinstance(new, str):
         return "Error: 'old_string' and 'new_string' must both be strings."
     # A truncated emoji escape ("\ud83d") survives json.loads as a lone surrogate
-    # that cannot be encoded. The write encodes before its first try block, and
-    # the UnicodeEncodeError raised there is swallowed further up into "Unknown
-    # tool: edit_file" -- the one answer that teaches the model this tool does
-    # not exist and sends it back to the whole-file rewrite. Refused here, ahead
-    # of any filesystem work, so both the edit and the create path are covered.
-    # old_string needs no check: it is only ever compared, never written.
+    # that cannot be encoded, and the UnicodeEncodeError the write raises is
+    # swallowed upstream into "Unknown tool: edit_file" -- the one answer that
+    # sends the model back to the whole-file rewrite. old_string needs no check,
+    # being only ever compared.
     try:
         new.encode("utf-8")
     except UnicodeEncodeError:
@@ -9299,10 +9273,10 @@ def _edit_file(
     replace_all = _edit_file_replace_all(arguments.get("replace_all"))
     if replace_all is None:
         return "Error: 'replace_all' must be true or false."
-    # Creation is decided before the no-op check below, not after. Both strings
-    # empty is the documented way to create an empty file -- __init__.py,
-    # py.typed, .gitkeep -- and read as "identical, nothing to change" it was
-    # refused, leaving the model no way at all to write a zero-byte file.
+    # Decided before the no-op check below, not after: both strings empty is the
+    # documented way to create __init__.py or .gitkeep, and read as "identical,
+    # nothing to change" it was refused, leaving no way to write a zero-byte
+    # file.
     if not old:
         return _edit_file_create(
             target,
@@ -9363,8 +9337,7 @@ def _edit_file(
     )
     if error:
         return error
-    # Where the first replacement landed, so the receipt can window around it
-    # instead of diffing the whole file.
+    # Windowed around the first replacement, rather than diffing the whole file.
     return _edit_file_receipt(
         before,
         old,
@@ -9647,8 +9620,7 @@ TERMINAL_TOOL_FULL_ACCESS = {
     },
 }
 
-# edit_file is added below, once its schema exists: its Full access variant is
-# an append, not one of the substitutions above.
+# edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
     "python": PYTHON_TOOL_FULL_ACCESS,
     "terminal": TERMINAL_TOOL_FULL_ACCESS,
@@ -9727,9 +9699,8 @@ EDIT_FILE_TOOL = {
 }
 
 # Appended, not substituted: the sandboxed text never claims absolute paths
-# fail, so there is nothing false to rewrite, only a capability to add. It
-# matters most here, since a model that thinks edit_file cannot reach a real
-# checkout falls straight back to the whole-file rewrite.
+# fail, so there is nothing false to rewrite, only a capability to add. A model
+# that thinks it cannot reach a real checkout falls back to the whole-file rewrite.
 _EDIT_FILE_FULL_ACCESS_CLAUSE = (
     " The code sandbox is disabled, so an absolute path resolves as written and "
     "edits the real file there, anywhere the Unsloth Studio process can reach."
@@ -10109,8 +10080,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
             )
-    # Same in-flight guard as the two above: it resolves the session workdir and
-    # writes into it, so a chat deleted mid-call must not unlink it underneath.
+    # Same in-flight guard as the two above: it writes into the session workdir,
+    # so a chat deleted mid-call must not unlink it underneath.
     if name == "edit_file":
         with _session_in_flight(session_id):
             return _edit_file(

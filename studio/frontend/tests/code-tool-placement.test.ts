@@ -74,8 +74,8 @@ test("a provider with no sandbox uses Studio's own tools", () => {
 });
 
 test("edit_file is local-only, never a stand-in for a hosted sandbox", () => {
-  // It patches a file in THIS machine's session workdir, so it must not creep
-  // into the hosted branch just because the Code pill is what turns it on.
+  // It must not creep into the hosted branch just because the Code pill is
+  // what turns it on.
   for (const hosted of [true, false]) {
     const names = selectCodeToolNames({
       codeToolsEnabled: true,
