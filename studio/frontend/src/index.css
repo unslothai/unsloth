@@ -2840,6 +2840,36 @@ html[data-chat-font] .aui-root {
 	scrollbar-gutter: stable;
 }
 
+/* An UNREGISTERED custom property inherits, so writing --aui-scroll-stabilizer
+   on the scroll container marks inherited style dirty for every descendant of
+   the thread, and the next scrollHeight read then recalculates style for the
+   whole thread instead of for the message that changed. Measured in isolation
+   in Chromium, that write costs 28x more on a 42,000-element subtree than the
+   same write on a property registered with inherits:false.
+
+   Registering it confines the invalidation to the viewport element. Nothing
+   below the viewport reads the variable; the only consumer is the
+   padding-bottom declaration right underneath, on the same element. The initial
+   value reproduces the `var(..., 0px)` fallback exactly, so an unset property
+   still computes to 0px and removeProperty() still releases the padding.
+
+   The write is RARE and the cost is not. The stabilizer only writes when
+   content shrank inside the follow window, which a studiobench film hits three
+   or four times per cell, essentially all of them at stream finalisation when
+   shiki re-highlights the trailing block. Those few writes are most of the cost
+   of ending a stream in a long thread: suppressing them at runtime and shipping
+   this rule both cut stop-generation latency at the 100K rung by about 77 per
+   cent, and both flatten its growth from 10K to 100K from roughly 4.3x to 1.3x.
+   Rare is not cheap when one write invalidates every element in the thread.
+
+   Engines without @property (Firefox below 128) ignore this block and keep the
+   inherited behaviour, which is slower and still correct. */
+@property --aui-scroll-stabilizer {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+
 /* Marker class applied only to actual streaming-thread viewports
    (see ThreadPrimitive.Viewport in components/assistant-ui/thread.tsx).
    Scoped separately from `.aui-thread-viewport` because that class is
