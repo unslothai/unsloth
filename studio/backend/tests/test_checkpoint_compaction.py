@@ -569,9 +569,7 @@ def test_the_reachability_probe_is_no_for_an_embedder_that_cannot_initialize(mon
     from core.rag import conversation_archive, embeddings
 
     monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
-    monkeypatch.setattr(
-        conversation_archive.rag_db, "get_connection", lambda *a, **k: object()
-    )
+    monkeypatch.setattr(conversation_archive.rag_db, "get_connection", lambda *a, **k: object())
 
     def _boom(*args, **kwargs):
         raise RuntimeError("embedding backend failed to initialize")
