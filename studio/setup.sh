@@ -1793,15 +1793,582 @@ if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
+# Payload-presence probe, shared by the fast-path escape and the post-update check
+# (mirrors $_pkgProbeCode in setup.ps1). Third deliberate mirror of the damage
+# predicate in unsloth_cli/_studio_deps.py damaged_installed_files and
+# studio/backend/utils/transformers_version.py _sidecar_scan_impl -- keep the
+# predicates in sync. POSTVER=__MISSING__ only when the venv's own libdirs hold
+# no such distribution; POSTVER=__DAMAGED__ when they do but a recorded file is
+# gone, is not a regular file, or is shorter than pip recorded -- a leftover
+# dist-info still reports a version, pip treats intact metadata as satisfied and
+# reinstalls nothing, so only the RECORD-vs-filesystem compare sees this. Data
+# counts too: the wheel ships runtime payload that is not .py
+# (unsloth_cli/pi_subagent.ts, studio/frontend/dist) and start.py fails outright
+# without it. locate_file, not find_spec: an emptied package directory still
+# answers find_spec as a namespace package, a same-name copy reachable through a
+# .pth hook answers for a deleted managed payload, and neither sees a nested
+# file a partial quarantine took. The distribution is selected from the venv's
+# own purelib/platlib, not the startup-modified sys.path, so a complete external
+# copy prepended by an executable .pth cannot answer for the managed one.
+# Carve-outs, same reasoning as the mirrors: a recorded size binds a path only
+# when every claim on it carries one and the file sits below the smallest --
+# below every claim it matches none of them, while an unsized claim could be the
+# copy that landed (tighter than the mirrors' skip-when-shared rule on purpose:
+# an interrupted upgrade's duplicate dist-info would otherwise waive the whole
+# shrinkage check for the package's own files); larger than recorded is a
+# collision, not damage; shared non-runtime roots
+# (tests/, docs/, ...) are skipped outright -- unsloth_zoo <= 2026.8.5 shipped
+# tests/ into that squatted namespace and a clobbered copy wedged every update;
+# package-lock.json keeps existence but loses its size (setup's npm install
+# rewrites it in place); .dist-info//.egg-info//.pyc are installer-owned or
+# regenerated. Divergence from the CLI mirror: absolute and ../ scheme rows
+# (console scripts) are dropped here, because the installers rewrite or remove
+# launchers themselves and this probe's finding fails setup rather than printing
+# advice. RECORD is read as text, not through d.files: 3.14+ filters d.files to
+# files that exist, which is blind to exactly these deletions. find_spec remains
+# Rows, the truncation check and the reported version come only from the SELECTED
+# distribution: an interrupted upgrade can leave a second dist-info for the same
+# name, and the stale RECORD from the other one must not damage a complete
+# install -- the newest wins, by PEP 440 when packaging imports and by a
+# numeric-prefix-with-suffix-rank fallback when it does not. An editable install
+# (direct_url.json dir_info.editable; a venv left editable by an earlier --local
+# run is supported state) records only its site-packages shims, which say nothing
+# about the checkout they point at, so it is validated through find_spec instead:
+# the editable finder resolves into the real tree. Only top-level
+# resolution there: a checkout's nested files have no recorded inventory to
+# compare against, importing is off the table by design, and a development tree
+# is the user's own to edit.
+# only for a RECORD-less install, best effort. The POSTVER= sentinel keeps a
+# printing sitecustomize or .pth hook out of the caller's exact compares: -I
+# implies -E/-P/-s only, so site hooks still run.
+_PKG_PROBE_PY="
+import csv, importlib.machinery, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
+from pathlib import PurePosixPath
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+_paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
+_norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
+_shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
+_rewritten = frozenset(('package-lock.json',))
+# Which DISTRIBUTIONS claim each path, as (normalized name, version). Both halves
+# are needed and they answer different questions: a recorded SIZE is ambiguous only
+# when a different PACKAGE claims the path (two dist-infos of the same package are
+# one owner there, which is what lets the selected candidate's own size apply),
+# while OWNERSHIP of a resolved module has to be exact -- a file claimed only by
+# the 1.0 dist-info is not the payload of the 2.0 the probe selected.
+owners = {}
+cands = []
+for x in importlib.metadata.distributions(path=_paths):
+    try:
+        name = x.metadata['Name']
+    except Exception:
+        continue
+    try:
+        # once per distribution, never per row: x.version re-reads the metadata, and
+        # the row loop below runs thousands of times across a real environment
+        _xver = x.version
+    except Exception:
+        continue
+    try:
+        # NOT collapsed with an or-empty: read_text returns None when RECORD is
+        # absent and '' when it
+        # is present and empty, and those mean different things -- a wheel install
+        # always writes at least the self-entry, so a zero-byte inventory is an
+        # interrupted metadata write, which is damage rather than a RECORD-less
+        # install. The distinction is carried through to _verdict.
+        record = x.read_text('RECORD')
+    except Exception:
+        # False, not None: read_text answers None when RECORD is ABSENT and raises
+        # when it exists but its bytes are not valid UTF-8, which is a partial write
+        # or a quarantine -- corruption, and not to be mistaken for having no
+        # inventory at all. The boundary is the stdlib's: read_text SUPPRESSES
+        # PermissionError and answers None for it, so a merely locked RECORD stays on
+        # the lenient path, which is the same call made for a locked file below.
+        record = False
+    if _norm(name) == _norm(sys.argv[1]):
+        cands.append((x, record))
+    try:
+        for r in csv.reader((record or '').splitlines()):
+            rel = r[0] if r else ''
+            if not rel or rel.endswith('/'):
+                continue
+            if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                continue
+            f = PurePosixPath(rel.replace(chr(92), '/'))
+            if f.is_absolute() or '..' in f.parts:
+                continue
+            key = os.path.normcase(str(x.locate_file(f)))
+            owners.setdefault(key, set()).add((_norm(name), _xver))
+    except csv.Error:
+        # A field past csv.field_size_limit is a partial write with no delimiter
+        # in sight. It must not end the scan for every other distribution:
+        # ownership from this inventory is unusable and skipped, and when it is
+        # the target's own RECORD the same parse fails again in _verdict, where
+        # it reads as damage.
+        pass
+def _pep440_key(v):
+    # A port of packaging.version's own comparison key, used only when packaging
+    # itself cannot import. Hand-rolled stage ranking kept springing leaks
+    # (compound suffixes, implicit post, epochs, local labels, the v prefix), so
+    # this mirrors the real algorithm instead: an absent pre sorts ABOVE any pre
+    # unless the version is a bare dev build, an absent post BELOW any post, and
+    # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
+    # fuzzes it against packaging.
+    # exactly one optional v, not lstrip: vv999 is not a version, and eating both
+    # would parse it as 999 and let it outrank a real release
+    v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
+    em = re.match(r'([0-9]+)!', v)
+    epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
+    if not m:
+        return None
+    rel = [int(n) for n in m.group(0).split('.')]
+    while rel and rel[-1] == 0:
+        rel.pop()
+    rest, _plus, loc = v[m.end():].partition('+')
+    pre = post = dev = None
+    # scanned from the left, never searched: a substring like the r in preview
+    # must not read as the r that spells post
+    # PEP 440 allows each of pre, post and dev at most once and only in that
+    # order, so the rank must strictly increase: 1.0.post1-2 and 1.0.post1a1 are
+    # not versions at all and must not out-key a real release
+    _seen = 0
+    while rest:
+        # the implicit post release: a bare -N, valid right after the release
+        # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
+        # is matched every pass rather than once up front. Only dev may follow a
+        # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
+        if im:
+            if _seen >= 2:
+                return None
+            _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
+            continue
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
+        if not mm:
+            break
+        _t, _n = mm.group(1), int(mm.group(2) or 0)
+        _rank = 3 if _t == 'dev' else (2 if _t in ('post', 'rev', 'r') else 1)
+        if _rank <= _seen:
+            return None
+        _seen = _rank
+        if _rank == 2:
+            post = _n
+        elif _rank == 3:
+            dev = _n
+        else:
+            pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
+        rest = rest[mm.end():]
+    # anything the tokenizer could not consume means this is not a PEP 440 version
+    # at all (999garbage), and a parsed key would let it outrank a real release
+    if rest:
+        return None
+    if _plus and not re.match(r'^[a-z0-9]+([-._][a-z0-9]+)*$', loc):
+        return None
+    if pre is None:
+        pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
+    lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
+    # dev numbers are unbounded, so an absent dev needs a real infinity, not a big
+    # integer a .dev1000000001 could climb past
+    return (epoch, rel, pre, -1 if post is None else post, float('inf') if dev is None else dev, lk)
+def _vkey(c):
+    v = c[0].version or ''
+    try:
+        from packaging.version import Version
+        return (1, Version(v))
+    except Exception:
+        pass
+    k = _pep440_key(v)
+    # unparsable sorts below every parsed candidate
+    return (0, k) if k is not None else (-1, ())
+if not cands:
+    print('POSTVER=__MISSING__')
+    sys.exit(0)
+# Ties are broken on HEALTH, not discovery order: an interrupted reinstall can
+# leave two dist-infos at the same version, and picking the stale one would fail
+# setup over an installation that is actually fine. The extra passes only happen
+# when a tie exists AND the first candidate looks damaged.
+_ranked = [(_vkey(_c), _c) for _c in cands]
+_topkey = max(_k for _k, _ in _ranked)
+_tied = [_c for _k, _c in _ranked if _k == _topkey]
+d, d_record = _tied[0]
+def _verdict(d, d_record):
+    try:
+        _durl = json.loads(d.read_text('direct_url.json') or '{}')
+        _edit = bool(_durl.get('dir_info', {}).get('editable'))
+    except Exception:
+        _durl, _edit = {}, False
+    # where an editable install actually points. Resolved once: the tops branch binds
+    # editable specs to it, and the no-tops branch below validates it directly.
+    _target = ''
+    if _edit:
+        try:
+            _u = urlparse(str(_durl.get('url') or ''))
+            # a UNC checkout is file://server/share/repo, and its authority is part
+            # of the path: dropping the server resolves the share alone and rejects
+            # every real module origin under it. Rebuilt by hand rather than fed to
+            # url2pathname with the authority attached, which refuses a non-local one
+            # outright on POSIX; UNC exists only on Windows, so the separator is
+            # fixed. chr(92), never a literal backslash -- and none anywhere in this
+            # program: it is stored in a double-quoted shell string, where a doubled
+            # backslash collapses to one and breaks the source outright.
+            _bs = chr(92)
+            if _u.netloc and _u.netloc.lower() != 'localhost':
+                _target = _bs + _bs + _u.netloc + url2pathname(_u.path).replace('/', _bs)
+            else:
+                _target = url2pathname(_u.path)
+        except Exception:
+            _target = ''
+    # importable payload, used for namespace specs and for an editable checkout. Suffixes
+    # come from importlib itself rather than a hardcoded list, so an extension module
+    # counts on every platform; __pycache__ does not, being what a quarantine leaves.
+    _imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
+                 + importlib.machinery.EXTENSION_SUFFIXES)
+    def _foreign(p):
+        # Claimed by a DIFFERENT distribution's RECORD. Being inside the managed root
+        # is not ownership: another package installed there can provide the same
+        # import name, and after our payload is deleted its copy would answer for us.
+        # A path no RECORD claims is not foreign -- that is the RECORD-less case this
+        # check exists alongside, not evidence against us. Defined HERE, beside
+        # _has_module rather than inside _spec: _has_module calls it too, and Python's
+        # lexical scoping does not reach a sibling function.
+        _o = owners.get(os.path.normcase(os.path.abspath(p)))
+        return bool(_o) and _mine not in _o
+    def _has_module(_p):
+        # Walked to the bottom, with no depth cap: a namespace package may nest as
+        # deep as it likes, and cutting the walk short would report a healthy install
+        # as damaged. Cycles are the real hazard, not depth, so realpaths already
+        # visited are skipped -- a symlink loop cannot spin here. The first module
+        # found answers, so only a tree that has none is walked in full.
+        _stack = [_p]
+        _seen = set()
+        while _stack:
+            _dir = _stack.pop()
+            _real = os.path.normcase(os.path.realpath(_dir))
+            if _real in _seen:
+                continue
+            _seen.add(_real)
+            try:
+                _entries = os.listdir(_dir)
+            except OSError:
+                continue
+            for _e in _entries:
+                if _e == '__pycache__':
+                    continue
+                _f = os.path.join(_dir, _e)
+                if os.path.isdir(_f):
+                    _stack.append(_f)
+                elif _e.endswith(_imp) and not _foreign(_f):
+                    return True
+        return False
+    rows = []
+    selfrec = False
+    _badrow = False
+    if not _edit:
+        try:
+            for r in csv.reader((d_record or '').splitlines()):
+                if r:
+                    # accumulated, not overwritten: a short row anywhere is a truncated
+                    # write, and a later well-formed row must not erase the evidence
+                    _badrow = _badrow or len(r) != 3
+                rel = r[0] if r else ''
+                if not rel or rel.endswith('/'):
+                    continue
+                if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
+                    selfrec = True
+                if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                    continue
+                f = PurePosixPath(rel.replace(chr(92), '/'))
+                if f.is_absolute() or '..' in f.parts:
+                    continue
+                if len(f.parts) > 1 and f.parts[0] in _shared:
+                    continue
+                rows.append((f, (r[2] if len(r) > 2 else '').strip(),
+                             os.path.normcase(str(d.locate_file(f)))))
+        except csv.Error:
+            # a field past csv.field_size_limit is a malformed row by another
+            # name: keep the evidence, and whatever parsed before it
+            _badrow = True
+    # a truncated RECORD can keep its self-entry when the writer ordered entries
+    # lexicographically (dist-info sorts before the payload), so the final parsed
+    # row must also carry RECORD's three fields: a mid-line cut leaves a short row,
+    # while a valid wheel may legitimately omit the final newline (CSV allows it),
+    # so the newline itself is not the signal. Declared-top coverage cannot serve as
+    # one either: top_level.txt legitimately names tops the wheel never ships
+    # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
+    # line boundary stays undetectable here.
+    # an existing RECORD that is empty or unreadable is corruption, not the absence
+    # of one: only a genuinely missing inventory falls through to the lenient paths
+    _unreadable = d_record is False
+    _empty_record = (not _unreadable) and d_record is not None and not d_record.strip()
+    damaged = (not _edit) and (_unreadable or _empty_record
+                               or (bool(d_record) and (not selfrec or _badrow)))
+    try:
+        _mine = (_norm(d.metadata['Name']), d.version)
+    except Exception:
+        _mine = None
+    if not _edit and rows:
+        # A PEP 660 editable whose direct_url.json is gone or corrupt still has its
+        # .pth and finder shims, and those are its ENTIRE payload -- a plain file
+        # scan finds them present and calls the install healthy while the checkout
+        # they point at may be deleted. Nothing here can validate that target, and
+        # unusable metadata for an editable install is the damage, exactly as an
+        # unresolvable url is below. A wheel that merely ships a .pth alongside real
+        # modules is untouched: this needs the payload to be shims and nothing else.
+        # Finder names are the backend's to choose (scikit-build-core writes
+        # _<name>_editable.py), so a finder is recognized by being imported from a
+        # .pth line here, not by its filename; the legacy prefixes stay for shims
+        # whose .pth has gone unreadable.
+        _pth_mods = set()
+        for _f, _fsz, _fk in rows:
+            if _f.suffix != '.pth':
+                continue
+            try:
+                _txt = d.locate_file(_f).read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                _txt = ''
+            for _ln in (_txt or '').splitlines():
+                _parts = _ln.strip().split(None, 1)
+                if len(_parts) == 2 and _parts[0] == 'import':
+                    for _mod in _parts[1].split(';', 1)[0].split(','):
+                        _toks = _mod.replace('.', ' ').split()
+                        if _toks:
+                            _pth_mods.add(_toks[0])
+        _shim = _real = 0
+        for _f, _fsz, _fk in rows:
+            if _f.suffix == '.pth' or _f.name.startswith(('__editable__', '_editable_')):
+                _shim += 1
+            elif len(_f.parts) == 1 and _f.stem in _pth_mods:
+                _shim += 1
+            else:
+                _real += 1
+        if _shim and not _real:
+            damaged = True
+    if not damaged:
+        for f, sz, key in rows:
+            try:
+                st = d.locate_file(f).stat()
+            except (FileNotFoundError, NotADirectoryError):
+                damaged = True
+                break
+            except OSError:
+                # EACCES/ESTALE/EIO say the file could not be READ, never that it is
+                # gone, and a reinstall instruction cannot fix that: skip the row (the
+                # same distinction the sidecar scanner draws; its consequence matches
+                # this probe's, unlike the CLI mirror's advisory print).
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                damaged = True
+                break
+            # The SELECTED candidate's own recorded size, not the smallest across
+            # every dist-info: an old dist-info recording 100 bytes for a path the
+            # new one records as 200 would otherwise let the stale file pass. A
+            # foreign claimant still makes the size ambiguous -- whichever copy
+            # landed says nothing about either RECORD -- and larger than recorded
+            # is a collision, not damage.
+            if (len(set(_n for _n, _v in owners.get(key, ()))) <= 1 and sz.isdigit()
+                    and f.name not in _rewritten and st.st_size < int(sz)):
+                damaged = True
+                break
+    def _spec(n, root):
+        # find_spec raises when a name's parent package is missing: a negative answer,
+        # not an error to propagate
+        try:
+            s = importlib.util.find_spec(n) if n else None
+        except Exception:
+            return False
+        if s is None:
+            return False
+        # The module must live under the root that owns it: the distribution's own
+        # directory normally, the recorded checkout for an editable install (which
+        # resolves THROUGH its finder into that tree). -I still runs site processing,
+        # so an executable .pth can put a same-named copy on sys.path and answer for a
+        # payload that is gone -- for a plain install and an editable one alike. An
+        # empty root means nothing can be bound and only presence is checked.
+        # realpath, not abspath: an editable checkout reached through a symlink or a
+        # junction is recorded one way in direct_url.json and reported the other way
+        # by the finder, and the two spellings name the same files. Only the
+        # containment test resolves links -- the ownership map is keyed on abspath,
+        # where a miss merely means not-proven-foreign, which is the safe answer.
+        # No double quote anywhere in this program either: it is carried in a
+        # double-quoted shell string that such a quote would end early.
+        _base = os.path.normcase(os.path.realpath(root)) if root else None
+        def _inside(p):
+            # normcase on both sides: Windows paths are case-insensitive, and a
+            # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
+            # would otherwise read as living outside itself
+            if _base is None:
+                return True
+            # rstrip first: a checkout at a filesystem root already ends in the
+            # separator, and '/' + '/' would reject every path under it
+            _pp = os.path.normcase(os.path.realpath(p))
+            return _pp == _base or _pp.startswith(_base.rstrip(os.sep) + os.sep)
+        if s.origin and s.origin != 'namespace':
+            return _inside(s.origin) and not _foreign(s.origin)
+        # A namespace spec is not payload on its own: an emptied package directory
+        # still answers find_spec with its own path, so require an importable module.
+        for _p in list(getattr(s, 'submodule_search_locations', None) or []):
+            if _p and _inside(_p) and _has_module(_p):
+                return True
+        return False
+    def _tops():
+        # top_level.txt is OPTIONAL metadata and may be unreadable or not even valid
+        # UTF-8 after a partial write or a quarantine. Letting that raise would end
+        # the probe with no sentinel, which every caller reads as inconclusive -- so
+        # a broken file must degrade to no-top-levels, not to no-answer. Read here
+        # rather than up front so the recorded-payload checks run first regardless.
+        try:
+            return (d.read_text('top_level.txt') or '').split()
+        except Exception:
+            return []
+    if not rows and not damaged:
+        if _edit and not _target:
+            # An editable install whose direct_url.json no longer says where it
+            # points: nothing can bind it, and an unbound presence check would let a
+            # same-named copy reached through a .pth answer for a checkout that may
+            # be gone. Unusable metadata for an editable install is itself the
+            # damage, and it is what the no-tops branch below has always reported.
+            damaged = True
+        elif _tops():
+            damaged = not all(_spec(t, _target if _edit else str(d.locate_file('')))
+                              for t in _tops() if t)
+        elif _edit:
+            # An editable install with no top_level.txt: its RECORD lists only the
+            # site-packages shims, so nothing above can speak for the checkout. Resolve
+            # the distribution's OWN module and bind it to the recorded target: any
+            # importable file under the checkout would otherwise do, and a checkout keeps
+            # a setup.py or noxfile.py long after its package directory is gone. The
+            # editable finder knows where the package really lives, so a src/ layout
+            # still resolves, while a deleted package or a same-named copy outside the
+            # checkout does not.
+            #
+            # A miss is NOT damage though: a distribution name does not determine its
+            # import name, and acme-unsloth may legitimately expose unsloth. Only two
+            # things are provable without top_level.txt -- the checkout is gone, or it
+            # holds no importable module at all. Anything else is unverifiable here,
+            # and unverifiable must not read as broken.
+            if not _target or not os.path.isdir(_target):
+                damaged = True
+            elif _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target):
+                damaged = False
+            else:
+                damaged = not _has_module(_target)
+        elif d_record is None:
+            # Nothing enumerates the payload: no RECORD at all and no top_level.txt.
+            # The distribution's own name is a hint, not a mapping -- acme-unsloth may
+            # legitimately expose unsloth -- so a hit proves health but a MISS proves
+            # nothing and must not be damage on its own.
+            #
+            # What is provable is the shape of the metadata: a wheel install writes
+            # RECORD beside WHEEL, so WHEEL present with RECORD absent is an install
+            # that stopped halfway. A distribution carrying neither (a distro or conda
+            # package, which the CLI mirror also declines to judge) stays unverified.
+            # Gated on the RECORD being ABSENT, not on rows being empty: a CLI-only
+            # wheel (py-spy) records just its console script and ships no importable
+            # module, and its RECORD already answered.
+            if _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file(''))):
+                damaged = False
+            else:
+                try:
+                    damaged = d.read_text('WHEEL') is not None
+                except Exception:
+                    damaged = True
+    return damaged
+damaged = _verdict(d, d_record)
+if damaged:
+    for _alt in _tied[1:]:
+        if not _verdict(_alt[0], _alt[1]):
+            d, d_record, damaged = _alt[0], _alt[1], False
+            break
+print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
+"
+# Bounded like the PowerShell probe runner: the probe stats every recorded file,
+# and a stalled NFS/FUSE mount can wedge stat() in uninterruptible sleep -- a
+# synchronous substitution would hang the update forever. On timeout the child is
+# abandoned, not waited on (a D-state process ignores even KILL until the syscall
+# returns), and the empty answer flows into the already-supported inconclusive
+# outcome. The sentinel line is extracted here so a printing site hook cannot
+# pollute the caller's exact compares.
+_bounded_pkg_probe() {
+    _bpp_out=$(mktemp) || return 0
+    # Backgrounded directly, NOT wrapped in ( ... ): $! must be the interpreter
+    # itself. A wrapper subshell would take the TERM below and leave python
+    # reparented and still stuck, leaking a process that holds venv resources.
+    "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" > "$_bpp_out" 2>/dev/null &
+    _bpp_pid=$!
+    _bpp_i=0
+    while kill -0 "$_bpp_pid" 2>/dev/null; do
+        if [ "$_bpp_i" -ge 300 ]; then
+            # The descendant tree is walked BEFORE the interpreter is signalled: once
+            # it exits its children are reparented to init and -P can no longer find
+            # them. A sitecustomize or .pth hook can spawn a helper that spawns its
+            # own child, so this descends level by level until one comes back empty --
+            # a fixed depth would strand whatever nests below it. The bound is a
+            # total-pid cap instead: teardown must not chase a fork bomb. Best effort
+            # either way: pgrep is not guaranteed to exist, anything spawned after
+            # the snapshot is missed, and this is teardown, not a contract. A process
+            # group would be exact, but job control prints its own notifications to
+            # the console and this script's output is pinned.
+            _bpp_kids=""
+            if command -v pgrep >/dev/null 2>&1; then
+                _bpp_level="$_bpp_pid"
+                _bpp_n=0
+                while [ -n "$_bpp_level" ] && [ "$_bpp_n" -lt 256 ]; do
+                    _bpp_next=""
+                    for _bpp_p in $_bpp_level; do
+                        _bpp_c=$(pgrep -P "$_bpp_p" 2>/dev/null || true)
+                        [ -n "$_bpp_c" ] && _bpp_next="$_bpp_next $_bpp_c"
+                        _bpp_n=$((_bpp_n + 1))
+                    done
+                    _bpp_kids="$_bpp_kids $_bpp_next"
+                    _bpp_level="$_bpp_next"
+                done
+            fi
+            kill "$_bpp_pid" 2>/dev/null || true
+            # KILL after a grace period: a probe wedged in an interruptible stall
+            # exits on TERM, one ignoring it must not outlive this function. A
+            # D-state process survives both, which is why it is abandoned rather
+            # than waited on.
+            sleep 0.5
+            kill -9 "$_bpp_pid" 2>/dev/null || true
+            # unquoted on purpose: the tree is a whitespace-separated pid list
+            [ -n "$(printf '%s' "$_bpp_kids" | tr -d ' ')" ] && kill -9 $_bpp_kids 2>/dev/null || true
+            rm -f "$_bpp_out"
+            return 0
+        fi
+        sleep 0.1
+        _bpp_i=$((_bpp_i + 1))
+    done
+    # The exit status gates the parse: a probe that dies before printing its own
+    # sentinel must not have a printing site hook's POSTVER= line read in its
+    # place. An unsuccessful exit yields the empty, inconclusive answer instead;
+    # setup.ps1 keys the same way on ExitCode.
+    if wait "$_bpp_pid" 2>/dev/null; then
+        sed -n 's/^POSTVER=//p' "$_bpp_out" | tail -n 1
+    fi
+    rm -f "$_bpp_out"
+}
+# Never inherited from the caller's environment: the post-update check below keys on
+# these, and the block that assigns them is skipped in installer-driven/local/Colab
+# runs (mirrors $LatestVer = "" in setup.ps1).
+LATEST_VER=""
+_PYPI_JSON=""
+# True only when the version-check gate ran: the post-update probe needs the venv
+# python and must stay off in installer-driven/local/Colab runs, but it must not
+# depend on the PyPI fetch succeeding -- a missing package is missing on any index.
+_VERIFY_UPDATE=false
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
-    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
+    _VERIFY_UPDATE=true
+    INSTALLED_VER=$("$VENV_DIR/bin/python" -I -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
-        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
+    _PYPI_JSON=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null || echo "")
+    LATEST_VER=$(printf '%s' "$_PYPI_JSON" \
+        | "$VENV_DIR/bin/python" -I -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
@@ -1838,6 +2405,31 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
 " "$SCRIPT_DIR" 2>/dev/null; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
+        fi
+        # A quarantined payload leaves dist-info reporting current while the canonical
+        # import is gone; the metadata compare above cannot see that, so the fast path
+        # stands only after the payload probe answers. The probe's version must also
+        # match the one that took the fast path: INSTALLED_VER above came from the
+        # default sys.path lookup, which an executable .pth can satisfy with a current
+        # external copy while the managed install sits stale -- the probe answers for
+        # the managed one only. A crashed or silent probe says nothing about the venv
+        # and leaves the fast path alone. Deliberately BEFORE the XPU escapes:
+        # tests/sh/test_setup_xpu_fastpath_escape.sh extracts that chain and runs
+        # it directly, and it must stay free of anything that launches an
+        # interpreter (a wedged Intel driver would hang one). Order does not
+        # matter -- every arm just clears the skip flag.
+        if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+            _FAST_VER=$(_bounded_pkg_probe)
+            if [ "$_FAST_VER" = "__MISSING__" ]; then
+                substep "managed $_PKG_NAME is not installed -- forcing dependency pass to repair..."
+                _SKIP_PYTHON_DEPS=false
+            elif [ "$_FAST_VER" = "__DAMAGED__" ]; then
+                substep "$_PKG_NAME files are missing or damaged -- forcing dependency pass to repair..."
+                _SKIP_PYTHON_DEPS=false
+            elif [ -n "$_FAST_VER" ] && [ "$_FAST_VER" != "$LATEST_VER" ]; then
+                substep "managed $_PKG_NAME is at $_FAST_VER, not $LATEST_VER -- forcing dependency pass to update..."
+                _SKIP_PYTHON_DEPS=false
+            fi
         fi
         # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
         # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
@@ -1935,6 +2527,229 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+    # a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
+    # resolves from the mirror while LATEST_VER came from pypi.org, so version
+    # comparisons are muted when a custom index is active. The missing-package
+    # check below still runs: a pass that leaves nothing installed is broken on
+    # any index.
+    _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
+    if [ "$_VERIFY_UPDATE" = true ]; then
+        # See _PKG_PROBE_PY for what counts as missing: a probe that merely crashed
+        # or timed out must not read as "not installed" and fail setup. -I so an
+        # inherited PYTHONPATH cannot satisfy the probe with same-name metadata
+        # from outside the managed venv.
+        POST_VER=$(_bounded_pkg_probe)
+        _UPDATE_OK=false
+        if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
+            _UPDATE_OK=true
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && "$VENV_DIR/bin/python" -I -c "
+import re, sys
+def _pep440_key(v):
+    # A port of packaging.version's own comparison key, used only when packaging
+    # itself cannot import. Hand-rolled stage ranking kept springing leaks
+    # (compound suffixes, implicit post, epochs, local labels, the v prefix), so
+    # this mirrors the real algorithm instead: an absent pre sorts ABOVE any pre
+    # unless the version is a bare dev build, an absent post BELOW any post, and
+    # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
+    # fuzzes it against packaging.
+    # exactly one optional v, not lstrip: vv999 is not a version, and eating both
+    # would parse it as 999 and let it outrank a real release
+    v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
+    em = re.match(r'([0-9]+)!', v)
+    epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
+    if not m:
+        return None
+    rel = [int(n) for n in m.group(0).split('.')]
+    while rel and rel[-1] == 0:
+        rel.pop()
+    rest, _plus, loc = v[m.end():].partition('+')
+    pre = post = dev = None
+    # scanned from the left, never searched: a substring like the r in preview
+    # must not read as the r that spells post
+    # PEP 440 allows each of pre, post and dev at most once and only in that
+    # order, so the rank must strictly increase: 1.0.post1-2 and 1.0.post1a1 are
+    # not versions at all and must not out-key a real release
+    _seen = 0
+    while rest:
+        # the implicit post release: a bare -N, valid right after the release
+        # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
+        # is matched every pass rather than once up front. Only dev may follow a
+        # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
+        if im:
+            if _seen >= 2:
+                return None
+            _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
+            continue
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
+        if not mm:
+            break
+        _t, _n = mm.group(1), int(mm.group(2) or 0)
+        _rank = 3 if _t == 'dev' else (2 if _t in ('post', 'rev', 'r') else 1)
+        if _rank <= _seen:
+            return None
+        _seen = _rank
+        if _rank == 2:
+            post = _n
+        elif _rank == 3:
+            dev = _n
+        else:
+            pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
+        rest = rest[mm.end():]
+    # anything the tokenizer could not consume means this is not a PEP 440 version
+    # at all (999garbage), and a parsed key would let it outrank a real release
+    if rest:
+        return None
+    if _plus and not re.match(r'^[a-z0-9]+([-._][a-z0-9]+)*$', loc):
+        return None
+    if pre is None:
+        pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
+    lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
+    # dev numbers are unbounded, so an absent dev needs a real infinity, not a big
+    # integer a .dev1000000001 could climb past
+    return (epoch, rel, pre, -1 if post is None else post, float('inf') if dev is None else dev, lk)
+try:
+    from packaging.version import Version
+    ok = Version(sys.argv[1]) >= Version(sys.argv[2])
+except Exception:
+    _a, _b = _pep440_key(sys.argv[1]), _pep440_key(sys.argv[2])
+    if _a is None or _b is None:
+        sys.exit(1)
+    ok = _a >= _b
+sys.exit(0 if ok else 1)
+" "$POST_VER" "$LATEST_VER" 2>/dev/null; then
+            # newer than announced is fine (a release can land mid-update); PEP 440
+            # ordering so an installed pre/post/dev build never passes as the release
+            _UPDATE_OK=true
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -I -c "
+import json, sys
+raw = sys.stdin.read()
+try:
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version, InvalidVersion
+    post = Version(sys.argv[1])
+    latest = Version(sys.argv[2])
+    releases = json.loads(raw).get('releases') or {}
+except Exception:
+    sys.exit(1)
+try:
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
+    supported = set(str(t) for t in sys_tags())
+except Exception:
+    supported = None
+cur = Version('.'.join(map(str, sys.version_info[:3])))
+best = None
+for ver, files in releases.items():
+    try:
+        v = Version(ver)
+    except InvalidVersion:
+        continue
+    if v.is_prerelease:
+        continue
+    for f in files:
+        if f.get('yanked'):
+            continue
+        rp = f.get('requires_python')
+        try:
+            if rp and cur not in SpecifierSet(rp):
+                continue
+        except Exception:
+            pass
+        pt = f.get('packagetype')
+        if pt == 'bdist_wheel' and supported is not None:
+            try:
+                if not any(str(t) in supported for t in parse_wheel_filename(f.get('filename') or '')[3]):
+                    continue
+            except Exception:
+                pass
+        elif pt and pt != 'sdist' and pt != 'bdist_wheel':
+            continue
+        if best is None or v > best:
+            best = v
+        break
+sys.exit(0 if best is not None and best < latest and post >= best else 1)
+" "$POST_VER" "$LATEST_VER" 2>/dev/null; then
+            # the announced release cannot install on this interpreter (Requires-Python
+            # bump): accept only the newest release this interpreter CAN install, so a
+            # no-op pass below that bar still fails loudly
+            substep "$_PKG_NAME $POST_VER kept: no $LATEST_VER artifact installs on this environment"
+            _UPDATE_OK=true
+        fi
+        if [ "$_UPDATE_OK" = true ]; then
+            substep "$_PKG_NAME $POST_VER confirmed"
+        elif [ "$POST_VER" = "__MISSING__" ] || [ "$POST_VER" = "__DAMAGED__" ]; then
+            # the unambiguous failures: a "successful" pass that left no package
+            # behind (no-op pass, stale dist-info) or left its files damaged -- pip
+            # sees intact metadata and reinstalls nothing, so an update cannot fix
+            # either; the answer is reinstall over the top and the update must say
+            # so. The pass already wrote its success manifest (step 15, before this
+            # check) and verify_install accepts a null recorded version, so the
+            # marker must not survive: its presence means "install completed".
+            _MANIFEST_STATE=$("$VENV_DIR/bin/python" -c "
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+# quarantine can take studio/install_manifest.py too, and a missing helper must
+# not read as a missing manifest: the pass just wrote one. The file sits at a
+# fixed name under the venv (install_manifest.venv_root()/MANIFEST_NAME), so
+# fall back to handling it directly.
+mp = os.path.join(sys.prefix, 'unsloth_install_manifest.json')
+try:
+    import install_manifest
+except Exception:
+    install_manifest = None
+ok = False
+for _ in range(3):
+    try:
+        if install_manifest is not None:
+            ok = bool(install_manifest.remove_manifest())
+        else:
+            if os.path.exists(mp):
+                os.remove(mp)
+            ok = True
+    except Exception:
+        ok = False
+    if ok:
+        break
+    time.sleep(0.2)
+if not ok:
+    # deletion blocked (AV lock, read-only): write is a different access right
+    # than delete on Windows, and a schema-busted manifest also reads incomplete
+    try:
+        target = install_manifest.manifest_path() if install_manifest is not None else mp
+        with open(target, 'w', encoding='utf-8') as fh:
+            fh.write('{\"schema\": -1}')
+        ok = True
+    except Exception:
+        pass
+print('MANIFEST=' + ('gone' if ok else 'stuck'))
+" "$SCRIPT_DIR" 2>/dev/null || echo "MANIFEST=stuck")
+            case "$_MANIFEST_STATE" in *stuck*)
+                substep "stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "$C_WARN" ;;
+            esac
+            if [ "$POST_VER" = "__DAMAGED__" ]; then
+                _POST_MSG="update ran but $_PKG_NAME files are damaged -- reinstall over the top"
+            else
+                _POST_MSG="update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
+            fi
+            step "python" "$_POST_MSG" "$C_ERR"
+            setup_fail 1 "$_POST_MSG"
+        elif [ -z "$POST_VER" ]; then
+            step "python" "could not verify $_PKG_NAME version after update${LATEST_VER:+ (expected $LATEST_VER)}" "$C_WARN"
+        elif [ -z "$LATEST_VER" ]; then
+            substep "$_PKG_NAME $POST_VER present (PyPI unreachable; compare skipped)"
+        elif [ -n "$_CUSTOM_INDEX" ]; then
+            substep "$_PKG_NAME $POST_VER present (custom package index; PyPI compare skipped)"
+        else
+            # older-but-successful is a resolver outcome (constraints, config-file
+            # mirrors, wheels for this platform), not an install failure: pypi.org's
+            # announced latest is not authoritative for what this environment can
+            # run -- surface it, don't brick the update
+            step "python" "update left $_PKG_NAME at $POST_VER ($LATEST_VER announced on PyPI)" "$C_WARN"
+        fi
+    fi
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"

@@ -1058,20 +1058,153 @@ function Invoke-BoundedPythonProbe {
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $proc = [System.Diagnostics.Process]::Start($psi)
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-            try { $proc.Kill() } catch {}
+            # 5.1's Kill() ends only the interpreter; taskkill /T /F also reaps a
+            # descendant a sitecustomize or .pth hook spawned, which would otherwise
+            # keep the redirected handles open (mirrors _windows_taskkill_tree in
+            # studio/backend/core/inference/tools.py). Inlined rather than factored
+            # out: the probe suites lift this function out on its own and execute it,
+            # so it has to stay self-contained. install.ps1's copy is deliberately
+            # untouched -- this reland's scope is setup.sh/setup.ps1.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
             $result.Error = "python did not answer within $TimeoutSec seconds"
             return $result
         }
-        $result.Output = $outTask.GetAwaiter().GetResult()
+        # Bounded by what is LEFT of the deadline, not a fresh one: python can exit
+        # while a descendant it spawned still holds the inherited handle, so the pipe
+        # never reaches EOF, and restarting the clock here would let a nominal 30s
+        # probe run past a minute. An abandoned reader leaves the field empty, which
+        # every caller already treats as "no answer".
+        $_readLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        $_leaked = $false
+        if ($outTask.Wait($_readLeft)) { $result.Output = $outTask.Result } else { $_leaked = $true }
         # Kept, not discarded: the only place a failed probe's OSError / WinError text exists, and
         # the caller decides what to do with the venv based on it.
-        $result.Error = $errTask.GetAwaiter().GetResult()
+        $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        if ($errTask.Wait($_errLeft)) { $result.Error = $errTask.Result } else { $_leaked = $true }
+        # $_leaked means python exited cleanly but something it spawned still holds
+        # the inherited handle, so the pipe never reached EOF. That descendant is
+        # deliberately NOT chased here. Reaping it needs the parent-child map, and
+        # every way to get it breaks something this helper or the release depends on:
+        # a kill-on-close job object needs a native P/Invoke that
+        # tests/studio/test_installer_av_shapes.py keeps out of these scripts, and a
+        # Win32_Process query has no timeout that holds locally -- see
+        # Invoke-BoundedVideoControllerScan below, which goes out of process with a
+        # wall-clock kill for exactly that reason. A cleanup that can hang forever
+        # would defeat the one guarantee this helper exists to make, so the bound
+        # wins: the answer is abandoned, the caller reads it as inconclusive, and the
+        # stray descendant is left to exit on its own.
+
+        $result.Ok = ($proc.ExitCode -eq 0)
+        return $result
+    } catch {
+        $result.Error = $_.Exception.Message
+        return $result
+    }
+}
+
+# Invoke-BoundedPythonProbe for a probe too big for one -c line: the program rides in on
+# stdin ("python -") and its inputs in environment variables, so nothing is interpolated
+# into a command line and nothing needs encoding -- an encoded payload is a construct
+# tests/studio/test_installer_av_shapes.py exists to keep out of this file, and nothing
+# is written to disk and executed either. Same bounding and stream handling as the
+# -c helper above.
+function Invoke-BoundedPythonStdinProbe {
+    param([string]$PythonExe, [string]$Code, [hashtable]$ProbeEnv, [int]$TimeoutSec = 30)
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+    if (-not $PythonExe -or -not $Code) { return $result }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PythonExe
+        # -I so a project-local sysconfig.py or csv.py in the caller's working
+        # directory cannot shadow the probe's own imports before its in-code
+        # scrub runs: python - would otherwise prepend the cwd (-P is implied).
+        $psi.Arguments = "-I -"
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        if ($ProbeEnv) {
+            foreach ($_envKey in $ProbeEnv.Keys) { $psi.EnvironmentVariables["$_envKey"] = "$($ProbeEnv[$_envKey])" }
+        }
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        # The write itself is bounded: an interpreter wedged during startup -- the
+        # case this helper exists for -- never drains stdin, the probe is larger
+        # than a 4 KB pipe buffer (4099 bytes on a CRLF checkout), and a synchronous
+        # write would then block before WaitForExit ever started. Draining stdout
+        # and stderr above does not unblock stdin.
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Code)
+        $writeTask = $proc.StandardInput.BaseStream.WriteAsync($bytes, 0, $bytes.Length)
+        $writeDone = $false
+        $writeBroke = $false
+        try { $writeDone = $writeTask.Wait($TimeoutSec * 1000) } catch { $writeBroke = $true }
+        if (-not $writeDone -and -not $writeBroke) {
+            # Kill first: it breaks the pipe and unblocks the pending write, so the
+            # Close below cannot wedge behind it.
+            # 5.1's Kill() ends only the interpreter; taskkill /T /F also reaps a
+            # descendant a sitecustomize or .pth hook spawned, which would otherwise
+            # keep the redirected handles open (mirrors _windows_taskkill_tree in
+            # studio/backend/core/inference/tools.py). Inlined rather than factored
+            # out: the probe suites lift this function out on its own and execute it,
+            # so it has to stay self-contained. install.ps1's copy is deliberately
+            # untouched -- this reland's scope is setup.sh/setup.ps1.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
+            try { $proc.StandardInput.Close() } catch {}
+            $result.Error = "python did not accept the probe within $TimeoutSec seconds"
+            return $result
+        }
+        # A broken pipe means the child already exited; its exit code and stderr are
+        # the answer, so fall through to the wait either way once stdin is closed.
+        try { $proc.StandardInput.Close() } catch {}
+        $_waitLeft = [Math]::Max(1000, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        if (-not $proc.WaitForExit($_waitLeft)) {
+            # 5.1's Kill() ends only the interpreter; taskkill /T /F also reaps a
+            # descendant a sitecustomize or .pth hook spawned, which would otherwise
+            # keep the redirected handles open (mirrors _windows_taskkill_tree in
+            # studio/backend/core/inference/tools.py). Inlined rather than factored
+            # out: the probe suites lift this function out on its own and execute it,
+            # so it has to stay self-contained. install.ps1's copy is deliberately
+            # untouched -- this reland's scope is setup.sh/setup.ps1.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
+            # Synthesised, not read back: waiting on the reader tasks of a wedged child would
+            # reintroduce the hang this helper exists to bound.
+            $result.Error = "python did not answer within $TimeoutSec seconds"
+            return $result
+        }
+        # Bounded like the wait above: a descendant holding the inherited handle keeps
+        # the pipe open after python exits, and an unbounded read would hang past
+        # TimeoutSec. An abandoned reader leaves the field empty = "no answer".
+        $_readLeft = [Math]::Max(1000, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        $_leaked = $false
+        if ($outTask.Wait($_readLeft)) { $result.Output = $outTask.Result } else { $_leaked = $true }
+        $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        if ($errTask.Wait($_errLeft)) { $result.Error = $errTask.Result } else { $_leaked = $true }
+        # $_leaked means python exited cleanly but something it spawned still holds
+        # the inherited handle, so the pipe never reached EOF. That descendant is
+        # deliberately NOT chased here. Reaping it needs the parent-child map, and
+        # every way to get it breaks something this helper or the release depends on:
+        # a kill-on-close job object needs a native P/Invoke that
+        # tests/studio/test_installer_av_shapes.py keeps out of these scripts, and a
+        # Win32_Process query has no timeout that holds locally -- see
+        # Invoke-BoundedVideoControllerScan below, which goes out of process with a
+        # wall-clock kill for exactly that reason. A cleanup that can hang forever
+        # would defeat the one guarantee this helper exists to make, so the bound
+        # wins: the answer is abandoned, the caller reads it as inconclusive, and the
+        # stray descendant is left to exit on its own.
+
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
     } catch {
@@ -4726,12 +4859,515 @@ function Fast-Download {
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
+# Payload-presence probe, shared by the fast-path escape and the post-update check
+# (mirrors _PKG_PROBE_PY in setup.sh; the package name rides in an environment
+# variable and the program itself on stdin via Invoke-BoundedPythonStdinProbe, so
+# nothing is interpolated into a command line and nothing needs encoding). Third
+# deliberate mirror of the damage predicate in unsloth_cli/_studio_deps.py
+# damaged_installed_files and studio/backend/utils/transformers_version.py
+# _sidecar_scan_impl -- keep the predicates in sync. POSTVER=__MISSING__ only
+# when the venv's own libdirs hold no such distribution; POSTVER=__DAMAGED__ when
+# they do but a recorded file is gone, is not a regular file, or is shorter than
+# pip recorded -- a leftover dist-info still reports a version, pip treats intact
+# metadata as satisfied and reinstalls nothing, so only the RECORD-vs-filesystem
+# compare sees this. Data counts too: the wheel ships runtime payload that is not
+# .py (unsloth_cli/pi_subagent.ts, studio/frontend/dist) and start.py fails
+# outright without it. locate_file, not find_spec: an emptied package directory
+# still answers find_spec as a namespace package, a same-name copy reachable
+# through a .pth hook answers for a deleted managed payload, and neither sees a
+# nested file a partial quarantine took. The distribution is selected from the
+# venv's own purelib/platlib, not the startup-modified sys.path, so a complete
+# external copy prepended by an executable .pth cannot answer for the managed
+# one. Carve-outs, same reasoning as the mirrors: a recorded size binds a path
+# only when every claim on it carries one and the file sits below the smallest --
+# below every claim it matches none of them, while an unsized claim could be the
+# copy that landed (tighter than the mirrors' skip-when-shared rule on purpose:
+# an interrupted upgrade's duplicate dist-info would otherwise waive the whole
+# shrinkage check for the package's own files); larger than recorded is a
+# collision, not damage;
+# shared non-runtime roots (tests/, docs/, ...) are skipped outright;
+# package-lock.json keeps existence but loses its size (setup's npm install
+# rewrites it in place); .dist-info//.egg-info//.pyc are installer-owned or
+# regenerated. Divergence from the CLI mirror: absolute and ../ scheme rows
+# (console scripts) are dropped here, because the installers rewrite or remove
+# launchers themselves and this probe's finding fails setup rather than printing
+# advice. RECORD is read as text, not through d.files: 3.14+ filters d.files to
+# files that exist, which is blind to exactly these deletions. find_spec remains
+# Rows, the truncation check and the reported version come only from the SELECTED
+# distribution: an interrupted upgrade can leave a second dist-info for the same
+# name, and the stale RECORD from the other one must not damage a complete
+# install -- the newest wins, by PEP 440 when packaging imports and by a
+# numeric-prefix-with-suffix-rank fallback when it does not. An editable install
+# (direct_url.json dir_info.editable; a venv left editable by an earlier --local
+# run is supported state) records only its site-packages shims, which say nothing
+# about the checkout they point at, so it is validated through find_spec instead:
+# the editable finder resolves into the real tree. Only top-level
+# resolution there: a checkout's nested files have no recorded inventory to
+# compare against, importing is off the table by design, and a development tree
+# is the user's own to edit.
+# only for a RECORD-less install, best effort. Both probes run under -I, which
+# already keeps PYTHONPATH and the working directory off sys.path; no in-code
+# scrub on top of it -- filtering sys.path by PYTHONPATH spelling would strip a
+# path a compat-style editable .pth legitimately re-adds when the user also
+# lists the checkout there.
+$_pkgProbeCode = @'
+import csv, importlib.machinery, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
+from pathlib import PurePosixPath
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+_pkg = os.environ.get('STUDIO_VERIFY_PKG') or ''
+_paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
+_norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
+_shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
+_rewritten = frozenset(('package-lock.json',))
+# Which DISTRIBUTIONS claim each path, as (normalized name, version). Both halves
+# are needed and they answer different questions: a recorded SIZE is ambiguous only
+# when a different PACKAGE claims the path (two dist-infos of the same package are
+# one owner there, which is what lets the selected candidate's own size apply),
+# while OWNERSHIP of a resolved module has to be exact -- a file claimed only by
+# the 1.0 dist-info is not the payload of the 2.0 the probe selected.
+owners = {}
+cands = []
+for x in importlib.metadata.distributions(path=_paths):
+    try:
+        name = x.metadata['Name']
+    except Exception:
+        continue
+    try:
+        # once per distribution, never per row: x.version re-reads the metadata, and
+        # the row loop below runs thousands of times across a real environment
+        _xver = x.version
+    except Exception:
+        continue
+    try:
+        # NOT collapsed with an or-empty: read_text returns None when RECORD is
+        # absent and '' when it
+        # is present and empty, and those mean different things -- a wheel install
+        # always writes at least the self-entry, so a zero-byte inventory is an
+        # interrupted metadata write, which is damage rather than a RECORD-less
+        # install. The distinction is carried through to _verdict.
+        record = x.read_text('RECORD')
+    except Exception:
+        # False, not None: read_text answers None when RECORD is ABSENT and raises
+        # when it exists but its bytes are not valid UTF-8, which is a partial write
+        # or a quarantine -- corruption, and not to be mistaken for having no
+        # inventory at all. The boundary is the stdlib's: read_text SUPPRESSES
+        # PermissionError and answers None for it, so a merely locked RECORD stays on
+        # the lenient path, which is the same call made for a locked file below.
+        record = False
+    if _norm(name) == _norm(_pkg):
+        cands.append((x, record))
+    try:
+        for r in csv.reader((record or '').splitlines()):
+            rel = r[0] if r else ''
+            if not rel or rel.endswith('/'):
+                continue
+            if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                continue
+            f = PurePosixPath(rel.replace(chr(92), '/'))
+            if f.is_absolute() or '..' in f.parts:
+                continue
+            key = os.path.normcase(str(x.locate_file(f)))
+            owners.setdefault(key, set()).add((_norm(name), _xver))
+    except csv.Error:
+        # A field past csv.field_size_limit is a partial write with no delimiter
+        # in sight. It must not end the scan for every other distribution:
+        # ownership from this inventory is unusable and skipped, and when it is
+        # the target's own RECORD the same parse fails again in _verdict, where
+        # it reads as damage.
+        pass
+def _pep440_key(v):
+    # A port of packaging.version's own comparison key, used only when packaging
+    # itself cannot import. Hand-rolled stage ranking kept springing leaks
+    # (compound suffixes, implicit post, epochs, local labels, the v prefix), so
+    # this mirrors the real algorithm instead: an absent pre sorts ABOVE any pre
+    # unless the version is a bare dev build, an absent post BELOW any post, and
+    # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
+    # fuzzes it against packaging.
+    # exactly one optional v, not lstrip: vv999 is not a version, and eating both
+    # would parse it as 999 and let it outrank a real release
+    v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
+    em = re.match(r'([0-9]+)!', v)
+    epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
+    if not m:
+        return None
+    rel = [int(n) for n in m.group(0).split('.')]
+    while rel and rel[-1] == 0:
+        rel.pop()
+    rest, _plus, loc = v[m.end():].partition('+')
+    pre = post = dev = None
+    # scanned from the left, never searched: a substring like the r in preview
+    # must not read as the r that spells post
+    # PEP 440 allows each of pre, post and dev at most once and only in that
+    # order, so the rank must strictly increase: 1.0.post1-2 and 1.0.post1a1 are
+    # not versions at all and must not out-key a real release
+    _seen = 0
+    while rest:
+        # the implicit post release: a bare -N, valid right after the release
+        # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
+        # is matched every pass rather than once up front. Only dev may follow a
+        # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
+        if im:
+            if _seen >= 2:
+                return None
+            _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
+            continue
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
+        if not mm:
+            break
+        _t, _n = mm.group(1), int(mm.group(2) or 0)
+        _rank = 3 if _t == 'dev' else (2 if _t in ('post', 'rev', 'r') else 1)
+        if _rank <= _seen:
+            return None
+        _seen = _rank
+        if _rank == 2:
+            post = _n
+        elif _rank == 3:
+            dev = _n
+        else:
+            pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
+        rest = rest[mm.end():]
+    # anything the tokenizer could not consume means this is not a PEP 440 version
+    # at all (999garbage), and a parsed key would let it outrank a real release
+    if rest:
+        return None
+    if _plus and not re.match(r'^[a-z0-9]+([-._][a-z0-9]+)*$', loc):
+        return None
+    if pre is None:
+        pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
+    lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
+    # dev numbers are unbounded, so an absent dev needs a real infinity, not a big
+    # integer a .dev1000000001 could climb past
+    return (epoch, rel, pre, -1 if post is None else post, float('inf') if dev is None else dev, lk)
+def _vkey(c):
+    v = c[0].version or ''
+    try:
+        from packaging.version import Version
+        return (1, Version(v))
+    except Exception:
+        pass
+    k = _pep440_key(v)
+    # unparsable sorts below every parsed candidate
+    return (0, k) if k is not None else (-1, ())
+if not cands:
+    print('POSTVER=__MISSING__')
+    sys.exit(0)
+# Ties are broken on HEALTH, not discovery order: an interrupted reinstall can
+# leave two dist-infos at the same version, and picking the stale one would fail
+# setup over an installation that is actually fine. The extra passes only happen
+# when a tie exists AND the first candidate looks damaged.
+_ranked = [(_vkey(_c), _c) for _c in cands]
+_topkey = max(_k for _k, _ in _ranked)
+_tied = [_c for _k, _c in _ranked if _k == _topkey]
+d, d_record = _tied[0]
+def _verdict(d, d_record):
+    try:
+        _durl = json.loads(d.read_text('direct_url.json') or '{}')
+        _edit = bool(_durl.get('dir_info', {}).get('editable'))
+    except Exception:
+        _durl, _edit = {}, False
+    # where an editable install actually points. Resolved once: the tops branch binds
+    # editable specs to it, and the no-tops branch below validates it directly.
+    _target = ''
+    if _edit:
+        try:
+            _u = urlparse(str(_durl.get('url') or ''))
+            # a UNC checkout is file://server/share/repo, and its authority is part
+            # of the path: dropping the server resolves the share alone and rejects
+            # every real module origin under it. Rebuilt by hand rather than fed to
+            # url2pathname with the authority attached, which refuses a non-local one
+            # outright on POSIX; UNC exists only on Windows, so the separator is
+            # fixed. chr(92), never a literal backslash -- and none anywhere in this
+            # program: it is stored in a double-quoted shell string, where a doubled
+            # backslash collapses to one and breaks the source outright.
+            _bs = chr(92)
+            if _u.netloc and _u.netloc.lower() != 'localhost':
+                _target = _bs + _bs + _u.netloc + url2pathname(_u.path).replace('/', _bs)
+            else:
+                _target = url2pathname(_u.path)
+        except Exception:
+            _target = ''
+    # importable payload, used for namespace specs and for an editable checkout. Suffixes
+    # come from importlib itself rather than a hardcoded list, so an extension module
+    # counts on every platform; __pycache__ does not, being what a quarantine leaves.
+    _imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
+                 + importlib.machinery.EXTENSION_SUFFIXES)
+    def _foreign(p):
+        # Claimed by a DIFFERENT distribution's RECORD. Being inside the managed root
+        # is not ownership: another package installed there can provide the same
+        # import name, and after our payload is deleted its copy would answer for us.
+        # A path no RECORD claims is not foreign -- that is the RECORD-less case this
+        # check exists alongside, not evidence against us. Defined HERE, beside
+        # _has_module rather than inside _spec: _has_module calls it too, and Python's
+        # lexical scoping does not reach a sibling function.
+        _o = owners.get(os.path.normcase(os.path.abspath(p)))
+        return bool(_o) and _mine not in _o
+    def _has_module(_p):
+        # Walked to the bottom, with no depth cap: a namespace package may nest as
+        # deep as it likes, and cutting the walk short would report a healthy install
+        # as damaged. Cycles are the real hazard, not depth, so realpaths already
+        # visited are skipped -- a symlink loop cannot spin here. The first module
+        # found answers, so only a tree that has none is walked in full.
+        _stack = [_p]
+        _seen = set()
+        while _stack:
+            _dir = _stack.pop()
+            _real = os.path.normcase(os.path.realpath(_dir))
+            if _real in _seen:
+                continue
+            _seen.add(_real)
+            try:
+                _entries = os.listdir(_dir)
+            except OSError:
+                continue
+            for _e in _entries:
+                if _e == '__pycache__':
+                    continue
+                _f = os.path.join(_dir, _e)
+                if os.path.isdir(_f):
+                    _stack.append(_f)
+                elif _e.endswith(_imp) and not _foreign(_f):
+                    return True
+        return False
+    rows = []
+    selfrec = False
+    _badrow = False
+    if not _edit:
+        try:
+            for r in csv.reader((d_record or '').splitlines()):
+                if r:
+                    # accumulated, not overwritten: a short row anywhere is a truncated
+                    # write, and a later well-formed row must not erase the evidence
+                    _badrow = _badrow or len(r) != 3
+                rel = r[0] if r else ''
+                if not rel or rel.endswith('/'):
+                    continue
+                if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
+                    selfrec = True
+                if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                    continue
+                f = PurePosixPath(rel.replace(chr(92), '/'))
+                if f.is_absolute() or '..' in f.parts:
+                    continue
+                if len(f.parts) > 1 and f.parts[0] in _shared:
+                    continue
+                rows.append((f, (r[2] if len(r) > 2 else '').strip(),
+                             os.path.normcase(str(d.locate_file(f)))))
+        except csv.Error:
+            # a field past csv.field_size_limit is a malformed row by another
+            # name: keep the evidence, and whatever parsed before it
+            _badrow = True
+    # a truncated RECORD can keep its self-entry when the writer ordered entries
+    # lexicographically (dist-info sorts before the payload), so the final parsed
+    # row must also carry RECORD's three fields: a mid-line cut leaves a short row,
+    # while a valid wheel may legitimately omit the final newline (CSV allows it),
+    # so the newline itself is not the signal. Declared-top coverage cannot serve as
+    # one either: top_level.txt legitimately names tops the wheel never ships
+    # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
+    # line boundary stays undetectable here.
+    # an existing RECORD that is empty or unreadable is corruption, not the absence
+    # of one: only a genuinely missing inventory falls through to the lenient paths
+    _unreadable = d_record is False
+    _empty_record = (not _unreadable) and d_record is not None and not d_record.strip()
+    damaged = (not _edit) and (_unreadable or _empty_record
+                               or (bool(d_record) and (not selfrec or _badrow)))
+    try:
+        _mine = (_norm(d.metadata['Name']), d.version)
+    except Exception:
+        _mine = None
+    if not _edit and rows:
+        # A PEP 660 editable whose direct_url.json is gone or corrupt still has its
+        # .pth and finder shims, and those are its ENTIRE payload -- a plain file
+        # scan finds them present and calls the install healthy while the checkout
+        # they point at may be deleted. Nothing here can validate that target, and
+        # unusable metadata for an editable install is the damage, exactly as an
+        # unresolvable url is below. A wheel that merely ships a .pth alongside real
+        # modules is untouched: this needs the payload to be shims and nothing else.
+        # Finder names are the backend's to choose (scikit-build-core writes
+        # _<name>_editable.py), so a finder is recognized by being imported from a
+        # .pth line here, not by its filename; the legacy prefixes stay for shims
+        # whose .pth has gone unreadable.
+        _pth_mods = set()
+        for _f, _fsz, _fk in rows:
+            if _f.suffix != '.pth':
+                continue
+            try:
+                _txt = d.locate_file(_f).read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                _txt = ''
+            for _ln in (_txt or '').splitlines():
+                _parts = _ln.strip().split(None, 1)
+                if len(_parts) == 2 and _parts[0] == 'import':
+                    for _mod in _parts[1].split(';', 1)[0].split(','):
+                        _toks = _mod.replace('.', ' ').split()
+                        if _toks:
+                            _pth_mods.add(_toks[0])
+        _shim = _real = 0
+        for _f, _fsz, _fk in rows:
+            if _f.suffix == '.pth' or _f.name.startswith(('__editable__', '_editable_')):
+                _shim += 1
+            elif len(_f.parts) == 1 and _f.stem in _pth_mods:
+                _shim += 1
+            else:
+                _real += 1
+        if _shim and not _real:
+            damaged = True
+    if not damaged:
+        for f, sz, key in rows:
+            try:
+                st = d.locate_file(f).stat()
+            except (FileNotFoundError, NotADirectoryError):
+                damaged = True
+                break
+            except OSError:
+                # EACCES/ESTALE/EIO say the file could not be READ, never that it is
+                # gone, and a reinstall instruction cannot fix that: skip the row (the
+                # same distinction the sidecar scanner draws; its consequence matches
+                # this probe's, unlike the CLI mirror's advisory print).
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                damaged = True
+                break
+            # The SELECTED candidate's own recorded size, not the smallest across
+            # every dist-info: an old dist-info recording 100 bytes for a path the
+            # new one records as 200 would otherwise let the stale file pass. A
+            # foreign claimant still makes the size ambiguous -- whichever copy
+            # landed says nothing about either RECORD -- and larger than recorded
+            # is a collision, not damage.
+            if (len(set(_n for _n, _v in owners.get(key, ()))) <= 1 and sz.isdigit()
+                    and f.name not in _rewritten and st.st_size < int(sz)):
+                damaged = True
+                break
+    def _spec(n, root):
+        # find_spec raises when a name's parent package is missing: a negative answer,
+        # not an error to propagate
+        try:
+            s = importlib.util.find_spec(n) if n else None
+        except Exception:
+            return False
+        if s is None:
+            return False
+        # The module must live under the root that owns it: the distribution's own
+        # directory normally, the recorded checkout for an editable install (which
+        # resolves THROUGH its finder into that tree). -I still runs site processing,
+        # so an executable .pth can put a same-named copy on sys.path and answer for a
+        # payload that is gone -- for a plain install and an editable one alike. An
+        # empty root means nothing can be bound and only presence is checked.
+        # realpath, not abspath: an editable checkout reached through a symlink or a
+        # junction is recorded one way in direct_url.json and reported the other way
+        # by the finder, and the two spellings name the same files. Only the
+        # containment test resolves links -- the ownership map is keyed on abspath,
+        # where a miss merely means not-proven-foreign, which is the safe answer.
+        # No double quote anywhere in this program either: it is carried in a
+        # double-quoted shell string that such a quote would end early.
+        _base = os.path.normcase(os.path.realpath(root)) if root else None
+        def _inside(p):
+            # normcase on both sides: Windows paths are case-insensitive, and a
+            # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
+            # would otherwise read as living outside itself
+            if _base is None:
+                return True
+            # rstrip first: a checkout at a filesystem root already ends in the
+            # separator, and '/' + '/' would reject every path under it
+            _pp = os.path.normcase(os.path.realpath(p))
+            return _pp == _base or _pp.startswith(_base.rstrip(os.sep) + os.sep)
+        if s.origin and s.origin != 'namespace':
+            return _inside(s.origin) and not _foreign(s.origin)
+        # A namespace spec is not payload on its own: an emptied package directory
+        # still answers find_spec with its own path, so require an importable module.
+        for _p in list(getattr(s, 'submodule_search_locations', None) or []):
+            if _p and _inside(_p) and _has_module(_p):
+                return True
+        return False
+    def _tops():
+        # top_level.txt is OPTIONAL metadata and may be unreadable or not even valid
+        # UTF-8 after a partial write or a quarantine. Letting that raise would end
+        # the probe with no sentinel, which every caller reads as inconclusive -- so
+        # a broken file must degrade to no-top-levels, not to no-answer. Read here
+        # rather than up front so the recorded-payload checks run first regardless.
+        try:
+            return (d.read_text('top_level.txt') or '').split()
+        except Exception:
+            return []
+    if not rows and not damaged:
+        if _edit and not _target:
+            # An editable install whose direct_url.json no longer says where it
+            # points: nothing can bind it, and an unbound presence check would let a
+            # same-named copy reached through a .pth answer for a checkout that may
+            # be gone. Unusable metadata for an editable install is itself the
+            # damage, and it is what the no-tops branch below has always reported.
+            damaged = True
+        elif _tops():
+            damaged = not all(_spec(t, _target if _edit else str(d.locate_file('')))
+                              for t in _tops() if t)
+        elif _edit:
+            # An editable install with no top_level.txt: its RECORD lists only the
+            # site-packages shims, so nothing above can speak for the checkout. Resolve
+            # the distribution's OWN module and bind it to the recorded target: any
+            # importable file under the checkout would otherwise do, and a checkout keeps
+            # a setup.py or noxfile.py long after its package directory is gone. The
+            # editable finder knows where the package really lives, so a src/ layout
+            # still resolves, while a deleted package or a same-named copy outside the
+            # checkout does not.
+            #
+            # A miss is NOT damage though: a distribution name does not determine its
+            # import name, and acme-unsloth may legitimately expose unsloth. Only two
+            # things are provable without top_level.txt -- the checkout is gone, or it
+            # holds no importable module at all. Anything else is unverifiable here,
+            # and unverifiable must not read as broken.
+            if not _target or not os.path.isdir(_target):
+                damaged = True
+            elif _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target):
+                damaged = False
+            else:
+                damaged = not _has_module(_target)
+        elif d_record is None:
+            # Nothing enumerates the payload: no RECORD at all and no top_level.txt.
+            # The distribution's own name is a hint, not a mapping -- acme-unsloth may
+            # legitimately expose unsloth -- so a hit proves health but a MISS proves
+            # nothing and must not be damage on its own.
+            #
+            # What is provable is the shape of the metadata: a wheel install writes
+            # RECORD beside WHEEL, so WHEEL present with RECORD absent is an install
+            # that stopped halfway. A distribution carrying neither (a distro or conda
+            # package, which the CLI mirror also declines to judge) stays unverified.
+            # Gated on the RECORD being ABSENT, not on rows being empty: a CLI-only
+            # wheel (py-spy) records just its console script and ships no importable
+            # module, and its RECORD already answered.
+            if _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file(''))):
+                damaged = False
+            else:
+                try:
+                    damaged = d.read_text('WHEEL') is not None
+                except Exception:
+                    damaged = True
+    return damaged
+damaged = _verdict(d, d_record)
+if damaged:
+    for _alt in _tied[1:]:
+        if not _verdict(_alt[0], _alt[1]):
+            d, d_record, damaged = _alt[0], _alt[1], False
+            break
+print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
+'@
 $SkipPythonDeps = $false
+$LatestVer = ""
+# Initialized beside $LatestVer: a failed PyPI fetch leaves the catch with nothing
+# assigned, and the Requires-Python fallback reads this under a profile's
+# Set-StrictMode, where an unset variable is a terminating error, not $null.
+$pypiJson = $null
+# True only when the version-check gate ran: the post-update probe must stay off in
+# installer-driven/local runs, but it must not depend on the PyPI fetch succeeding --
+# a missing package is missing on any index.
+$_verifyUpdate = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
+    $_verifyUpdate = $true
     $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
-    $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
@@ -4850,6 +5486,29 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
                     substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
                     $SkipPythonDeps = $false
                 }
+            }
+        }
+        # A quarantined payload leaves dist-info reporting current while the canonical
+        # import is gone; the metadata compare above cannot see that, so the fast path
+        # stands only after the payload probe answers. The probe's version must also
+        # match the one that took the fast path: $InstalledVer above came from the
+        # default sys.path lookup, which an executable .pth can satisfy with a current
+        # external copy while the managed install sits stale -- the probe answers for
+        # the managed one only. A crashed or silent probe says nothing about the venv
+        # and leaves the fast path alone.
+        if ($SkipPythonDeps) {
+            $_fastProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_pkgProbeCode -ProbeEnv @{ STUDIO_VERIFY_PKG = $_PkgName }
+            $_fvAll = if ($_fastProbe.Ok) { [regex]::Matches($_fastProbe.Output, '(?m)^POSTVER=(\S+)\s*$') } else { $null }
+            $_fastVer = if ($_fvAll -and $_fvAll.Count) { $_fvAll[$_fvAll.Count - 1].Groups[1].Value } else { "" }
+            if ($_fastVer -eq "__MISSING__") {
+                substep "managed $_PkgName is not installed -- forcing dependency pass to repair..." "Cyan"
+                $SkipPythonDeps = $false
+            } elseif ($_fastVer -eq "__DAMAGED__") {
+                substep "$_PkgName files are missing or damaged -- forcing dependency pass to repair..." "Cyan"
+                $SkipPythonDeps = $false
+            } elseif ($_fastVer -and $_fastVer -ne $LatestVer) {
+                substep "managed $_PkgName is at $_fastVer, not $LatestVer -- forcing dependency pass to update..." "Cyan"
+                $SkipPythonDeps = $false
             }
         }
     } elseif ($InstalledVer -and $LatestVer) {
@@ -5441,6 +6100,407 @@ if ($stackExit -ne 0) {
     Write-StudioLine "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-StudioLine "   Re-run the installer or check the error above for details." -ForegroundColor Red
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
+}
+
+# a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
+# resolves from the mirror while $LatestVer came from pypi.org, so version
+# comparisons are muted when a custom index is active. The missing-package check
+# below still runs: a pass that leaves nothing installed is broken on any index.
+$_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
+if ($_verifyUpdate) {
+    # See $_pkgProbeCode for what counts as missing: a probe that merely crashed must
+    # not read as "not installed" and fail setup.
+    $_postProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_pkgProbeCode -ProbeEnv @{ STUDIO_VERIFY_PKG = $_PkgName }
+    # The LAST anchored sentinel line, matching the shell probe's tail -n 1: -I
+    # still runs site initialization, so a printing hook could emit its own
+    # POSTVER= line ahead of the probe's authoritative one.
+    $_pvAll = if ($_postProbe.Ok) { [regex]::Matches($_postProbe.Output, '(?m)^POSTVER=(\S+)\s*$') } else { $null }
+    $PostVer = if ($_pvAll -and $_pvAll.Count) { $_pvAll[$_pvAll.Count - 1].Groups[1].Value } else { "" }
+    $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
+    if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__" -and $PostVer -ne "__DAMAGED__") {
+        # newer than announced is fine (a release can land mid-update); PEP 440
+        # ordering so an installed pre/post/dev build never passes as the release
+        # Same program as setup.sh's compare probe: packaging when it imports, the
+        # ported key when it does not. Versions ride in the environment, so nothing
+        # is interpolated into a command line.
+        $_pepCode = @'
+import os, re, sys
+def _pep440_key(v):
+    # A port of packaging.version's own comparison key, used only when packaging
+    # itself cannot import. Hand-rolled stage ranking kept springing leaks
+    # (compound suffixes, implicit post, epochs, local labels, the v prefix), so
+    # this mirrors the real algorithm instead: an absent pre sorts ABOVE any pre
+    # unless the version is a bare dev build, an absent post BELOW any post, and
+    # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
+    # fuzzes it against packaging.
+    # exactly one optional v, not lstrip: vv999 is not a version, and eating both
+    # would parse it as 999 and let it outrank a real release
+    v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
+    em = re.match(r'([0-9]+)!', v)
+    epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
+    if not m:
+        return None
+    rel = [int(n) for n in m.group(0).split('.')]
+    while rel and rel[-1] == 0:
+        rel.pop()
+    rest, _plus, loc = v[m.end():].partition('+')
+    pre = post = dev = None
+    # scanned from the left, never searched: a substring like the r in preview
+    # must not read as the r that spells post
+    # PEP 440 allows each of pre, post and dev at most once and only in that
+    # order, so the rank must strictly increase: 1.0.post1-2 and 1.0.post1a1 are
+    # not versions at all and must not out-key a real release
+    _seen = 0
+    while rest:
+        # the implicit post release: a bare -N, valid right after the release
+        # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
+        # is matched every pass rather than once up front. Only dev may follow a
+        # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
+        if im:
+            if _seen >= 2:
+                return None
+            _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
+            continue
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
+        if not mm:
+            break
+        _t, _n = mm.group(1), int(mm.group(2) or 0)
+        _rank = 3 if _t == 'dev' else (2 if _t in ('post', 'rev', 'r') else 1)
+        if _rank <= _seen:
+            return None
+        _seen = _rank
+        if _rank == 2:
+            post = _n
+        elif _rank == 3:
+            dev = _n
+        else:
+            pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
+        rest = rest[mm.end():]
+    # anything the tokenizer could not consume means this is not a PEP 440 version
+    # at all (999garbage), and a parsed key would let it outrank a real release
+    if rest:
+        return None
+    if _plus and not re.match(r'^[a-z0-9]+([-._][a-z0-9]+)*$', loc):
+        return None
+    if pre is None:
+        pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
+    lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
+    # dev numbers are unbounded, so an absent dev needs a real infinity, not a big
+    # integer a .dev1000000001 could climb past
+    return (epoch, rel, pre, -1 if post is None else post, float('inf') if dev is None else dev, lk)
+_a, _b = _pep440_key(os.environ['STUDIO_CMP_POST']), _pep440_key(os.environ['STUDIO_CMP_LATEST'])
+try:
+    from packaging.version import Version
+    _ok = Version(os.environ['STUDIO_CMP_POST']) >= Version(os.environ['STUDIO_CMP_LATEST'])
+except Exception:
+    if _a is None or _b is None:
+        sys.exit(1)
+    _ok = _a >= _b
+print('PEPCMP=' + ('ge' if _ok else 'lt'))
+'@
+        $_pepProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_pepCode -ProbeEnv @{
+            STUDIO_CMP_POST = $PostVer; STUDIO_CMP_LATEST = $LatestVer }
+        # The LAST anchored sentinel, like the POSTVER extraction: -I still runs site
+        # initialization, so a printing sitecustomize or .pth hook could emit its own
+        # PEPCMP= line ahead of the probe's authoritative one, and a scalar -match
+        # would take that first line.
+        $_cmpAll = if ($_pepProbe.Ok) { [regex]::Matches($_pepProbe.Output, '(?m)^PEPCMP=(ge|lt)\s*$') } else { $null }
+        if ($_cmpAll -and $_cmpAll.Count) {
+            $_updateOk = ($_cmpAll[$_cmpAll.Count - 1].Groups[1].Value -eq "ge")
+        } else {
+            # Last resort: python ran the probe above but could not run the comparator.
+            # A full port of _pep440_key rather than another hand-rolled rank -- the
+            # scalar version kept tying compound suffixes (1.0a1.post1.dev1 with
+            # 1.0a1.post1). Returns $null for anything that is not a PEP 440 version,
+            # which leaves $_updateOk false: the warning outcome below, never a pass.
+            # Every number is [bigint]: PEP 440 bounds none of them, and an [int] cast
+            # on a release like 2147483648 would THROW under the script's
+            # ErrorActionPreference Stop -- a last-resort comparator must never be the
+            # thing that fails the update, which is also why the whole block is wrapped.
+            try {
+                $_pepKey = {
+                    param($_v)
+                    # "$_v" not $_v ?? '': the null-coalescing operator is PowerShell 7
+                    # syntax and this script is parsed by Windows PowerShell 5.1
+                    $_s = "$_v".Trim()
+                    $_s = ($_s -replace '^[vV]', '').ToLower()
+                    $_ep = [bigint]::Zero
+                    if ($_s -match '^([0-9]+)!') {
+                        $_ep = [bigint]::Parse($Matches[1])
+                        $_s = $_s.Substring($Matches[0].Length)
+                    }
+                    # ASCII [0-9] throughout, never \d: .NET matches Unicode decimal digits
+                    # with \d, and a non-version would parse as a release
+                    if ($_s -notmatch '^[0-9]+(\.[0-9]+)*') { return $null }
+                    $_relStr = $Matches[0]
+                    $_s = $_s.Substring($_relStr.Length)
+                    $_rel = [System.Collections.ArrayList]@()
+                    foreach ($_seg in $_relStr.Split('.')) { [void]$_rel.Add([bigint]::Parse($_seg)) }
+                    while ($_rel.Count -gt 0 -and $_rel[$_rel.Count - 1] -eq [bigint]::Zero) {
+                        $_rel.RemoveAt($_rel.Count - 1)
+                    }
+                    # the local label is split off before the stage scan and never ranked
+                    # here: PyPI forbids local versions, so the announced side never has one
+                    $_loc = ''
+                    $_plus = $_s.IndexOf('+')
+                    if ($_plus -ge 0) {
+                        $_loc = $_s.Substring($_plus + 1)
+                        $_s = $_s.Substring(0, $_plus)
+                        if ($_loc -notmatch '^[a-z0-9]+([-._][a-z0-9]+)*$') { return $null }
+                    }
+                    $_pre = $null; $_post = $null; $_dev = $null; $_seen = 0
+                    while ($_s) {
+                        # the implicit post release: a bare -N, valid after the release and
+                        # after a prerelease, with only dev allowed to follow it
+                        if ($_s -match '^-([0-9]+)($|[-._]|dev)') {
+                            if ($_seen -ge 2) { return $null }
+                            $_seen = 2; $_post = [bigint]::Parse($Matches[1])
+                            $_s = $_s.Substring(1 + $Matches[1].Length)
+                            continue
+                        }
+                        if ($_s -notmatch '^[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)') { break }
+                        $_tok = $Matches[1]
+                        $_num = if ($Matches[2]) { [bigint]::Parse($Matches[2]) } else { [bigint]::Zero }
+                        $_rank = if ($_tok -eq 'dev') { 3 } elseif ($_tok -in @('post', 'rev', 'r')) { 2 } else { 1 }
+                        # PEP 440 allows each of pre, post and dev once, in that order
+                        if ($_rank -le $_seen) { return $null }
+                        $_seen = $_rank
+                        if ($_rank -eq 2) { $_post = $_num }
+                        elseif ($_rank -eq 3) { $_dev = $_num }
+                        else {
+                            $_stage = switch ($_tok) {
+                                { $_ -in @('a', 'alpha') } { 0; break }
+                                { $_ -in @('b', 'beta') } { 1; break }
+                                default { 2 }
+                            }
+                            $_pre = @([bigint]::Parse("$_stage"), $_num)
+                        }
+                        $_s = $_s.Substring($Matches[0].Length)
+                    }
+                    # anything left over is not a version at all (999garbage)
+                    if ($_s) { return $null }
+                    if ($null -eq $_pre) {
+                        # an absent pre sorts ABOVE any pre unless this is a bare dev build
+                        $_pre = if ($null -eq $_post -and $null -ne $_dev) {
+                            @([bigint]::Parse("-1"), [bigint]::Zero)
+                        } else {
+                            @([bigint]::Parse("9"), [bigint]::Zero)
+                        }
+                    }
+                    # The release stays variable-length and is padded against the OTHER
+                    # version at compare time: padding to a fixed width here would tie
+                    # two versions that first differ past that width. Presence flags
+                    # instead of numeric sentinels -- an absent post sorts BELOW any
+                    # post, an absent dev ABOVE any dev, and no float has to mix with
+                    # the bigints.
+                    return @{
+                        Ep       = $_ep
+                        Rel      = $_rel.ToArray()
+                        Pre      = $_pre
+                        PostSet  = $(if ($null -eq $_post) { [bigint]::Zero } else { [bigint]::One })
+                        PostNum  = $(if ($null -eq $_post) { [bigint]::Zero } else { $_post })
+                        DevUnset = $(if ($null -eq $_dev) { [bigint]::One } else { [bigint]::Zero })
+                        DevNum   = $(if ($null -eq $_dev) { [bigint]::Zero } else { $_dev })
+                    }
+                }
+                $_pk = & $_pepKey $PostVer
+                $_lk = & $_pepKey $LatestVer
+                if ($null -ne $_pk -and $null -ne $_lk) {
+                    $_cmp = 0
+                    if ($_pk.Ep -ne $_lk.Ep) { $_cmp = $(if ($_pk.Ep -gt $_lk.Ep) { 1 } else { -1 }) }
+                    if ($_cmp -eq 0) {
+                        $_segs = [Math]::Max($_pk.Rel.Count, $_lk.Rel.Count)
+                        for ($_i = 0; $_i -lt $_segs; $_i++) {
+                            $_a = $(if ($_i -lt $_pk.Rel.Count) { $_pk.Rel[$_i] } else { [bigint]::Zero })
+                            $_b = $(if ($_i -lt $_lk.Rel.Count) { $_lk.Rel[$_i] } else { [bigint]::Zero })
+                            if ($_a -ne $_b) { $_cmp = $(if ($_a -gt $_b) { 1 } else { -1 }); break }
+                        }
+                    }
+                    foreach ($_pair in @(@($_pk.Pre[0], $_lk.Pre[0]), @($_pk.Pre[1], $_lk.Pre[1]),
+                                         @($_pk.PostSet, $_lk.PostSet), @($_pk.PostNum, $_lk.PostNum),
+                                         @($_pk.DevUnset, $_lk.DevUnset), @($_pk.DevNum, $_lk.DevNum))) {
+                        if ($_cmp -ne 0) { break }
+                        if ($_pair[0] -gt $_pair[1]) { $_cmp = 1 } elseif ($_pair[0] -lt $_pair[1]) { $_cmp = -1 }
+                    }
+                    $_updateOk = ($_cmp -ge 0)
+                }
+            } catch {
+                # inconclusive, never fatal
+                $_updateOk = $false
+            }
+        }
+        if (-not $_updateOk -and $pypiJson -and $pypiJson.releases) {
+            # the announced release cannot install on this interpreter (Requires-Python
+            # bump): accept only the newest release this interpreter CAN install, so a
+            # no-op pass below that bar still fails loudly. Reuses the PyPI response
+            # already fetched above (flattened to version/yanked/requires_python lines --
+            # no second request that could fail under Python's own proxy/TLS setup).
+            # The probe program rides in on stdin and its inputs in environment
+            # variables: no command-line interpolation (a profile name like O'Neil
+            # would end a generated string literal early) and no encoding, which is a
+            # shape tests/studio/test_installer_av_shapes.py keeps out of this file.
+            # The whole probe is best-effort: a full or unwritable temp dir (or an
+            # exhausted GetTempFileName pool) must fall through to the warning
+            # outcome below, not abort setup under ErrorActionPreference Stop.
+            $_relPath = $null
+            try {
+                $_relPath = [System.IO.Path]::GetTempFileName()
+                $_relLines = foreach ($_rel in $pypiJson.releases.PSObject.Properties) {
+                    foreach ($_relFile in $_rel.Value) {
+                        "$($_rel.Name)`t$(if ($_relFile.yanked) { 1 } else { 0 })`t$($_relFile.requires_python)`t$($_relFile.packagetype)`t$($_relFile.filename)"
+                    }
+                }
+                Set-Content -LiteralPath $_relPath -Value ($_relLines -join "`n") -Encoding UTF8
+                $_bestCode = @'
+import os, sys
+import site
+_keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else []))
+_pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p)
+_pp.add(os.getcwd())
+sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]
+try:
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version, InvalidVersion
+    post = Version(os.environ['STUDIO_VERIFY_POST'])
+    latest = Version(os.environ['STUDIO_VERIFY_LATEST'])
+    with open(os.environ['STUDIO_VERIFY_TABLE'], encoding='utf-8-sig') as fh:
+        lines = fh.read().splitlines()
+except Exception:
+    sys.exit(1)
+try:
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
+    supported = set(str(t) for t in sys_tags())
+except Exception:
+    supported = None
+cur = Version('.'.join(map(str, sys.version_info[:3])))
+best = None
+for line in lines:
+    parts = line.split('\t')
+    if len(parts) != 5 or parts[1] == '1':
+        continue
+    try:
+        v = Version(parts[0])
+    except InvalidVersion:
+        continue
+    if v.is_prerelease:
+        continue
+    rp = parts[2]
+    try:
+        if rp and cur not in SpecifierSet(rp):
+            continue
+    except Exception:
+        pass
+    pt = parts[3]
+    if pt == 'bdist_wheel' and supported is not None:
+        try:
+            if not any(str(t) in supported for t in parse_wheel_filename(parts[4])[3]):
+                continue
+        except Exception:
+            pass
+    elif pt and pt != 'sdist' and pt != 'bdist_wheel':
+        continue
+    if best is None or v > best:
+        best = v
+print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= best else 'stale'))
+'@
+                $_bestProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_bestCode -ProbeEnv @{
+                    STUDIO_VERIFY_POST = $PostVer; STUDIO_VERIFY_LATEST = $LatestVer; STUDIO_VERIFY_TABLE = $_relPath }
+                # last sentinel again: a startup hook's line must not answer for the probe
+                $_verAll = if ($_bestProbe.Ok) { [regex]::Matches($_bestProbe.Output, '(?m)^VERIFYVER=(ok|stale)\s*$') } else { $null }
+                if ($_verAll -and $_verAll.Count -and $_verAll[$_verAll.Count - 1].Groups[1].Value -eq "ok") {
+                    substep "$_PkgName $PostVer kept: no $LatestVer artifact installs on this environment"
+                    $_updateOk = $true
+                }
+            } catch {
+                # Temp-table write failed: leave $_updateOk false and let the
+                # older-but-successful outcome below stay a warning, not a failure.
+            } finally {
+                if ($_relPath) {
+                    Remove-Item -LiteralPath $_relPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+    if ($_updateOk) {
+        substep "$_PkgName $PostVer confirmed"
+    } elseif ($PostVer -eq "__MISSING__" -or $PostVer -eq "__DAMAGED__") {
+        # the unambiguous failures: a "successful" pass that left no package behind
+        # (no-op pass, stale dist-info) or left its files damaged -- pip sees intact
+        # metadata and reinstalls nothing, so an update cannot fix either; the answer
+        # is reinstall over the top and the update must say so. The pass already
+        # wrote its success manifest (step 15, before this check) and verify_install
+        # accepts a null recorded version, so the marker must not survive: its
+        # presence means "install completed".
+        $_manifestState = ""
+        try {
+            $_manifestState = (& python -c "
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+# quarantine can take studio/install_manifest.py too, and a missing helper must
+# not read as a missing manifest: the pass just wrote one. The file sits at a
+# fixed name under the venv (install_manifest.venv_root()/MANIFEST_NAME), so
+# fall back to handling it directly.
+mp = os.path.join(sys.prefix, 'unsloth_install_manifest.json')
+try:
+    import install_manifest
+except Exception:
+    install_manifest = None
+ok = False
+for _ in range(3):
+    try:
+        if install_manifest is not None:
+            ok = bool(install_manifest.remove_manifest())
+        else:
+            if os.path.exists(mp):
+                os.remove(mp)
+            ok = True
+    except Exception:
+        ok = False
+    if ok:
+        break
+    time.sleep(0.2)
+if not ok:
+    # deletion blocked (AV lock, read-only): write is a different access right
+    # than delete on Windows, and a schema-busted manifest also reads incomplete
+    try:
+        target = install_manifest.manifest_path() if install_manifest is not None else mp
+        with open(target, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps({'schema': -1}))
+        ok = True
+    except Exception:
+        pass
+print('MANIFEST=' + ('gone' if ok else 'stuck'))
+" "$PSScriptRoot" 2>$null | Out-String).Trim()
+        } catch {}
+        if ($_manifestState -notmatch 'MANIFEST=gone') {
+            substep "[WARN] stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "Yellow"
+        }
+        $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
+        $_postMsg = if ($PostVer -eq "__DAMAGED__") {
+            "update ran but $_PkgName files are damaged -- reinstall over the top"
+        } else {
+            "update ran but $_PkgName is not installed$_expected"
+        }
+        Write-StudioLine "[FAILED] $_postMsg" -ForegroundColor Red
+        Exit-SetupFailure $_postMsg
+    } elseif (-not $PostVer) {
+        $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
+        substep "[WARN] could not verify $_PkgName version after update$_expected" "Yellow"
+    } elseif (-not $LatestVer) {
+        substep "$_PkgName $PostVer present (PyPI unreachable; compare skipped)"
+    } elseif ($_customIndex) {
+        substep "$_PkgName $PostVer present (custom package index; PyPI compare skipped)"
+    } else {
+        # older-but-successful is a resolver outcome (constraints, config-file
+        # mirrors, wheels for this platform), not an install failure: pypi.org's
+        # announced latest is not authoritative for what this environment can
+        # run -- surface it, don't brick the update
+        substep "[WARN] update left $_PkgName at $PostVer ($LatestVer announced on PyPI)" "Yellow"
+    }
 }
 
 } else {

@@ -88,11 +88,59 @@ def test_no_remote_script_is_piped_into_a_shell_first(name: str) -> None:
     assert pinned < fallback, f"{name} reaches the piped fallback before the pinned release"
 
 
+# Spellings PowerShell accepts for -EncodedCommand that are not prefixes of it.
+ENCODED_COMMAND_ALIASES = frozenset(("ec",))
+
+
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_no_encoded_or_base64_command_payloads(name: str) -> None:
-    text = _text(name)
-    for banned in ("-EncodedCommand", "FromBase64String", "base64 -d", "base64 --decode"):
+    # ToBase64String / b64decode: an encoded python payload came back once (#8505, reverted
+    # in #8824). Multi-line probes ride in on stdin with env-var inputs instead.
+    # Case-insensitive because PowerShell is: [Convert]::tobase64string is the same
+    # construct, and macOS base64 decodes with -D.
+    text = _text(name).lower()
+    for banned in (
+        "-encodedcommand",
+        "frombase64string",
+        "tobase64string",
+        "b64decode",
+        "b64encode",
+    ):
         assert banned not in text, f"{name} contains {banned}"
+    # PowerShell accepts unambiguous prefixes of -EncodedCommand (-e, -enc, ...) and
+    # the backend's command screen in studio/backend/core/inference/tools.py treats
+    # them as equivalent, so this guard must too. Only powershell/pwsh invocation
+    # lines are examined: -e is everyday shell vocabulary everywhere else, and a
+    # non-prefix like -Encoding stays legal. Explicit continuations (a trailing
+    # backtick or backslash) are joined first so a split invocation is still one
+    # logical line; a guard over first-party scripts does not chase deeper
+    # obfuscation than that.
+    logical = re.sub(r"`\r?\n", " ", text)
+    logical = re.sub(r"\\\r?\n", " ", logical)
+    # The decoder ban scans the whole argument tail after `base64`, not just the
+    # next token: `base64 -w 0 -d` and `--ignore-garbage --decode` still decode.
+    # Lowercased text also folds macOS's -D in. A short cluster counts wherever
+    # the d sits (-di, -id), and GNU accepts unambiguous long-option prefixes, so
+    # --dec decodes exactly as --decode does.
+    for number, line in enumerate(logical.splitlines(), start = 1):
+        for b64 in re.finditer(r"\bbase64\b", line):
+            tail = line[b64.end() :]
+            hit = re.search(r"(?<![\w-])-[a-z]*d[a-z]*\b", tail)
+            assert not hit, f"{name}:{number} invokes a base64 decoder: {line.strip()}"
+            for long_opt in re.finditer(r"(?<![\w-])--([a-z]+)\b", tail):
+                assert not "decode".startswith(
+                    long_opt.group(1)
+                ), f"{name}:{number} invokes a base64 decoder: {line.strip()}"
+    for number, line in enumerate(logical.splitlines(), start = 1):
+        if "powershell" not in line and "pwsh" not in line:
+            continue
+        for match in re.finditer(r"(?<![\w-])-(e[a-z]*)\b", line):
+            flag = match.group(1)
+            # `ec` is not a prefix of the full name but IS a documented alias, next to
+            # `e` and the ordinary prefixes: see about_pwsh, -EncodedCommand | -e | -ec.
+            assert not (
+                "encodedcommand".startswith(flag) or flag in ENCODED_COMMAND_ALIASES
+            ), f"{name}:{number} passes an -EncodedCommand prefix to PowerShell: {line.strip()}"
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
