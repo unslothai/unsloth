@@ -70,7 +70,9 @@ STANDARD = Scene(name = "standard", slots = _slots([
     # ── during generation ────────────────────────────────────────
     ("scroll_during_generation", 3_000, 8_000),
     ("keystroke",                12_000, 6_000),
-    ("scroll_during_generation", 19_000, 8_000),
+    # 15s, not 19s: the fixed tail drains at about 18s, so a slot at 19s would be labelled
+    # "during generation" while running against a finished reply.
+    ("scroll_during_generation", 15_000, 8_000),
     ("stop_generation",          28_000, 8_000),
     # ── after the reply is complete ──────────────────────────────
     ("scroll_after",             38_000, 8_000),
@@ -92,22 +94,29 @@ STANDARD = Scene(name = "standard", slots = _slots([
 # compared with one that does not -- on a shorter clock, for the small rungs where the stream is
 # over in seconds.
 QUICK = Scene(name = "quick", slots = _slots([
+    # The streamed tail is a FIXED 6,000 characters at every rung (see corpus.STREAM_TAIL_CHARS),
+    # which at the field cadence drains in about 18 s. Everything below 18 s is genuinely during
+    # generation and everything above it genuinely after, at 1K and at 1M alike. Before the tail
+    # was fixed the stream ran 811 s at 1M against a 135 s film, so ten of these slots carried a
+    # label that was simply false at the top three rungs.
     ("scroll_during_generation",  1_500, 4_000),
     ("keystroke",                 6_000, 5_000),
     ("scroll_during_generation", 11_500, 4_000),
-    ("stop_generation",          16_000, 6_000),
-    ("scroll_after",             22_500, 5_000),
-    ("reasoning_toggle",         28_000, 8_000),
-    ("message_menu",             36_500, 8_000),
-    ("copy_markdown",            45_000, 5_000),
-    ("select_text",              50_500, 5_000),
-    ("select_all_copy",          56_000, 7_000),
-    ("composer_fill",            63_500, 7_000),
-    ("model_change",             71_000, 7_000),
-    ("settings",                 78_500, 9_000),
-    ("image_upload",             88_000, 9_000),
-    ("thread_reopen",            97_500, 25_000),
-    ("delete_message",          123_000, 12_000),
+    # Opens after the tail has drained: this action now starts and stops its OWN turn rather than
+    # truncating the cell's measured reply.
+    ("stop_generation",          20_000, 8_000),
+    ("scroll_after",             29_000, 5_000),
+    ("reasoning_toggle",         34_500, 8_000),
+    ("message_menu",             43_000, 8_000),
+    ("copy_markdown",            51_500, 5_000),
+    ("select_text",              57_000, 5_000),
+    ("select_all_copy",          62_500, 7_000),
+    ("composer_fill",            70_000, 7_000),
+    ("model_change",             77_500, 7_000),
+    ("settings",                 85_000, 9_000),
+    ("image_upload",             94_500, 9_000),
+    ("thread_reopen",           104_000, 25_000),
+    ("delete_message",          129_500, 12_000),
 ]))
 
 SCENES = {"quick": QUICK, "standard": STANDARD, "full": STANDARD}

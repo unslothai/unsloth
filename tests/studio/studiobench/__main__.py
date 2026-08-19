@@ -152,7 +152,7 @@ def doctor(args) -> int:
 
 # ── the run ─────────────────────────────────────────────────────────
 
-def run(args) -> int:
+def run(args, ab_ref = None) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments                # noqa: F401
     from .pacer import Pacer
@@ -178,59 +178,98 @@ def run(args) -> int:
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
-    install = None
-    owns_studio = False
-    if args.attach:
-        base_url = args.attach.rstrip("/")
-        _log(f"  attaching to {base_url}")
-    else:
-        home = Path(args.home or (out / "studio_home"))
-        _log(f"  installing Studio from {args.branch} into {home} (this takes a while)")
-        install = install_studio(args.branch, home)
-        launch_studio(install, args.port, out / "logs" / "studio.log")
-        base_url = install.base_url
-        owns_studio = True
-        _log(f"  Studio up at {base_url}")
+    # One spec per side. Without --ab there is exactly one and everything below is the old path.
+    specs = [("base", args.branch, args.attach, args.port)]
+    if ab_ref:
+        specs.append(("treatment", ab_ref, args.attach_b, args.port + 1))
+        if args.attach and not args.attach_b:
+            _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
+            return 2
+        _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
 
-    if not wait_for_healthz(base_url, 60):
-        _log(f"  FATAL: {base_url}/healthz did not answer 200")
-        return 2
+    installs = []
+    sides = []
+    for label, ref, attach, port in specs:
+        if attach:
+            side_url = attach.rstrip("/")
+            side_install, owns = None, False
+            _log(f"  {label}: attaching to {side_url}")
+        else:
+            home = Path(args.home or (out / f"studio_home_{label}"))
+            _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
+            side_install = install_studio(ref, home)
+            launch_studio(side_install, port, out / "logs" / f"studio_{label}.log")
+            side_url, owns = side_install.base_url, True
+            _log(f"  {label}: Studio up at {side_url}")
+        installs.append((side_install, owns))
+        sides.append({"label": label, "ref": ref, "base_url": side_url})
 
-    # ── THE GATE. Before anything else is measured. ─────────────────
-    verdict = check_bundle(base_url)
-    _log(f"  bundle: {verdict.reason}")
-    if not verdict.production and not args.allow_dev_server:
-        _log("  REFUSING TO RUN. A development build inflates the very axis under investigation")
-        _log("  by about 3.2x, so a measurement here would confirm any hypothesis brought to it.")
-        _log("  Pass --allow-dev-server only to demonstrate that this gate matters.")
-        return 3
+    base_url = sides[0]["base_url"]
+    install, owns_studio = installs[0]
+
+    for side in sides:
+        if not wait_for_healthz(side["base_url"], 60):
+            _log(f"  FATAL: {side['base_url']}/healthz did not answer 200")
+            return 2
+
+    # ── THE GATE. Before anything else is measured. Both sides, because an A/B where one side
+    # is a development build is worse than no A/B: the 3.2x inflation lands entirely on one arm
+    # and reads as a colossal regression or win. ────────────────────
+    verdict = None
+    for side in sides:
+        side_verdict = check_bundle(side["base_url"])
+        _log(f"  {side['label']} bundle: {side_verdict.reason}")
+        side["verdict"] = side_verdict
+        if verdict is None:
+            verdict = side_verdict
+        if not side_verdict.production and not args.allow_dev_server:
+            _log("  REFUSING TO RUN. A development build inflates the very axis under "
+                 "investigation")
+            _log("  by about 3.2x, so a measurement here would confirm any hypothesis brought "
+                 "to it.")
+            _log("  Pass --allow-dev-server only to demonstrate that this gate matters.")
+            return 3
 
     pacer = Pacer().start()
     _log(f"  pacer at {pacer.base_url}")
     model_id = "studiobench-pacer"
     pacer.state.model_ids = [model_id]
 
-    auth = authenticate(base_url, args.username,
-                        args.password or (install.bootstrap_password if install else ""))
-    _log(f"  authenticated as {auth.username}")
+    from .runtime.ab import origin_scoped
 
-    provider = pacer_provider(pacer.base_url, [model_id])
-    # Registered in the BACKEND, and the id it assigns is what the selection names. See
-    # lifecycle.register_provider: a provider that exists only in localStorage renders in the
-    # picker as "No longer offered" and send throws `Connection not found` without ever asking
-    # for a completion.
-    register_provider(base_url, auth, provider)
-    checkpoint = external_checkpoint_id(provider, model_id)
-    _log(f"  provider {provider.provider_type} -> {provider.base_url}, checkpoint {checkpoint}")
-    init_scripts = [
-        seed_init_script(auth, [provider], extra_local_storage = {
+    init_scripts = []
+    for index, side in enumerate(sides):
+        side_install = installs[index][0]
+        side_auth = authenticate(side["base_url"], args.username,
+                                 args.password or (side_install.bootstrap_password
+                                                   if side_install else ""))
+        _log(f"  {side['label']}: authenticated as {side_auth.username}")
+
+        # BOTH sides register the SAME pacer, so the bytes on the wire are identical by
+        # construction rather than by two configurations that are meant to agree.
+        side_provider = pacer_provider(pacer.base_url, [model_id])
+        # Registered in the BACKEND, and the id it assigns is what the selection names. See
+        # lifecycle.register_provider: a provider that exists only in localStorage renders in the
+        # picker as "No longer offered" and send throws `Connection not found` without ever asking
+        # for a completion.
+        register_provider(side["base_url"], side_auth, side_provider)
+        side_checkpoint = external_checkpoint_id(side_provider, model_id)
+        _log(f"  {side['label']}: provider {side_provider.provider_type} -> "
+             f"{side_provider.base_url}, checkpoint {side_checkpoint}")
+        side["auth"] = side_auth
+
+        seed = seed_init_script(side_auth, [side_provider], extra_local_storage = {
             # The SELECTION, without which nothing is ever generated. See
             # lifecycle.external_checkpoint_id.
-            "unsloth_chat_last_external_checkpoint": checkpoint,
+            "unsloth_chat_last_external_checkpoint": side_checkpoint,
             "unsloth_chat_connections_enabled": "true",
-        }),
-        resources.read_text("scene/dom.js"),
-    ]
+        })
+        # Origin-gated even in the single-target case, so the one-build and two-build paths are
+        # the same code and the gate cannot rot while unused.
+        init_scripts.append(origin_scoped(side["base_url"], seed))
+
+    auth = sides[0]["auth"]
+    init_scripts.append(resources.read_text("scene/dom.js"))
 
     procs_before = {}
     try:
@@ -261,11 +300,18 @@ def run(args) -> int:
               "rungs": TIER_RUNGS[args.tier], "instrument_level": args.instrument_level})
     rec.gate("production_build", verdict.production, verdict.as_dict())
 
-    seeder = Seeder(base_url = base_url, auth = auth, model_id = model_id, log = _log)
-    runner = CellRunner(session = session, pacer = pacer, seeder = seeder, corpus = corpus,
-                        base_url = base_url, model_id = model_id, tier = args.tier,
-                        paths = paths, log = _log, cadence = args.cadence,
-                        image_path = ensure_probe_image(paths))
+    image_path = ensure_probe_image(paths)
+    for side in sides:
+        side_seeder = Seeder(base_url = side["base_url"], auth = side["auth"],
+                             model_id = model_id, log = _log)
+        side["seeder"] = side_seeder
+        side["runner"] = CellRunner(
+            session = session, pacer = pacer, seeder = side_seeder, corpus = corpus,
+            base_url = side["base_url"], model_id = model_id, tier = args.tier,
+            paths = paths, log = _log, cadence = args.cadence, image_path = image_path)
+
+    seeder = sides[0]["seeder"]
+    runner = sides[0]["runner"]
 
     rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
     cells = build_cells(rungs, corpus, args.tier, ctx.session_id, args.instrument_level,
@@ -275,13 +321,34 @@ def run(args) -> int:
     if done:
         _log(f"  resuming: {len(done)} cells already in {paths.payload_jsonl.name}")
 
+    if ab_ref:
+        from .runtime.ab import Target, interleave, order_is_balanced
+
+        targets = [Target(label = s["label"], ref = s["ref"], base_url = s["base_url"],
+                          seeder = s["seeder"], runner = s["runner"]) for s in sides]
+        work = interleave(cells, targets)
+        if not order_is_balanced(work):
+            # Said out loud rather than silently absorbed: with an odd number of reps one side
+            # always runs first, so anything drifting monotonically through the session lands on
+            # the other one instead of cancelling.
+            _log("  WARNING: the run order is not balanced (use an even --reps). Linear drift "
+                 "within the session is charged to whichever side runs second.")
+        rec.emit({"row_type": "ab_plan", "base_ref": sides[0]["ref"],
+                  "treatment_ref": sides[1]["ref"], "balanced": order_is_balanced(work),
+                  "order": [c.cell_id for _t, c, _p in work]})
+    else:
+        work = [(None, cell, plan) for cell, plan in cells]
+
     rows = []
     try:
-        for cell, plan in cells:
+        for target, cell, plan in work:
             if cell.cell_id in done:
                 _log(f"  skipping {cell.cell_id} (already recorded)")
                 continue
-            rows.append(runner.run(cell, plan))
+            active = target.runner if target is not None else runner
+            if target is not None:
+                _log(f"\n### arm {target.label} ({target.ref}) at {target.base_url}")
+            rows.append(active.run(cell, plan))
     finally:
         for inst in session.instruments:
             session._safe(inst, "detach")
@@ -291,14 +358,54 @@ def run(args) -> int:
             pass
         bundle.close()
         pacer.stop()
-        if owns_studio and install is not None and not args.keep_studio:
-            stop_studio(install)
+        for side_install, side_owns in installs:
+            if side_owns and side_install is not None and not args.keep_studio:
+                stop_studio(side_install)
         rec.close()
+
+    if ab_ref:
+        _render_ab(paths, sides, ctx.session_id, corpus.corpus_hash)
 
     _summarise(rows, paths)
     completed = sum(1 for r in rows if r.get("completed"))
     _log(f"\n{completed} of {len(rows)} cells completed. payload: {paths.payload_jsonl}")
     return 0 if completed == len(rows) and rows else 1
+
+
+def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
+    """Render the A/B table from the payload the run just wrote.
+
+    Read back from disk rather than kept in memory on purpose: it is the same path a tester takes
+    with `--report`, so the table nobody checks and the table everybody reads are produced by one
+    piece of code.
+    """
+    from .report.render import render_ab_table
+    from .runtime.ab import compare_arms
+
+    records = []
+    with paths.payload_jsonl.open(encoding = "utf-8") as fh:
+        for line in fh:
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue
+
+    try:
+        result = compare_arms(
+            records, sides[0]["label"], sides[1]["label"],
+            bench_version = TOOL_VERSION, corpus_hash = corpus_hash, session_id = session_id,
+            label = f"{sides[0]['ref']} -> {sides[1]['ref']}")
+    except Exception as exc:                                        # noqa: BLE001
+        _log(f"\nA/B table could not be built: {type(exc).__name__}: {exc}")
+        return
+
+    text = render_ab_table(result)
+    print("\n" + text)
+    out = paths.out / "ab.md"
+    out.write_text(text, encoding = "utf-8")
+    _log(f"A/B table written to {out}")
+    _log("NOTE: no null control (base vs base) was run, so the noise floor here is the declared "
+         "default and not this machine's. A win inside that floor is not a win.")
 
 
 def _resume_set(paths) -> set:
@@ -397,6 +504,9 @@ def main(argv: list) -> int:
                     help = "skip cells already completed in the output payload")
     ap.add_argument("--ab", metavar = "REF",
                     help = "A/B a second ref, interleaved within one session (not yet wired)")
+    ap.add_argument("--attach-b", metavar = "URL", dest = "attach_b",
+                    help = "the treatment side's already-running Studio, when --ab is used "
+                           "together with --attach")
     ap.add_argument("--report", metavar = "PAYLOAD",
                     help = "score and render an existing payload.jsonl, then exit. Runs offline, "
                            "so a payload mailed in from another machine reports here")
@@ -430,8 +540,7 @@ def main(argv: list) -> int:
     if args.report:
         return report_only(args)
     if args.ab:
-        _log("--ab is declared in the CLI but not yet wired. Layer 3 owns the arm ladder.")
-        return 2
+        return run(args, ab_ref = args.ab)
     return run(args)
 
 

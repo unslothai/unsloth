@@ -465,6 +465,15 @@ RUNGS: dict[str, int] = {
 # reported: `chars_per_token` in every row is the MEASURED one, and it is measured per rung.
 PROVISIONAL_CHARS_PER_TOKEN = 4.0
 
+# How much of the last turn STREAMS, at every rung. See the long note in `plan_rung`.
+#
+# Sized from the film, not chosen round: the quick scene's during-generation slots occupy the
+# first 16 s and the first after-generation slot opens at 22.5 s, so the stream has to finish
+# inside roughly 20 s. At the field cadence of 24 characters every 73 ms -- 328.8 chars/s -- that
+# is about 6,500 characters. Rounded DOWN so the stream reliably drains before the first action
+# that claims the reply is complete, rather than finishing exactly as it starts.
+STREAM_TAIL_CHARS = 6_000
+
 
 @dataclass
 class RungPlan:
@@ -504,15 +513,43 @@ def plan_rung(corpus: Corpus, rung: str,
     if not units:
         units = [corpus.unit(0)]
     seeded = units[:-1]
-    # The streamed unit is the LAST one, and it is the largest, which is the turn a user is
-    # actually waiting on when a long thread feels slow.
+    # The streamed unit is the LAST one: the turn a user is actually waiting on when a long
+    # thread feels slow.
     streamed = units[-1]
-    # Clip the streamed turn so the rung is the size it claims. Without this the 1K rung streams
-    # a whole 11,850-character turn, three times its own budget, and the smallest rung -- the
-    # baseline every growth ratio is taken against -- is not on the curve it anchors.
-    overshoot = (sum(u.chars for u in seeded) + streamed.chars) - target_chars
-    if overshoot > 0:
-        streamed = streamed.clipped_to(max(1, streamed.chars - overshoot))
+
+    # THE STREAMED TAIL IS THE SAME SIZE AT EVERY RUNG, and the whole size ladder lives in the
+    # seeded prefix. This is not tidiness, it is what makes the film mean anything above 10K.
+    #
+    # The scene is a FIXED-DURATION film whose slots are wall-clock times: three actions run
+    # "during generation" and ten run "after the reply is complete". At the field's own cadence
+    # of 24 characters every 73 ms, a streamed tail that grows with the rung takes 11 s at 1K,
+    # 54 s at 10K, 354 s at 100K and 811 s at 1M -- against a film 135 s long. Above 10K the
+    # stream outlasts the entire film, so every action labelled "after the reply is complete"
+    # runs mid-generation. The run still completes and still prints a full table; the labels are
+    # simply false, which is worse than a crash.
+    #
+    # Holding the tail constant also isolates the variable under investigation. The question is
+    # what a streamed chunk costs AS A FUNCTION OF THE THREAD ALREADY ON SCREEN, and that needs
+    # the chunk workload held fixed while the thread grows, not both moving together.
+    tail_target = min(STREAM_TAIL_CHARS, target_chars)
+    seed_target = max(0, target_chars - tail_target)
+
+    # Size the SEEDED PREFIX to the remainder, then trim its last unit to land on the target.
+    # Growing it a whole unit at a time instead overshoots by up to one turn, which at the 1K
+    # rung means 13,333 characters against a 4,000-character budget.
+    seeded = corpus.units_for_chars(seed_target) if seed_target > 0 else []
+    if seeded:
+        overshoot = sum(u.chars for u in seeded) - seed_target
+        if overshoot > 0:
+            seeded[-1] = seeded[-1].clipped_to(max(1, seeded[-1].chars - overshoot))
+
+    # The streamed turn is the next one after the prefix, clipped to the fixed tail.
+    # The next turn after the prefix, or the last one the manifest has. At 1M the prefix consumes
+    # nearly the whole frozen corpus, and running off the end must not be a KeyError in the middle
+    # of a 60-minute tier.
+    last_index = max(e["index"] for e in corpus.manifest["units"])
+    streamed = corpus.unit(min(len(seeded), last_index)).clipped_to(tail_target)
+
     return RungPlan(rung = rung, target_tokens = tokens, target_chars = target_chars,
                     seeded_units = seeded, streamed_unit = streamed)
 

@@ -216,6 +216,9 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
+    # Bookkeeping about HOW the A/B was run, not a measurement of the app. It belongs beside the
+    # identity fields so a reader can see whether the order was balanced without digging.
+    "ab_plan": "header",
 }
 
 

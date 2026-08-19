@@ -304,8 +304,35 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     if text:
         ctx.page.fill('textarea[aria-label="Message input"]', "")
         ctx.page.wait_for_timeout(120)
+
+    # STOP GETS ITS OWN GENERATION. It used to stop whatever the cell was streaming, which
+    # permanently truncated the measured reply: at the 10K rung the pacer got 5,304 of 17,737
+    # characters away before the socket broke, so the ten actions that follow -- all of them
+    # labelled "after the reply is complete" -- and the final census ran against a thread barely
+    # a third of the size the rung claims. The seeded-vs-streamed equivalence check then compared
+    # that truncated reply against a complete seeded one and reported 20% drift, which read as a
+    # finding about seeding and was a finding about this action.
+    #
+    # Sending its own short turn keeps the measured reply intact and means the action has
+    # something to stop at EVERY rung, instead of reporting `not_run` at the small ones where the
+    # main stream is already over by the time the slot opens.
+    own_generation = False
     if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        return not_run("nothing was generating, so there was nothing to stop")
+        ctx.page.fill('textarea[aria-label="Message input"]', "one more")
+        ctx.page.wait_for_timeout(80)
+        ctx.page.keyboard.press("Enter")
+        own_generation = True
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if _ev(ctx, "() => window.__sb.dom.isRunning()"):
+                break
+            ctx.page.wait_for_timeout(50)
+        else:
+            return not_run("nothing was generating and a new turn did not start within 8s")
+        if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
+            return not_run("nothing was generating and a new turn did not start within 8s")
+        # Let it get going, so stop is measured against a live stream rather than a starting one.
+        ctx.page.wait_for_timeout(600)
     button = ctx.page.query_selector('button[aria-label="Stop generating"]')
     if button is None:
         queue = ctx.page.query_selector('button[aria-label="Queue message"]')
@@ -329,6 +356,9 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         ran = True, expect_ok = ok,
         expect = {"chars_before": chars_before, "chars_after": chars_after,
                   "still_running": not ok,
+                  # Which reply was stopped. A reader comparing `chars_added_after_stop` across
+                  # rungs needs to know whether this was a throwaway turn or the cell's own.
+                  "own_generation": own_generation,
                   # A stop that worked leaves the text where it was, give or take the chunks
                   # already in flight. A large jump means the stream ran on.
                   "chars_added_after_stop": (None if chars_after is None or chars_before is None

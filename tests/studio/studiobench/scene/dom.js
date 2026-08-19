@@ -199,6 +199,15 @@
         // 16,186 spans, i.e. 5.6 characters per span, and a fixture that does not reproduce that
         // is not measuring the same highlighter load per character.
         highlight_spans: qa("pre span").length,
+        // WHERE the spans live, not just how many. A collapsed reasoning pane UNMOUNTS its
+        // children, so a thread with the same text can carry wildly different DOM depending on
+        // how that text got there. Without this split, "seeded has 20% fewer spans" is a number
+        // with three possible explanations and no way to choose between them.
+        reasoning_spans: qa('[data-slot="reasoning-root"] pre span').length,
+        reasoning_code_blocks: qa('[data-slot="reasoning-root"] pre').length,
+        content_spans:
+          qa("pre span").length - qa('[data-slot="reasoning-root"] pre span').length,
+        content_code_blocks: qa("pre").length - qa('[data-slot="reasoning-root"] pre').length,
         // Carried in the census so the peak occupancy and the character count come from the
         // SAME reading. Two separate reads, taken either side of a destructive action, disagree.
         assistant_chars: D.assistantChars(),

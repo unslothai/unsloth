@@ -23,6 +23,10 @@ SCHEMA = "studiobench/1"
 
 ROW_TYPES = frozenset({
     "run_meta", "gate", "cell", "window", "action", "sample", "failure",
+    # The A/B run order, recorded before the first cell. Written even when the order is
+    # UNBALANCED, because whether linear drift cancelled is a property of the run that a reader
+    # of the table has no other way to recover.
+    "ab_plan",
 })
 
 # Required keys per row type. Enforced in Recorder.emit, because a row that silently lost its
