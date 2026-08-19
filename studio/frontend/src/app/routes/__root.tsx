@@ -185,18 +185,37 @@ function isChatOnlyAllowed(pathname: string): boolean {
   return false;
 }
 
+// Train and Data Recipes are the two the datasets library gates, and neither is covered
+// by the chat-only guard above: off ARM64 the host is not chat-only at all, and
+// /data-recipes is explicitly allowed even when it is. Disabling the sidebar rows is not
+// a guard, so a bookmark or a reload lands on a page whose every call answers 503.
+function needsDatasets(pathname: string): boolean {
+  return ["/studio", "/data-recipes"].some(
+    (base) => pathname === base || pathname.startsWith(`${base}/`),
+  );
+}
+
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
     // Fetch platform info before the chat-only guard. fetchDeviceType caches,
     // so later navigations are instant.
     await fetchDeviceType();
-    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const { isChatOnly, capabilitiesUnknown, datasetsAvailable } =
+      usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
       isChatOnly() &&
       !isChatOnlyAllowed(location.pathname) &&
       !(unmeasured && waitsOutUnknownVerdict(location.pathname))
     ) {
+      throw redirect({ to: "/chat" });
+    }
+    // Independent of the hardware verdict: this is answered from the interpreter and
+    // is published on provisional replies too, so waiting for detection would admit
+    // the page for as long as a slow torch import takes. `false` can only come from
+    // the server -- the default is `true` and nothing else writes it -- so this still
+    // never fires on the pre-measurement guess.
+    if (!datasetsAvailable && needsDatasets(location.pathname)) {
       throw redirect({ to: "/chat" });
     }
   },

@@ -182,6 +182,14 @@ if _backend_dir not in sys.path:
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
 
+# Cheap and import-safe without the library present: find_spec only, no datasets import.
+from utils.datasets_availability import (
+    _is_arm64_windows,
+    datasets_available,
+    is_inference_only_tier,
+    unavailable_detail as datasets_unavailable_detail,
+)
+
 activate_native_tls()
 
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
@@ -1366,8 +1374,23 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
-app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
-app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+# Both routers gate per route rather than here, for the same reason /api/hub/datasets
+# does: only the handlers that reach a lazy `from datasets import` or pandas need the
+# library, and shutting the whole prefix would take down the download and job-status
+# routes with them. /api/datasets is the retained compatibility alias an older client
+# still calls; Data Recipes reads seeds through pandas and `datasets.load_dataset`, and
+# this tier ships neither, so without the gate those answer 500 plus a traceback where
+# the tier promises a stated 503.
+app.include_router(
+    datasets_router,
+    prefix = "/api/datasets",
+    tags = ["datasets"],
+)
+app.include_router(
+    data_recipe_router,
+    prefix = "/api/data-recipe",
+    tags = ["data-recipe"],
+)
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
@@ -1436,6 +1459,22 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
     `device_type` as authoritative, and the sidebar's recovery poll runs only while it reads
     `chat_only_reason == "mlx_unavailable"`, so one such reply hides Train for the session.
     """
+    # Ahead of the detection guard, deliberately: the ARM64 inference-only install
+    # cannot train on ANY device, so this verdict does not depend on the hardware
+    # pass and never changes. Reporting "still detecting" instead would leave the UI
+    # polling for a verdict that is already known, and reporting the hardware pass's
+    # own answer would tell an ARM64 Windows box that training is available (issue
+    # #8495). Not inside detect_hardware(): every training-capable branch there
+    # returns early, and this is the one place the verdict is published.
+    #
+    # The TIER, and on the interpreter it was built for. chat_only takes safetensors
+    # models, Video and the Hub's Run button away from the whole UI: true on a native
+    # ARM64 install, which is CPU-only and torch-limited anyway, and false on an x64
+    # GPU box that opted into UNSLOTH_NO_DATASETS and can still run all three. What the
+    # tier really removes is training and the data features, and `datasets_available`
+    # below carries that on its own, so those hosts keep their hardware verdict here.
+    if is_inference_only_tier() and _is_arm64_windows():
+        return True, "datasets_unavailable", datasets_unavailable_detail()
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
             return None
@@ -1692,6 +1731,14 @@ async def health_check(request: Request):
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
     }
+    # Training and the data features, separately from chat_only: an x64 host that opted
+    # into the reduced tier keeps its GPU and every inference feature, and only loses
+    # these. Answered from the interpreter, so it is published beside a provisional or
+    # deferred hardware reply too: the client treats those as settled capabilities, and
+    # omitting it there leaves the default (available) in place for the session.
+    authed["datasets_available"] = datasets_available()
+    if not authed["datasets_available"]:
+        authed["datasets_unavailable_detail"] = datasets_unavailable_detail()
     if snapshot is not None:
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]

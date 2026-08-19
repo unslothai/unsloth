@@ -767,3 +767,240 @@ class TestBuildPipCmdUpgradeIntent:
     def test_commands_without_the_flag_are_untouched(self):
         cmd = ips._build_pip_cmd(("--no-cache-dir", "somepackage"))
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
+
+
+class TestRequirementFilterNormalisesNames:
+    """The skip sets are written PEP 503 style; requirement files are not.
+    extras-no-deps.txt says `pytorch_tokenizers` and no-torch-runtime.txt says
+    `hf_transfer`, and a raw-text filter let both through -- on Windows on ARM the
+    install then tried to build them from source (issue #8495)."""
+
+    @staticmethod
+    def _filtered(tmp_path, body: str, skip: set[str]) -> str:
+        req = tmp_path / "reqs.txt"
+        req.write_text(body, encoding = "utf-8")
+        return ips._filter_requirements(req, skip).read_text(encoding = "utf-8")
+
+    def test_underscore_spelling_is_matched(self, tmp_path):
+        out = self._filtered(
+            tmp_path,
+            'pytorch_tokenizers<=1.4.1; sys_platform != "darwin"\nnumpy==2.5.2\n',
+            {"pytorch-tokenizers"},
+        )
+        assert "pytorch_tokenizers" not in out
+        assert "numpy==2.5.2" in out
+
+    def test_hyphen_spelling_is_matched(self, tmp_path):
+        out = self._filtered(tmp_path, "hf-transfer==0.1.9\nnumpy==2.5.2\n", {"hf_transfer"})
+        assert "hf-transfer" not in out
+        assert "numpy==2.5.2" in out
+
+    def test_prefix_matching_is_still_broad(self, tmp_path):
+        """Documenting existing behaviour, not endorsing it: the original filter
+        matched any line STARTING with a skip entry, so `datasets` also drops a
+        hypothetical `datasets-extra`. That arm is kept because callers have always
+        been able to pass a prefix rather than a distribution name, and narrowing it
+        here would silently change what the no-torch and Windows filters remove.
+        The canonical-name arm added alongside it is what catches the underscore
+        spellings; it only ever removes more, never less."""
+        out = self._filtered(tmp_path, "datasets==4.3.0\ndatasets-extra==1.0\n", {"datasets"})
+        assert "datasets==4.3.0" not in out
+        assert "datasets-extra==1.0" not in out
+
+    def test_comments_and_flags_are_left_alone(self, tmp_path):
+        body = "# datasets is dropped below\n--no-binary :all:\ndatasets==4.3.0\n"
+        out = self._filtered(tmp_path, body, {"datasets"})
+        assert "# datasets is dropped below" in out
+        assert "--no-binary :all:" in out
+        assert "datasets==4.3.0" not in out
+
+
+def _satisfying_version(specifier: str) -> str:
+    """A version that satisfies `specifier`, so the synthetic "installed" map below
+    describes a HEALTHY venv and any reported gap is the omission under test."""
+    from packaging.specifiers import SpecifierSet
+
+    if not specifier:
+        return "1.0"
+    spec = SpecifierSet(specifier)
+    candidates = [str(clause.version) for clause in spec] + ["1.0", "0.0.1", "99.0"]
+    for candidate in candidates:
+        if spec.contains(candidate):
+            return candidate
+    raise AssertionError(f"no satisfying version for {specifier!r}")
+
+
+class TestManifestVerificationHonoursTheTier:
+    """A tier install must verify as complete.
+
+    The ARM64 inference-only pass deliberately omits studio.txt entries with no
+    win_arm64 wheel (datasets, pandas, sqlite-vec, ddgs). verify_install() checked
+    the whole of studio.txt regardless of the tier it had just recorded, so a
+    perfectly successful install reported `studio_deps_missing` on every single
+    verification: `studio setup` forced another dependency pass each invocation and
+    verify-install / the desktop preflight rejected the environment.
+    """
+
+    import install_manifest as _manifest
+
+    manifest = _manifest
+
+    @staticmethod
+    def _installed_without_tier_packages() -> dict:
+        """Every studio.txt distribution at its pinned version except the ones the
+        tier drops, i.e. exactly what a successful tier install leaves behind.
+
+        Pins the tier LIFTS (pymupdf and friends, whose studio.txt version has no
+        win_arm64 wheel) are recorded at the lifted version, because that is the one
+        pip_install actually put on disk.
+        """
+        reqs = TestManifestVerificationHonoursTheTier.manifest.requirements_root(STUDIO_DIR)
+        text = (reqs / "studio.txt").read_text(encoding = "utf-8")
+        dropped = {
+            TestManifestVerificationHonoursTheTier.manifest._canonical(name)
+            for name in TestManifestVerificationHonoursTheTier.manifest.NO_DATASETS_OMITTED_REQUIREMENTS
+        }
+        lifts = TestManifestVerificationHonoursTheTier.manifest.tier_version_lifts(reqs)
+        installed = {}
+        for line in text.splitlines():
+            parsed = TestManifestVerificationHonoursTheTier.manifest._parse_requirement_line(line)
+            if parsed is None:
+                continue
+            name, marker, specifier = parsed
+            canonical = TestManifestVerificationHonoursTheTier.manifest._canonical(name)
+            if canonical in dropped:
+                continue
+            if not TestManifestVerificationHonoursTheTier.manifest._marker_applies(marker):
+                continue
+            installed[canonical] = _satisfying_version(lifts.get(canonical, specifier))
+        return installed
+
+    def _write_manifest(self, root: Path, no_datasets: bool) -> None:
+        import json
+        reqs = self.manifest.requirements_root(STUDIO_DIR)
+        (root / self.manifest.MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "schema": self.manifest.MANIFEST_SCHEMA,
+                    "package": "unsloth",
+                    "package_version": None,
+                    "requirement_files": self.manifest.requirement_digests(reqs),
+                    "no_datasets": no_datasets,
+                }
+            ),
+            encoding = "utf-8",
+        )
+
+    def test_tier_install_verifies_as_complete(self, tmp_path, monkeypatch):
+        # On the machine the tier exists for: a native ARM64 Windows interpreter,
+        # where the overrides really did decide the installed versions.
+        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda manifest = None: True)
+        self._write_manifest(tmp_path, no_datasets = True)
+        result = self.manifest.verify_install(
+            root = tmp_path,
+            req_root = self.manifest.requirements_root(STUDIO_DIR),
+            installed = self._installed_without_tier_packages(),
+        )
+        assert result["missing"] == []
+        assert result["reason"] is None
+        assert result["ok"] is True
+
+    def test_an_x64_no_datasets_install_is_judged_by_the_x64_pins(self, tmp_path, monkeypatch):
+        """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install too, where
+        pip_install never applies overrides-win-arm64.txt. Judged by the lifted pins,
+        a correctly installed PyMuPDF 1.27.2.3 reads as missing on every launch."""
+        monkeypatch.setattr(self.manifest, "_is_windows_arm64_python", lambda manifest = None: False)
+        self._write_manifest(tmp_path, no_datasets = True)
+        reqs = self.manifest.requirements_root(STUDIO_DIR)
+        installed = self._installed_without_tier_packages()
+        for name in self.manifest.tier_version_lifts(reqs):
+            installed.pop(name, None)
+        # The pinned versions, i.e. what an x64 tier install actually leaves behind.
+        for line in (reqs / "studio.txt").read_text(encoding = "utf-8").splitlines():
+            parsed = self.manifest._parse_requirement_line(line)
+            if parsed is None:
+                continue
+            name, _marker, specifier = parsed
+            canonical = self.manifest._canonical(name)
+            if canonical in self.manifest.tier_version_lifts(reqs):
+                installed[canonical] = _satisfying_version(specifier)
+        result = self.manifest.verify_install(
+            root = tmp_path,
+            req_root = reqs,
+            installed = installed,
+        )
+        assert result["missing"] == []
+        assert result["ok"] is True
+
+    def test_the_same_venv_outside_the_tier_still_reports_the_gap(self):
+        """The omission is only intended when the install recorded the tier; an
+        ordinary install missing datasets is still a broken venv."""
+        result = self.manifest.verify_install(
+            root = Path("/nonexistent-root-for-this-test"),
+            req_root = self.manifest.requirements_root(STUDIO_DIR),
+            installed = self._installed_without_tier_packages(),
+        )
+        assert "datasets" in result["missing"]
+
+    def test_marker_file_alone_records_the_tier(self, tmp_path):
+        """The manifest is dropped before every dependency pass, so the marker is
+        what answers for a run killed mid-pass -- recorded_no_datasets() reads both."""
+        self._write_manifest(tmp_path, no_datasets = False)
+        (tmp_path / self.manifest.MANIFEST_NAME).unlink()
+        (tmp_path / self.manifest.NO_DATASETS_MARKER).write_text("", encoding = "utf-8")
+        missing = self.manifest.missing_requirements(
+            self.manifest.requirements_root(STUDIO_DIR) / "studio.txt",
+            installed = self._installed_without_tier_packages(),
+            omit = self.manifest.NO_DATASETS_OMITTED_REQUIREMENTS,
+            # The same pair verify_install() derives from the marker: what the tier
+            # drops, and what it lifts.
+            lifts = self.manifest.tier_version_lifts(self.manifest.requirements_root(STUDIO_DIR)),
+        )
+        assert missing == []
+        assert self.manifest.recorded_no_datasets(tmp_path) is True
+
+    def test_omitted_set_covers_every_studio_txt_entry_the_tier_drops(self):
+        """The two lists are maintained apart, so a package added to the skip list
+        and not here reintroduces the permanent studio_deps_missing."""
+        reqs = self.manifest.requirements_root(STUDIO_DIR)
+        studio_txt = (reqs / "studio.txt").read_text(encoding = "utf-8")
+        named = set()
+        for line in studio_txt.splitlines():
+            parsed = self.manifest._parse_requirement_line(line)
+            if parsed is not None:
+                named.add(self.manifest._canonical(parsed[0]))
+        skipped = {self.manifest._canonical(name) for name in ips.NO_DATASETS_SKIP_PACKAGES}
+        omitted = {
+            self.manifest._canonical(name)
+            for name in self.manifest.NO_DATASETS_OMITTED_REQUIREMENTS
+        }
+        assert (skipped & named) <= omitted
+
+
+class TestOverridesFileIsFingerprinted:
+    """On a --local ARM64 install this file decides the installed version of
+    PyMuPDF, PyAV, scikit-learn and cryptography. Untracked, editing it left
+    requirement_digests() unchanged, so verification treated the environment as
+    current and skipped the dependency pass that would have applied the edit."""
+
+    import install_manifest as _manifest
+
+    manifest = _manifest
+
+    def test_overrides_file_is_tracked(self):
+        assert "single-env/overrides-win-arm64.txt" in self.manifest.TRACKED_REQUIREMENT_FILES
+
+    def test_editing_the_overrides_file_changes_the_fingerprint(self, tmp_path):
+        real = self.manifest.requirements_root(STUDIO_DIR)
+        staged = tmp_path / "requirements"
+        (staged / "single-env").mkdir(parents = True)
+        for name in self.manifest.TRACKED_REQUIREMENT_FILES:
+            source = real / name
+            if source.is_file():
+                (staged / name).write_text(source.read_text(encoding = "utf-8"), encoding = "utf-8")
+        before = self.manifest.requirement_digests(staged)
+        target = staged / "single-env" / "overrides-win-arm64.txt"
+        target.write_text(
+            target.read_text(encoding = "utf-8") + "\npymupdf>=1.99\n", encoding = "utf-8"
+        )
+        assert self.manifest.requirement_digests(staged) != before

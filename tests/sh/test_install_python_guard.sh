@@ -257,6 +257,149 @@ assert_eq "a recreate that works still replaces the environment" \
 
 rm -f "$_HELPERS" "$_GUARD" "$_DRIVER"
 
+# ── The --python / UNSLOTH_PYTHON range gate (#8495) ──
+# The version was never range-checked, so an unsupported minor reached `uv venv`
+# and failed minutes later inside dependency resolution with a bare "pyarrow"
+# (constraints.txt pins pyarrow==23.0.1, which has no cp39 wheel on any platform;
+# matplotlib, pymupdf, pymupdf4llm and fastmcp are 3.10+ too).
+#
+# The check is inline argument parsing, not a function, so run the real prefix of
+# install.sh: everything up to the Tauri helpers, which is before any network or
+# filesystem work. A copy of the logic here could not catch it moving.
+# The real block, extracted like every other test here: it is inline argument
+# validation rather than a function, so it is pulled out by its own first and last
+# lines and driven with _USER_PYTHON pre-set. A reimplementation would keep passing
+# after install.sh changed, which is the failure mode this file exists to avoid.
+_GATE=$(mktemp)
+{
+    # $2 is the --shortcuts-only flag: the gate only judges a run that will
+    # actually select an interpreter.
+    # $3 is VENV_DIR: the gate is deferred until that is known, and skipped when
+    # the venv it names already exists.
+    printf '_USER_PYTHON="$1"\n_SHORTCUTS_ONLY="${2:-false}"\nVENV_DIR="${3:-/nonexistent}"\n'
+    # The verdicts moved into _check_python_request so a path-style request reaches
+    # them too, so the function comes along with the one that calls it.
+    sed -n '/^_check_python_request()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_gate_python_request()/,/^}/p' "$INSTALL_SH"
+    printf '_gate_python_request\n'
+} > "$_GATE"
+grep -q '_req_minor' "$_GATE" || { echo "  FAIL: could not extract the python range gate"; FAIL=$((FAIL + 1)); }
+
+run_python_gate() {  # version -> "rejected" | "accepted"
+    if sh "$_GATE" "$1" >/dev/null 2>&1; then echo "accepted"; else echo "rejected"; fi
+}
+
+assert_eq "3.9 is rejected before uv is asked for a venv" \
+    "rejected" "$(run_python_gate 3.9)"
+# `unsloth studio update` re-runs the installer with --shortcuts-only to refresh the
+# launcher, handing it the caller's whole environment (unsloth_cli/commands/studio.py).
+# That run selects no interpreter, so a stale UNSLOTH_PYTHON=3.9 exported years ago
+# must not fail it: the helper only prints the status, so the update would look
+# successful with the launcher left unwritten.
+assert_eq "--shortcuts-only does not judge the python request" \
+    "accepted" "$(if sh "$_GATE" 3.9 true >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
+# An existing venv is no reason to let the request through. Every re-run moves the
+# old venv aside and recreates it from the request, so a stale UNSLOTH_PYTHON=3.9 on
+# a box already installed on 3.13 replaces a working environment with one that cannot
+# resolve -- observed on CI, where a full install is followed by a 3.9 run.
+_VENV_FIXTURE=$(mktemp -d)
+mkdir -p "$_VENV_FIXTURE/bin"
+printf '#!/bin/sh\necho 3.13\n' > "$_VENV_FIXTURE/bin/python"
+chmod +x "$_VENV_FIXTURE/bin/python"
+assert_eq "an existing venv does not excuse an unsupported request" \
+    "rejected" "$(if sh "$_GATE" 3.9 false "$_VENV_FIXTURE" >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
+rm -rf "$_VENV_FIXTURE"
+# ...but the deferral must not orphan the function: it has to be called for real.
+assert_eq "install.sh calls the gate at top level" "yes" \
+    "$(grep -qx '_gate_python_request' "$INSTALL_SH" && echo yes || echo no)"
+assert_eq "2.7 is rejected" \
+    "rejected" "$(run_python_gate 2.7)"
+# 3.10 is rejected with everything below it: both bundled Data Designer plugins
+# declare requires-python >= 3.11 and install_python_stack.py installs them
+# unconditionally, so a 3.10 run dies on a local project uv refuses, near the end
+# of setup -- the late failure this gate exists to replace.
+assert_eq "3.10 is rejected: the Data Designer plugins need 3.11" \
+    "rejected" "$(run_python_gate 3.10)"
+assert_eq "3.11 is the floor and is allowed" \
+    "accepted" "$(run_python_gate 3.11)"
+assert_eq "3.13 is allowed" \
+    "accepted" "$(run_python_gate 3.13)"
+# Newer than tested is a warning, not a failure: unproven is not known-broken.
+assert_eq "3.14 warns but continues" \
+    "accepted" "$(run_python_gate 3.14)"
+# Not versions at all, and not this gate's business.
+assert_eq "an explicit interpreter path passes through" \
+    "accepted" "$(run_python_gate /usr/bin/python3.12)"
+# A path names an interpreter as surely as "3.9" does. Real executables, built here,
+# because the gate asks the interpreter rather than parsing its name.
+_FAKE_DIR=$(mktemp -d)
+printf '#!/bin/sh\necho "3.9"\n' > "$_FAKE_DIR/py39"
+printf '#!/bin/sh\necho "3.12"\n' > "$_FAKE_DIR/py312"
+chmod +x "$_FAKE_DIR/py39" "$_FAKE_DIR/py312"
+assert_eq "a path to an unsupported interpreter is rejected" \
+    "rejected" "$(run_python_gate "$_FAKE_DIR/py39")"
+assert_eq "a path to a supported interpreter is accepted" \
+    "accepted" "$(run_python_gate "$_FAKE_DIR/py312")"
+assert_eq "a path that cannot be run is left to the steps that resolve it" \
+    "accepted" "$(run_python_gate "$_FAKE_DIR/does-not-exist")"
+rm -rf "$_FAKE_DIR"
+# A bare name on PATH is as common a spelling as a version or a path, and uv venv
+# --python accepts it, so it reached the same 3.11-only plugins under a third name.
+_BARE_DIR=$(mktemp -d)
+printf '#!/bin/sh\necho "3.9"\n' > "$_BARE_DIR/python3.9"
+printf '#!/bin/sh\necho "3.12"\n' > "$_BARE_DIR/python3.12"
+chmod +x "$_BARE_DIR/python3.9" "$_BARE_DIR/python3.12"
+assert_eq "a bare interpreter name on PATH is rejected when unsupported" \
+    "rejected" "$(PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.9 >/dev/null 2>&1 && echo accepted || echo rejected)"
+assert_eq "a bare interpreter name on PATH is accepted when supported" \
+    "accepted" "$(PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.12 >/dev/null 2>&1 && echo accepted || echo rejected)"
+assert_eq "a bare name that is not on PATH is left to the steps that resolve it" \
+    "accepted" "$(run_python_gate python3.9-does-not-exist)"
+# A three-field answer from a wrapper on PATH is still a version, not an abort: the
+# probe asks for two fields, but nothing stops a shim printing "3.9.1".
+printf '#!/bin/sh\necho "3.9.1"\n' > "$_BARE_DIR/python3.9-verbose"
+chmod +x "$_BARE_DIR/python3.9-verbose"
+assert_eq "a three-field probe answer is judged, not aborted on" \
+    "rejected" "$(PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.9-verbose 2>&1 | grep -q 'Illegal number' && echo aborted || (PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.9-verbose >/dev/null 2>&1 && echo accepted || echo rejected))"
+rm -rf "$_BARE_DIR"
+assert_eq "a uv download name passes through" \
+    "accepted" "$(run_python_gate cpython-3.12-linux-aarch64-none)"
+assert_eq "a prerelease string passes through instead of aborting dash" \
+    "accepted" "$(run_python_gate 3.13rc1)"
+assert_eq "an empty request is left to the default" \
+    "accepted" "$(run_python_gate "")"
+
+case "$(sh "$_GATE" 3.9 2>&1 || true)" in
+    *pyarrow*) assert_eq "the rejection message names pyarrow" "yes" "yes" ;;
+    *) assert_eq "the rejection message names pyarrow" "yes" "no" ;;
+esac
+case "$(sh "$_GATE" 3.14 2>&1 || true)" in
+    *WARNING*) assert_eq "3.14 says why it is unproven" "yes" "yes" ;;
+    *) assert_eq "3.14 says why it is unproven" "yes" "no" ;;
+esac
+
+# 3.15+ is not "unproven", it is impossible: pyproject.toml declares
+# requires-python = ">=3.9,<3.15", so uv refuses the unsloth package itself there
+# whatever wheels exist. Warning and continuing recreated the late resolver failure
+# this gate was added to replace.
+assert_eq "3.15 is rejected, not merely warned about" \
+    "rejected" "$(run_python_gate 3.15)"
+assert_eq "3.16 is rejected" \
+    "rejected" "$(run_python_gate 3.16)"
+assert_eq "4.0 is rejected" \
+    "rejected" "$(run_python_gate 4.0)"
+case "$(sh "$_GATE" 3.15 2>&1 || true)" in
+    *requires-python*) assert_eq "the 3.15 rejection names requires-python" "yes" "yes" ;;
+    *) assert_eq "the 3.15 rejection names requires-python" "yes" "no" ;;
+esac
+# The ceiling the message quotes has to be the one pyproject.toml actually declares.
+case "$(grep -m1 '^requires-python' "$SCRIPT_DIR/../../pyproject.toml")" in
+    *'<3.15'*) assert_eq "pyproject still pins the ceiling this gate enforces" "yes" "yes" ;;
+    *) assert_eq "pyproject still pins the ceiling this gate enforces" "yes" "no" ;;
+esac
+
+rm -f "$_GATE"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

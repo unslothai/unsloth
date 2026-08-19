@@ -44,6 +44,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
+import { usePlatformStore } from "@/config/env";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -318,6 +319,16 @@ export function DataRecipesPage(): ReactElement {
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
+
+  // Recipes read seeds through datasets and pandas, so leave once a verdict says the
+  // install has neither: the root guard admits this route while the verdict is still out.
+  // Not gated on the hardware verdict: only the server sets this false, and it is
+  // published before detection settles.
+  const datasetsAvailable = usePlatformStore((s) => s.datasetsAvailable);
+  useEffect(() => {
+    if (datasetsAvailable) return;
+    void navigate({ to: "/chat", replace: true });
+  }, [datasetsAvailable, navigate]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {

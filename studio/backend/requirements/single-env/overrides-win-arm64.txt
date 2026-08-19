@@ -1,0 +1,45 @@
+# Windows on ARM (ARM64 inference-only tier) version lifts.
+#
+# Read only when install_python_stack.py is running on a native win-arm64
+# interpreter in the no-datasets tier, so x64 Windows -- the supported Windows on
+# ARM configuration, and every other platform -- never sees these.
+#
+# An override rather than a constraint, for the same reason as
+# overrides-darwin-arm64.txt: the pins these replace live in constraints.txt and
+# studio.txt, and -c cannot raise a floor those files set. Whatever is named here
+# wins outright.
+#
+# Each entry is a pin whose exact version predates its win_arm64 wheel. Packages
+# that have NO win_arm64 wheel at any version cannot be fixed here and are dropped
+# instead, by NO_DATASETS_SKIP_PACKAGES in install_python_stack.py.
+
+# pymupdf ships win_arm64 from 1.28.2 only; studio.txt pins 1.27.2.3. pymupdf4llm
+# is a pure-Python wheel and installs unchanged, and its 0.3.x line tracks pymupdf
+# 1.27/1.28 alike, so only the compiled half moves.
+pymupdf>=1.28.2
+
+# av ships win_arm64 from 17.0.0; constraints.txt caps av<16 for a macOS 13 reason
+# (15.1.0 is the last release with a macosx_13_0 arm64 wheel). That cap is about
+# Intel/Apple macs and has nothing to say about Windows on ARM, where <16 leaves no
+# installable wheel at all.
+av>=17.0.0
+
+# scikit-learn ships win_arm64 from 1.8.0; extras.txt pins 1.7.1. Below that uv
+# falls through to a source build, whose own build dependency (numpy) then fails
+# to compile -- the failure surfaces as numpy, not as the pin that caused it.
+scikit-learn>=1.8.0
+
+# cryptography publishes win_arm64 wheels for 46.0.0 through 46.0.3 and nowhere else:
+# 45 and below never had one, and 46.0.4 onwards dropped it again. Both bounds are
+# load-bearing. Without the floor, studio.txt's open `cryptography>=42.0.0` picks a
+# release with no ARM64 wheel; without the ceiling it picks the newest release, and
+# this phase does not resolve wheels-only, so either lands on a Rust source build --
+# the failure this tier exists to avoid.
+#
+# Known cost, recorded because it is on the TLS path: 46.0.3 is behind advisories
+# fixed in 46.0.5, 46.0.6, 46.0.7, 48.0.1 and 50.0.0, and NONE of those publish a
+# win_arm64 wheel, so no fixed version is installable here at all. Native ARM64
+# Windows is the reduced install for exactly this class of reason; the installer
+# prefers an emulated x64 interpreter, which resolves cryptography normally. Raise
+# both bounds the moment upstream ships a win_arm64 wheel again.
+cryptography>=46.0.0,<46.0.4

@@ -759,10 +759,21 @@ export function AppSidebar() {
   // rows on a measured verdict and let them spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
+  // Training needs the datasets library as well as a device that can train. Read
+  // separately, because the reduced install tier removes only the first: an x64 host
+  // that opted into it keeps its GPU, safetensors inference, Video and Hub Run.
+  const datasetsAvailable = usePlatformStore((s) => s.datasetsAvailable);
+  const datasetsDetail = usePlatformStore((s) => s.datasetsUnavailableDetail);
+  const datasetsMissing = !datasetsAvailable && !capabilitiesUnknown;
+  const trainingBlocked = chatOnlyMeasured || datasetsMissing;
   // Explain a greyed-out Train (chat-only host) on hover. Export stays navigable so its page
   // can show a precise reason.
-  const trainDisabledHint: string | undefined = !chatOnlyMeasured
+  const trainDisabledHint: string | undefined = !trainingBlocked
     ? undefined
+    : datasetsMissing && !chatOnlyMeasured
+      ? datasetsDetail
+        ? `Training needs the datasets library. ${datasetsDetail}`
+        : "Training needs the datasets library, which this installation does not have."
     : chatOnlyReason === "mlx_unavailable"
       ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
         // backtrack leaves a stack that is present but unusable. Naming the package
@@ -771,11 +782,37 @@ export function AppSidebar() {
         chatOnlyDetail
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
-      : chatOnlyReason === "intel_mac"
-        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
+      : chatOnlyReason === "datasets_unavailable"
+        ? // ARM64 Windows inference-only install: the datasets library (and pyarrow
+          // under it) has no wheel for this architecture, so training is missing its
+          // data layer whatever the GPU says. The fix is an x64 Python, not hardware.
+          // The backend picks the wording, as it does for MLX above: it knows whether
+          // this is the ARM64 tier or an environment that simply lost the library, and
+          // the remedy differs (a different interpreter versus `pip install datasets`).
+          chatOnlyDetail
+          ? `Training needs the datasets library. ${chatOnlyDetail}`
+          : "Training needs the datasets library, which has no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable Train."
+        : chatOnlyReason === "intel_mac"
+          ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
+          : chatOnlyReason === "no_gpu"
+            ? "Training needs an NVIDIA or AMD GPU."
+            : undefined;
+  // The one feature besides Train that this tier cannot serve at all. Keyed off the
+  // reason rather than chat_only, so an Intel Mac or a GPU-less Linux box -- chat-only
+  // for hardware reasons but with datasets installed -- keeps Data Recipes.
+  const datasetsUnavailable =
+    datasetsMissing || (chatOnlyMeasured && chatOnlyReason === "datasets_unavailable");
+  // Same reason the Train hint takes its wording from the backend: this branch is
+  // reachable off ARM64 Windows, and telling a Linux user to install x64 Python is
+  // advice for a machine they are not sitting at. datasetsDetail first, because it is
+  // the one that is set on a host that merely lost the library: chatOnlyDetail is null
+  // there, and the fallback below is the ARM64 remedy.
+  const recipesDetail = datasetsDetail ?? chatOnlyDetail;
+  const recipesDisabledHint: string | undefined = datasetsUnavailable
+    ? recipesDetail
+      ? `Data Recipes needs the datasets library. ${recipesDetail}`
+      : "Data Recipes needs the datasets and pandas libraries, which have no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable them."
+    : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;
@@ -786,8 +823,16 @@ export function AppSidebar() {
   // that first reply, so re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
     // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
+    // datasets_unavailable joins mlx_unavailable: the 503 tells the user to install
+    // datasets, and the backend re-probes so health can clear without a restart. Read
+    // once, this row would stay disabled until a reload anyway.
+    const recoverable =
+      chatOnlyReason === "mlx_unavailable" || chatOnlyReason === "datasets_unavailable";
+    // datasetsMissing is its own unsettled state: off ARM64 the host is not chat-only
+    // at all, so `!chatOnly` would settle it here and the rows would stay disabled
+    // until a reload even after the advised `pip install datasets` took effect.
     const selfHealSettled =
-      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+      !datasetsMissing && (!chatOnly || (!recoverable && !detectionDeferred));
     // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
     // wait at most once per page load, so a host that detects slower than that keeps the
     // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
@@ -816,7 +861,7 @@ export function AppSidebar() {
         });
     }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
-  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
+  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, datasetsMissing, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -1724,13 +1769,13 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured,
+      disabled: trainingBlocked,
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) return;
+        if (trainingBlocked) return;
         navigate({ to: "/studio" });
         closeMobileIfOpen();
       },
@@ -1771,7 +1816,14 @@ export function AppSidebar() {
       icon: ChefHatIcon,
       label: t("shell.navigation.recipes"),
       active: isRecipesRoute,
+      // Data Recipes is the one non-Train feature this tier actually loses: every
+      // seed path reads pandas or `datasets.load_dataset`, and the ARM64
+      // inference-only install ships neither. The backend answers 503 now, but an
+      // enabled entry that only fails on click is worse than a greyed-out one.
+      disabled: datasetsUnavailable,
+      tooltip: recipesDisabledHint,
       onClick: () => {
+        if (datasetsUnavailable) return;
         navigate({ to: "/data-recipes" });
         closeMobileIfOpen();
       },

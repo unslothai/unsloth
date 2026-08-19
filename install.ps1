@@ -315,11 +315,34 @@ function Install-UnslothStudio {
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
+        # The tier handoff is restored after the setup call, which every failure
+        # before it skips. `irm ... | iex` runs this in the CALLER's shell, so a
+        # leak here pins that session to the inference-only tier -- including the
+        # x64 retry this very message asks for.
+        if ($null -ne $script:HadPreviousNoDatasetsEnv) {
+            if ($script:HadPreviousNoDatasetsEnv) {
+                $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
+            } else {
+                Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
+            }
+        }
         if ($TauriMode) {
             exit $Code
         }
         throw $Message
     }
+
+    # The ARM64 fallback below sets $env:UNSLOTH_NO_DATASETS to hand the tier to
+    # `studio setup`. `irm ... | iex` runs all of this in the CALLER's PowerShell
+    # process, so without a restore that assignment outlives the installer: the
+    # recovery this very script prints -- install x64 Python, re-run in the same
+    # terminal -- would then re-enter the tier and ignore the new interpreter.
+    # Restored next to UNSLOTH_STUDIO_HOME and the other handoff variables, after
+    # the setup call that is the only thing that reads it. Snapshotted before the
+    # flag parsing: $script: state outlives one invocation, so a second run that
+    # died on its own arguments would restore what the FIRST run saw.
+    $script:PreviousNoDatasetsEnv = $env:UNSLOTH_NO_DATASETS
+    $script:HadPreviousNoDatasetsEnv = ($null -ne $script:PreviousNoDatasetsEnv)
 
     # ── Parse flags ──
     $StudioLocalInstall = $false
@@ -393,6 +416,24 @@ function Install-UnslothStudio {
     # than a version, so uv never picks one of these -- but the machine may
     # already have it, and $PythonFallbackFullVersion above is what replaces it.
     $PythonSkip = @("3.13.8")
+    # Windows on ARM: the install drops the packages with no win_arm64 wheel
+    # (datasets/pyarrow, sqlite-vec, tiktoken, hf-transfer, ddgs, pandas) and Studio
+    # runs inference-only. Set automatically when no x64 interpreter can be obtained,
+    # and up front by UNSLOTH_NO_DATASETS for someone who would rather keep a native
+    # ARM64 environment than run x64 emulated -- which is what the failure messages
+    # here and in setup.ps1 tell them to do, so it has to be honoured before the swap
+    # rather than only after it fails. Declared here so every later read is defined
+    # under Set-StrictMode.
+    $script:ArmInferenceOnly = $false
+    # Tracked separately from the flag: a tier the CALLER asked for is a decision, a
+    # tier the installer fell back into is a workaround. Only the second may be
+    # withdrawn automatically when an x64 environment turns up.
+    $script:ArmInferenceOnlyRequested = $false
+    if ($env:UNSLOTH_NO_DATASETS -and
+        (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())) {
+        $script:ArmInferenceOnly = $true
+        $script:ArmInferenceOnlyRequested = $true
+    }
     # The entry above is skipped for one reason: it cannot `import torch`. A
     # -NoTorch install never imports it, so refusing the interpreter would send a
     # locked-down GGUF-only machine into winget/python.org recovery it may not be
@@ -2558,7 +2599,22 @@ exit 0
         # win_arm64 wheel, so a native ARM64 Python source-builds both and dies on CMake /
         # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
         # there is, and the caller then bootstraps x64 or warns.
-        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64")
+        # -X64Only still forces the search (Install-X64Python's last resort). Otherwise
+        # the inference-only tier keeps the native interpreter: choosing that tier IS
+        # choosing native ARM64 over an emulated x64 build.
+        $armHost = ((Get-HostMachineArch) -eq "arm64")
+        $preferX64 = $X64Only -or ($armHost -and -not $script:ArmInferenceOnly)
+        # The tier has to RANK too, not accept the first candidate. On a box where the
+        # py launcher hands out an emulated x64 build first, returning it immediately
+        # produced an emulated install with the training packages stripped out -- the
+        # disadvantages of both tiers, when the whole point of opting in is to keep the
+        # native ARM64 interpreter. Never under -X64Only: that switch is
+        # Install-X64Python's own last resort and must not be answered with ARM64.
+        $preferArm64 = $armHost -and $script:ArmInferenceOnly -and -not $X64Only
+        # Whether an early return is allowed at all. Off means collect every candidate
+        # and choose on architecture below.
+        $rankByArch = $preferX64 -or $preferArm64
+        $wantedArch = if ($preferArm64) { "arm64" } else { "x86_64" }
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
@@ -2583,7 +2639,7 @@ exit 0
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
@@ -2612,7 +2668,7 @@ exit 0
                         # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
@@ -2623,7 +2679,7 @@ exit 0
         # a same-minor x64 install that is neither preferred nor on PATH never becomes a
         # candidate. `-3.12-64` cannot disambiguate (deprecated, it only means "not
         # 32-bit"), so enumerate every registration with -0p and probe each path.
-        if ($preferX64) {
+        if ($rankByArch) {
             foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
                 if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
                 $listed = @()
@@ -2655,11 +2711,22 @@ exit 0
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
         }
+        # The tier sweeps every supported minor for a native build before settling for
+        # an emulated one. Outside it, the same cross-minor search is Install-X64Python's
+        # job (it re-runs this function with -X64Only); the tier skips that swap
+        # entirely, so without this an ARM64 3.11 next to an x64 3.13 still produced an
+        # emulated install with the training packages removed.
+        if ($preferArm64) {
+            foreach ($minor in $minors) {
+                $native = $candidates | Where-Object { $_.Version -eq $minor -and $_.Arch -eq "arm64" } | Select-Object -First 1
+                if ($native) { return $native }
+            }
+        }
         foreach ($minor in $minors) {
             $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
             if ($sameMinor.Count -eq 0) { continue }
-            $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
-            if ($x64) { return $x64 }
+            $wanted = $sameMinor | Where-Object { $_.Arch -eq $wantedArch } | Select-Object -First 1
+            if ($wanted) { return $wanted }
             if (-not $X64Only) { return $sameMinor[0] }
         }
         if (-not $X64Only -and $candidates.Count -gt 0) { return $candidates[0] }
@@ -2675,8 +2742,18 @@ exit 0
     function Install-PythonFromPythonOrg {
         # $Arch overrides the host arch, to pull x64 onto an ARM64 box.
         param([string]$Arch = "")
-        # python.org ships one installer per architecture.
-        $targetArch = if ($Arch) { $Arch } else { Get-TauriDiagArch }
+        # python.org ships one installer per architecture. An ARM64 host defaults to
+        # x64 rather than to its own arch: pyarrow (via datasets), hf-transfer,
+        # sqlite-vec and tiktoken publish no win_arm64 wheel, so a native ARM64 CPython
+        # bootstrapped here is one the caller has to turn round and replace. -Arch still
+        # forces either build, which is how the ARM64 inference-only tier asks for arm64.
+        $targetArch = if ($Arch) {
+            $Arch
+        } elseif ((Get-HostMachineArch) -eq "arm64" -and -not $script:ArmInferenceOnly) {
+            "x86_64"
+        } else {
+            Get-TauriDiagArch
+        }
         $archSuffix = switch ($targetArch) {
             "x86_64" { "-amd64" }
             "arm64"  { "-arm64" }
@@ -2875,7 +2952,12 @@ exit 0
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
     # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
     # both and fails deep into the run. Warn up front if x64 is unobtainable.
-    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
+    if ($script:ArmInferenceOnly -and (Get-HostMachineArch) -eq "arm64") {
+        # Asked for by name: keep the native interpreter and skip the swap entirely,
+        # or the x64 bootstrap below would undo the choice on its way past.
+        substep "windows on arm: UNSLOTH_NO_DATASETS is set -- installing inference-only on native ARM64." "Yellow"
+        substep "chat, model downloads and image/video generation work; training does not." "Yellow"
+    } elseif ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
         substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
         substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
         $X64Python = Install-X64Python
@@ -2883,11 +2965,20 @@ exit 0
             $DetectedPython = $X64Python
             step "python" "using x64 Python $($DetectedPython.Version) under emulation"
         } else {
+            # No x64 interpreter is obtainable, so the full stack cannot be installed
+            # here at all -- pyarrow (via datasets), sqlite-vec and tiktoken have never
+            # published a win_arm64 wheel at any version. Carrying on into
+            # `uv pip install unsloth` only buys a source build that fails on CMake
+            # minutes later (issue #8495), so switch to the ARM64 inference-only tier,
+            # which drops exactly those packages. Training needs datasets and so stays
+            # unavailable; UNSLOTH_NO_DATASETS carries the choice into setup.ps1.
+            $script:ArmInferenceOnly = $true
+            $env:UNSLOTH_NO_DATASETS = "1"
             Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-StudioLine "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
-            Write-StudioLine "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
-            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-StudioLine "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+            Write-StudioLine "       Installing in inference-only mode on ARM64 Python $($DetectedPython.Version):" -ForegroundColor Yellow
+            Write-StudioLine "       chat, model downloads and image/video generation work; training does not," -ForegroundColor Yellow
+            Write-StudioLine "       because pyarrow (via datasets) ships no win_arm64 wheel and cannot be built." -ForegroundColor Yellow
+            Write-StudioLine "       For the full product install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
             Write-StudioLine "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
         }
     }
@@ -3577,6 +3668,64 @@ exit 0
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
+    }
+
+    # ── Windows on ARM: a migrated environment never met the x64 swap ──
+    # The swap above only ever runs over a freshly *selected* interpreter, so a venv
+    # built by an older installer (legacy .venv, or the CWD-relative one) arrives here
+    # still ARM64 and cannot resolve pyarrow. Ask the venv interpreter itself rather
+    # than reading the host arch, which an emulated x64 process also reports as arm64.
+    # A mismatch is set aside through the existing rollback path, so the fresh-venv
+    # branch below rebuilds from $DetectedPython and a failed reinstall is restorable.
+    if ($_Migrated -and (Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython)) {
+        $migratedTag = Get-PythonPlatformTag $VenvPython
+        $_keepMigratedVenv = $false
+        # An x64 environment is never the wrong answer on this host: it can install
+        # everything the tier gives up. So if the tier is only on because no x64
+        # interpreter could be FOUND, and the migrated venv turns out to have one,
+        # keep it and leave the tier -- rebuilding here would delete a working
+        # training-capable environment to replace it with a reduced one.
+        if ($script:ArmInferenceOnly -and -not $script:ArmInferenceOnlyRequested -and
+            $migratedTag -eq "win-amd64") {
+            # Only reached when the tier was a fallback. UNSLOTH_NO_DATASETS=1 asks for
+            # inference-only on purpose, including on x64, so it survives this.
+            substep "migrated environment already runs x64 Python -- keeping it, full install." "Yellow"
+            $script:ArmInferenceOnly = $false
+            # And keep it through the tag comparison below: $DetectedPython is the
+            # native ARM64 interpreter whose absence of an x64 alternative caused the
+            # fallback, so comparing against it would rebuild the very venv this
+            # branch exists to preserve.
+            $_keepMigratedVenv = $true
+            if ($script:HadPreviousNoDatasetsEnv) {
+                $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
+            } else {
+                Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
+            }
+        }
+        # From the interpreter this run selected, not from the tier: UNSLOTH_NO_DATASETS
+        # picks a dependency set, not an architecture, and the selector answers x64
+        # whenever an x64 build exists. Hardcoded to win-arm64, an explicit tier on a
+        # machine with a working migrated x64 venv rebuilt it for no reason.
+        $wantedTag = Get-PythonPlatformTag $DetectedPython.Path
+        if (-not $wantedTag) { $wantedTag = if ($script:ArmInferenceOnly) { "win-arm64" } else { "win-amd64" } }
+        # A tag we could not read is not evidence of the wrong architecture. The probe
+        # returns "" for a broken interpreter, an antivirus-blocked one-shot, or a
+        # relocated base install, and treating that as a mismatch sends a working
+        # environment -- with whatever the user keeps inside it -- through a rollback
+        # whose success deletes the original tree. Only rebuild on a KNOWN mismatch.
+        if (-not $_keepMigratedVenv -and $migratedTag -and $migratedTag -ne $wantedTag) {
+            $migratedTagLabel = $migratedTag
+            substep "migrated environment is $migratedTagLabel, this install needs $wantedTag -- rebuilding" "Yellow"
+            try {
+                Start-StudioVenvRollback -ExistingDir $VenvDir
+            } catch {
+                Write-StudioLine "[ERROR] Could not set aside the migrated environment: $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not set aside the migrated environment")
+            }
+            # The tree is gone, so this is a fresh install again: $_Migrated also selects
+            # the migrated-env upgrade path further down, which would skip base packages.
+            $_Migrated = $false
+        }
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
@@ -4887,6 +5036,89 @@ exit 0
     #   are still pulled in because they are new, not upgrades.
     #
     # ── Helper: find no-torch-runtime.txt ──
+    # Kept identical to NO_DATASETS_SKIP_PACKAGES in studio/install_python_stack.py
+    # (tests/python/test_cross_platform_parity.py compares the two): every one of
+    # these is a compiled package with no win_arm64 wheel at any version, and every
+    # one already degrades at runtime rather than being load-bearing.
+    # trl is deliberately absent: it is a pure-Python wheel that installs on ARM64,
+    # every step that installs it is a --no-deps step so it cannot pull datasets back
+    # in, and unsloth/models/_utils.py imports it unconditionally -- dropping it makes
+    # `from unsloth import FastLanguageModel` fail in a tier that advertises chat.
+    $script:ArmInferenceSkipPackages = @(
+        "datasets", "sqlite-vec", "tiktoken", "openai-whisper", "hf-transfer", "ddgs",
+        "pandas", "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard",
+        "torch-stoi", "librosa"
+    )
+
+    # Pins that predate their package's first win_arm64 wheel, rewritten in place.
+    # Kept identical to single-env/overrides-win-arm64.txt, which is how
+    # install_python_stack.py applies the same lifts (tests/python/
+    # test_cross_platform_parity.py compares the two). Named here rather than read
+    # from that file: the requirements this filters are the ones shipped inside the
+    # INSTALLED unsloth wheel, which on a fresh install is whatever release is on
+    # PyPI -- so an overrides file added in this change is not there yet, and a lift
+    # that silently no-ops leaves uv trying to compile MuPDF from source.
+    $script:ArmInferenceLiftPackages = @{
+        "pymupdf"      = "pymupdf>=1.28.2"
+        "av"           = "av>=17.0.0"
+        "scikit-learn" = "scikit-learn>=1.8.0"
+        "cryptography" = "cryptography>=46.0.0,<46.0.4"
+    }
+
+    # The requirements file with the ARM64-impossible entries removed, or the original
+    # path when the tier is off. install_python_stack.py does the same filtering for the
+    # steps it owns, but this branch hands a requirements file straight to uv, so an
+    # unfiltered sqlite-vec/datasets line here fails the whole install on ARM64.
+    # Only the copies THIS run wrote. Cleanup keys off the list rather than the path,
+    # because outside the tier the function returns the caller's own requirements file
+    # and deleting that would take a file out of the installed wheel.
+    $script:ArmFilteredRequirementFiles = @()
+
+    function Remove-ArmFilteredRequirements {
+        foreach ($path in $script:ArmFilteredRequirementFiles) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        }
+        $script:ArmFilteredRequirementFiles = @()
+    }
+
+    function Get-ArmFilteredRequirements {
+        param([string]$Path)
+        if (-not $script:ArmInferenceOnly -or -not $Path -or -not (Test-Path -LiteralPath $Path)) { return $Path }
+        # The lifts are a wheel-availability workaround, so they follow the INTERPRETER
+        # being installed into, not the host: an emulated x64 venv on an ARM64 machine
+        # has wheels for the pinned versions, and install_python_stack.py and
+        # install_manifest.py both gate on the interpreter too. Keyed off the host, a
+        # tier install into that venv got ARM pins and then failed verification for
+        # ever. The skips still apply: no datasets means no datasets, whatever the
+        # architecture.
+        $applyLifts = ((Get-PythonPlatformTag $VenvPython) -eq "win-arm64")
+        $kept = foreach ($line in Get-Content -LiteralPath $Path) {
+            $bare = ($line -split "#")[0].Trim()
+            if (-not $bare) { $line; continue }
+            # Distribution name = up to the first specifier, marker, extra or space.
+            # Normalised PEP 503 style so hf_transfer and hf-transfer are one package.
+            $name = (($bare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
+            if ($script:ArmInferenceSkipPackages -contains $name) { continue }
+            if ($applyLifts -and $script:ArmInferenceLiftPackages.ContainsKey($name)) {
+                $script:ArmInferenceLiftPackages[$name]
+                continue
+            }
+            $line
+        }
+        # A fresh name per call, not per process. $PID is shared by every runspace in
+        # one PowerShell host, so two installs for different Studio homes could
+        # otherwise rewrite this file while uv was reading the other one's copy.
+        $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f ([guid]::NewGuid().ToString("N")))
+        Set-Content -LiteralPath $filtered -Value $kept -Encoding UTF8
+        $script:ArmFilteredRequirementFiles += $filtered
+        # UNSLOTH_NO_DATASETS=1 turns this tier on for an x64 install too, where the
+        # reason is the flag rather than the architecture. Saying "windows on arm"
+        # there would be a false explanation of a real change.
+        $why = if ($applyLifts) { "windows on arm" } else { "no-datasets install" }
+        substep "${why}: dropped $($script:ArmInferenceSkipPackages -join ', ') (no win_arm64 wheels)"
+        return $filtered
+    }
+
     function Find-NoTorchRuntimeFile {
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
             return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
@@ -4902,7 +5134,12 @@ exit 0
         # existing torch/CUDA unless the flavor repair below re-lands it.
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
-        if ($SkipTorch) {
+        # The ARM64 inference-only tier takes the no-deps route for the same reason
+        # no-torch does: unsloth's released metadata declares datasets (and torch) hard
+        # dependencies, so a with-deps upgrade here re-pulls pyarrow into an environment
+        # that has no wheel for it. The migrated venv kept its native ARM64 interpreter
+        # deliberately -- the arch re-probe above only rebuilds it outside the tier.
+        if ($SkipTorch -or $script:ArmInferenceOnly) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
@@ -4913,10 +5150,11 @@ exit 0
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
-                $NoTorchReq = Find-NoTorchRuntimeFile
+                $NoTorchReq = Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
+                Remove-ArmFilteredRequirements
             }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
@@ -5052,10 +5290,43 @@ exit 0
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
-                $NoTorchReq = Find-NoTorchRuntimeFile
+                $NoTorchReq = Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
+                Remove-ArmFilteredRequirements
+            }
+        } elseif ($script:ArmInferenceOnly) {
+            # ARM64 inference-only: unsloth's released metadata declares datasets a hard
+            # dependency, so a normal install pulls pyarrow in however the requirement
+            # files are filtered. --no-deps plus no-torch-runtime.txt (which
+            # install_python_stack.py installs, minus the packages with no win_arm64
+            # wheel) is the same route no-torch already takes. Torch is NOT skipped: it
+            # publishes win_arm64 CPU wheels and was installed above.
+            # --package is honoured here as it is on every other branch: a caller who
+            # asked to install a fork or a pinned spec must not silently get released
+            # unsloth back. The floor is only applied to the default name, where it is
+            # the version that knows about this tier.
+            $armCoreSpec = if ($PackageName -eq "unsloth") { "unsloth>=2026.8.15" } else { $PackageName }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (arm64 inference-only)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo -- "$armCoreSpec" "unsloth-zoo>=2026.8.10" }
+            if ($baseInstallExit -eq 0) {
+                # Same pydantic-with-deps trick as the no-torch branch: under --no-deps
+                # pydantic and pydantic-core drift apart and fail pydantic's own check.
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
+            }
+            if ($baseInstallExit -eq 0) {
+                # --no-deps above installed unsloth WITHOUT its declared dependencies,
+                # and pydantic is not one of the ones that matter first: the `unsloth`
+                # console script imports typer at the top of unsloth_cli/__init__.py, so
+                # the studio setup handoff below would exit ModuleNotFoundError
+                # before install_python_stack.py could install anything. The two other
+                # --no-deps branches already lay down no-torch-runtime.txt for exactly
+                # this reason; the ARM filter drops the entries with no win_arm64 wheel.
+                $NoTorchReq = Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)
+                if ($NoTorchReq) {
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install arm64 inference-only runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                }
+                Remove-ArmFilteredRequirements
             }
         } elseif ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12" }
@@ -5486,6 +5757,14 @@ exit 0
             $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+        }
+        # Set by the ARM64 fallback, and only for this run. Leaving it behind in a
+        # piped-to-iex shell pins the caller to the inference-only tier for the rest
+        # of the session, including the x64 retry the failure message asks for.
+        if ($script:HadPreviousNoDatasetsEnv) {
+            $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
+        } else {
+            Remove-Item Env:UNSLOTH_NO_DATASETS -ErrorAction SilentlyContinue
         }
         # ...and the copy this function holds goes with it, rather than sitting in the frame for
         # the rest of a long install.

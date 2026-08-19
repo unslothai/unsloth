@@ -278,3 +278,135 @@ def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
 
     # Absent directory: must degrade quietly, it runs mid-install.
     im.set_no_torch_marker(True, root = install_root / "does" / "not" / "exist")
+
+
+def test_a_manifest_from_before_a_tracked_file_existed_is_not_stale(install_root, req_root):
+    """TRACKED_REQUIREMENT_FILES grows: overrides-win-arm64.txt joined it with the
+    ARM64 tier. Under plain dictionary equality every manifest written by an older
+    version would compare unequal the moment users upgraded, and every existing
+    install on every platform would take a full dependency pass on its first
+    `unsloth studio update`. A file the install never recorded says nothing about
+    whether that install is stale.
+
+    Named, not general: the tolerance covers LATE_TRACKED_REQUIREMENT_FILES only. A
+    manifest missing one of the long-standing keys describes something other than
+    this install and stays stale, as it was before."""
+    for name in im.LATE_TRACKED_REQUIREMENT_FILES:
+        path = req_root / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text("pymupdf>=1.28.2\n", encoding = "utf-8")
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    recorded = data["requirement_files"]
+    assert recorded, "the fixture should record at least one requirement file"
+    late = [name for name in im.LATE_TRACKED_REQUIREMENT_FILES if name in recorded]
+    assert late, "the fixture should record the late-tracked file"
+    for name in late:
+        del recorded[name]  # as if this file were added after the install
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["manifest_ok"] is True
+    assert state["reason"] != "studio_install_requirements_changed"
+
+
+def test_a_manifest_missing_a_long_standing_file_is_still_stale(install_root, req_root):
+    """A named exception, not a relaxation: a truncated or hand-edited manifest
+    still goes through repair, as it did before the ARM64 work."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    recorded = data["requirement_files"]
+    long_standing = [
+        name for name in sorted(recorded) if name not in im.LATE_TRACKED_REQUIREMENT_FILES
+    ]
+    assert long_standing, "the fixture should record a file that predates the tier"
+    del recorded[long_standing[0]]
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"
+
+
+def test_a_recorded_file_that_disappeared_is_still_stale(install_root, req_root):
+    """The other direction: forward tolerance must not become blindness."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    data["requirement_files"]["single-env/gone-since.txt"] = "0" * 64
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"
+
+
+def test_the_tier_does_invalidate_on_a_newly_tracked_file(install_root, req_root, monkeypatch):
+    """The exception to the rule above. On the ARM64 tier,
+    single-env/overrides-win-arm64.txt decides which PyMuPDF, PyAV, scikit-learn and
+    cryptography get installed, so an install whose manifest predates that file has
+    to re-run once. Everywhere else the file is inert and the old manifest is fine."""
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    dropped = sorted(data["requirement_files"])[0]
+    del data["requirement_files"][dropped]
+    data["no_datasets"] = True  # this install is the tier
+    path.write_text(json.dumps(data), encoding = "utf-8")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"
+
+    # And once the pass has run, the manifest carries every key and is current again.
+    im.write_manifest(
+        root = install_root,
+        req_root = req_root,
+        package_name = "pytest",
+        no_datasets = True,
+    )
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["manifest_ok"] is True
+
+
+class TestTierVersionLifts:
+    """The tier does not only drop requirements, it rewrites some pins.
+
+    pip_install() lifts pymupdf==1.27.2.3 to >=1.28.2 because 1.27 has no win_arm64
+    wheel. verify_install() reads studio.txt, so unless it applies the same lift it
+    judges the 1.28.x it just installed against the original exact pin, reports a
+    correctly installed distribution as missing, and re-runs the dependency pass on
+    every single launch.
+    """
+
+    def test_lifts_are_read_from_the_overrides_file(self):
+        lifts = im.tier_version_lifts()
+        assert lifts.get("pymupdf", "").startswith(">=")
+        # Parsed rather than duplicated, so editing the overrides file moves both.
+        assert set(lifts) <= {"pymupdf", "av", "scikit-learn", "cryptography", "pandas"}
+
+    def test_a_lifted_version_is_not_reported_missing(self, tmp_path):
+        req = tmp_path / "studio.txt"
+        req.write_text("pymupdf==1.27.2.3\n", encoding = "utf-8")
+        installed = {"pymupdf": "1.28.2"}
+        assert im.missing_requirements(req, installed = installed) == ["pymupdf"]
+        assert (
+            im.missing_requirements(
+                req,
+                installed = installed,
+                lifts = {"pymupdf": ">=1.28.2"},
+            )
+            == []
+        )
+
+    def test_a_version_below_the_lift_is_still_missing(self, tmp_path):
+        """Tolerating the lift must not turn the check off."""
+        req = tmp_path / "studio.txt"
+        req.write_text("pymupdf==1.27.2.3\n", encoding = "utf-8")
+        assert im.missing_requirements(
+            req,
+            installed = {"pymupdf": "1.26.0"},
+            lifts = {"pymupdf": ">=1.28.2"},
+        ) == ["pymupdf"]
+
+    def test_a_missing_overrides_file_yields_no_lifts(self, tmp_path):
+        assert im.tier_version_lifts(tmp_path) == {}

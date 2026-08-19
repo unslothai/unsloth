@@ -484,6 +484,108 @@ case "$PACKAGE_NAME" in
         exit 1 ;;
 esac
 
+# --python / UNSLOTH_PYTHON was never range-checked, so an unsupported minor went
+# straight to `uv venv` and only surfaced minutes later as a bare dependency name.
+# On 3.9 that name is "pyarrow" (constraints.txt pins pyarrow==23.0.1, which has no
+# cp39 wheel on any platform), and matplotlib, pymupdf, pymupdf4llm and fastmcp are
+# 3.10+ too, so fixing one pin would only move the wall (issue #8495). install.ps1
+# has enforced 3.11-3.13 all along; this is the same window.
+# Only a plain X.Y / X.Y.Z is judged. A path or a uv download name is not a version
+# and passes through untouched, matching _python_request's own screening.
+# And only when this run will actually select an interpreter. `unsloth studio update`
+# re-runs the installer with --shortcuts-only to refresh the launcher, passing the
+# caller's whole environment through, so a stale UNSLOTH_PYTHON=3.9 exported years
+# ago would fail a step that never touches Python -- a regression on a machine that
+# is not installing anything.
+# One verdict for both ways of naming an interpreter: "3.12" and /usr/bin/python3.12.
+# $_req_major / $_req_minor are empty when the request is not ours to judge, and then
+# this does nothing.
+_check_python_request() {
+    [ -n "$_req_major" ] && [ -n "$_req_minor" ] || return 0
+    # Hard-fail only what provably cannot resolve. 3.11 is the floor
+    # install.ps1 has always enforced, and it is the real one here too:
+    # both bundled Data Designer plugins declare requires-python >=3.11
+    # and install_python_stack.py installs them unconditionally, so 3.10
+    # dies near the END of every setup on a local project uv refuses --
+    # the late failure this gate exists to replace. Above 3.13 is
+    # unproven rather than known-broken, so it warns and continues.
+    if [ "$_req_major" -ne 3 ] || [ "$_req_minor" -lt 11 ]; then
+        echo "❌ ERROR: Python $_USER_PYTHON is not supported by Unsloth Studio (need 3.11-3.13)." >&2
+        echo "   Below 3.11: pyarrow (via datasets), matplotlib, pymupdf, pymupdf4llm and" >&2
+        echo "   fastmcp publish no wheels, and the bundled Data Designer plugins declare" >&2
+        echo "   requires-python >= 3.11, so the install would fail during resolution" >&2
+        echo "   with a bare dependency name instead of this message." >&2
+        echo "   Re-run without --python to use the default, or pass a supported version." >&2
+        exit 1
+    elif [ "$_req_minor" -ge 15 ]; then
+        # Not "untested" but impossible: pyproject.toml declares
+        # requires-python = ">=3.9,<3.15", so uv refuses the unsloth
+        # package itself on 3.15+ whatever wheels exist. Warning and
+        # continuing recreates the late resolver failure this gate was
+        # added to replace. Bump both together when the pin moves.
+        echo "❌ ERROR: Python $_USER_PYTHON is not supported by Unsloth (requires-python is >=3.9,<3.15)." >&2
+        echo "   uv cannot install the unsloth package on it at all, so the run would" >&2
+        echo "   fail during resolution instead of here." >&2
+        echo "   Re-run without --python to use the default, or pass 3.11-3.13." >&2
+        exit 1
+    elif [ "$_req_minor" -gt 13 ]; then
+        echo "⚠️  WARNING: Python $_USER_PYTHON is newer than the tested range (3.11-3.13)." >&2
+        echo "   Some wheels may not exist yet for it; 3.13 is the safe choice." >&2
+    fi
+}
+
+# Deferred to just after VENV_DIR is known; see the call below.
+_gate_python_request() {
+    [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ] || return 0
+    # An existing venv is no reason to skip this. Every re-run moves the old venv
+    # aside and recreates it from the request (_start_studio_venv_replacement), so
+    # a stale UNSLOTH_PYTHON=3.9 on a box already installed on 3.13 does not sit
+    # unread: it replaces a working environment with one that cannot resolve.
+    _req_major=""; _req_minor=""
+    # Ask an interpreter for its version, however it was named. Skipped when it cannot
+    # be run: resolving the request is not this gate's job, and the steps below report
+    # a bad one themselves.
+    _probe_python_version() {  # interpreter
+        _probe_ver=$("$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)
+        case "$_probe_ver" in
+            [0-9]*.[0-9]*)
+                _req_major=${_probe_ver%%.*}
+                _probe_rest=${_probe_ver#*.}
+                # Only up to the next dot. The line above asks for two fields, but a
+                # wrapper on PATH answering "3.9.1" would otherwise leave "9.1" for the
+                # arithmetic below, which aborts dash with "Illegal number".
+                _req_minor=${_probe_rest%%.*}
+                case "$_req_major$_req_minor" in
+                    ''|*[!0-9]*) _req_major=""; _req_minor="" ;;
+                esac ;;
+        esac
+    }
+    case "$_USER_PYTHON" in
+        */*|*\\*)
+            # A path names an interpreter just as "3.9" does, so ask it rather than
+            # letting it through: /usr/bin/python3.9 hit the same 3.11-only plugins
+            # this gate exists to catch, only minutes later and under another name.
+            _probe_python_version "$_USER_PYTHON" ;;
+        [0-9]*.[0-9]*)
+            _req_major=${_USER_PYTHON%%.*}
+            _req_rest=${_USER_PYTHON#*.}
+            _req_minor=${_req_rest%%.*}
+            # Anything non-numeric (a prerelease like 3.13rc1) is not ours to judge;
+            # the arithmetic in the check would abort dash with "Illegal number".
+            case "$_req_major$_req_minor" in
+                ''|*[!0-9]*) _req_major=""; _req_minor="" ;;
+            esac ;;
+        *)
+            # A bare name on PATH -- `python3.9` is as common a spelling as either of
+            # the above, and uv venv --python accepts it. Only when it resolves to
+            # something runnable: a uv download identifier (cpython-3.12-linux-...)
+            # is not on PATH, so it keeps passing through untouched.
+            _resolved=$(command -v "$_USER_PYTHON" 2>/dev/null || true)
+            [ -n "$_resolved" ] && _probe_python_version "$_resolved" ;;
+    esac
+    _check_python_request
+}
+
 # ── Tauri structured output ──
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then
@@ -655,6 +757,13 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+
+# Reject an unsupported --python/UNSLOTH_PYTHON, ahead of every install step and of
+# the venv replacement that would otherwise act on it. Above the rollback block, not
+# inside it: tests/sh/test_install_rollback_lifecycle.sh extracts that block verbatim
+# and runs it under dash, where a call to a function defined elsewhere is a 127.
+_gate_python_request
+
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false

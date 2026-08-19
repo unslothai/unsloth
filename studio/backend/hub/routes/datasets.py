@@ -34,8 +34,22 @@ from hub.schemas.downloads import (
     TransportStatusResponse,
 )
 from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
+from utils.datasets_availability import require_datasets_http
 
 router = APIRouter()
+
+# Per route, not on the router: only the endpoints whose service actually reaches
+# `from datasets import` are gated. Everything else here works from the filesystem,
+# huggingface_hub or the request body -- the cache inventory, the download jobs,
+# uploads, the local listing, its split options (local_options.py reimplements that
+# without the library on purpose) and ai-assist-mapping, which reads the samples the
+# client already sent. So reclaiming cache space, putting a file in place and starting,
+# tracking and cancelling a download all keep working in the ARM64 inference-only tier,
+# which is the tier that still downloads models (issue #8495). Starting one is the
+# point: a cache populated now is a dataset ready for the tier that can train on it.
+# Where the gate does fire it replaces a 500 from a lazy import several frames down;
+# anywhere else it costs a dict lookup.
+needs_datasets = Depends(require_datasets_http)
 
 
 @router.post("/upload", response_model = UploadDatasetResponse)
@@ -138,7 +152,7 @@ async def get_dataset_transport_status(
     return await downloads.get_dataset_transport_status_response(repo_id)
 
 
-@router.post("/check-format", response_model = CheckFormatResponse)
+@router.post("/check-format", response_model = CheckFormatResponse, dependencies = [needs_datasets])
 def check_format(
     request: CheckFormatRequest,
     hf_token: Optional[str] = Depends(get_hf_token),

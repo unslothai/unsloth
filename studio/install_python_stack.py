@@ -63,6 +63,16 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     or IS_MAC_INTEL
 )
 
+# Windows on ARM: pyarrow (via datasets), sqlite-vec and tiktoken have never
+# published a win_arm64 wheel at any version, so the full stack cannot be installed
+# on a native ARM64 interpreter -- uv falls through to a source build and dies on
+# CMake (issue #8495). Linux aarch64 is unaffected: every pin resolves there.
+# sysconfig, not platform.machine(): this has to describe the wheels THIS
+# interpreter accepts, and an x64 CPython emulated on an ARM64 box (the supported
+# configuration, which install.ps1 goes out of its way to obtain) reports
+# win-amd64 here while the host is still arm64.
+IS_WINDOWS_ARM64_PYTHON = IS_WINDOWS and sysconfig.get_platform().lower() == "win-arm64"
+
 
 def _is_windows_arm64() -> bool:
     """Windows on ARM, machine arch rather than process arch: platform.machine() reports
@@ -1842,8 +1852,7 @@ def _hsa_spoofed_physical_gfx(
         re-probe."""
         if physical == [inferred_gfx]:
             _safe_print(
-                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
-                f"physical arch.\n"
+                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the physical arch.\n"
             )
             return inferred_gfx
         # Say so rather than leaving "Checking whether..." hanging: on a real gfx1100
@@ -2427,8 +2436,7 @@ def _ensure_cuda_torch() -> None:
         if _target_span is None or not _span_covers(_target_span, _sms):
             return
         _why = (
-            f"torch is {_family} but this host has GPUs outside its "
-            f"sm_{_span[0]}-{_span[1]} range"
+            f"torch is {_family} but this host has GPUs outside its sm_{_span[0]}-{_span[1]} range"
         )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
@@ -3367,6 +3375,33 @@ def _infer_no_torch() -> bool:
 
 NO_TORCH = _infer_no_torch()
 
+
+def _infer_no_datasets() -> bool:
+    """Whether to run the ARM64 inference-only tier (no datasets/pyarrow).
+
+    Same precedence and the same reasons as _infer_no_torch: UNSLOTH_NO_DATASETS
+    (install.ps1 exports it when it could not obtain an x64 interpreter) -> the tier
+    recorded in this venv's manifest/marker -> platform detection, so a plain
+    ``unsloth studio update`` on a native ARM64 interpreter stays in the tier instead
+    of re-adding datasets and failing on pyarrow again (issue #8495).
+
+    Platform detection deliberately reads the interpreter, not the host: on Windows
+    on ARM the supported configuration is an emulated x64 CPython, which resolves
+    everything and must NOT land in this tier.
+
+    Evaluated at import, before install_python_stack() drops the manifest.
+    """
+    env = os.environ.get("UNSLOTH_NO_DATASETS")
+    if env is not None and env.strip():
+        return env.strip().lower() in install_manifest.NO_TORCH_TRUTHY
+    recorded = install_manifest.recorded_no_datasets()
+    if recorded is not None:
+        return recorded
+    return IS_WINDOWS_ARM64_PYTHON
+
+
+NO_DATASETS = _infer_no_datasets()
+
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
 # "cpu"; empty = standalone `studio update`, where we re-detect).
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
@@ -3439,6 +3474,19 @@ LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-git
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
 if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
     os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
+# Windows on ARM: several pins predate their win_arm64 wheel (pandas 2.3.3, pymupdf
+# 1.27.x, av<16), so the tier lifts them to the first release that has one. An
+# override rather than a constraint, for the same reason as the MLX file: the pins
+# live in constraints.txt and studio.txt, and a -c constraint cannot raise a floor
+# those files set. Only the ARM64 tier reads it, so x64 Windows is untouched.
+_WIN_ARM64_OVERRIDES = SINGLE_ENV / "overrides-win-arm64.txt"
+if (
+    NO_DATASETS
+    and IS_WINDOWS_ARM64_PYTHON
+    and _WIN_ARM64_OVERRIDES.is_file()
+    and "UV_OVERRIDE" not in os.environ
+):
+    os.environ["UV_OVERRIDE"] = _uv_safe_path(_WIN_ARM64_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the console encoding may be a legacy code page (e.g. CP1252)
@@ -3707,6 +3755,90 @@ def _extras_sdist_only_packages() -> tuple[str, ...]:
     return tuple(names)
 
 
+# Every one of these is a compiled package with no win_arm64 wheel at any version,
+# verified against PyPI, and every one of them already degrades at runtime:
+#   datasets   - pyarrow's only route into the stack; training needs it, chat does not
+#   sqlite-vec - RAG; storage/rag_db.py already sets RAG_AVAILABLE = False without it
+#   tiktoken   - reached only through transformers/data-designer, never imported here
+#   openai-whisper
+#              - pure Python itself, but extras.txt is the one step installed WITH
+#                dependency resolution and openai-whisper declares tiktoken, so
+#                filtering the direct tiktoken line does not keep tiktoken out: uv
+#                resolves it transitively and source-builds it (no win_arm64 wheel at
+#                any version), aborting the run. Dropping Whisper drops speech-to-text
+#                in this tier; keeping it drops the whole install.
+#   hf-transfer- download accelerator; the hub paths already force it off (hub/services/
+#                download_lifecycle.py sets HF_HUB_ENABLE_HF_TRANSFER=0)
+#   ddgs       - web search; pulls brotli, which has no win_arm64 wheel either. The one
+#                import site (core/inference/tools.py) is function-local under except
+#   pandas     - only the 3.0 line has win_arm64 wheels and studio.txt pins 2.3.3 on
+#                purpose, so drop it rather than lift a pin across a major. Its callers
+#                are Data Recipes, which need datasets and are unavailable here anyway
+# trl is deliberately NOT here. It is a py3-none-any wheel, it installs on ARM64,
+# and every step that installs it (extras-no-deps.txt, no-torch-runtime.txt) is a
+# --no-deps step, so it cannot drag datasets back in. Its own `trl/__init__.py` is a
+# _LazyModule with no eager `datasets` reference, so `from trl import __version__`
+# imports without the library present. That import is not optional: unsloth/models/
+# _utils.py runs it unconditionally, so `from unsloth import FastLanguageModel` --
+# the first line of studio/backend/core/inference/inference.py -- raises
+# ModuleNotFoundError without trl, and this tier advertises chat.
+# Two different reasons live below, and only the first travels off ARM64.
+# NO_DATASETS_SKIP_PACKAGES is the data stack itself: the tier is defined by not
+# having it, on every platform. WIN_ARM64_SKIP_PACKAGES is the win_arm64 wheel gap,
+# which is a property of the interpreter, not of the tier -- UNSLOTH_NO_DATASETS=1 on
+# x64 Windows or Linux installs all of it, and dropping it there would take away RAG,
+# web search, speech-to-text and the export helpers from a host that can run them.
+NO_DATASETS_SKIP_PACKAGES = {
+    "datasets",
+    "pandas",
+}
+
+WIN_ARM64_SKIP_PACKAGES = {
+    "sqlite-vec",
+    "tiktoken",
+    "openai-whisper",
+    "hf-transfer",
+    "ddgs",
+    # Optional extras in the same position: a compiled package with no win_arm64
+    # wheel at any version. pytorch-tokenizers and torch-c-dlpack-ext are ExecuTorch
+    # /DLPack helpers used by specific export paths, MeCab is the Japanese tokenizer
+    # a handful of models want. All three are already installed --no-deps as extras,
+    # so dropping them costs those features rather than the install.
+    "pytorch-tokenizers",
+    "torch-c-dlpack-ext",
+    "mecab",
+    # tensorboard itself is pure Python, but it requires grpcio, which has no
+    # win_arm64 wheel at any version and cannot build there either (its BoringSSL
+    # ASM has no ARM64 Windows target). Only the training worker writes TensorBoard
+    # logs (core/training/worker.py:3145), so this tier loses nothing it has.
+    "tensorboard",
+    # Same shape one layer down: torch-stoi is pure Python but declares torchaudio,
+    # and the PyTorch CPU index publishes no win_arm64 torchaudio at any version --
+    # which is exactly why install.ps1 installs torch and torchvision without it
+    # there. extras.txt is the one step resolved WITH dependencies, so leaving this
+    # line in is enough to fail the whole tier resolution on the audio stack it was
+    # already told not to install. It scores speech intelligibility for the STT
+    # extras, which need torchaudio anyway.
+    "torch-stoi",
+    # librosa is pure Python but requires numba, and numba and llvmlite publish no
+    # win_arm64 wheel at any version (verified against the index, not the changelog).
+    # extras.txt is resolved WITH dependencies, so this line alone fails the tier.
+    # It is already optional here: routes/inference.py:10784 catches its absence and
+    # tells the caller this format needs librosa, and no-torch skips it for the same
+    # reason (extras.txt says so at the top).
+    "librosa",
+}
+
+# Constraint entries dropped in the ARM64 tier: the skipped packages themselves (a
+# pin on something never installed can still drag it back in transitively) plus the
+# two pins that sit below the first release with a win_arm64 wheel. The lifts live in
+# single-env/overrides-win-arm64.txt; a constraint cannot be lifted by an override,
+# only removed, so the ceiling has to come off here for the floor there to apply.
+_WIN_ARM64_UNCONSTRAINED = (
+    NO_DATASETS_SKIP_PACKAGES | WIN_ARM64_SKIP_PACKAGES | {"pyarrow", "av", "pymupdf"}
+)
+
+
 def _select_flash_attn_version(torch_mm: str) -> str | None:
     return flash_attn_package_version(torch_mm)
 
@@ -3856,11 +3988,32 @@ def _bootstrap_uv() -> bool:
     return True
 
 
+def _canonical_requirement_name(line: str) -> str:
+    """PEP 503 name of a requirement line, or "" when there is none.
+
+    The skip sets are written with hyphens, and requirement files are not:
+    extras-no-deps.txt says ``pytorch_tokenizers`` and no-torch-runtime.txt says
+    ``hf_transfer``. Comparing the raw text let both through the filter and the
+    install then tried to build them from source.
+    """
+    bare = line.split("#")[0].strip()
+    if not bare or bare.startswith("-"):
+        return ""
+    return re.split(r"[=<>!~;\[ ]", bare)[0].strip().lower().replace("_", "-")
+
+
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy, adjacent when writable, with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
+    canonical_skip = {pkg.lower().replace("_", "-") for pkg in skip}
     filtered = [
-        line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
+        line
+        for line in lines
+        # The startswith arm is kept as well: callers have always been able to name a
+        # prefix rather than a distribution, and dropping it here would silently
+        # re-admit whatever relied on that.
+        if _canonical_requirement_name(line) not in canonical_skip
+        and not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     # Beside the source so relative -r/-c includes resolve; a read-only tree
     # (root-owned install, non-root user) falls back rather than aborting.
@@ -3876,6 +4029,76 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     except OSError:
         tmp = tempfile.NamedTemporaryFile(**kwargs)
     tmp.writelines(filtered)
+    tmp.close()
+    return Path(tmp.name)
+
+
+def _no_deps_mode_label() -> str:
+    """Why this install is taking the --no-deps route, in the user's own terms.
+
+    The tier is reachable on x64 as well, through UNSLOTH_NO_DATASETS=1, and on a
+    machine that is not ARM64 "ARM64 inference-only mode" is a false explanation of
+    a real change.
+    """
+    if NO_TORCH:
+        return "no-torch mode"
+    if IS_WINDOWS_ARM64_PYTHON:
+        return "ARM64 inference-only mode"
+    return "no-datasets mode"
+
+
+def _win_arm64_lifts() -> dict[str, str]:
+    """{canonical name: requirement} from overrides-win-arm64.txt, or {}.
+
+    Parsed rather than duplicated so the file stays the single description of which
+    pins predate their win_arm64 wheel. install.ps1 carries the same table for the
+    files it installs before this script exists.
+    """
+    lifts: dict[str, str] = {}
+    if not _WIN_ARM64_OVERRIDES.is_file():
+        return lifts
+    try:
+        text = _WIN_ARM64_OVERRIDES.read_text(encoding = "utf-8")
+    except OSError:
+        return lifts
+    for raw in text.splitlines():
+        line = raw.split("#")[0].strip()
+        if not line:
+            continue
+        name = re.split(r"[=<>!~;\[ ]", line)[0].strip().lower().replace("_", "-")
+        if name:
+            lifts[name] = line
+    return lifts
+
+
+def _lift_requirements(req: Path, lifts: dict[str, str]) -> Path:
+    """A temp copy with pinned lines replaced by their ARM64 lift.
+
+    UV_OVERRIDE covers the resolved installs, but not the ones that pass --no-deps
+    (uv resolves nothing, so there is no requirement to override) and not the pip
+    fallback, which does not read it. Rewriting the line covers all three.
+    """
+    out: list[str] = []
+    for raw in req.read_text(encoding = "utf-8").splitlines(keepends = True):
+        bare = raw.split("#")[0].strip()
+        if bare and not bare.startswith("-"):
+            name = re.split(r"[=<>!~;\[ ]", bare)[0].strip().lower().replace("_", "-")
+            if name in lifts:
+                out.append(lifts[name] + "\n")
+                continue
+        out.append(raw)
+    kwargs = dict(
+        mode = "w",
+        prefix = f".{req.stem}-arm64-",
+        suffix = ".txt",
+        delete = False,
+        encoding = "utf-8",
+    )
+    try:
+        tmp = tempfile.NamedTemporaryFile(dir = req.parent, **kwargs)
+    except OSError:
+        tmp = tempfile.NamedTemporaryFile(**kwargs)
+    tmp.writelines(out)
     tmp.close()
     return Path(tmp.name)
 
@@ -4105,18 +4328,39 @@ def pip_install(
     _invalidate_torch_runtime_probe()
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []
+    temp_reqs: list[Path] = []
     if constrain and CONSTRAINTS.is_file():
-        constraint_args_pip = ["-c", str(CONSTRAINTS)]
-        constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
+        constraints = CONSTRAINTS
+        if NO_DATASETS and IS_WINDOWS_ARM64_PYTHON:
+            # A constraint is a ceiling, and two of these sit below the first version
+            # with a win_arm64 wheel (av<16, pymupdf via studio.txt), which no override
+            # can lift -- uv reports the pair as unsatisfiable. The dropped packages'
+            # pins go with them so a stale `pyarrow==23.0.1` cannot pull datasets back
+            # through a transitive requirement. Everything else still applies.
+            constraints = _filter_requirements(CONSTRAINTS, _WIN_ARM64_UNCONSTRAINED)
+            temp_reqs.append(constraints)
+        constraint_args_pip = ["-c", str(constraints)]
+        constraint_args_uv = ["-c", _uv_safe_path(constraints)]
 
     actual_req = req
-    temp_reqs: list[Path] = []
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
+    if actual_req is not None and NO_DATASETS and NO_DATASETS_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_DATASETS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    # The wheel gap, not the tier: only where the wheels are actually missing.
+    if actual_req is not None and IS_WINDOWS_ARM64_PYTHON and WIN_ARM64_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, WIN_ARM64_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    if actual_req is not None and NO_DATASETS and IS_WINDOWS_ARM64_PYTHON:
+        _lifts = _win_arm64_lifts()
+        if _lifts:
+            actual_req = _lift_requirements(actual_req, _lifts)
+            temp_reqs.append(actual_req)
     if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
         # wheel. `unsloth studio update --local` does not pass
@@ -4295,6 +4539,28 @@ def install_python_stack() -> int:
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
 
+    # Nothing has been mutated yet, which is the point of doing this here: a native
+    # ARM64 interpreter outside the inference-only tier cannot install the stack at
+    # all (pyarrow via datasets, sqlite-vec, tiktoken and hf-transfer publish no
+    # win_arm64 wheel), and failing at the door beats failing several minutes later
+    # inside a pyarrow source build with nothing but the package name to go on --
+    # which is exactly what issue #8495 reported. install.ps1 normally prevents this
+    # by resolving an x64 interpreter; this catches the paths that reach here anyway
+    # (a hand-made venv, a bare `python install_python_stack.py`).
+    if IS_WINDOWS_ARM64_PYTHON and not NO_DATASETS:
+        _safe_print(
+            "error: this is a native ARM64 Python (win-arm64), which cannot install "
+            "the Unsloth Studio stack: pyarrow (via datasets), sqlite-vec, tiktoken "
+            "and hf-transfer publish no win_arm64 wheels at any version.\n"
+            "  Fix: install x64 Python from https://www.python.org/downloads/windows/ "
+            "('Windows installer (64-bit)', not ARM64) and re-run the installer -- x64 "
+            "runs emulated and supports the whole product, training included.\n"
+            "  Or: set UNSLOTH_NO_DATASETS=1 for an ARM64 inference-only install "
+            "(chat and model downloads work; training does not).",
+            file = sys.stderr,
+        )
+        return 1
+
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
     # survives rather than mutate the venv behind a marker that still verifies.
@@ -4311,6 +4577,9 @@ def install_python_stack() -> int:
     # pass killed part-way. Otherwise the next update sees neither, reads the
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
+    # Same reasoning for the ARM64 inference-only tier: without a marker that
+    # outlives a killed pass, the next update re-adds datasets and dies on pyarrow.
+    install_manifest.set_no_datasets_marker(NO_DATASETS)
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
@@ -4379,12 +4648,23 @@ def install_python_stack() -> int:
     if skip_base:
         # install.sh / install.ps1 already installed both core distributions.
         pass
-    elif NO_TORCH:
+    elif NO_TORCH or NO_DATASETS:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
         # both with --no-deps (PyPI metadata declares torch a hard dep; avoid it).
-        _progress("base packages (no torch)")
+        #
+        # The ARM64 inference-only tier takes the same route for the same shape of
+        # reason: unsloth's released metadata also declares datasets a hard dep, so a
+        # normal install re-pulls pyarrow however the requirement files are filtered.
+        # --no-deps plus no-torch-runtime.txt is exactly "unsloth's dependencies,
+        # named explicitly", and pip_install strips the win_arm64-less ones from that
+        # file through NO_DATASETS_SKIP_PACKAGES. Torch is not skipped in this tier --
+        # it has win_arm64 CPU wheels and install.ps1 installs it separately.
+        _progress("base packages (no torch)" if NO_TORCH else "base packages (inference-only)")
         pip_install(
-            f"Updating {package_name} + unsloth-zoo (no-torch mode)",
+            f"Updating {package_name} + unsloth-zoo "
+            # The tier is reachable on x64 through UNSLOTH_NO_DATASETS=1, where the
+            # architecture is not the reason and saying so would be a false one.
+            f"({_no_deps_mode_label()})",
             "--no-cache-dir",
             "--no-deps",
             "--upgrade-package",
@@ -4403,7 +4683,7 @@ def install_python_stack() -> int:
             "pydantic",
         )
         pip_install(
-            "Installing no-torch runtime deps",
+            "Installing no-torch runtime deps" if NO_TORCH else "Installing runtime deps",
             "--no-cache-dir",
             "--no-deps",
             req = REQ_ROOT / "no-torch-runtime.txt",
@@ -4742,6 +5022,7 @@ def install_python_stack() -> int:
             steps_total = _TOTAL,
             package_name = package_name,
             no_torch = NO_TORCH,
+            no_datasets = NO_DATASETS,
         )
         is None
     ):

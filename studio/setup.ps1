@@ -3347,6 +3347,30 @@ function Test-IsConda {
     return $false
 }
 
+# The interpreter's own wheel platform: win-amd64|win-arm64|win32|"". -S so a
+# sitecustomize banner cannot be read as the tag (install.ps1 carries the same
+# helper; tests/python/test_cross_platform_parity.py holds the two together).
+function Get-PythonPlatformTag {
+    param([string]$Exe)
+    try {
+        return (& $Exe -S -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+    } catch { return "" }
+}
+
+# Windows on ARM: pyarrow (via datasets), sqlite-vec and tiktoken have never
+# published a win_arm64 wheel, so only an x64 interpreter -- emulated, which is
+# fine -- can carry the full stack. install.ps1 already prefers x64 when it picks
+# an interpreter; every path here instead *reuses* one, so it has to re-ask.
+# Ask the interpreter, never the host: an emulated x64 process on an ARM64 box
+# still reports arm64 for the host. The ARM64 inference-only tier deliberately
+# runs on win-arm64 and so is exempt.
+function Test-CompatibleSetupPythonArch {
+    param([string]$Exe)
+    if ((Get-HostMachineArch) -ne "arm64") { return $true }
+    if ($script:NoDatasetsMode) { return $true }
+    return ((Get-PythonPlatformTag $Exe) -eq "win-amd64")
+}
+
 # 1g. Python (>= 3.11 and < 3.14). Prefer the interpreter install.ps1 already
 # resolved and built the venv with (UNSLOTH_SETUP_PYTHON), or the existing
 # venv python, before re-probing a system where a 3.14 or a WindowsApps stub
@@ -3373,6 +3397,83 @@ function Resolve-ReusedSetupPython {
     return $null
 }
 $ReusedSetupPython = Resolve-ReusedSetupPython
+
+# Both sources, and the marker is the one that matters on `unsloth studio update`:
+# install.ps1 exports UNSLOTH_NO_DATASETS for its own run only, so without the marker
+# an update would judge a tier venv by the full-install rule and refuse the very
+# environment it just built. Mirrors install_manifest.recorded_no_datasets().
+# The same canonical truthy set install.ps1 and install_manifest.NO_TORCH_TRUTHY use.
+# An exact -eq "1" comparison read UNSLOTH_NO_DATASETS=true/yes/on as "off": install.ps1
+# accepted the value and kept the native ARM64 interpreter, then the arch gate below --
+# with no marker yet on a fresh install -- rejected that very interpreter and aborted
+# setup, against an opt-in the user had stated explicitly.
+$NoDatasetsMode = ($null -ne $env:UNSLOTH_NO_DATASETS) -and
+    (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())
+# Manifest first, marker second -- the order install_manifest.recorded_no_datasets()
+# uses. The manifest is written when a pass COMPLETES, so an explicit `no_datasets:
+# false` is the record of a finished full install and has to be able to override a
+# marker that a failed removal, or a copy that carried the dotfile along, left
+# behind. Reading the marker first made that impossible: a stale dotfile would send
+# an x64 environment back into the tier on every update, and record it as the tier
+# again. The marker still answers on its own, which is its job -- it survives a pass
+# that died before the manifest was written. (Get-PersistedNoTorch is the same shape
+# for no-torch.)
+# Only when the variable is unset: any explicit value wins, as it does in
+# install_python_stack._infer_no_datasets(), so UNSLOTH_NO_DATASETS=0 can bring a
+# tier install back to the full set instead of being overruled by its own marker.
+$_noDatasetsRequested = ($null -ne $env:UNSLOTH_NO_DATASETS) -and
+    ("" -ne $env:UNSLOTH_NO_DATASETS.Trim())
+if (-not $NoDatasetsMode -and -not $_noDatasetsRequested -and $ReusedSetupPython) {
+    try {
+        # <venv>\Scripts\python.exe -> <venv>
+        $_venvRoot = Split-Path -Parent (Split-Path -Parent $ReusedSetupPython)
+        $_recorded = $null
+        $_manifest = Join-Path $_venvRoot "unsloth_install_manifest.json"
+        if ($_venvRoot -and (Test-Path -LiteralPath $_manifest -PathType Leaf)) {
+            $_payload = $null
+            try { $_payload = Get-Content -LiteralPath $_manifest -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $_payload = $null }
+            if ($null -ne $_payload -and $null -ne $_payload.no_datasets) {
+                $_recorded = ("$($_payload.no_datasets)" -match '^\s*(?i:true|1|yes|on)\s*$')
+            }
+        }
+        if ($null -ne $_recorded) {
+            $NoDatasetsMode = $_recorded
+            # Handed over explicitly: install_python_stack.py re-infers the tier
+            # from env, manifest, marker, interpreter -- and the dependency pass
+            # deletes the manifest first, so this precedence would be undone at the
+            # process boundary. Only a recorded value is exported; with no record
+            # the child's own interpreter check is the right answer.
+            $env:UNSLOTH_NO_DATASETS = if ($_recorded) { "1" } else { "0" }
+        } elseif ($_venvRoot -and (Test-Path -LiteralPath (Join-Path $_venvRoot ".unsloth-no-datasets"))) {
+            $NoDatasetsMode = $true
+            $env:UNSLOTH_NO_DATASETS = "1"
+        }
+    } catch { }
+}
+# An ARM64 venv with neither marker nor variable: an environment built before this
+# tier existed, or one whose install died before the marker was written. Without
+# this, the arch gate below refuses it on every run and `unsloth studio update`
+# can never converge -- including the desktop app's own update, which will not
+# fetch a new build until its backend update succeeds. setup.ps1 only updates the
+# venv it is given; it cannot go and fetch an x64 interpreter the way install.ps1
+# can, so adopting the tier is the only outcome here that leaves a working Studio.
+# Said out loud, with the remedy, because it is a reduced install.
+if (-not $NoDatasetsMode -and -not $_noDatasetsRequested -and
+    (Get-HostMachineArch) -eq "arm64" -and $ReusedSetupPython) {
+    if ((Get-PythonPlatformTag $ReusedSetupPython) -eq "win-arm64") {
+        $NoDatasetsMode = $true
+        $env:UNSLOTH_NO_DATASETS = "1"
+        # Write-StudioLine, not Write-Host: the desktop app runs setup under
+        # CREATE_NO_WINDOW, where 5.1's console host writes these bytes itself and
+        # every non-ASCII character arrives as U+FFFD.
+        Write-StudioLine "[!] This environment runs a native ARM64 Python, which has no wheel for" -ForegroundColor Yellow
+        Write-StudioLine "    datasets (via pyarrow). Updating it as an inference-only install: chat," -ForegroundColor Yellow
+        Write-StudioLine "    model downloads and the Hub keep working, training does not." -ForegroundColor Yellow
+        Write-StudioLine "    For the full product, install x64 Python from" -ForegroundColor Yellow
+        Write-StudioLine "    https://www.python.org/downloads/windows/ (it runs emulated) and re-run" -ForegroundColor Yellow
+        Write-StudioLine "    the Unsloth installer." -ForegroundColor Yellow
+    }
+}
 
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PythonOk = $false
@@ -3403,11 +3504,50 @@ function Add-PythonDirToProcessPath {
     } catch { }
 }
 
+# After winget installs an x64 Python on an ARM64 host, `python` on PATH can still be
+# the pre-existing native build: winget does not reorder PATH. Ask the py launchers and
+# winget's own install root for an x64 3.11-3.13 instead of failing on PATH order alone.
+function Find-X64SetupPython {
+    foreach ($launcher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
+        if ($launcher.Source -match $CondaSkipPattern) { continue }
+        foreach ($minor in @("3.13", "3.12", "3.11")) {
+            try {
+                $exe = (& $launcher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+            } catch { $exe = $null }
+            if ($exe -and (Test-Path -LiteralPath $exe) -and (Test-CompatibleSetupPythonArch $exe)) {
+                return $exe
+            }
+        }
+    }
+    foreach ($root in @($env:LOCALAPPDATA, $env:ProgramFiles)) {
+        if (-not $root) { continue }
+        foreach ($minor in @("313", "312", "311")) {
+            $exe = Join-Path $root "Programs\Python\Python$minor\python.exe"
+            if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $root "Python$minor\python.exe" }
+            if ((Test-Path -LiteralPath $exe) -and (Test-CompatibleSetupPythonArch $exe)) { return $exe }
+        }
+    }
+    return $null
+}
+
 # Reuse the install.ps1 / venv interpreter before any system probe.
 $ValidatedSetupPython = $null
 if ($ReusedSetupPython) {
     $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
     if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
+        # An ARM64 environment cannot be repaired from here -- setup only updates
+        # packages inside the venv it is handed, and every update it would run ends
+        # in the same source build of pyarrow (issue #8495). Say so instead of
+        # spending several minutes arriving at "install unsloth failed: pyarrow".
+        if (-not (Test-CompatibleSetupPythonArch $ReusedSetupPython)) {
+            Write-StudioLine "[ERROR] This environment was built with ARM64 Python ($(Get-PythonPlatformTag $ReusedSetupPython))." -ForegroundColor Red
+            Write-StudioLine "        pyarrow (via datasets), sqlite-vec and tiktoken publish no win_arm64 wheels," -ForegroundColor Yellow
+            Write-StudioLine "        so the stack cannot be installed or updated here." -ForegroundColor Yellow
+            Write-StudioLine "        Fix: re-run the installer to rebuild it with x64 Python (it runs emulated):" -ForegroundColor Yellow
+            Write-StudioLine "             irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+            Write-StudioLine "        Or set UNSLOTH_NO_DATASETS=1 for an ARM64 inference-only install (no training)." -ForegroundColor Yellow
+            Exit-SetupFailure "Environment uses ARM64 Python, which cannot install the Studio stack"
+        }
         $DetectedPyVer = $_reusedVer
         Add-PythonDirToProcessPath $ReusedSetupPython
         $PythonOk = $true
@@ -3427,16 +3567,22 @@ foreach ($PyLauncher in $PyLaunchers) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
             if ($out -match 'Python (3\.\d+\.\d+)') {
-                $DetectedPyVer = $Matches[1]
+                $_candidateVer = $Matches[1]
                 # Make `python` resolvable for the rest of setup. Without this,
                 # py-launcher-only installs (no python.exe on PATH) pass the gate
                 # and then crash on the first bare `python` call below.
+                $resolvedExe = $null
                 try {
                     $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
-                        Add-PythonDirToProcessPath $resolvedExe
-                    }
                 } catch { }
+                # Windows on ARM: skip a native ARM64 build and keep looking. The
+                # launcher hands out the native one first, and it cannot resolve the
+                # stack; a lower-priority x64 minor is worth more than the newest ARM64.
+                if ($resolvedExe -and -not (Test-CompatibleSetupPythonArch $resolvedExe)) { continue }
+                $DetectedPyVer = $_candidateVer
+                if ($resolvedExe -and (Test-Path $resolvedExe)) {
+                    Add-PythonDirToProcessPath $resolvedExe
+                }
                 $PythonOk = $true
                 break
             }
@@ -3450,9 +3596,28 @@ if (-not $PythonOk -and $HasPython) {
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            $DetectedPyVer = "$PyMajor.$PyMinor"
-            $PythonOk = $true
+            # Same ARM64 screen as the launcher loop above: a supported version is
+            # not enough on Windows on ARM, the build has to be x64.
+            $_barePython = (Get-Command python -ErrorAction SilentlyContinue).Source
+            if (-not $_barePython -or (Test-CompatibleSetupPythonArch $_barePython)) {
+                $DetectedPyVer = "$PyMajor.$PyMinor"
+                $PythonOk = $true
+            }
         }
+    }
+}
+
+# Windows on ARM, no reusable interpreter, and every candidate rejected on
+# architecture: $HasPython is still true, so the winget branch below -- which is
+# guarded by `-not $HasPython` and is the only thing that would install the x64
+# build -- was skipped, and setup hard-exited with "No supported Python (3.11-3.13)"
+# on a machine that has a perfectly supported 3.12. A present-but-unusable
+# interpreter is no usable Python, so say so and let the bootstrap run.
+if (-not $PythonOk -and $HasPython -and (Get-HostMachineArch) -eq "arm64" -and -not $NoDatasetsMode) {
+    $_barePythonSource = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if ($_barePythonSource -and -not (Test-CompatibleSetupPythonArch $_barePythonSource)) {
+        substep "windows on arm: the Python on PATH is a native ARM64 build, which cannot resolve the stack"
+        $HasPython = $false
     }
 }
 
@@ -3466,14 +3631,43 @@ if ($PythonOk) {
     Write-StudioLine "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+        # On an ARM64 host winget defaults to the ARM64 package, which cannot resolve
+        # pyarrow/sqlite-vec/tiktoken. --architecture x64 pulls the emulated build that
+        # can, matching install.ps1's Install-X64Python. The inference-only tier wants
+        # the native build, so it takes winget's default.
+        $_wingetArchArgs = @()
+        if ((Get-HostMachineArch) -eq "arm64" -and -not $NoDatasetsMode) {
+            $_wingetArchArgs = @("--architecture", "x64")
+            substep "windows on arm: installing x64 Python (no win_arm64 wheels for the stack)"
+        }
+        winget install -e --id Python.Python.3.12 --source winget @_wingetArchArgs --accept-package-agreements --accept-source-agreements
         Refresh-Environment
     }
-    $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+    $_afterWinget = (Get-Command python -ErrorAction SilentlyContinue)
+    $HasPython = $null -ne $_afterWinget
     if (-not $HasPython) {
         Write-StudioLine "[ERROR] Python could not be installed automatically." -ForegroundColor Red
         Write-StudioLine "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
         Exit-SetupFailure "Python could not be installed automatically"
+    }
+    # The ARM64 branch above cleared $HasPython precisely because the python on PATH
+    # was native. If winget failed, or its x64 build is not first on PATH, that same
+    # interpreter answers here: without this the run continues on the build that was
+    # just rejected and dies later, deep in the dependency pass.
+    if (-not (Test-CompatibleSetupPythonArch $_afterWinget.Source)) {
+        # PATH order, not a failed install: winget's x64 build registers with the py
+        # launcher but does not displace the native python already ahead of it.
+        $_x64Python = Find-X64SetupPython
+        if ($_x64Python) {
+            Add-PythonDirToProcessPath $_x64Python
+            substep "windows on arm: using x64 Python at $_x64Python"
+        }
+    }
+    $_pythonNow = (Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $_pythonNow -or -not (Test-CompatibleSetupPythonArch $_pythonNow.Source)) {
+        Write-StudioLine "[ERROR] Python on PATH is a native ARM64 build, which has no wheels for the stack." -ForegroundColor Red
+        Write-StudioLine "        Install x64 Python 3.12 from https://python.org/downloads/windows/ (it runs emulated)." -ForegroundColor Yellow
+        Exit-SetupFailure "No x64 Python 3.11-3.13 was found"
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
@@ -3785,7 +3979,11 @@ if ($ReusedSetupPython) {
         $out = & $ReusedSetupPython --version 2>&1 | Out-String
         if ($out -match 'Python 3\.(\d+)') {
             $pyMinor = [int]$Matches[1]
-            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython)) {
+            # Arch as well as version: the 1g gate above already exits on an ARM64
+            # environment, so this only catches a handoff that skipped it, but the two
+            # reuse sites must agree or the second silently re-admits what the first rejected.
+            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython) `
+                -and (Test-CompatibleSetupPythonArch $ReusedSetupPython)) {
                 $PythonCmd = $ReusedSetupPython
             }
         }
@@ -3808,7 +4006,10 @@ foreach ($pyLauncher in $PyLaunchersResolve) {
                     # Resolve the actual executable path so venv creation
                     # does not re-resolve back to a conda interpreter.
                     $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
+                    # Test-CompatibleSetupPythonArch keeps the search going past a
+                    # native ARM64 build; on every other host it is always true.
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe) `
+                        -and (Test-CompatibleSetupPythonArch $resolvedExe)) {
                         $PythonCmd = $resolvedExe
                         break
                     }
@@ -3834,7 +4035,7 @@ if (-not $PythonCmd) {
                 $ver = & $cmdInfo.Source --version 2>&1
                 if ($ver -match 'Python 3\.(\d+)') {
                     $minor = [int]$Matches[1]
-                    if ($minor -ge 11 -and $minor -le 13) {
+                    if ($minor -ge 11 -and $minor -le 13 -and (Test-CompatibleSetupPythonArch $cmdInfo.Source)) {
                         $PythonCmd = $cmdInfo.Source
                         break
                     }
@@ -3847,8 +4048,17 @@ if (-not $PythonCmd) {
 
 if (-not $PythonCmd) {
     Write-StudioLine "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
-    Write-StudioLine "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
-    Write-StudioLine "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
+    if ((Get-HostMachineArch) -eq "arm64" -and -not $NoDatasetsMode) {
+        # Naming the arch here matters: an ARM64 Python may well be installed and
+        # was skipped on purpose, so "not found" alone reads as a false negative.
+        Write-StudioLine "        On Windows on ARM an x64 build is required: pyarrow (via datasets)," -ForegroundColor Yellow
+        Write-StudioLine "        sqlite-vec and tiktoken publish no win_arm64 wheels. x64 runs emulated." -ForegroundColor Yellow
+        Write-StudioLine "        Install Python from https://python.org/downloads/windows/ (64-bit, not ARM64) or via:" -ForegroundColor Yellow
+        Write-StudioLine "        winget install -e --id Python.Python.3.12 --architecture x64" -ForegroundColor Yellow
+    } else {
+        Write-StudioLine "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
+        Write-StudioLine "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
+    }
     Exit-SetupFailure "No standalone Python 3.11-3.13 was found"
 }
 
@@ -4781,6 +4991,32 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         if ($_studioInstallIncomplete) {
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
+        }
+        # An explicit UNSLOTH_NO_DATASETS that disagrees with what this venv recorded is
+        # a transition request, and verify_install() judges the venv against the tier it
+        # already has -- so it says "ok" and the fast path skips the very pass that would
+        # carry the change out. Only when the variable was actually set: with nothing
+        # requested there is nothing to reconcile.
+        if ($_noDatasetsRequested) {
+            $_recordedTier = $null
+            try {
+                $_tierProbe = (& python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(2)
+recorded = install_manifest.recorded_no_datasets()
+sys.exit(2 if recorded is None else (0 if recorded else 1))
+" "$PSScriptRoot" 2>$null)
+                if ($LASTEXITCODE -eq 0) { $_recordedTier = $true }
+                elseif ($LASTEXITCODE -eq 1) { $_recordedTier = $false }
+            } catch {}
+            if ($null -ne $_recordedTier -and $_recordedTier -ne $NoDatasetsMode) {
+                substep "requested install tier differs from the recorded one -- forcing dependency pass..." "Cyan"
+                $SkipPythonDeps = $false
+            }
         }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to

@@ -1043,3 +1043,230 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit QLoRA needs a source build" in text
             ), f"{name} must tell aarch64 users 4-bit needs a source build"
+
+
+class TestWindowsArm64WheelGapParity:
+    """Windows on ARM has no win_arm64 wheel for pyarrow (via datasets), sqlite-vec,
+    tiktoken or hf-transfer, so the full stack needs an x64 interpreter -- emulated,
+    which resolves everything. install.ps1 has preferred x64 since #7549; the paths
+    that REUSE an interpreter did not, which is how issue #8495 still happened.
+
+    The four scripts have to agree on that rule or the gap reopens in whichever one
+    drifts, so each is pinned here rather than only in its own file's tests."""
+
+    def test_both_windows_scripts_probe_the_interpreter_not_the_host(self):
+        """sysconfig.get_platform(), not PROCESSOR_ARCHITECTURE: the supported
+        configuration is an x64 CPython on an ARM64 box, where the host arch is
+        arm64 and the answer that matters is win-amd64."""
+        for path in (INSTALL_PS1, SETUP_PS1):
+            source = path.read_text(encoding = "utf-8")
+            assert "function Get-PythonPlatformTag" in source, path.name
+            index = source.index("function Get-PythonPlatformTag")
+            body = source[index : index + 600]
+            assert "sysconfig.get_platform()" in body, path.name
+            # -S, or a sitecustomize banner is read as the platform tag.
+            assert '-S -c "import sysconfig' in body, path.name
+
+    def test_python_stack_preflights_before_mutating_the_venv(self):
+        """Defence in depth for the paths that reach the installer directly (a
+        hand-made venv, a bare `python install_python_stack.py`)."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert "IS_WINDOWS_ARM64_PYTHON" in source
+        preflight = source.index("if IS_WINDOWS_ARM64_PYTHON and not NO_DATASETS:")
+        drop_manifest = source.index("install_manifest.remove_manifest()")
+        assert preflight < drop_manifest, "preflight must run before the venv is touched"
+
+    def test_every_script_names_the_same_fix(self):
+        """A message that says only "failed" sends the reporter back to the issue
+        tracker; each of these has to name x64 Python."""
+        for path in (INSTALL_PS1, SETUP_PS1, STACK_PY):
+            source = path.read_text(encoding = "utf-8").lower()
+            assert "python.org/downloads/windows" in source, path.name
+            assert "x64" in source, path.name
+
+    def test_tier_flag_crosses_every_boundary(self):
+        """install.ps1 decides the tier, setup.ps1 and install_python_stack.py have
+        to honour it, and the marker keeps `unsloth studio update` inside it."""
+        assert 'UNSLOTH_NO_DATASETS = "1"' in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "UNSLOTH_NO_DATASETS" in SETUP_PS1.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert 'os.environ.get("UNSLOTH_NO_DATASETS")' in stack
+        assert "install_manifest.recorded_no_datasets()" in stack
+        assert "set_no_datasets_marker" in stack
+
+    def test_install_sh_rejects_a_python_that_cannot_resolve_the_stack(self):
+        """The Linux half of #8495: --python was never range-checked, so an
+        unsupported minor surfaced as a bare "pyarrow" from the resolver."""
+        source = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_req_minor" in source
+        index = source.index("is not supported by Unsloth Studio")
+        message = source[index - 400 : index + 500]
+        assert "pyarrow" in message
+        # The floor is 11, and it is the plugins that make it 11 rather than a
+        # judgement call: both bundled Data Designer projects declare
+        # requires-python >= 3.11 and install_python_stack.py installs them
+        # unconditionally, so 3.10 dies on a local project uv refuses, at the END of
+        # setup -- the late failure this gate replaces.
+        assert '"$_req_minor" -lt 11' in message
+        for plugin in ("data-designer-unstructured-seed", "data-designer-github-repo-seed"):
+            pyproject = REPO_ROOT / "studio" / "backend" / "plugins" / plugin / "pyproject.toml"
+            assert 'requires-python = ">=3.11"' in pyproject.read_text(
+                encoding = "utf-8"
+            ), f"{plugin} no longer needs 3.11; the gate's floor can move with it"
+
+    def test_linux_arm64_is_not_swept_up(self):
+        """aarch64 Linux has full wheel coverage and must keep installing natively;
+        only Windows may demand an x64 interpreter."""
+        for path in (INSTALL_PS1, SETUP_PS1):
+            source = path.read_text(encoding = "utf-8")
+            index = (
+                source.index("Test-CompatibleSetupPythonArch")
+                if path is SETUP_PS1
+                else source.index("windows on arm: only a native ARM64")
+            )
+            assert "Get-HostMachineArch" in source[max(0, index - 2000) : index + 2000]
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        gap = stack.index("IS_WINDOWS_ARM64_PYTHON = ")
+        assert "IS_WINDOWS and" in stack[gap : gap + 200]
+
+
+class TestArm64SkipListParity:
+    """install.ps1 hands a requirements file straight to uv in the no-torch branch,
+    so it has to drop the ARM64-impossible entries itself; install_python_stack.py
+    filters the steps it owns. Two lists, one rule -- and a package missing from
+    either fails the whole install on a Snapdragon (issue #8495)."""
+
+    @staticmethod
+    def _powershell_list() -> set[str]:
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        index = source.index("$script:ArmInferenceSkipPackages = @(")
+        block = source[index : source.index(")", index)]
+        return {name.strip().strip('"').lower() for name in re.findall(r'"[^"]+"', block)}
+
+    @staticmethod
+    def _python_set() -> set[str]:
+        """Both halves. The PowerShell list runs only on native ARM64, so it is the
+        union: the data stack the tier drops everywhere, plus the wheel gap Python
+        drops only on this interpreter."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        names: set[str] = set()
+        for start in ("NO_DATASETS_SKIP_PACKAGES = {", "WIN_ARM64_SKIP_PACKAGES = {"):
+            index = source.index(start)
+            block = source[index : source.index("\n}", index)]
+            names |= {name.strip().strip('"').lower() for name in re.findall(r'"[^"]+"', block)}
+        return names
+
+    def test_lists_match(self):
+        assert self._powershell_list() == self._python_set()
+
+    def test_the_python_side_splits_the_two_reasons(self):
+        """The tier is supported on x64, where the wheel gap does not exist: dropping
+        sqlite-vec, ddgs or whisper there removes working features."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        index = source.index("NO_DATASETS_SKIP_PACKAGES = {")
+        tier_only = source[index : source.index("\n}", index)]
+        for name in ("sqlite-vec", "ddgs", "openai-whisper", "librosa"):
+            assert name not in tier_only, name
+
+    def test_list_covers_the_known_gaps(self):
+        """Pinned by name: each has been checked against PyPI and publishes no
+        win_arm64 wheel at any version, so a resolver failure here is not a pin bump."""
+        expected = {
+            "datasets",
+            "sqlite-vec",
+            "tiktoken",
+            # extras.txt is the one step installed WITH dependency resolution, and
+            # openai-whisper declares tiktoken, so filtering the direct tiktoken line
+            # alone let uv resolve it transitively and source-build it anyway.
+            "openai-whisper",
+            "hf-transfer",
+            "ddgs",
+            "pandas",
+            "pytorch-tokenizers",
+            "torch-c-dlpack-ext",
+            "mecab",
+            "tensorboard",
+            # Pure Python, but it declares torchaudio, which the PyTorch CPU index
+            # publishes no win_arm64 build of -- the same reason install.ps1 installs
+            # torch and torchvision without it there. extras.txt resolves WITH
+            # dependencies, so this one line failed the entire tier resolution.
+            "torch-stoi",
+            # Pure Python, but requires numba, and numba and llvmlite publish no
+            # win_arm64 wheel at any version. Already optional at the one runtime
+            # caller, which says so.
+            "librosa",
+        }
+        assert self._python_set() == expected
+
+    def test_trl_is_not_skipped(self):
+        """trl is a py3-none-any wheel that installs on ARM64, every step that
+        installs it is a --no-deps step so it cannot pull datasets back in, and
+        unsloth/models/_utils.py imports it unconditionally. Skipping it made
+        `from unsloth import FastLanguageModel` -- line 6 of the Studio inference
+        worker -- raise ModuleNotFoundError in a tier that advertises chat."""
+        assert "trl" not in self._python_set()
+        assert "trl" not in self._powershell_list()
+
+    def test_whisper_is_skipped_so_tiktoken_cannot_return(self):
+        """The skip list is only as good as the transitive closure it excludes."""
+        assert "openai-whisper" in self._python_set()
+        assert "openai-whisper" in self._powershell_list()
+        extras = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
+            encoding = "utf-8"
+        )
+        assert "openai-whisper" in extras
+
+    @staticmethod
+    def _requirement_names(text: str) -> dict[str, str]:
+        entries = {}
+        for line in text.splitlines():
+            bare = line.split("#")[0].strip()
+            if not bare:
+                continue
+            name = re.split(r"[=<>!~;\[ ]", bare)[0].strip().lower().replace("_", "-")
+            if name:
+                entries[name] = bare
+        return entries
+
+    def test_version_lifts_match_the_overrides_file(self):
+        """install.ps1 rewrites the pinned lines itself (the file it filters comes
+        from the installed wheel, which need not contain a newly added overrides
+        file), and install_python_stack.py points UV_OVERRIDE at the file. Same
+        lifts, or an ARM64 install compiles MuPDF from source on one path only."""
+        overrides = (
+            REPO_ROOT
+            / "studio"
+            / "backend"
+            / "requirements"
+            / "single-env"
+            / "overrides-win-arm64.txt"
+        ).read_text(encoding = "utf-8")
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        index = source.index("$script:ArmInferenceLiftPackages = @{")
+        block = source[index : source.index("}", index)]
+        powershell = {
+            name.lower(): spec for name, spec in re.findall(r'"([^"]+)"\s*=\s*"([^"]+)"', block)
+        }
+        assert powershell == {
+            name: entry for name, entry in self._requirement_names(overrides).items()
+        }
+
+    def test_lifts_are_applied_by_rewriting_not_only_by_uv_override(self):
+        """UV_OVERRIDE does not reach a --no-deps install (uv resolves nothing to
+        override) nor the pip fallback (it never reads the variable), and both are
+        on the tier's path -- that is how a lifted scikit-learn still source-built."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _lift_requirements(" in source
+        assert "_lift_requirements(actual_req, _lifts)" in source
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "ArmInferenceLiftPackages" in ps1
+
+    def test_powershell_filter_normalises_names(self):
+        """no-torch-runtime.txt spells it hf_transfer and the list spells it
+        hf-transfer; PEP 503 says they are the same distribution."""
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        index = source.index("function Get-ArmFilteredRequirements")
+        body = source[index : index + 1600]
+        assert '.Replace("_", "-")' in body
+        # Off unless the tier is on, so an ordinary install still installs everything.
+        assert "if (-not $script:ArmInferenceOnly" in body

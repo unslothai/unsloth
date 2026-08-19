@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import sys
+import sysconfig
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -40,6 +41,13 @@ NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 # the next update, which then tries to delete the venv it is running out of.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
+# Same contract as NO_TORCH_MARKER, for the ARM64 inference-only tier: Windows on
+# ARM has no win_arm64 wheel for pyarrow (via datasets), sqlite-vec or tiktoken, so
+# when no x64 interpreter can be obtained the install drops those and training with
+# it (issue #8495). Like no-torch this must outlive both the dropped manifest and a
+# killed pass, or the next `unsloth studio update` re-adds datasets and fails again.
+NO_DATASETS_MARKER = ".unsloth-no-datasets"
+
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
 # Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
@@ -50,6 +58,41 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "no-torch-runtime.txt",
     "single-env/data-designer-deps.txt",
     "single-env/data-designer.txt",
+    # Lifts the pins that predate their package's first win_arm64 wheel (pymupdf, av,
+    # scikit-learn, cryptography). On the ARM64 tier this file DECIDES the installed
+    # version, so leaving it untracked lets a --local edit change what the next pass
+    # would install while requirement_digests() still reports the environment current.
+    "single-env/overrides-win-arm64.txt",
+)
+
+# Added to TRACKED_REQUIREMENT_FILES after installs in the field were already
+# recording digests: a manifest cannot be stale for a file it never knew about. Only
+# these names are tolerated; any other gap still means the manifest does not describe
+# this install. Empty once no manifest predates the release that added them.
+LATE_TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = ("single-env/overrides-win-arm64.txt",)
+
+# Entries in studio.txt that the ARM64 inference-only tier deliberately never
+# installs, so verification must not demand them back. Kept in step with
+# install_python_stack.NO_DATASETS_SKIP_PACKAGES, which is the full list; only the
+# members that studio.txt actually names matter here, because studio.txt is the one
+# file verify_install() checks. Canonical (PEP 503) names.
+NO_DATASETS_OMITTED_REQUIREMENTS: Tuple[str, ...] = (
+    "datasets",
+    "pandas",
+    "trl",
+)
+
+# Omitted for the wheel gap rather than for the tier, so only on the interpreter that
+# has the gap. UNSLOTH_NO_DATASETS=1 on x64 installs every one of these, and excusing
+# them there would let a genuinely incomplete install verify clean. Kept in step with
+# install_python_stack.WIN_ARM64_SKIP_PACKAGES; only the members studio.txt names
+# matter here, because studio.txt is the one file verify_install() checks.
+WIN_ARM64_OMITTED_REQUIREMENTS: Tuple[str, ...] = (
+    "sqlite-vec",
+    "ddgs",
+    "tiktoken",
+    "hf-transfer",
+    "tensorboard",
 )
 
 # The import chain studio/backend/run.py walks on startup.
@@ -127,6 +170,7 @@ def write_manifest(
     steps_total: int = 0,
     package_name: str = "unsloth",
     no_torch: Optional[bool] = None,
+    no_datasets: Optional[bool] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -137,6 +181,10 @@ def write_manifest(
         "package_version": _installed_version(package_name),
         "python": platform.python_version(),
         "platform": f"{sys.platform}-{platform.machine()}",
+        # The wheel tag, not the machine: an emulated x64 interpreter on ARM64 Windows
+        # reports arm64 for the machine, and the tag is what decides which wheels this
+        # venv could install. Read back when verifying a venv other than our own.
+        "platform_tag": sysconfig.get_platform(),
         "prefix": str(venv_root()),
         "steps_total": steps_total,
         "requirement_files": requirement_digests(req_root),
@@ -149,6 +197,9 @@ def write_manifest(
     # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
+    # Same additive contract, for the ARM64 inference-only tier.
+    if no_datasets is not None:
+        payload["no_datasets"] = bool(no_datasets)
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -222,6 +273,48 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     return None
 
 
+def no_datasets_marker_path(root: Optional[Path] = None) -> Path:
+    return (root or venv_root()) / NO_DATASETS_MARKER
+
+
+def set_no_datasets_marker(no_datasets: bool, root: Optional[Path] = None) -> None:
+    """Record the ARM64 inference-only tier. Never raises.
+
+    Mirrors set_no_torch_marker exactly, including the removal arm: an ARM64 venv
+    later rebuilt on an x64 interpreter must not keep answering "no datasets".
+    """
+    path = no_datasets_marker_path(root)
+    try:
+        if no_datasets:
+            path.write_text("", encoding = "utf-8")
+        else:
+            path.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
+def recorded_no_datasets(root: Optional[Path] = None) -> Optional[bool]:
+    """The tier this venv was installed with, or None when unknown.
+
+    None means nothing recorded it, and callers fall back to their own detection --
+    never to False, or an install made before this key existed would be silently
+    switched back to a tier its interpreter cannot resolve.
+    """
+    manifest = read_manifest(root)
+    if manifest is not None:
+        value = manifest.get("no_datasets")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in NO_TORCH_TRUTHY
+    try:
+        if no_datasets_marker_path(root).exists():
+            return True
+    except OSError:
+        pass
+    return None
+
+
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
     """(distribution name, marker, specifier) for a requirement, or None.
 
@@ -279,8 +372,58 @@ def _version_satisfies(version: str, specifier: str) -> bool:
         return False
 
 
+def _is_windows_arm64_python(manifest: Optional[Dict[str, object]] = None) -> bool:
+    """Is the interpreter being verified a native ARM64 Windows build?
+
+    The manifest answers first when it carries a tag, because verify_install() also
+    checks OTHER venvs (install_state(root=..., installed=...)): asked about a foreign
+    tier install, the running interpreter is the wrong thing to look at, in both
+    directions. Manifests written before the key existed fall back to this process.
+
+    sysconfig, not platform.machine(): an emulated x64 interpreter reports arm64 for
+    the machine and win-amd64 for the tag, and the tag decides which wheels exist.
+    Same expression as install_python_stack.IS_WINDOWS_ARM64_PYTHON, repeated because
+    this module is loaded alone by setup.ps1 and the desktop preflight.
+    """
+    recorded = (manifest or {}).get("platform_tag")
+    if isinstance(recorded, str) and recorded:
+        return recorded.lower() == "win-arm64"
+    return os.name == "nt" and sysconfig.get_platform().lower() == "win-arm64"
+
+
+def tier_version_lifts(req_root: Optional[Path] = None) -> Dict[str, str]:
+    """{canonical name: specifier} from single-env/overrides-win-arm64.txt.
+
+    The ARM64 tier does not only OMIT requirements, it also lifts some: pip_install()
+    rewrites `pymupdf==1.27.2.3` to `pymupdf>=1.28.2` because 1.27 has no win_arm64
+    wheel. Verification reads studio.txt, so without this it compares the installed
+    1.28.x against the original exact pin, calls a correctly installed distribution
+    missing, and sends every setup into another dependency pass.
+
+    Parsed from the file rather than duplicated, the same way install_python_stack
+    does it, so one edit moves both.
+    """
+    overrides = (req_root or requirements_root()) / "single-env" / "overrides-win-arm64.txt"
+    lifts: Dict[str, str] = {}
+    try:
+        lines = overrides.read_text(encoding = "utf-8").splitlines()
+    except OSError:
+        return lifts
+    for line in lines:
+        parsed = _parse_requirement_line(line)
+        if parsed is None:
+            continue
+        name, _marker, specifier = parsed
+        if specifier:
+            lifts[_canonical(name)] = specifier
+    return lifts
+
+
 def missing_requirements(
-    req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
+    req_file: Optional[Path] = None,
+    installed: Optional[Dict[str, str]] = None,
+    omit: Optional[Tuple[str, ...]] = None,
+    lifts: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """Distribution names that are missing or outside their required versions.
 
@@ -289,6 +432,11 @@ def missing_requirements(
 
     `installed` (canonical distribution name -> version) checks a venv other
     than the one running this code, which importlib.metadata cannot see.
+
+    `omit` names distributions this install tier never installs, so their absence
+    is the intended state rather than a broken venv. `lifts` replaces a pin the tier
+    rewrote before installing, so the version on disk is judged against what was
+    actually requested.
     """
     from importlib.metadata import PackageNotFoundError, distribution
 
@@ -298,14 +446,22 @@ def missing_requirements(
     except OSError:
         return []
 
+    omitted = {_canonical(name) for name in (omit or ())}
     missing: List[str] = []
     for line in lines:
         parsed = _parse_requirement_line(line)
         if parsed is None:
             continue
         name, marker, specifier = parsed
+        if _canonical(name) in omitted:
+            continue
         if not _marker_applies(marker):
             continue
+        if lifts:
+            lifted = lifts.get(_canonical(name))
+            if lifted:
+                # The tier installed this version, so it is the one to verify against.
+                specifier = lifted
         if installed is not None:
             version = installed.get(_canonical(name))
             if version is None or not _version_satisfies(version, specifier):
@@ -321,6 +477,45 @@ def missing_requirements(
             if not _version_satisfies(dist.version, specifier):
                 missing.append(name)
     return missing
+
+
+def _requirements_changed(
+    recorded: object,
+    current: Dict[str, str],
+    strict: bool = False,
+) -> bool:
+    """Has a requirement file this install was built from been edited since?
+
+    Not plain dictionary equality, because TRACKED_REQUIREMENT_FILES grows: adding
+    one (overrides-win-arm64.txt did) would otherwise make every manifest written by
+    an older version compare unequal, and every existing install on every platform
+    would take a full dependency pass on its first `unsloth studio update` after the
+    upgrade. A file the install never recorded says nothing about whether the
+    install is stale, so a key only the current version tracks is ignored -- for the
+    names in LATE_TRACKED_REQUIREMENT_FILES only. Any long-standing key still has to
+    be there, so a truncated manifest is as stale as it always was.
+
+    Everything the manifest DID record still has to match, and a file that has since
+    disappeared still counts as a change, so a --local edit is caught exactly as
+    before.
+
+    `strict` restores the missing-key check for the one install where a newly tracked
+    file DOES decide what gets installed: on the ARM64 tier, overrides-win-arm64.txt
+    picks the PyMuPDF, PyAV, scikit-learn and cryptography versions, so an install
+    whose manifest predates it must re-run once -- after which the manifest carries
+    the key and later edits are caught like any other.
+    """
+    if not isinstance(recorded, dict):
+        return True
+    for name, digest in recorded.items():
+        if current.get(name) != digest:
+            return True
+    unrecorded = set(current) - set(recorded)
+    if not strict:
+        unrecorded -= set(LATE_TRACKED_REQUIREMENT_FILES)
+    if unrecorded:
+        return True
+    return False
 
 
 def verify_install(
@@ -339,10 +534,36 @@ def verify_install(
     would answer for the venv the caller happens to be running in.
     """
     reqs = req_root or requirements_root()
-    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
+    manifest = read_manifest(root)
+
+    # The ARM64 inference-only tier omits studio.txt entries with no win_arm64 wheel
+    # (datasets, pandas, sqlite-vec, ddgs) on purpose. Demanding them back here would
+    # report `studio_deps_missing` on every single verification of a perfectly
+    # complete tier install: `studio setup` would force another dependency pass each
+    # invocation, and verify-install / the desktop preflight would reject it. Read the
+    # tier the install actually recorded, not the platform, so an environment moved
+    # between tiers is judged by the rule it was built under.
+    tier = bool(recorded_no_datasets(root))
+    omit = NO_DATASETS_OMITTED_REQUIREMENTS if tier else None
+    # The wheel-gap omissions follow the interpreter, the way the lifts below do: an
+    # x64 tier install has all of them, so excusing them there would pass an install
+    # that really is missing packages.
+    if omit and _is_windows_arm64_python(manifest):
+        omit = omit + WIN_ARM64_OMITTED_REQUIREMENTS
+    # And the pins the tier LIFTED rather than dropped, or a correctly installed
+    # PyMuPDF 1.28.x reads as missing against studio.txt's ==1.27.2.3 for ever.
+    # Gated on the interpreter too, as the install side is: UNSLOTH_NO_DATASETS=1
+    # turns the tier on for an x64 install, where the overrides never ran and the
+    # original pins are what is installed.
+    lifts = tier_version_lifts(reqs) if (tier and _is_windows_arm64_python(manifest)) else None
+    missing = missing_requirements(
+        reqs / BOOT_REQUIREMENT_FILE,
+        installed = installed,
+        omit = omit,
+        lifts = lifts,
+    )
     deps_ok = not missing
 
-    manifest = read_manifest(root)
     manifest_ok = False
     reason: Optional[str] = None
 
@@ -357,7 +578,12 @@ def verify_install(
         recorded = manifest.get("package_version")
         if current and recorded and current != recorded:
             reason = "studio_install_version_changed"
-        elif manifest.get("requirement_files") != requirement_digests(reqs):
+        elif _requirements_changed(
+            manifest.get("requirement_files"),
+            requirement_digests(reqs),
+            # Only the tier: that is where a newly tracked file changes the install.
+            strict = bool(recorded_no_datasets(root)),
+        ):
             reason = "studio_install_requirements_changed"
         else:
             manifest_ok = True
