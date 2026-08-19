@@ -582,6 +582,57 @@ def test_windows_npm_sibling_runtime_is_validated(managed_node_install, monkeypa
 
     _patch_floors(monkeypatch, lambda executable: _record(executable))
     configured = f"{good}{os.pathsep}{old}"
-    result = node_runtime.path_with_managed_node(configured, require_npm = True, require_npx = False)
+    result = node_runtime.path_with_managed_node(
+        configured, require_npm = True, require_npx = False
+    )
     assert any(c.endswith("node.exe") for c in checked), checked
     assert result == f"{managed_node_install}{os.pathsep}{configured}"
+
+
+def _good_node_only(tmp_path, name = "toolchain"):
+    d = tmp_path / name
+    d.mkdir()
+    _make_executable(d, "node")
+    return d
+
+
+def test_pathed_npm_keeps_a_configured_node(managed_node_install, monkeypatch, tmp_path):
+    """The pathed launcher runs either way; its shebang must keep the configured node."""
+    configured = _good_node_only(tmp_path)
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(configured))
+    assert mcp_client._stdio_env(None, "/opt/toolchain/npm")["PATH"] == str(configured)
+
+
+def test_pathed_npx_keeps_a_configured_node(managed_node_install, monkeypatch, tmp_path):
+    configured = _good_node_only(tmp_path)
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(configured))
+    assert mcp_client._stdio_env(None, "/opt/toolchain/npx")["PATH"] == str(configured)
+
+
+def test_pathed_npm_still_gets_node_when_path_has_none(
+    managed_node_install, monkeypatch, tmp_path
+):
+    """With no node at all the shebang would fail, so the managed runtime still helps."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(empty))
+    env = mcp_client._stdio_env(None, "/opt/toolchain/npm")
+    assert env["PATH"] == f"{managed_node_install}{os.pathsep}{empty}"
+
+
+def test_bare_npm_still_requires_npm_on_path(managed_node_install, monkeypatch, tmp_path):
+    configured = _good_node_only(tmp_path, "bare")
+    _patch_floors(monkeypatch, lambda executable: True)
+    monkeypatch.setenv("PATH", str(configured))
+    env = mcp_client._stdio_env(None, "npm")
+    assert env["PATH"] == f"{managed_node_install}{os.pathsep}{configured}"
+
+
+def test_runtime_requirements_for_pathed_launchers():
+    assert mcp_client._runtime_requirements("/opt/toolchain/npm") == (False, False)
+    assert mcp_client._runtime_requirements("/opt/toolchain/npx") == (False, False)
+    assert mcp_client._runtime_requirements("npm") == (True, False)
+    assert mcp_client._runtime_requirements("npx") == (True, True)
