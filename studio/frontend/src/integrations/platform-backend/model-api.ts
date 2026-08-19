@@ -22,6 +22,11 @@ import {
 } from "./model-types";
 
 const segment = (value: string) => encodeURIComponent(value.trim());
+// Provider probes can consume the backend driver's full 15-second HTTP
+// timeout. Keep the browser deadline comfortably above that boundary so the
+// backend response wins instead of being masked by a simultaneous client
+// timeout.
+const PROVIDER_CONNECTION_TIMEOUT_MS = 30_000;
 const list = <T>(value: unknown, mapper: (item: unknown) => T | null): T[] =>
   (Array.isArray(value) ? value : [])
     .map(mapper)
@@ -217,7 +222,11 @@ export function testProviderInstanceConnection(
 ): Promise<unknown> {
   return platformRequest(
     `/providers/${segment(providerName)}/instances/${segment(instanceName)}/connection`,
-    { signal, getRetries: 0 },
+    {
+      signal,
+      getRetries: 0,
+      timeoutMs: PROVIDER_CONNECTION_TIMEOUT_MS,
+    },
   );
 }
 
@@ -237,6 +246,7 @@ export function testProviderConnection(
       model_info: [],
     },
     signal,
+    timeoutMs: PROVIDER_CONNECTION_TIMEOUT_MS,
   });
 }
 

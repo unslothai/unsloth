@@ -47,6 +47,8 @@ COPY --from=go-builder /src/api/apps/restful_apis/aimlapi_api.py \
   /ragflow/api/apps/restful_apis/aimlapi_api.py
 COPY --from=go-builder /src/common/aimlapi_utils.py \
   /ragflow/common/aimlapi_utils.py
+COPY --from=go-builder /src/common/config_utils.py \
+  /ragflow/common/config_utils.py
 COPY --from=rag-platform-assets backend-entrypoint.sh /usr/local/bin/rag-platform-entrypoint
 COPY --from=rag-platform-assets runtime-readiness.sh /usr/local/bin/rag-platform-readiness
 COPY --from=rag-platform-assets proxy.conf /etc/nginx/proxy.conf

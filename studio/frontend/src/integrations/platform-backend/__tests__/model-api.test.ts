@@ -221,6 +221,37 @@ describe("Rag Platform Phase 3 model service", () => {
     expect(JSON.stringify(localStorage)).not.toContain("replacement-key");
   });
 
+  it("keeps provider connection probes alive beyond the generic request timeout", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+      );
+
+    try {
+      const probe = testProviderInstanceConnection("VLLM", "slow-instance");
+      const rejection = expect(probe).rejects.toMatchObject({
+        code: "CLIENT_TIMEOUT",
+      });
+
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(fetchSpy.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(14_999);
+      await rejection;
+    } finally {
+      fetchSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("uses the VLLM runtime contract for custom OpenAI-compatible base URLs", async () => {
     const payloads: unknown[] = [];
     platformTestServer.use(
