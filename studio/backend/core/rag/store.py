@@ -64,6 +64,9 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
+# Straight and curly double quotes, single quotes and backticks: how a user names a word
+# instead of using it. Non-greedy and single-line so an unclosed quote spans nothing.
+_QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
 
 
 def _match_query(query: str) -> str:
@@ -182,7 +185,19 @@ def conversation_match_queries(query: str) -> list[str]:
     # lower-case spelling of that question already does.
     raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
-    content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS] or tokens
+    # A QUOTED word is the subject, whatever the stopword list thinks of it. `What did I
+    # say about "this"?` reduces to '"say"' once the list has had it, and an archived
+    # `Use this endpoint` is then unreachable: it never contains "say", and if unrelated
+    # chunks fill the fetch window `_candidates` never reaches its hybrid fallback. Quotes
+    # are the one signal a user has for naming a word rather than using it, so the tokens
+    # inside them are exempt. They stay out of `identifiers` -- a quoted function word is
+    # not shaped like a name -- so this widens the permissive pass only.
+    quoted = frozenset(
+        token
+        for match in _QUOTED.findall(query.lower())
+        for token in _TOKEN.findall("".join(match))
+    )
+    content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS or t in quoted] or tokens
     permissive = " OR ".join(f'"{t}"' for t in content)
     if not identifiers:
         return [permissive]

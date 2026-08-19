@@ -694,9 +694,26 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 }
             )
             continue
+        # Split by POSITION, not by type. A persisted assistant row holds the whole turn
+        # in generation order, so a text part BEFORE the first call is what the model said
+        # on its way to calling (the live wire form carries that on the call message
+        # itself), and a text part after the calls is the reply that followed the result.
+        # Treating both as "the reply" put pre-call text after the results, three messages
+        # reading call/result/text against the live two reading call+text/result, and
+        # `_occurrences` then matched nothing and the turn took an invented ordinal.
+        first_call = next(
+            index
+            for index, part in enumerate(parts)
+            if isinstance(part, dict) and part.get("type") == "tool-call"
+        )
+        preamble = [
+            part
+            for part in parts[:first_call]
+            if not (isinstance(part, dict) and part.get("type") == "tool-call")
+        ]
         rest = [
             part
-            for part in parts
+            for part in parts[first_call:]
             if not (isinstance(part, dict) and part.get("type") == "tool-call")
         ]
         wire.append(
@@ -704,7 +721,8 @@ def _as_wire(messages: list[dict]) -> list[dict]:
                 "role": message.get("role"),
                 "content": [
                     {key: value for key, value in call.items() if key != "result"} for call in calls
-                ],
+                ]
+                + preamble,
                 "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
             }
         )
@@ -754,7 +772,7 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # already records how many messages a turn holds.
     wire = _as_wire(_active_chain(messages))
     return [
-        [_normalise(_probe_text(message)) for message in group]
+        [_normalise_cased(_probe_text(message)) for message in group]
         for group in group_turns(wire)
         if group
     ]
@@ -782,7 +800,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     """
     if not positions or not group:
         return []
-    texts = [_normalise(_probe_text(message)) for message in group]
+    texts = [_normalise_cased(_probe_text(message)) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
@@ -869,7 +887,7 @@ def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
     except Exception:
         return None
     positions = [
-        [_normalise(_probe_text(message)) for message in group]
+        [_normalise_cased(_probe_text(message)) for message in group]
         for group in group_turns(_as_wire(live))
         if group
     ]
@@ -1061,6 +1079,22 @@ def has_archive(thread_id: str) -> bool:
 
 def _normalise(text: str) -> str:
     return " ".join((text or "").split()).lower()
+
+
+def _normalise_cased(text: str) -> str:
+    """Whitespace-collapsed but CASE-PRESERVING, for transcript seat matching.
+
+    `Set key Foo` and `Set key FOO` are two different turns: they hash differently, so the
+    archive keeps a document for each. Folding case here made `_occurrences` hand BOTH
+    seats to BOTH of them, and a turn that believes it has two occurrences to fill gets
+    written twice at the next compaction. Measured: four documents for two turns, both
+    stamped at both ordinals, and the recall unable to say which spelling was said later
+    -- exactly the duplication the whole-turn comparison was added to stop. The two sides
+    compared here are the same strings from the same thread, so there is no casing to be
+    tolerant of; only the free-text branch filter, which compares a QUERY against saved
+    text, still folds case.
+    """
+    return " ".join((text or "").split())
 
 
 def _live_transcript(thread_id: str) -> Optional[list[str]]:
@@ -1924,7 +1958,19 @@ def recall(
                 pass
 
 
-def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
+def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
+    """The scope's document ids, optionally cut at ``created_before``. See `delete_for_thread`."""
+    if not created_before:
+        return ("SELECT id FROM documents WHERE scope=?", (scope,))
+    return (
+        "SELECT id FROM documents WHERE scope=? AND created_at<?",
+        (scope, created_before),
+    )
+
+
+def _delete_scope_without_vec(
+    scope: str, thread_id: str, *, created_before: Optional[str] = None
+) -> int:
     """Delete a scope's text-bearing rows over a connection with no sqlite-vec.
 
     Deletion must not depend on the optional native extension. Archives are only WRITTEN
@@ -1942,7 +1988,7 @@ def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
         conn = rag_db.get_metadata_connection()
         documents = [
             row["id"]
-            for row in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
+            for row in conn.execute(*_scope_select(scope, created_before)).fetchall()
         ]
         for document_id in documents:
             conn.execute(
@@ -1967,8 +2013,17 @@ def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
     return removed
 
 
-def delete_for_thread(thread_id: str) -> int:
-    """Drop a thread's archive. Called when the thread itself is deleted."""
+def delete_for_thread(thread_id: str, *, created_before: Optional[str] = None) -> int:
+    """Drop a thread's archive. Called when the thread itself is deleted.
+
+    ``created_before`` bounds the delete to documents archived before an ISO-8601 UTC
+    instant, which is how a thread id that came BACK is handled. Skipping the scope
+    wholesale spared the recreated chat's memory but also kept the deleted
+    conversation's, under a live id with nothing left to sweep it: the endpoint reported
+    success while the turns the user asked to delete stayed recallable in the new chat.
+    Cutting at the moment the delete was accepted takes exactly the old conversation and
+    leaves whatever the recreated thread has archived since.
+    """
     if not thread_id:
         return 0
     scope = store.conversation_archive_scope(thread_id)
@@ -1979,8 +2034,8 @@ def delete_for_thread(thread_id: str) -> int:
             conn = rag_db.get_connection()
         except Exception:
             # No vec0 here. Delete what can be deleted rather than nothing at all.
-            return _delete_scope_without_vec(scope, thread_id)
-        for row in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall():
+            return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
+        for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
             store.delete_document(conn, row["id"])
             removed += 1
     except Exception:
