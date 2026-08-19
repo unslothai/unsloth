@@ -3265,3 +3265,82 @@ def test_plain_stream_closes_generator_on_disconnect():
 
     asyncio.run(_drive())
     assert closed.is_set()
+
+
+def test_display_strip_keeps_provenance_trace_intact():
+    # Genuine reasoning that quotes </think> and then rehearses an enabled call: the
+    # think-aware cleaner closes the block at the quoted tag, so without provenance it
+    # strips the rehearsal out of the trace while wrap["len"] still measures the full
+    # one -- the split then eats the real terminator and the whole answer.
+    from routes.inference import _ReasoningSpanGuard, _split_think_segments
+
+    trace = 'emit </think> then <tool_call>{"name": "get_weather", "arguments": {}}</tool_call> ends it'
+    raw = f"<think>{trace}</think>It is sunny."
+    prov = {"wrapped": 1, "wraps": [{"len": len(trace)}]}
+
+    clean = _ReasoningSpanGuard(prov).strip(
+        raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
+    )
+    assert clean == raw
+
+    emitter = AnthropicStreamEmitter(think_provenance = prov)
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": clean})
+    events += emitter.finish()
+    assert _emitter_client_thinking(events) == trace
+    assert _emitter_client_text(events) == "It is sunny."
+    assert _split_think_segments(clean, prov["wraps"][0]) == [
+        ("thinking", trace),
+        ("text", "It is sunny."),
+    ]
+
+
+def test_display_strip_protects_the_wrap_of_each_tool_turn():
+    # A tool loop's second synthesis turn opens its own leading <think> backed by the NEXT
+    # wrap entry, so the guard must advance with the emitter's ledger; measuring turn 2
+    # against wraps[0] would put the boundary mid-trace and strip the rehearsal again.
+    from routes.inference import _ReasoningSpanGuard
+
+    first = "short first turn"
+    second = 'emit </think> then <tool_call>{"name": "get_weather", "arguments": {}}</tool_call> ends it'
+    prov = {"wrapped": 2, "wraps": [{"len": len(first)}, {"len": len(second)}]}
+    guard = _ReasoningSpanGuard(prov)
+    names = {"get_weather"}
+
+    turn1 = f"<think>{first}</think>Looking it up."
+    assert guard.strip(turn1, auto_heal_tool_calls = True, enabled_tool_names = names) == turn1
+    guard.tool_end()
+
+    turn2 = f"<think>{second}</think>It is sunny."
+    assert guard.strip(turn2, auto_heal_tool_calls = True, enabled_tool_names = names) == turn2
+
+
+def test_display_strip_still_cleans_tool_xml_after_the_trace():
+    # The protection covers only the recorded span; a leaked call in the answer still goes.
+    from routes.inference import _ReasoningSpanGuard, _strip_tool_xml_for_display
+
+    prov = {"wrapped": 1, "wraps": [{"len": len("plain reasoning")}]}
+    raw = '<think>plain reasoning</think>Done <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>ok'
+    clean = _ReasoningSpanGuard(prov).strip(
+        raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
+    )
+    assert clean == "<think>plain reasoning</think>Done ok"
+    # No provenance -> byte-identical to the plain display strip.
+    assert _ReasoningSpanGuard(None).strip(
+        raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
+    ) == _strip_tool_xml_for_display(
+        raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
+    )
+
+
+def test_display_strip_leaves_unwrapped_leading_tag_to_the_cleaner():
+    # wrapped == 0: the model typed the tag itself, so behaviour must not change.
+    from routes.inference import _ReasoningSpanGuard, _strip_tool_xml_for_display
+
+    raw = '<think>literal</think>Done <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>ok'
+    for prov in ({"wrapped": 0, "wraps": []}, None):
+        assert _ReasoningSpanGuard(prov).strip(
+            raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
+        ) == _strip_tool_xml_for_display(
+            raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
+        )
