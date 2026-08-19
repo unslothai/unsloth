@@ -1608,3 +1608,59 @@ def test_the_deleted_conversation_goes_even_when_its_id_comes_back(conn):
     )
     assert "5150" not in remaining
     assert "8080" in remaining
+
+
+def test_an_answer_corrected_only_in_case_retires_the_archived_copy(conn):
+    """Lowercasing the comparison made a case-only correction invisible.
+
+    `Foo` corrected to `foo` is a real edit, and the pre-edit copy stayed eligible: a
+    later search could answer with the spelling the user had just fixed. Same for a block
+    re-indented and nothing else, which is the ordinary way YAML and Python get corrected.
+    """
+    rows = [{"text": "user: set the key\nassistant: Foo"}]
+    corrected = conversation_archive.branch_message_texts(
+        [{"role": "user", "content": "set the key"}, {"role": "assistant", "content": "foo"}]
+    )
+    intact = conversation_archive.branch_message_texts(
+        [{"role": "user", "content": "set the key"}, {"role": "assistant", "content": "Foo"}]
+    )
+
+    assert conversation_archive._document_matches_one_run(rows, corrected, 2) is False
+    assert conversation_archive._document_matches_one_run(rows, intact, 2) is True
+
+
+def test_a_turn_that_opens_on_whitespace_is_still_on_its_branch(conn):
+    """The guard on the tighter comparison, which `rstrip()` would have broken.
+
+    `render_turn` strips the whole message, so keeping a probe's LEADING whitespace makes
+    a live turn beginning with a space or a newline start its run at a non-zero offset and
+    `_document_matches_one_run` retires it. Pasted code is the common shape here, so the
+    loss would land on exactly the turns worth recalling.
+    """
+    for content in ("   hello there", "\n  def f():\n    pass"):
+        turn = [{"role": "user", "content": content}, {"role": "assistant", "content": "ok"}]
+        rendered = conversation_archive.render_turn(turn)
+        text = rendered[1] if isinstance(rendered, tuple) else rendered
+        live = conversation_archive.branch_message_texts(turn)
+
+        assert conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True
+
+
+def test_a_tool_result_cut_exactly_on_a_line_stays_on_its_branch(conn):
+    """`render_turn`'s cut can land on a newline, and the marker is then its own line.
+
+    Stripped, that line is empty and was dropped, taking the truncation flag with it. The
+    last real probe was read as complete, `_document_matches_one_run` demanded the live
+    message end where the probe did, and an unedited over-cap tool result was retired:
+    measured on a 900-line result, no query could return it.
+    """
+    for length, where in ((7, "on a line boundary"), (8, "mid line")):
+        body = "\n".join("y" * length for _ in range(900))
+        turn = [{"role": "user", "content": "run it"}, {"role": "tool", "content": body}]
+        rendered = conversation_archive.render_turn(turn)
+        text = rendered[1] if isinstance(rendered, tuple) else rendered
+        live = conversation_archive.branch_message_texts(turn)
+
+        assert conversation_archive._document_matches_one_run([{"text": text}], live, 2) is True, (
+            f"cut {where}"
+        )
