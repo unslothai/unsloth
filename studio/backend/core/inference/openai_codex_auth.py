@@ -251,6 +251,22 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
         mark_subscription_catalog_stale(provider_id)
 
 
+def remember_catalog_account(provider_id: str, account_id: str) -> None:
+    """Record, next to the credentials, which account the saved models were proven for.
+
+    The in-memory mark does not survive a restart or reach a cold worker, and a rebind
+    replaces the bundle wholesale, so keeping the proof here is what makes "these saved
+    models belong to some other account" outlive this process.
+    """
+    bundle = load_oauth_bundle(provider_id)
+    if not bundle or bundle.get("account_id") != account_id:
+        return
+    if bundle.get("catalog_account_id") == account_id:
+        return
+    bundle["catalog_account_id"] = account_id
+    save_oauth_bundle(provider_id, bundle)
+
+
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:
     raw = credential_secrets.get_secret(credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id)
     if not raw:

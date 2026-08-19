@@ -321,6 +321,19 @@ def subscription_catalog_stale(provider_id: str) -> bool:
     return provider_id in _stale_catalogs
 
 
+def saved_models_proven_for(provider_id: str, account_id: str | None) -> bool:
+    """Whether the row's saved models are on record as validated against this account.
+
+    Consulted when this process holds no catalog: the in-memory mark is gone after a
+    restart and never existed on a cold worker, so the record kept with the credentials
+    is the only thing that still knows a rebind happened.
+    """
+    if account_id is None:
+        return True
+    bundle = codex_auth.load_oauth_bundle(provider_id)
+    return bool(bundle) and bundle.get("catalog_account_id") == account_id
+
+
 def subscription_catalog_known(provider_id: str) -> bool:
     """Whether this process has read a catalog for the connection at all.
 
@@ -459,6 +472,7 @@ async def list_subscription_models(
     _offered_models[provider_id] = {model["id"]: model for model in models}
     _catalog_accounts[provider_id] = account_id
     _stale_catalogs.discard(provider_id)
+    codex_auth.remember_catalog_account(provider_id, account_id)
     return models
 
 

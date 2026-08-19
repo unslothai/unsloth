@@ -2336,3 +2336,83 @@ def test_an_overtaken_read_is_dropped_when_the_account_moved(monkeypatch):
         assert asyncio.run(codex_client.ensure_subscription_models("provider-18")) == set()
     finally:
         forget_subscription_models("provider-18")
+
+
+def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
+    """The stale mark dies with the process; the record next to the credentials does not."""
+    saved = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+
+    import httpx
+
+    calls = []
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        calls.append(_provider_id)
+        # The gate's own refresh resolves; the chat path's later call stops the request.
+        if len(calls) > 1:
+            raise codex_auth.CodexAuthError("stub: past the model gate")
+        return "token", "acct-b"
+
+    class Unreachable:
+        async def get(self, *_args, **_kwargs):
+            raise httpx.ConnectError("upstream down")
+
+        async def aclose(self):
+            return None
+
+    # Cold: the refresh cannot reach upstream, so the catalog stays unknown and the
+    # decision is the cold branch alone.
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Unreachable())
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-b"})
+    try:
+        refused = _codex_chat_gate(monkeypatch, saved, resolve = _resolve, saved_models = [saved])
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+
+        # The same cold process, with the row on record as proven for this account.
+        monkeypatch.setattr(
+            codex_auth,
+            "load_oauth_bundle",
+            lambda _pid: {"account_id": "acct-b", "catalog_account_id": "acct-b"},
+        )
+        proven_calls = []
+
+        async def _always_refuse(_provider_id, force_refresh = False, expected_access_token = None):
+            proven_calls.append(_provider_id)
+            raise codex_auth.CodexAuthError("stub: past the model gate")
+
+        accepted = _codex_chat_gate(
+            monkeypatch, saved, resolve = _always_refuse, saved_models = [saved]
+        )
+        assert accepted.status_code == 401, accepted.detail
+        # Allowed straight off the row, so the gate never reached for a catalog: the one
+        # call is the chat path's own.
+        assert len(proven_calls) == 1
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_storing_a_catalog_records_the_account_with_the_credentials(monkeypatch):
+    """That record is what a later cold process reads instead of the lost mark."""
+    stored = {"provider-19": None}
+    bundle = {
+        "access_token": "token",
+        "refresh_token": "refresh",
+        "expires_at": 1,
+        "account_id": "acct-1",
+    }
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: dict(bundle))
+    monkeypatch.setattr(
+        codex_auth,
+        "save_oauth_bundle",
+        lambda provider_id, value: stored.__setitem__(provider_id, value),
+    )
+    fake = _models_response({"models": [{"slug": "gpt-5.4", "visibility": "list"}]})
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("provider-19")
+    try:
+        asyncio.run(list_subscription_models("provider-19", "token", "acct-1"))
+        assert stored["provider-19"]["catalog_account_id"] == "acct-1"
+    finally:
+        forget_subscription_models("provider-19")

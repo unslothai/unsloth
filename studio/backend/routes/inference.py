@@ -12415,6 +12415,7 @@ async def _proxy_to_external_provider(
             forget_subscription_models,
             mark_subscription_catalog_stale,
             subscription_catalog_known,
+            saved_models_proven_for,
             subscription_catalog_matches_account,
             subscription_catalog_stale,
         )
@@ -12477,6 +12478,11 @@ async def _proxy_to_external_provider(
                     if offered_subscription_model(payload.provider_id, slug) is not None
                 }
             if subscription_catalog_stale(payload.provider_id):
+                return set(info.get("default_models", []))
+            if not saved_models_proven_for(payload.provider_id, current_account):
+                # No catalog here and nothing on record saying the row was validated for
+                # this account, which is what a rebind before a restart, or on another
+                # worker, leaves behind.
                 return set(info.get("default_models", []))
             return set(info.get("default_models", [])) | saved
 
@@ -12595,6 +12601,17 @@ async def _proxy_to_external_provider(
                     force_refresh = True,
                     expected_access_token = current_access_token,
                 )
+                if not subscription_catalog_matches_account(
+                    payload.provider_id, refreshed_account_id
+                ):
+                    # A rebind landed mid-stream, so these credentials belong to an
+                    # account this model was never authorized against. Retrying here
+                    # would put it upstream under them.
+                    forget_subscription_models(payload.provider_id)
+                    mark_subscription_catalog_stale(payload.provider_id)
+                    raise CodexAuthError(
+                        "This ChatGPT connection changed accounts. Send the message again."
+                    )
                 return current_access_token, refreshed_account_id
 
             from core.inference.openai_codex_tool_loop import (
