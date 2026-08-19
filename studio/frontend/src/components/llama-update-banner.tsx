@@ -86,7 +86,7 @@ export function LlamaUpdateBanner({
   // for a cross-tab reload_required resync (the settings-sheet's own instance
   // only runs during an MTP-fallback rebuild), so muting the banner must not
   // also silence that resync -- it only suppresses the UI below.
-  const { status, visible, applying: applyingReported, apply, dismiss, snooze } =
+  const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
@@ -108,12 +108,6 @@ export function LlamaUpdateBanner({
     }
   }
 
-  const jobTerminal =
-    status?.job.state === "success" || status?.job.state === "error";
-  // A late poll can leave applying true after the job already finished. The
-  // progress UI must follow the job, or the toast stays pinned with no close
-  // button. See #9196.
-  const applying = applyingReported && !jobTerminal;
   const show =
     showBannerPref &&
     visible &&

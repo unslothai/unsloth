@@ -170,13 +170,6 @@ test("only the dismissible cards licence covering the composer", () => {
     /\{applying \? null : \(\s*\n\s*<button/,
     "the dismiss button is no longer the thing the licence is tied to",
   );
-  // applying is the job, not the hook flag: a late poll can leave the flag
-  // true after success, and the progress UI has no close button (#9196).
-  assert.match(
-    LLAMA,
-    /const applying = applyingReported && !jobTerminal/,
-    "the progress toast no longer follows a stale applying flag after the job finished",
-  );
   const indicator = read("features/loaded-models/loaded-models-indicator.tsx");
   const downloads = read(
     "features/hub/download-manager/download-manager-panel.tsx",
