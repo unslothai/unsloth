@@ -9,9 +9,11 @@ compiled cache landed in the launcher's CWD, and a deleted chat left its folder
 behind. Verified on Windows, macOS and Linux.
 """
 
+import functools
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,55 @@ import platform
 from pathlib import Path
 
 import pytest
+
+
+_FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
+
+
+@functools.lru_cache(maxsize = None)
+def _frontend_text(*rel: str) -> str:
+    """The named frontend sources concatenated, read once per distinct scope.
+
+    Two scopes, deliberately different sizes. A promise the dialog MUST make is looked for where
+    user-visible copy legitimately lives, so an unrelated occurrence elsewhere cannot satisfy it;
+    a promise it must NOT make is looked for everywhere, where breadth only makes the check
+    stricter. The cache matters because the wide scope is ~1200 files.
+    """
+    paths: list[Path] = []
+    for r in rel:
+        target = _FRONTEND_SRC / r
+        if target.is_dir():
+            paths += [p for p in sorted(target.rglob("*")) if p.suffix in (".ts", ".tsx")]
+        else:
+            paths.append(target)
+    return "\n".join(p.read_text(encoding = "utf-8") for p in paths if p.is_file())
+
+
+def _frontend_copy_text() -> str:
+    """Where the sidebar's user-visible strings live: the locales, and the component itself."""
+    return _frontend_text("i18n/locales", "components/app-sidebar.tsx")
+
+
+def _frontend_src_text() -> str:
+    """Every frontend source file, for asserting a string is absent from all of them."""
+    return _frontend_text(".")
+
+
+def _sidebar_function_body(name: str) -> str:
+    """The body of a top-level `function <name>(...) {...}` in app-sidebar.tsx, brace-matched so
+    reformatting does not change what is read, and so unrelated edits elsewhere cannot fail it."""
+    sidebar = (_FRONTEND_SRC / "components" / "app-sidebar.tsx").read_text(encoding = "utf-8")
+    start = sidebar.index(f"function {name}(")
+    open_brace = sidebar.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(sidebar)):
+        if sidebar[i] == "{":
+            depth += 1
+        elif sidebar[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return sidebar[open_brace : i + 1]
+    raise AssertionError(f"unbalanced braces reading {name} out of app-sidebar.tsx")
 
 
 # ---------------------------------------------------------------------------
@@ -1928,11 +1979,13 @@ def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
 def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
-    sidebar = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
-    assert "This chat's own sandbox folder is removed from disk." in sidebar
-    assert "Anything this chat's tools wrote is removed from disk." not in sidebar
+    # The copy is the contract, not where it lives: #8932 moved these strings into the locale file
+    # unchanged and broke a grep of app-sidebar.tsx.
+    # The promise it must make: looked for where the sidebar's user-visible copy lives, not
+    # across the whole tree, or an occurrence in an unrelated file would satisfy it.
+    assert "This chat's own sandbox folder is removed from disk." in _frontend_copy_text()
+    # The promise it must not make: looked for everywhere, where breadth only tightens it.
+    assert "Anything this chat's tools wrote is removed from disk." not in _frontend_src_text()
 
 
 def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch):
@@ -2213,11 +2266,33 @@ def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypat
 def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
     """Anything it wrote before the move is in its own folder, and the backend
     never touches the project workspace."""
-    sidebar = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
-    assert 'return target.kind === "project" || target.kind === "chat";' in sidebar
-    assert "!target.item.projectId" not in sidebar
+    # Read the decision out of deleteTargetHasFiles rather than pinning one spelling: #8932 added
+    # bulk targets and rewrote the body to `target.kind !== "run"`, same answer for chats and
+    # projects. The contract is that a run has no sandbox and project membership is never
+    # consulted, so assert exactly that.
+    body = _sidebar_function_body("deleteTargetHasFiles")
+    assert "projectId" not in body, (
+        "a chat moved into a project still owns the sandbox it wrote before the move, "
+        "so the switch must not be gated on project membership"
+    )
+    # Negative checks alone did not establish this. `return target.kind === "run";` -- the exact
+    # inversion, hiding the switch for every chat and project -- mentions "run", mentions no
+    # projectId, and contains neither prohibited expression, so it passed all of them. Pin the
+    # DIRECTION: run is the kind that is excluded, never the one that is included.
+    assert re.search(r'kind\s*!==\s*"run"', body) or all(
+        f'"{kind}"' in body for kind in ("chat", "chats", "project", "projects")
+    ), (
+        "the body must either exclude run by negation or name every kind that keeps its sandbox; "
+        "as written it does neither, so it cannot say which targets reach the switch"
+    )
+    assert not re.search(r'return\s+target\.kind\s*===\s*"run"\s*;', body), (
+        "inverted: this returns the delete switch for training runs only, and hides it for "
+        "every chat and project"
+    )
+    for kind in ('"chat"', '"project"'):
+        assert (
+            f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body
+        ), f"{kind} targets must keep reaching the delete switch"
 
 
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():

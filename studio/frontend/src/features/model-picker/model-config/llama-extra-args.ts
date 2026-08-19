@@ -1040,7 +1040,7 @@ export function diagnoseExtraArgs(
         level: "error",
         message: control
           ? `${flag} is set by ${control} above and cannot be passed here.`
-          : `${flag} is managed by Unsloth Studio and cannot be passed here.`,
+          : `${flag} is managed by Unsloth and cannot be passed here.`,
       });
       continue;
     }

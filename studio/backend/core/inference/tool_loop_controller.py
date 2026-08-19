@@ -207,6 +207,32 @@ def tool_event_provenance(**flags: object) -> dict[str, object]:
     return provenance
 
 
+def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
+    """(server display name, bare tool name) for a resolvable mcp__ tool."""
+    if not tool_name.startswith("mcp__"):
+        return None
+    parts = tool_name.split("__", 2)
+    if len(parts) < 3 or not parts[1] or not parts[2]:
+        return None
+    try:
+        from storage import mcp_servers_db
+        server = mcp_servers_db.get_server(parts[1])
+    except Exception:  # noqa: BLE001
+        return None
+    display = (server or {}).get("display_name")
+    return (str(display), parts[2]) if display else None
+
+
+def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
+    """Provisional-card provenance, MCP display name included so an early or
+    orphaned card (cancel/error before the real tool_start) never shows the id."""
+    mcp = mcp_display_parts(tool_name)
+    return tool_event_provenance(
+        provisional = True,
+        mcp_server = mcp[0] if mcp else None,
+    )
+
+
 def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     """Return the status text already used by local tool streams."""
     if tool_name == "web_search":
@@ -235,6 +261,14 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    if tool_name == "edit_file":
+        # The name, not the patch: the tool card below already shows the edit.
+        path = str(arguments.get("path") or "").strip()
+        name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
+        return f"Editing: {name}" if name else "Editing file..."
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        return f"Calling: {mcp[0]} · {mcp[1]}"
     return f"Calling: {tool_name}"
 
 
@@ -248,6 +282,11 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: Python"
     if tool_name == "terminal":
         return "Waiting for approval: command"
+    if tool_name == "edit_file":
+        return "Waiting for approval: file edit"
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        return f"Waiting for approval: {mcp[0]} · {mcp[1]}"
     return f"Waiting for approval: {tool_name}"
 
 
@@ -330,15 +369,23 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     return result
 
 
+def deferred_nudge_text(msgs: Sequence[dict]) -> str:
+    """Join a batch's no-op nudges into one deduped body.
+
+    Callers that keep the feedback inside the tool exchange need the text
+    without the ``role=user`` wrapper, so both forms stay in sync here.
+    """
+    return "\n\n".join(dict.fromkeys(msg["content"] for msg in msgs))
+
+
 def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
     """Append a batch's no-op nudges as one deduped ``role=user`` message.
 
     Deferred to after the batch's tool results so a no-op never splits an
     assistant's ``tool_calls`` from their ``role=tool`` results.
     """
-    contents = list(dict.fromkeys(msg["content"] for msg in msgs))
-    if contents:
-        conversation.append({"role": "user", "content": "\n\n".join(contents)})
+    if msgs:
+        conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
@@ -436,10 +483,12 @@ class ToolLoopController:
             tool_name = tool_name,
         )
         key = canonical_tool_call_key(tool_name, coerced.arguments)
+        mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
             forced = forced,
             provisional = provisional,
+            mcp_server = mcp[0] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""

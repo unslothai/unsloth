@@ -72,6 +72,13 @@ def _safe_is_dir(path) -> bool:
         return False
 
 
+from utils.paths.scan_folder_health import (
+    annotate_scan_folders,
+    note_scan_folder_scanned,
+    record_scan_failure,
+    refresh_failed_scan_folders,
+)
+
 # Shared with the hub inventory scans; private aliases kept for existing importers.
 # ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name"); anything else is a path.
 from utils.hidden_models import (
@@ -1015,7 +1022,10 @@ def collect_local_models(
                 )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            # Keep the reason so the folder list can show it instead of nothing.
+            record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
+        note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
         local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show
@@ -1080,6 +1090,12 @@ async def _shared_compat_local_inventory_scan(
 
     requested_sources = sources
 
+    def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+        # Tag each model with its task so the Images picker can filter to diffusion.
+        # Inside the shared flight so overlapping callers reuse one classified result
+        # instead of each repeating the GGUF header reads.
+        return [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+
     async def collect(
         expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
     ) -> List[LocalModelInfo]:
@@ -1091,7 +1107,11 @@ async def _shared_compat_local_inventory_scan(
         )
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _CompatLocalCacheChanged(models)
-        return models
+        classified = await asyncio.to_thread(classify, models)
+        # That hop is an await point of its own, so a mutation can land after the check above.
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _CompatLocalCacheChanged(models)
+        return classified
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[List[LocalModelInfo]] = None
@@ -1130,7 +1150,7 @@ async def _shared_compat_local_inventory_scan(
     # current. Answer with the freshest one (the loop only reaches here through
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
-    return superseded
+    return await asyncio.to_thread(classify, superseded)
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -1176,9 +1196,6 @@ async def list_local_models(
 
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
-        # Tag each model with its task so the Images picker can filter to diffusion.
-        models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
-
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -1199,7 +1216,11 @@ async def list_local_models(
 async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
-    return {"folders": list_scan_folders()}
+
+    folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
+    await asyncio.to_thread(refresh_failed_scan_folders, folders)
+    return {"folders": annotate_scan_folders(folders)}
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
@@ -4018,10 +4039,8 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
-    from utils.models.gguf_metadata import read_gguf_general_metadata
-
-    arch = (read_gguf_general_metadata(path) or {}).get("general.architecture")
-    return arch.strip() if isinstance(arch, str) and arch.strip() else None
+    from utils.models.gguf_metadata import read_gguf_architecture
+    return read_gguf_architecture(path)
 
 
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:

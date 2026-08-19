@@ -82,7 +82,11 @@ import {
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 
-import { resolveToolCallPartId } from "../tool-call-id";
+import { toolCallReplayArguments } from "../tool-call-arguments";
+import {
+  findStreamedToolCallPartIndex,
+  resolveToolCallPartId,
+} from "../tool-call-id";
 
 import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
@@ -116,8 +120,10 @@ import {
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
@@ -133,6 +139,7 @@ import type { ModelType, ThreadRecord } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   CpuFallbackReason,
+  MmprojFallbackReason,
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -140,10 +147,12 @@ import type {
   OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
   getStoredChatProject,
+  isThreadIncognito,
   listStoredChatThreads,
   listStoredChatMessages,
   saveStoredChatMessage,
@@ -157,10 +166,16 @@ import {
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  createThinkTagTracker,
   extractDeltaText,
-  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { createSegmentedAssistantText } from "../utils/incremental-assistant-content";
+import {
+  createTrailingPlaceholderWatch,
+  stripTrailingTemplatePlaceholder,
+} from "../utils/trailing-template-placeholder";
+import { createStreamPublishGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -976,10 +991,7 @@ function serializeAssistantToolCallPart(
     return null;
   }
 
-  const argumentsStr =
-    typeof tc.argsText === "string" && tc.argsText.length > 0
-      ? tc.argsText
-      : JSON.stringify(tc.args ?? {});
+  const argumentsStr = toolCallReplayArguments(tc.argsText, tc.args);
   const entry: SerializedToolCall = {
     id: tc.toolCallId,
     type: "function" as const,
@@ -1490,6 +1502,43 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+function extractVideoPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "file") return undefined;
+  const filePart = part as unknown as { data?: string; mimeType?: string };
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  return filePart.data.startsWith("data:")
+    ? filePart.data.split(",")[1]
+    : filePart.data;
+}
+
+/** Base64 of the clip on the newest user turn. Only the newest counts, like
+ * audio: replaying an older one would re-sample it into frames and spend the
+ * context of every text follow-up. */
+export function findLatestUserVideoBase64(
+  messages: RunMessages,
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "user") continue;
+    for (const part of message.content ?? []) {
+      const base64 = extractVideoPartBase64(part);
+      if (base64) return base64;
+    }
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractVideoPartBase64(part);
+          if (base64) return base64;
+        }
+      }
+    }
+    break;
+  }
+  return undefined;
+}
+
 // The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
 // text the request carries.
 export const CANVAS_TOOL_INSTRUCTION =
@@ -1665,7 +1714,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -1768,21 +1817,70 @@ async function resolveChatInstructions(
     .join("\n\n");
 }
 
-async function resolveProjectId(
+// A run resolves the project separately for the sandbox, the RAG scope and the
+// instructions, and while a fresh thread's row is still being written they all
+// take the composer fallback. Answered once per thread and reused, or a
+// navigation between those calls mixes two projects into one request.
+const composerProjectByPendingThread = new Map<string, string | null>();
+
+/** The project the run started in, kept for the whole run. Only the first send
+ * for a thread records one: a later run finds the row and never consults it. */
+function rememberComposerProjectForRun(
+  threadId: string,
+  projectId: string | null,
+): void {
+  // An incognito thread never has a row, so resolveProjectId answers before it
+  // reads the map: an entry here would be one nothing ever removes.
+  if (isThreadIncognito(threadId)) return;
+  if (!composerProjectByPendingThread.has(threadId)) {
+    composerProjectByPendingThread.set(threadId, projectId);
+  }
+}
+
+export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
+  // A caller that gates on the answer (the queue's indexing probe) has to tell
+  // "no project" from "could not read the row": one sends, the other waits. It
+  // also names its own fallback, since the store names whichever project is on
+  // screen when it polls rather than the one it is waiting for.
+  opts?: { rethrowReadFailure?: boolean; composerProjectId?: string | null },
 ): Promise<string | null> {
+  // Read before the await: a send survives navigation, so a store read after the
+  // lookup could hand this request the project the user moved to.
+  const composerProjectId =
+    opts?.composerProjectId !== undefined
+      ? opts.composerProjectId
+      : useChatRuntimeStore.getState().activeProjectId;
   if (threadId) {
-    const thread = await (
-      readThreadRecord?.() ?? getStoredChatThread(threadId)
-    ).catch(() => null);
-    return thread?.projectId ?? null;
+    let thread: ThreadRecord | undefined;
+    try {
+      thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    } catch (error) {
+      // A failed lookup is not proof the row is missing, so it must not adopt
+      // whichever project the composer last had open.
+      if (opts?.rethrowReadFailure) throw error;
+      return null;
+    }
+    if (thread) {
+      composerProjectByPendingThread.delete(threadId);
+      return thread.projectId ?? null;
+    }
+    // No row yet: initialize() does not await the write, so a fresh chat's first
+    // send can read ahead of it and drop the project's sources, instructions and
+    // sandbox. An incognito thread is never persisted, so its miss is the answer.
+    if (isThreadIncognito(threadId)) {
+      return null;
+    }
+    const pending = composerProjectByPendingThread.get(threadId);
+    if (pending !== undefined) {
+      return pending;
+    }
+    // Not recorded here: the send records it, and this also runs off a run (the
+    // queue probe, the token-count extras), where a poll landing mid-navigation
+    // would pin the run to whichever project is on screen.
   }
-  const projectId = useChatRuntimeStore.getState().activeProjectId;
-  if (!projectId) {
-    return null;
-  }
-  return projectId;
+  return composerProjectId ?? null;
 }
 
 async function resolveSandboxSessionId(
@@ -1888,6 +1986,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   ggufContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
@@ -1913,6 +2012,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "supportsReasoningOff",
   "reasoningEffortLevels",
   "supportsPreserveThinking",
+  "preserveThinking",
   "supportsTools",
   "toolsEnabled",
   "codeToolsEnabled",
@@ -1990,6 +2090,8 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   liveUsage
     .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
+      // The model being stepped off is the one the background load put there.
+      persist: false,
     });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
@@ -2017,6 +2119,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
+    preserveThinking: state.preserveThinking,
     ggufContextLength: state.ggufContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
@@ -2026,6 +2129,7 @@ function queuedResolvedModelFromStore(
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
+          hasVideoInput: activeModel.hasVideoInput,
         }
       : null,
   };
@@ -2514,7 +2618,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
-  const lastLoaded = readLastLocalModelLoad();
+  const lastLoaded = await readLastLocalModelLoad(options?.abortSignal);
   let autoLoadToastDismissed = false;
   const toastId = toast.message("Loading a model…", {
     description: lastLoaded
@@ -2547,16 +2651,23 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const showAutoLoadSuccess = (
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,
+    mmprojFallbackReason?: MmprojFallbackReason | null,
   ): void => {
+    // Both reasons, composed. Nesting them as `mmproj ? ... : cpu ? ...` dropped the
+    // CPU message whenever both were set, which is reachable and is the case this
+    // feature exists for -- see loadFallbackNotice.
+    const notice = loadFallbackNotice(
+      message,
+      cpuFallbackReason,
+      mmprojFallbackReason,
+    );
     const options = {
-      description: cpuFallbackReason
-        ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-        : undefined,
+      description: notice.description,
       duration: 5000,
       icon: undefined,
     };
-    const showToast = cpuFallbackReason ? toast.warning : toast.success;
-    const title = cpuFallbackReason ? `${message} on CPU` : message;
+    const showToast = notice.degraded ? toast.warning : toast.success;
+    const title = notice.title;
     if (autoLoadToastDismissed) {
       showToast(title, options);
       return;
@@ -2946,6 +3057,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
+          fromModelDefaults: true,
+          // A budget remembered from a larger context does not fit this load.
+          maxTokensCap:
+            candidate.kind === "gguf"
+              ? (loadResp.context_length ?? undefined)
+              : effectiveMaxSeqLength,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -2988,6 +3105,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3020,6 +3138,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // override; null stays null (auto/VRAM-fit).
           customContextLength: config.customContextLength,
           loadedIsMultimodal: isMultimodalResponse(loadResp),
+          mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
           ...resolveLoadedSpeculativeSettings(loadResp),
@@ -3032,6 +3151,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3059,6 +3179,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           customContextLength: null,
           ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
+          mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
@@ -3070,7 +3191,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ggufVariant: candidate.ggufVariant,
         });
       }
-      showAutoLoadSuccess(candidate.successLabel, loadResp.cpu_fallback_reason);
+      showAutoLoadSuccess(
+        candidate.successLabel,
+        loadResp.cpu_fallback_reason,
+        loadResp.mmproj_fallback_reason,
+      );
     });
     return true;
   }
@@ -3326,6 +3451,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
+            fromModelDefaults: true,
+            maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
         const defaultModel: ChatModelSummary = {
@@ -3347,6 +3474,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3369,6 +3497,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
         activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
         });
@@ -3380,6 +3509,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
+          loadResp.mmproj_fallback_reason,
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -3444,6 +3574,7 @@ async function resolveQueuedEmptyLocalModel(
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
+            preserveThinking: resolvePreserveThinkingOnLoad(status),
             ggufContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
@@ -3454,6 +3585,7 @@ async function resolveQueuedEmptyLocalModel(
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
+              hasVideoInput: status.has_video_input ?? false,
             },
           },
         };
@@ -3524,12 +3656,38 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // Before the first await: hydration and a model load both run ahead of the
+      // first resolveProjectId, and a send survives navigation. Only consulted
+      // while the thread's own row is still missing.
+      const composerProjectIdAtSend =
+        useChatRuntimeStore.getState().activeProjectId ?? null;
       await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit
+      // composer. Waiting for the open chat's own settings in this one place is what
+      // keeps the message-level controls from starting a run on the installation
+      // defaults that stand in while the read is out, which for a chat stored as "ask"
+      // would mean running tools without asking.
+      // Bound to this run's own chat: a run for A released by B's pairing ending would
+      // resume and read B's settings for A.
+      const runThreadId =
+        unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
+      // Refused rather than run on whatever the store holds now: the wait only runs out
+      // for a chat the user left mid-read, and the settings on screen are then some
+      // other chat's. The run is recoverable by reopening the chat; a message sent with
+      // another chat's tools and permission level is not.
+      if (!(await awaitThreadScopedPairing(runThreadId))) {
+        throw new Error(
+          "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
+        );
+      }
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
-        (unstable_threadId ?? runtime.activeThreadId) || undefined;
+        (runThreadId ?? runtime.activeThreadId) || undefined;
+      if (resolvedThreadId) {
+        rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
+      }
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),
@@ -3651,6 +3809,9 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
+                preserveThinking:
+                  queuedEmptyModelRuntime?.preserveThinking ??
+                  liveRuntime.preserveThinking,
                 ggufContextLength:
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.ggufContextLength
@@ -3803,6 +3964,9 @@ export function createOpenAIStreamAdapter(
             inferenceRequest,
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
+            budgets: {
+              modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
+            },
             websitePolicy: {
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
@@ -3992,6 +4156,9 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
+              preserveThinking:
+                queuedEmptyModelRuntime?.preserveThinking ??
+                liveRuntime.preserveThinking,
               ggufContextLength:
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.ggufContextLength
@@ -4372,6 +4539,7 @@ export function createOpenAIStreamAdapter(
         survivingMessages,
         !queuedRunSettings && !continuation,
       );
+      const videoBase64 = findLatestUserVideoBase64(survivingMessages);
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
@@ -4414,6 +4582,7 @@ export function createOpenAIStreamAdapter(
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
           loadError: runtime.lastModelLoadError,
+          mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
@@ -4580,6 +4749,27 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
+      // Reading `cumulativeText` at all costs O(reply): each `+=` builds a cons
+      // string and the first read of it flattens the whole reply, so one
+      // charCodeAt per arrival is as expensive as a scan. Everything below that
+      // used to consult the buffer once per arrival is fed the delta instead,
+      // through `appendCumulative`, and the buffer is only read where the reply
+      // is actually published.
+      //
+      // Answers "does the text end inside <think>" from what each arrival adds.
+      const thinkTags = createThinkTagTracker();
+      // Answers "could the trailing ${...} strip cut anything" the same way, so
+      // the strip itself runs only on an arrival that ends in a fragment.
+      const placeholderWatch = createTrailingPlaceholderWatch();
+      // What the cap is measured against: only grows, unlike cumulativeText,
+      // and counts tool-argument deltas, which never reach it.
+      let streamedChars = 0;
+      // Whether this run appended reply text of its own. A continuation is
+      // SEEDED with the previous run's partial, and that partial is the middle
+      // of a reply someone is still writing rather than the end of a finished
+      // one, so a run that adds nothing to it must not have its tail trimmed.
+      // Read by the trailing-fragment strip after the stream.
+      let producedReplyText = false;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -4594,6 +4784,31 @@ export function createOpenAIStreamAdapter(
               text.slice(continuationPartial.length),
             )
           : text;
+      // The parse of everything already streamed, extended by each delta.
+      // `mergeContinuation` can rewrite the prefix it is handed, and a rewritten
+      // prefix is exactly what an extend-only parse cannot follow, so that one
+      // path keeps reparsing the whole reply as before. It is a continuation of
+      // an external provider that may repeat itself, not the streaming case.
+      const segmentedText = createSegmentedAssistantText({
+        trustAppends: !(continuationPartial && repairContinuation),
+      });
+      // The single place `cumulativeText` grows, so everything derived from it
+      // sees the same characters in the same order.
+      const appendCumulative = (text: string): void => {
+        if (!text) {
+          return;
+        }
+        cumulativeText += text;
+        segmentedText.appendText(text);
+        thinkTags.append(text);
+        placeholderWatch.append(text);
+      };
+      // A resumed turn starts with the partial already in the buffer. One read
+      // of it, once per turn, is what puts the trackers in step with it.
+      if (cumulativeText) {
+        thinkTags.append(cumulativeText);
+        placeholderWatch.append(cumulativeText);
+      }
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
@@ -4628,11 +4843,13 @@ export function createOpenAIStreamAdapter(
         provisional?: boolean;
         duplicate?: boolean;
         reason?: string;
+        mcp_server?: string;
         [key: string]: unknown;
       };
       type PositionedToolCallPart = ToolCallMessagePart & {
         textCursor?: number;
         _delta_index?: number;
+        _has_stable_id?: boolean;
         extra_content?: unknown;
         provenance?: ToolCallProvenance;
       };
@@ -4691,23 +4908,25 @@ export function createOpenAIStreamAdapter(
           })
           .sort((a, b) => a.cursor - b.cursor || a.index - b.index);
 
+        // The distinct cursors, which are where the text is cut into runs. The
+        // runs before them never change again once a later one exists, so only
+        // the last one is still growing.
+        const boundaries: number[] = [];
+        for (const positioned of positionedTools) {
+          if (boundaries[boundaries.length - 1] !== positioned.cursor) {
+            boundaries.push(positioned.cursor);
+          }
+        }
+        const runs = segmentedText.runs(rawText, boundaries);
+
         const assembled: Array<
           ReturnType<typeof parseAssistantContent>[number] | ToolCallMessagePart
         > = [];
-        let textCursor = 0;
         let toolIndex = 0;
 
-        const appendTextThrough = (nextCursor: number) => {
-          if (nextCursor <= textCursor) return;
-          assembled.push(
-            ...parseAssistantContent(rawText.slice(textCursor, nextCursor)),
-          );
-          textCursor = nextCursor;
-        };
-
-        while (toolIndex < positionedTools.length) {
-          const cursor = positionedTools[toolIndex].cursor;
-          appendTextThrough(cursor);
+        for (let index = 0; index < boundaries.length; index += 1) {
+          assembled.push(...runs[index]);
+          const cursor = boundaries[index];
           while (
             toolIndex < positionedTools.length &&
             positionedTools[toolIndex].cursor === cursor
@@ -4716,7 +4935,7 @@ export function createOpenAIStreamAdapter(
             toolIndex += 1;
           }
         }
-        appendTextThrough(rawText.length);
+        assembled.push(...runs[boundaries.length]);
 
         return pinTextThoughtSignature(assembled);
       };
@@ -4759,7 +4978,7 @@ export function createOpenAIStreamAdapter(
       };
       const closeReasoningContent = () => {
         if (reasoningContentOpen) {
-          cumulativeText += "</think>";
+          appendCumulative("</think>");
           reasoningContentOpen = false;
         }
         reasoningDurationTracker.finishGroup();
@@ -5280,6 +5499,7 @@ export function createOpenAIStreamAdapter(
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -5336,7 +5556,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(codeToolsEnabled
+                      ? ["python", "terminal", "edit_file"]
+                      : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
@@ -5405,6 +5627,8 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
+            // Per run, not per module: two turns must not share a cycle.
+            const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -5556,6 +5780,7 @@ export function createOpenAIStreamAdapter(
                     const accum =
                       (liveArgsTextById.get(liveId) ?? "") + fragment;
                     liveArgsTextById.set(liveId, accum);
+                    streamedChars += fragment.length;
                     const partial = parseLiveToolArgs(accum);
                     const idx = toolCallParts.findIndex(
                       (p) => p.toolCallId === liveId,
@@ -5569,17 +5794,22 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      yield {
-                        content: liveAssistantContent(),
-                        metadata: {
-                          timing: buildTiming(
-                            streamStartTime,
-                            totalChunks,
-                            firstTokenTime,
-                          ),
-                          custom: liveCustom(),
-                        },
-                      };
+                      // A preview: it repeats per argument delta and
+                      // tool_start replaces it. Tool events carry state, so
+                      // they stay ungated.
+                      if (canPublish(streamedChars)) {
+                        yield {
+                          content: liveAssistantContent(),
+                          metadata: {
+                            timing: buildTiming(
+                              streamStartTime,
+                              totalChunks,
+                              firstTokenTime,
+                            ),
+                            custom: liveCustom(),
+                          },
+                        };
+                      }
                     }
                   }
                   continue;
@@ -5964,12 +6194,17 @@ export function createOpenAIStreamAdapter(
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
+              // Replay state reaches the message only through a yield, so a
+              // Stop while the gate holds one persists a turn that cannot
+              // replay. Pace previews, never state.
+              let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<string, unknown>;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
                   const sig = (eGoogle as Record<string, unknown>).thought_signature;
                   if (typeof sig === "string" && sig) {
+                    replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
@@ -5980,6 +6215,7 @@ export function createOpenAIStreamAdapter(
                     codexReasoning,
                     codexRoundToolCallIds,
                   );
+                  replayStateChanged = true;
                 }
               }
 
@@ -6025,6 +6261,9 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
+                // Extending a call's arguments is a preview; introducing one
+                // is state, so it always publishes.
+                let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
                   const call = tc as {
@@ -6043,12 +6282,18 @@ export function createOpenAIStreamAdapter(
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
-                  // Match an existing fragment by resolved id first (canonical), then
-                  // by index slot; fall back to a minted tool_call_<n> id
-                  // for streams that send neither.
-                  let existing = stablePartId
-                    ? toolCallParts.find((p) => p.toolCallId === stablePartId)
-                    : undefined;
+                  // match by resolved id when the fragment carries one, else by
+                  // index slot; streams that send neither get a minted
+                  // tool_call_<n> id.
+                  const existingIndex = findStreamedToolCallPartIndex(
+                    toolCallParts,
+                    stablePartId,
+                    idx,
+                  );
+                  const existing =
+                    existingIndex === -1
+                      ? undefined
+                      : toolCallParts[existingIndex];
 
                   if (
                     stablePartId &&
@@ -6056,12 +6301,9 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  if (!existing && idx !== undefined) {
-                    existing = toolCallParts.find(
-                      (p) => (p as PositionedToolCallPart)._delta_index === idx,
-                    );
-                  }
                   const argsFragment = call.function?.arguments ?? "";
+                  streamedChars +=
+                    argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
@@ -6081,8 +6323,22 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    if (
+                      call.extra_content !== undefined &&
+                      JSON.stringify(call.extra_content) !==
+                        JSON.stringify(prevExtra)
+                    ) {
+                      // Gemini puts the thought signature on the call, and
+                      // the next turn is rejected without it.
+                      replayStateChanged = true;
+                    }
                     const updated: PositionedToolCallPart = {
                       ...(existing as PositionedToolCallPart),
+                      // a late id claims the slot its id-less opening fragment
+                      // created, so tool_start and tool_end find the same card.
+                      ...(stablePartId
+                        ? { toolCallId: stablePartId, _has_stable_id: true }
+                        : {}),
                       toolName: nextName,
                       argsText: merged,
                       args: parsedArgs,
@@ -6093,10 +6349,7 @@ export function createOpenAIStreamAdapter(
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
-                    const replaceIdx = toolCallParts.indexOf(existing);
-                    if (replaceIdx >= 0) {
-                      toolCallParts[replaceIdx] = updated;
-                    }
+                    toolCallParts[existingIndex] = updated;
                   } else {
                     const callId =
                       stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
@@ -6127,27 +6380,57 @@ export function createOpenAIStreamAdapter(
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : {}),
+                      ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
+                    addedToolCall = true;
                   }
                 }
-                yield {
-                  content: liveAssistantContent(),
-                  metadata: {
-                    timing: buildTiming(
-                      streamStartTime,
-                      totalChunks,
-                      firstTokenTime,
-                    ),
-                    custom: liveCustom(),
-                  },
-                };
+                if (
+                  addedToolCall ||
+                  replayStateChanged ||
+                  canPublish(streamedChars)
+                ) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
+              // extra_content can arrive with no content at all: a Gemini
+              // thoughtSignature fragment, or the codex reasoning ledger on a
+              // terminal delta. The skip below would drop both.
+              if (replayStateChanged && !delta && !reasoning) {
+                const replayContent = liveAssistantContent();
+                if (replayContent.length > 0) {
+                  yield {
+                    content: replayContent,
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
                 continue;
               }
               if (!delta && !reasoning) {
                 continue;
               }
+              // So a chunk that added nothing can be told from one that did.
+              const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
                 firstTokenTime = Date.now() - streamStartTime;
@@ -6158,26 +6441,25 @@ export function createOpenAIStreamAdapter(
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
-                  cumulativeText += `<think>${reasoning}`;
+                  appendCumulative(`<think>${reasoning}`);
                   reasoningContentOpen = true;
                 } else {
-                  cumulativeText += reasoning;
+                  appendCumulative(reasoning);
                 }
               }
               if (delta) {
                 if (reasoningContentOpen) {
                   closeReasoningContent();
                 }
-                cumulativeText += delta;
+                appendCumulative(delta);
               }
-              // Strip a trailing ${...} template-literal fragment from
-              // external streams (mistral magistral occasionally emits one).
-              if (isExternalRequest) {
-                cumulativeText = cumulativeText.replace(
-                  /\s*\$\{[^}]*\}\s*$/,
-                  "",
-                );
-              }
+              streamedChars += reasoning.length + delta.length;
+              producedReplyText = true;
+              // The trailing ${...} strip used to run here, once per arrival.
+              // It now runs once, on the finished reply, below the loop. See
+              // the comment there. Nothing on this path reads the buffer any
+              // more, so no arrival can flatten it.
+              const textEndsInsideThink = thinkTags.endsInsideThink();
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -6205,9 +6487,28 @@ export function createOpenAIStreamAdapter(
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
                 !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
+                !textEndsInsideThink
               ) {
                 reasoningDurationTracker.finishGroup();
+              }
+
+              // Everything above runs on every arrival; only the publish is
+              // coalesced. The cost being removed is downstream of the yield
+              // (assistant-ui, React, markdown, paint), not the rebuild, which
+              // is tens of milliseconds across a whole reply.
+              //
+              // A chunk with nothing new is skipped rather than paced: the gate
+              // would spend this cycle on an identical publish and hold the
+              // next real one.
+              if (
+                !replayStateChanged &&
+                (assistantContent.length === 0 ||
+                  cumulativeText.length === textLenBeforeChunk)
+              ) {
+                continue;
+              }
+              if (!replayStateChanged && !canPublish(streamedChars)) {
+                continue;
               }
 
               if (assistantContent.length > 0) {
@@ -6235,6 +6536,46 @@ export function createOpenAIStreamAdapter(
               continue;
             }
             throw streamError;
+          }
+        }
+        // Strip a trailing ${...} template-literal fragment from external
+        // streams (mistral magistral occasionally emits one at the end of an
+        // otherwise complete answer).
+        //
+        // Once, on the finished reply. "Ends with ${...}" is a property of the
+        // completed answer, and running the strip on every arrival tested it
+        // against every prefix of that answer instead: the one arrival whose
+        // buffer happened to end at `...${name}` was cut, and reassigning the
+        // result made the cut permanent, so "return `Hi, ${name}!`" arrived as
+        // "return `Hi,!`". Any reply containing a template literal lost text.
+        // See #9098.
+        //
+        // Only where the stream ran to completion. An abort leaves more text
+        // still to come, so its tail is a prefix again and stripping it would
+        // be the same bug; that path keeps the buffer whole and this runs on
+        // the resumed reply instead. `producedReplyText` is the same case one
+        // step in: a continuation that finishes without a text or reasoning
+        // delta, having emitted only a tool call, leaves the buffer holding
+        // nothing but the seeded partial, and a partial is a prefix too.
+        //
+        // The watch still gates the scan, and now saves the whole reply from
+        // being flattened rather than one arrival's worth: a reply that does
+        // not end in a brace is rejected without the buffer being read at all.
+        // Before the <think> close below, so a fragment at the end of an
+        // unterminated reasoning block is still the end of the reply when it
+        // is tested.
+        if (
+          isExternalRequest &&
+          producedReplyText &&
+          placeholderWatch.isCandidate()
+        ) {
+          const stripped = stripTrailingTemplatePlaceholder(cumulativeText);
+          if (stripped.length !== cumulativeText.length) {
+            cumulativeText = stripped;
+            // A suffix went away, so both trackers have to be told; the parse
+            // notices by itself, from the length.
+            thinkTags.retract(cumulativeText);
+            placeholderWatch.retract(cumulativeText);
           }
         }
         // If the stream ended while we were still inside a
