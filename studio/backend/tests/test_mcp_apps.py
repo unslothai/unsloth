@@ -372,9 +372,7 @@ def test_a_cold_cache_rediscovers_the_declaration(tmp_path, monkeypatch):
 
     _reset_db(tmp_path, monkeypatch)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True)
     import routes.mcp_servers as routes_mcp
 
     probes = []
@@ -388,10 +386,15 @@ def test_a_cold_cache_rediscovers_the_declaration(tmp_path, monkeypatch):
         routes_mcp,
         "read_resource_sync",
         lambda url, headers, uri, **kwargs: {
-            "uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<p/>", "ui": {},
+            "uri": uri,
+            "mimeType": "text/html;profile=mcp-app",
+            "text": "<p/>",
+            "ui": {},
         },
     )
-    assert asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u")).text == "<p/>"
+    assert (
+        asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u")).text == "<p/>"
+    )
     # The rediscovery warms the cache, so a second open does not re-probe.
     asyncio.run(routes_mcp.read_mcp_ui_resource("s1", UI, current_subject = "u"))
     assert len(probes) == 1
@@ -403,9 +406,7 @@ def test_a_rediscovery_still_refuses_an_undeclared_resource(tmp_path, monkeypatc
 
     _reset_db(tmp_path, monkeypatch)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True)
     import routes.mcp_servers as routes_mcp
 
     async def fake_list_tools(url, headers, timeout, use_oauth):
@@ -415,9 +416,7 @@ def test_a_rediscovery_still_refuses_an_undeclared_resource(tmp_path, monkeypatc
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            routes_mcp.read_mcp_ui_resource("s1", "ui://evil/other", current_subject = "u")
-        )
+        asyncio.run(routes_mcp.read_mcp_ui_resource("s1", "ui://evil/other", current_subject = "u"))
     assert excinfo.value.status_code == 404
 
 
@@ -427,9 +426,7 @@ def test_a_failed_rediscovery_does_not_500_the_fetch(tmp_path, monkeypatch):
 
     _reset_db(tmp_path, monkeypatch)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    mcp_servers_db.create_server(
-        id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "s1", display_name = "Sys", url = "https://x/mcp", is_enabled = True)
     import routes.mcp_servers as routes_mcp
 
     async def boom(url, headers, timeout, use_oauth):
