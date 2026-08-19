@@ -110,6 +110,11 @@ class TestIsEmbeddingGguf:
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is False
 
+    def test_false_on_minimal_backend_without_path_state(self):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._pooling_type = None
+        assert backend.is_embedding_gguf is False
+
     @pytest.mark.parametrize("pooling_type", [POOLING_MEAN, POOLING_CLS, POOLING_LAST])
     def test_true_for_every_sequence_pooling_mode(self, tmp_path, backend, pooling_type):
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = pooling_type))

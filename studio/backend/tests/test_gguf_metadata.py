@@ -9,6 +9,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 from typing import Iterable, Mapping
+from unittest.mock import patch
 
 from utils.models.gguf_metadata import (
     is_gguf_embedding_architecture,
@@ -587,4 +588,20 @@ def test_is_gguf_embedding_model_from_name_hint(tmp_path: Path):
         tmp_path / "Qwen3-Embedding-4B-Q4_K_M.gguf",
         {"general.architecture": "qwen3"},
     )
-    assert is_gguf_embedding_model(str(p), model_identifier = "unsloth/Qwen3-Embedding-4B") is True
+    with patch("utils.models.model_config.is_embedding_model") as remote_classifier:
+        assert (
+            is_gguf_embedding_model(str(p), model_identifier = "unsloth/Qwen3-Embedding-4B") is True
+        )
+    remote_classifier.assert_not_called()
+
+
+def test_is_gguf_embedding_model_ignores_owner_name_hint(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "Llama-3-Q4_K_M.gguf",
+        {"general.architecture": "llama"},
+    )
+    with patch("utils.models.model_config.is_embedding_model") as remote_classifier:
+        assert (
+            is_gguf_embedding_model(str(p), model_identifier = "embedding-lab/Llama-3-GGUF") is False
+        )
+    remote_classifier.assert_not_called()

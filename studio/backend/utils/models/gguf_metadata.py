@@ -590,7 +590,7 @@ GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     }
 )
 
-# Name hints for bare .gguf files whose architecture is not yet in the set above.
+# Name hints for model/file basenames whose architecture is not yet in the set above.
 _EMBEDDING_NAME_HINTS: tuple[str, ...] = (
     "nomic-embed",
     "llama-embed",
@@ -622,17 +622,9 @@ def is_gguf_embedding_model(
         return True
 
     if model_identifier:
-        ident = model_identifier.strip()
-        if ident:
-            try:
-                from utils.models.model_config import is_embedding_model
-                if is_embedding_model(ident):
-                    return True
-            except Exception:
-                pass
-            low = ident.lower()
-            if any(needle in low for needle in _EMBEDDING_NAME_HINTS):
-                return True
+        identifier_basename = model_identifier.strip().replace("\\", "/").rsplit("/", 1)[-1]
+        if any(needle in identifier_basename.lower() for needle in _EMBEDDING_NAME_HINTS):
+            return True
 
     try:
         low_path = Path(gguf_path).name.lower()

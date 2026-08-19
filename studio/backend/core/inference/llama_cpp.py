@@ -4776,7 +4776,7 @@ class LlamaCppBackend:
         pooling = getattr(self, "_pooling_type", None)
         if pooling is not None:
             return pooling in self._EMBEDDING_POOLING_TYPES
-        path = self._gguf_path
+        path = getattr(self, "_gguf_path", None)
         if not path:
             return False
         from utils.models.gguf_metadata import is_gguf_embedding_model
