@@ -12,11 +12,39 @@ than left to review.
 
 import ast
 import types
+
+import pytest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 STUDIO_TESTS = ROOT / "tests" / "studio"
+
+
+def _require_playwright_page():
+    """
+    Skip unless `from playwright.sync_api import Page` would actually work.
+
+    Two weaker guards were tried and both let this through. Checking the
+    top-level package passes because "playwright" resolves as a namespace
+    directory on the Repo tests (CPU) runner; checking "playwright.sync_api"
+    passes too, because that resolves as a namespace package as well. Only the
+    symbol the harnesses import is a real test of whether the import below can
+    succeed, so that is what is checked, and it is checked the way the harness
+    does it. The failure mode is a skip condition reported as
+
+      ImportError: cannot import name 'Page' from 'playwright.sync_api'
+      (unknown location)
+
+    on every branch, which costs an investigation each time it is seen.
+    """
+    sync_api = pytest.importorskip("playwright.sync_api")
+    if not hasattr(sync_api, "Page"):
+        pytest.skip(
+            "playwright.sync_api resolved from "
+            f"{getattr(sync_api, '__file__', None) or list(getattr(sync_api, '__path__', []))} "
+            "but has no Page; playwright is not usably installed here"
+        )
 
 
 def source(name: str) -> str:
@@ -108,7 +136,7 @@ def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, mo
 
     import pytest
 
-    pytest.importorskip("playwright")
+    _require_playwright_page()
     monkeypatch.setenv("PW_ART_DIR", str(tmp_path / "art"))
     spec = importlib.util.spec_from_file_location(
         "_ansi_smoke_under_test", STUDIO_TESTS / "playwright_strip_ansi_smoke.py"
@@ -264,7 +292,7 @@ def test_thread_weight_row_shapes_stay_distinct() -> None:
 
     sys.path.insert(0, str(STUDIO_TESTS))
     pytest = importlib.import_module("pytest")
-    pytest.importorskip("playwright")
+    _require_playwright_page()
     module = importlib.import_module("playwright_thread_weight")
     assert all(len(row) == 2 for row in module.TABLE_ROWS)
     assert all(len(row) == 3 for row in module.GROWTH_AXES)
@@ -355,7 +383,7 @@ def test_thread_weight_rejects_a_dead_delete_at_every_size() -> None:
 
     sys.path.insert(0, str(STUDIO_TESTS))
     pytest = importlib.import_module("pytest")
-    pytest.importorskip("playwright")
+    _require_playwright_page()
     module = importlib.import_module("playwright_thread_weight")
 
     sizes = [10, 50]
