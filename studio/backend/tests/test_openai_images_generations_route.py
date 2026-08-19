@@ -490,3 +490,18 @@ def test_no_loaded_model_records_an_error_row(monkeypatch):
     assert rows[0]["status"] == "error"
     # The route's 503 detail, not _friendly_error's generic fallback.
     assert "image model" in rows[0]["error"]
+
+
+def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
+    # A local On-Device pick puts the host directory in repo_id, and /api/inference/monitor
+    # serves the row over the tunnel, so the label gets the same path-free treatment as
+    # active_model and the lifecycle rows.
+    backend = _FakeBackend(repo_id = "/home/ana/models/my-flux")
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    api_monitor.clear()
+    assert cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"}).status_code == 200
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["model"] == "my-flux"

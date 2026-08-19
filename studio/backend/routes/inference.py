@@ -24464,7 +24464,11 @@ async def _generate_openai_images(
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    api_monitor.relabel(monitor_id, str(result.get("repo_id") or ""))
+    # A local-directory load carries the host path in repo_id, and the monitor payload goes
+    # out over the tunnel, so the label takes the path-free treatment active_model and the
+    # lifecycle rows already get.
+    _served_repo = str(result.get("repo_id") or "")
+    api_monitor.relabel(monitor_id, public_model_id(_served_repo) or _served_repo)
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
