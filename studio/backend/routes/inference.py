@@ -12545,9 +12545,7 @@ async def _proxy_to_external_provider(
             forget_subscription_models(payload.provider_id)
             mark_subscription_catalog_stale(payload.provider_id)
             if model not in _allowed_codex_models():
-                raise HTTPException(
-                    status_code = 400, detail = "Choose a curated Codex model."
-                )
+                raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
         chat_messages = _build_external_messages(
             payload.messages,
             model_supports_vision,

@@ -405,9 +405,7 @@ async def list_subscription_models(
                 # reauthorization would send the user to reconnect a connection whose
                 # credentials are probably fine, and the responses transport treats the
                 # same failure as transient.
-                raise CodexTransportError(
-                    "Could not refresh ChatGPT authorization."
-                ) from exc
+                raise CodexTransportError("Could not refresh ChatGPT authorization.") from exc
             response = await client.get(
                 url,
                 headers = _headers(access_token, account_id),

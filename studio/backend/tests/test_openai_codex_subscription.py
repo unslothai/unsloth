@@ -2134,13 +2134,22 @@ def test_a_refresh_that_cannot_be_reached_stays_retryable(monkeypatch):
     forget_subscription_models("provider-13")
 
     class Rejecting:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             return httpx.Response(401, json = {"detail": "expired"})
 
         async def aclose(self):
             return None
 
-    async def _unreachable(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _unreachable(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         raise codex_auth.CodexAuthError("token endpoint unreachable")
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Rejecting())
@@ -2160,13 +2169,22 @@ def test_a_rejected_refresh_credential_is_a_reauthorization(monkeypatch):
     forget_subscription_models("provider-14")
 
     class Rejecting:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             return httpx.Response(401, json = {"detail": "expired"})
 
         async def aclose(self):
             return None
 
-    async def _rejected(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _rejected(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         raise codex_auth.CodexReauthorizationRequired("refresh token rejected")
 
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: Rejecting())
