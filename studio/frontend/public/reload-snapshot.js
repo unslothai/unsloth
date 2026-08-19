@@ -263,6 +263,14 @@
     applyAppearance(snapshot.appearance);
     overlay = document.createElement("div");
     overlay.className = "reload-snapshot";
+    // Vite injects index.css only after main.tsx runs, and styles inside the
+    // closed shadow tree cannot match its host. Keep the host full-viewport
+    // during that development-only gap; index.css repeats this for production.
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.zIndex = "2147483647";
+    overlay.style.pointerEvents = "none";
+    overlay.style.background = "var(--background)";
     overlay.setAttribute("aria-hidden", "true");
     overlay.inert = true;
     // A closed shadow tree keeps the copy out of every document query. The

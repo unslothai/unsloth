@@ -528,7 +528,11 @@ function createEnvironment(options: {
     /** The host element of the retained shell, if one was restored. */
     get shell() {
       const host = appended[0] as unknown as
-        | { shadow: ShadowStub | null; removed: boolean }
+        | {
+            shadow: ShadowStub | null;
+            removed: boolean;
+            style: Record<string, unknown>;
+          }
         | undefined;
       if (!host?.shadow) return null;
       const children = host.shadow.children;
@@ -538,6 +542,7 @@ function createEnvironment(options: {
       )?.find((child) => child.tagName === "BODY");
       return {
         host,
+        hostStyle: host.style,
         mode: host.shadow.mode,
         stylesheets: children
           .filter((child) => child.rel === "stylesheet")
@@ -767,6 +772,27 @@ test("captures Vite's injected development stylesheet", () => {
     storage: outgoing.storage,
   });
   assert.deepEqual(incoming.shell?.inlineStyles, [css]);
+});
+
+test("positions the retained host before development CSS arrives", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Development shell</main>",
+    inlineStyleSheets: [".reload-snapshot-shell { display: block; }"],
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+  });
+  assert.equal(incoming.shell?.hostStyle.position, "fixed");
+  assert.equal(incoming.shell?.hostStyle.inset, "0");
+  assert.equal(incoming.shell?.hostStyle.zIndex, "2147483647");
+  assert.equal(incoming.shell?.hostStyle.pointerEvents, "none");
+  assert.equal(incoming.shell?.hostStyle.background, "var(--background)");
 });
 
 test("restores scroll offsets again after linked styles load", () => {

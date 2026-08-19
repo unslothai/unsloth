@@ -3246,10 +3246,11 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* The retained reload shell. Its contents live in a closed shadow tree styled
-   by public/reload-snapshot.css; only the host box is styled from here, so it
-   is painted by the render-blocking stylesheet. Click-through: the copy is a
-   picture, and the live document underneath keeps taking input. */
+/* The retained reload shell. Its contents live in a closed shadow tree. The
+   script repeats this host rule inline because Vite injects development CSS
+   after main.tsx loads; in production this is painted by the render-blocking
+   stylesheet. Click-through: the copy is a picture, and the live document
+   underneath keeps taking input. */
 .reload-snapshot {
 	position: fixed;
 	inset: 0;
