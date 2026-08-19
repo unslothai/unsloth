@@ -265,6 +265,30 @@ def test_a_second_reset_merges_into_one_block_instead_of_stacking_another():
     assert len(checkpoint._block_items(system)) == 2
 
 
+def test_a_multiline_instruction_survives_being_read_back():
+    """The block claims to quote the user verbatim, so a merge must not edit the quote.
+
+    Rendered flat, every line of a wrapped instruction looked like a separate bullet, and
+    reading it back kept only the ones starting with "- ". "Always do these:\\n1. ...\\n2.
+    ..." came back as the heading alone, silently deleting the requirements, and a user's
+    own bulleted list was promoted into separate items that ate the cap.
+    """
+    from core.inference import checkpoint
+
+    multi = "Always do these:\n1. include STATUS::ZQXVARA123\n2. keep the identifier"
+    nested = "Rules:\n- alpha\n- beta"
+
+    assert checkpoint._block_items(checkpoint.render_checkpoint([multi, "second"])) == [
+        multi,
+        "second",
+    ]
+    assert checkpoint._block_items(checkpoint.render_checkpoint([nested])) == [nested]
+
+    # A block written before the continuation indent existed still reads line by line.
+    legacy = "<carried_forward>\nheader\n\n- plain one\n- plain two\n</carried_forward>"
+    assert checkpoint._block_items(legacy) == ["plain one", "plain two"]
+
+
 def test_the_merged_block_is_re_capped_not_just_concatenated():
     """The caps apply to the block that ends up in the prompt, not to each contribution."""
     from core.inference import checkpoint
@@ -512,6 +536,43 @@ def test_can_reset_false_replays_an_epoch_but_never_starts_one():
     assert fitted is messages
 
 
+def test_an_unreachable_archive_stops_the_epoch_on_the_TURN_IT_BREAKS(monkeypatch):
+    """`degraded()` is the verdict on the last write, which is the wrong tense here.
+
+    The write for the turns this request is about to evict runs AFTER the fit and swallows
+    its own failure, so the first request after the store or the embedder goes away
+    committed a reset whose block says the dropped turns can be searched while nothing was
+    indexed. Probed now instead, so the reset is withheld on that turn rather than the one
+    after it.
+    """
+    from core.inference import llama_cpp
+    from core.rag import conversation_archive
+
+    monkeypatch.setattr(conversation_archive, "degraded", lambda: False)
+
+    monkeypatch.setattr(conversation_archive, "reachable", lambda: True)
+    assert llama_cpp._archive_is_degraded() is False
+
+    monkeypatch.setattr(conversation_archive, "reachable", lambda: False)
+    assert llama_cpp._archive_is_degraded() is True
+
+
+def test_the_reachability_probe_is_no_for_a_store_that_cannot_be_opened(monkeypatch):
+    """A probe, not a promise: it answers no rather than raising into the chat."""
+    from core.rag import conversation_archive
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+
+    def _boom():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(conversation_archive.rag_db, "get_connection", _boom)
+    assert conversation_archive.reachable() is False
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: False)
+    assert conversation_archive.reachable() is False
+
+
 def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeypatch):
     """`enabled()` and `can_archive()` are capability checks, so both keep saying yes while
     the embedder is failing and nothing is being indexed, and starting an epoch there would
@@ -679,6 +740,111 @@ def test_the_first_compaction_is_not_refused_for_lacking_a_tool_that_cannot_exis
         )
         is False
     )
+
+
+def test_the_memory_tool_override_needs_a_request_that_can_actually_reset(monkeypatch):
+    """The policy says a reset is possible SOMEWHERE, not that this request can do one.
+
+    Only the llama.cpp branch runs `fit_checkpoint_context`. The safetensors branch, the
+    external-provider loops and the token counter all share this selector, so reading the
+    process-wide policy here put Studio's conversation-memory tool in front of an MCP-only
+    request on a path where nothing is ever compacted. `_apply_compaction_nudge` already
+    takes the same per-request flag, for the same reason.
+    """
+    import asyncio
+    import types
+
+    import routes.inference as routes_mod
+
+    monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: True)
+    monkeypatch.setattr(routes_mod, "_checkpoint_needs_search", lambda: True)
+
+    payload = types.SimpleNamespace(
+        enabled_tools = [],
+        rag_scope = None,
+        thread_id = "t1",
+        bypass_permissions = False,
+    )
+
+    def _names(**kwargs):
+        tools = asyncio.run(
+            routes_mod._select_request_tools(
+                payload, tools_on = False, mcp_allowed = True, **kwargs
+            )
+        )
+        return [tool["function"]["name"] for tool in tools]
+
+    assert "search_conversation" not in _names()
+    assert "search_conversation" in _names(checkpoint_fitted = True)
+
+
+def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkeypatch):
+    """Two Retry siblings can carry byte-identical replies with only one having reset.
+
+    The exact-text filter keeps both, and taking the first match reopened the tool loop on
+    the branch that never reset, which costs a tools-off request the n > 1 and
+    non-streaming guards. The sticky boundary meets the same ambiguity and answers it with
+    `min(boundaries)`: where the text cannot separate them, leave the request as it was.
+    The two must agree, so this pins the agreement and not just the value.
+    """
+    import sys
+    import types
+
+    from core.inference import llama_cpp
+    from routes import inference as inference_routes
+
+    reply = "Done."
+
+    def _rows(first_checkpointed):
+        return [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": reply,
+                "metadata": {
+                    "custom": {
+                        "contextTruncation": {
+                            "fits": True,
+                            "dropped_messages": 12,
+                            "boundary_messages": 12,
+                            "checkpoint": first_checkpointed,
+                        }
+                    }
+                },
+            },
+            {
+                "role": "assistant",
+                "content": reply,
+                "metadata": {
+                    "custom": {
+                        "contextTruncation": {
+                            "fits": True,
+                            "dropped_messages": 6,
+                            "boundary_messages": 6,
+                        }
+                    }
+                },
+            },
+        ]
+
+    def _install(rows):
+        module = types.SimpleNamespace(list_chat_messages = lambda thread_id: rows)
+        package = types.ModuleType("storage")
+        package.studio_db = module
+        monkeypatch.setitem(sys.modules, "storage", package)
+        monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+    branch = [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
+
+    # Only the abandoned sibling reset. The boundary that gets replayed is the shallower
+    # one, which is the never-reset sibling's, so no epoch is in force on this branch.
+    _install(_rows(True))
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 6
+
+    # Neither reset: unchanged, and still no loop.
+    _install(_rows(False))
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
 
 def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():

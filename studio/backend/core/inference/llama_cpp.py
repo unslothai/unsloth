@@ -182,15 +182,21 @@ def _can_reset_epoch(
 
 
 def _archive_is_degraded() -> bool:
-    """Whether the last archive write failed outright.
+    """Whether an archive write for THIS request would fail.
 
     Read separately from `_can_reset_epoch` because it answers a different question. The
     admission gates gate whether an epoch may EXIST at all; this one only says whether a
     NEW one may start right now, and an epoch already in force is unaffected.
+
+    Two questions, not one. `degraded()` is the verdict on the LAST write, which is the
+    wrong tense: the write for the turns this request is about to evict runs afterwards and
+    swallows its own failure, so the first request after the store goes away would commit a
+    reset whose block says the dropped turns can be searched while nothing was indexed.
+    `reachable()` probes the store and the embedder now, which closes that turn.
     """
     try:
         from core.rag import conversation_archive
-        return bool(conversation_archive.degraded())
+        return bool(conversation_archive.degraded()) or not conversation_archive.reachable()
     except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
         return False
 

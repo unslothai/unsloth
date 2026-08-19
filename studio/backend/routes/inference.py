@@ -3479,14 +3479,39 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
                 for message in rows
                 if conversation_archive.content_on_branch(message.get("content"), branch)
             ]
-        for message in rows:
+        if not rows:
+            return False
+        # Rows the text cannot tell apart decide TOGETHER. Two Retry siblings can carry
+        # byte-identical replies with only the abandoned one having reset, and taking the
+        # first match reopened the loop on the branch that never did. The sticky boundary
+        # meets the same ambiguity and answers it the same way, with `min(boundaries)`:
+        # where the branch check cannot separate them, choose the reading that leaves the
+        # request as it was. The one case this gets wrong -- a real epoch on the live
+        # sibling -- is one the sticky boundary already declines to replay, so no boundary
+        # is restored on that turn either and there is nothing for the tool to reach back to.
+        newest = conversation_archive.message_text(rows[0].get("content"))
+        twins = [
+            message
+            for message in rows
+            if conversation_archive.message_text(message.get("content")) == newest
+        ]
+
+        def _checkpointed(message: dict) -> bool:
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
-                continue
+                return False
             truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
                 "contextTruncation"
             )
-            if isinstance(truncation, dict) and truncation.get("checkpoint"):
+            return bool(isinstance(truncation, dict) and truncation.get("checkpoint"))
+
+        if all(_checkpointed(message) for message in twins):
+            return True
+        # Older rows behind the newest turn still answer on their own: only the
+        # indistinguishable ones are held to the stricter rule.
+        twin_ids = {id(message) for message in twins}
+        for message in rows:
+            if id(message) not in twin_ids and _checkpointed(message):
                 return True
     except Exception:
         return False
@@ -3494,7 +3519,11 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 
 
 async def _select_request_tools(
-    payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
+    payload: ChatCompletionRequest,
+    *,
+    tools_on: bool,
+    mcp_allowed: bool,
+    checkpoint_fitted: bool = False,
 ) -> list[dict]:
     """Resolve the tool list for a chat request: built-ins filtered by the
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
@@ -3534,7 +3563,7 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and (tools_on or _checkpoint_needs_search()):
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
         if not tools_on:
             # Checkpoint compaction resets the conversation, so search_conversation stops
@@ -14198,7 +14227,14 @@ async def openai_chat_completions(
 
         if use_tools:
             tools_to_use = await _select_request_tools(
-                payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
+                payload,
+                tools_on = _tools_on,
+                mcp_allowed = _mcp_allowed,
+                # Only this branch runs the checkpoint fit. `_apply_compaction_nudge`
+                # already takes the same per-request signal for the same reason: the
+                # process-wide policy says a reset is POSSIBLE somewhere, not that this
+                # request can perform one.
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools

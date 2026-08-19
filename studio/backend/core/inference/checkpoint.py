@@ -71,6 +71,9 @@ MAX_ITEMS = int(os.environ.get("UNSLOTH_CHECKPOINT_MAX_ITEMS", "8"))
 
 _OPEN = "<carried_forward>"
 _CLOSE = "</carried_forward>"
+# What a wrapped instruction's later lines are indented by, so one instruction stays one
+# bullet when the block is read back.
+_CONTINUATION = "  "
 _HEADER = (
     "The conversation before this point was compacted away to make room. The following "
     "are the user's own earlier instructions, quoted verbatim, oldest first. They are a "
@@ -163,30 +166,51 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
         return ""
-    lines = "\n".join(f"- {item}" for item in items)
+    # Continuation lines are INDENTED, so an instruction that spans several lines is one
+    # bullet and survives the round trip through `_block_items`. A user's own numbered or
+    # bulleted list inside an instruction is otherwise indistinguishable from the block's
+    # own bullets: read back, "Always do these:\n1. ...\n2. ..." became just the heading,
+    # deleting the substance while the header still says the quote is verbatim.
+    lines = "\n".join("- " + item.replace("\n", "\n" + _CONTINUATION) for item in items)
     tail = _SEARCHABLE if searchable else _NOT_SEARCHABLE
     return f"{_OPEN}\n{_HEADER}{tail}\n\n{lines}\n{_CLOSE}"
 
 
+# A capture group, so `findall` yields the BODY. Without it the closing delimiter is part
+# of the match and the last item swallows it.
 _BLOCK = re.compile(
-    re.escape(_OPEN) + r".*?" + re.escape(_CLOSE) + r"\s*", re.IGNORECASE | re.DOTALL
+    re.escape(_OPEN) + r"(.*?)" + re.escape(_CLOSE) + r"\s*", re.IGNORECASE | re.DOTALL
 )
 
 
 def _block_items(text: str) -> list[str]:
-    """The bullets a system message's existing block holds, oldest first.
+    """The instructions a system message's existing block holds, oldest first.
 
     Parsed rather than discarded: by the time a second reset happens the turns that
     produced the first block are already gone, so the block text is the only copy of those
     standing instructions left. `_neutralise` defangs delimiters in quoted user text, so
     a real `</carried_forward>` can only be one we wrote.
+
+    A block written before the continuation indent existed still reads correctly line by
+    line; only a multi-line instruction in such a block loses its tail, which is what it
+    did anyway.
     """
     items: list[str] = []
     for body in _BLOCK.findall(text):
+        current: Optional[list[str]] = None
         for line in body.splitlines():
-            if line.startswith("- ") and line[2:].strip():
-                items.append(line[2:].strip())
-    return items
+            if line.startswith("- "):
+                if current:
+                    items.append("\n".join(current))
+                current = [line[2:]]
+            elif current is not None and line.startswith(_CONTINUATION):
+                current.append(line[len(_CONTINUATION):])
+            elif current:
+                items.append("\n".join(current))
+                current = None
+        if current:
+            items.append("\n".join(current))
+    return [item for item in (item.strip() for item in items) if item]
 
 
 def _recap(items: list[str], *, max_tokens: int, max_items: int) -> list[str]:

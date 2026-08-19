@@ -479,6 +479,30 @@ def degraded() -> bool:
     return _INGEST_FAILED
 
 
+def reachable() -> bool:
+    """Whether an archive write attempted RIGHT NOW could reach its store and embedder.
+
+    ``degraded`` is the verdict on the last write, which is the wrong tense for a caller
+    deciding whether to reset the conversation: the write for the turns THIS request is
+    about to evict has not happened yet, and it runs afterwards and swallows its own
+    failure. So the first request after the database or the embedder goes away commits a
+    reset whose block says the dropped turns can be searched, while nothing was indexed.
+
+    A probe rather than a promise. It cannot see a failure that begins after it returns,
+    which leaves the same one-turn window for a store that dies mid-request; the turns are
+    still recovered, because the client re-sends the branch and the write is idempotent.
+    """
+    if not enabled():
+        return False
+    try:
+        rag_db.get_connection()
+        embeddings.embedding_identity(config.effective_embedding_model())
+        return True
+    except Exception:  # noqa: BLE001 -- an unreachable archive is "no", never an error
+        logger.debug("conversation_archive.unreachable", exc_info = True)
+        return False
+
+
 # Returned by ``_stale_document`` for a turn that is already archived under vectors the
 # query side still accepts.
 _ARCHIVED = "archived"
