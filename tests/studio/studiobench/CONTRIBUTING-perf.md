@@ -11,13 +11,28 @@ answer was produced by not having it.
 ## The loop
 
 ```
-1. Screen    python -m tests.studio.studiobench --tier fast    ~5 min, direction only
-2. Confirm   python -m tests.studio.studiobench --tier standard --reps 4    ~20 min
-3. Gate      per-metric floor, sign consistency, stability
-4. Parity    prove you did not change what is rendered
+# 1. Screen: about 5 minutes, direction only
+python -m tests.studio.studiobench --tier fast --ab YOUR_REF --out outputs/mine
+
+# 2. Confirm: about 20 minutes
+python -m tests.studio.studiobench --tier standard --reps 4 --ab YOUR_REF --out outputs/mine
+
+# ... and the same command with --ab pointing at the BASE, as your null control
+python -m tests.studio.studiobench --tier standard --reps 4 --ab BASE_REF --out outputs/null
+
+# 3. Gate: per-metric floor, sign consistency, stability
+python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null outputs/mine
+
+# 4. Parity: prove you did not change what is rendered
+python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/mine
+
+# and, before you read any timing at all, that the run actually ran
+python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
 ```
 
-Steps 3 and 4 are not optional extras. A number that has not cleared them is not evidence.
+Steps 3 and 4 are not optional extras. A number that has not cleared them is not evidence, and
+`floor_table` will tell you so: run without `--floor` and it prints the deltas followed by a
+refusal to call any of them a result.
 
 ## 1. Screen on the fast tier
 
