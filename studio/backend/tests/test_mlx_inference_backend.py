@@ -3385,6 +3385,38 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     assert backend.messages[1]["tool_calls"][0]["function"]["arguments"] == {"q": "x"}
     assert backend.tools is None, "the loop declined it, so no server catalog is rendered"
 
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "developer", "content": ""}, *history],
+        enable_tools = False,
+    )
+    assert backend.messages[0]["role"] == "system"
+
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = history,
+        enable_tools = False,
+        tools = [{"function": {"name": "mine", "parameters": {}}}],
+    )
+    assert backend.tools[0]["type"] == "function"
+
+    # Not inside the MLX branch: with no MLX model to count it returns before it could have
+    # normalized anything, and the request still arrives normalized.
+    route = sys.modules["routes.inference"]
+    monkeypatch.setattr(route, "get_inference_backend", lambda: SimpleNamespace(models = {}))
+    payload = route.ChatCountTokensRequest(
+        messages = [{"role": "developer", "content": ""}],
+        tools = [{"function": {"name": "mine", "parameters": {}}}],
+    )
+    with contextlib.suppress(Exception):
+        asyncio.run(route.chat_count_tokens(payload, current_subject = "tester"))
+    assert payload.messages[0].role == "system"
+    assert payload.tools[0]["type"] == "function"
+
 
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
     """A request wins verbatim; asking for nothing takes the trained window, and a model

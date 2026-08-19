@@ -27253,6 +27253,21 @@ async def chat_count_tokens(
             detail = "Cannot count tokens while a generation is in progress.",
         )
 
+    # Same normalization /chat/completions does on entry: a template that renders roles
+    # literally would otherwise price a "developer" turn the completion renders as "system".
+    for _m in payload.messages:
+        if _m.role == "developer":
+            _m.role = "system"
+    # And the same default it applies to a function tool that omits the discriminator: a
+    # template serializing the whole entry renders it, so the count has to carry it too.
+    for _tool in payload.tools or []:
+        if (
+            isinstance(_tool, dict)
+            and _tool.get("type") is None
+            and isinstance(_tool.get("function"), dict)
+        ):
+            _tool["type"] = "function"
+
     # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
     if _request_has_image(payload):
         raise HTTPException(
