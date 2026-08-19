@@ -143,7 +143,11 @@ def _path_has_usable_node(
     return _probe_ok(npm, _npm_version_ok, path) if require_npm else True
 
 
-def _probe_ok(executable: str, check, path: str | None = None) -> bool:
+def _probe_ok(
+    executable: str,
+    check,
+    path: str | None = None,
+) -> bool:
     """Version check for one executable, memoized on success (see _usable_node_cache)."""
     if _usable_node_cache.get(executable):
         return True
@@ -216,7 +220,11 @@ def _node_version_ok(executable: str, path: str | None = None) -> bool:
     return _probe_version(executable, _version_meets_floor, path)
 
 
-def _probe_version(executable: str, meets_floor, path: str | None = None) -> bool:
+def _probe_version(
+    executable: str,
+    meets_floor,
+    path: str | None = None,
+) -> bool:
     """Run ``<executable> -v`` and apply ``meets_floor``; False on any error. ``path`` is
     the PATH the server would run with: npm and npx are ``#!/usr/bin/env node`` scripts,
     so probing them under the backend's own PATH can fail to find the candidate's node."""

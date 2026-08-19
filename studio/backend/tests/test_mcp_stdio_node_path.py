@@ -167,6 +167,7 @@ def test_stale_managed_node_leaves_stdio_env_alone(managed_node_install, monkeyp
 def test_managed_node_check_is_memoized_on_success(managed_node_install, monkeypatch):
     """One probe per process once usable: _stdio_env runs on every client build."""
     calls = []
+
     def _record(executable, path = None):
         calls.append(executable)
         return True
@@ -238,6 +239,7 @@ def _system_node_dir(tmp_path, with_npx = True):
 
 def _patch_floors(monkeypatch, predicate):
     """Both floors move together: the installers require node AND npm to pass."""
+
     def _check(executable, path = None):
         return predicate(executable)
 
@@ -542,7 +544,7 @@ def test_npx_server_on_the_same_path_still_gets_managed(
     assert env["PATH"] == f"{managed_node_install}{os.pathsep}{nonpx}"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang launcher")
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX shebang launcher")
 def test_npm_probe_runs_with_the_candidate_path(managed_node_install, monkeypatch, tmp_path):
     """npm is a `#!/usr/bin/env node` script, so the probe needs the candidate's node."""
     toolchain = tmp_path / "toolchain"
@@ -551,7 +553,7 @@ def test_npm_probe_runs_with_the_candidate_path(managed_node_install, monkeypatc
     node.write_text("#!/bin/sh\necho v22.12.0\n")
     node.chmod(0o755)
     npm = toolchain / "npm"
-    npm.write_text("#!/usr/bin/env node\n")       # only runs if node is on the probe PATH
+    npm.write_text("#!/usr/bin/env node\n")  # only runs if node is on the probe PATH
     npm.chmod(0o755)
     _make_executable(toolchain, "npx")
     # a backend PATH with no node at all, which is why this PR exists
