@@ -717,3 +717,77 @@ def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
     )
     assert updated.models == ["gpt-5.4", "gpt-5.5"]
     assert calls == []
+
+
+def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
+    """Renaming a connection must not need ChatGPT to be reachable.
+
+    The saved selection was proven when it was first accepted, and the picker
+    deliberately preserves it through a curated fallback, so refusing the save during an
+    outage would strand the row.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    listed = "gpt-5.7-nova"
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+
+    async def _refresh(provider_id):
+        codex_client._offered_models[provider_id] = {listed: {"id": listed}}
+        return {listed}
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _refresh)
+    asyncio.run(
+        providers_route.update_provider_config(
+            created.id,
+            ProviderUpdate(models = [listed]),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    codex_client.forget_subscription_models(created.id)
+
+    calls = []
+
+    async def _unreachable(provider_id):
+        calls.append(provider_id)
+        return set()
+
+    monkeypatch.setattr(providers_route.openai_codex_client, "ensure_subscription_models", _unreachable)
+    try:
+        renamed = asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(display_name = "Work account", models = [listed]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert renamed.display_name == "Work account"
+        assert renamed.models == [listed]
+        # The slug was already on the row, so nothing had to be proven upstream.
+        assert calls == []
+
+        # A slug that was never saved here still needs the catalog.
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(
+                providers_route.update_provider_config(
+                    created.id,
+                    ProviderUpdate(models = [listed, "gpt-5.9-unheard-of"]),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+        assert refused.value.status_code == 400
+        assert calls == [created.id]
+    finally:
+        codex_client.forget_subscription_models(created.id)

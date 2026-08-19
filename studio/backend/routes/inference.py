@@ -12445,7 +12445,12 @@ async def _proxy_to_external_provider(
         if model not in allowed_models:
             # The catalog is process-local, so a restart leaves a saved plan slug with
             # nothing to authorize it. Refresh once before refusing what the user picked.
-            allowed_models |= await ensure_subscription_models(payload.provider_id)
+            try:
+                allowed_models |= await ensure_subscription_models(payload.provider_id)
+            except (CodexAuthError, CodexReauthorizationError) as exc:
+                # Say reconnect, not "choose another model": the catalog is unreadable
+                # because the connection is, and the model may be perfectly valid.
+                raise HTTPException(status_code = 401, detail = str(exc)) from exc
         if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 

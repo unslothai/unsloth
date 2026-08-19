@@ -1520,7 +1520,10 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
     listed = "gpt-5.7-nova"
     assert listed not in get_provider_info("openai_codex")["default_models"]
 
+    # A catalog that simply does not list it: the refusal is about the model, not the
+    # connection, so the gate never reaches for a refresh.
     forget_subscription_models("codex-1")
+    codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4"}}
     refused = _codex_chat_gate(monkeypatch, listed)
     assert refused.status_code == 400
     assert "Choose a curated Codex model." in str(refused.detail)
@@ -1576,20 +1579,46 @@ def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
 
 
 def test_chat_refuses_when_the_catalog_cannot_be_refreshed(monkeypatch):
-    """An unreachable upstream falls back to the seed instead of locking the user out."""
+    """An unreachable catalog refuses the model; it does not declare the connection bad."""
+    import httpx
+
     forget_subscription_models("codex-1")
 
-    async def _fail(_provider_id):
-        raise codex_auth.CodexAuthError("disconnected")
+    async def _resolve(_provider_id):
+        return "secret-token", "acct-1"
 
-    monkeypatch.setattr(codex_auth, "resolve_access", _fail)
+    class Unreachable:
+        async def get(self, *_args, **_kwargs):
+            raise httpx.ConnectError("upstream down")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: Unreachable())
     try:
-        # A seed model still passes the gate.
-        seeded = _codex_chat_gate(monkeypatch, "gpt-5.4")
-        assert seeded.status_code == 401, seeded.detail
-        # An unknown slug is refused rather than proxied blind.
-        refused = _codex_chat_gate(monkeypatch, "gpt-5.7-nova")
+        refused = _codex_chat_gate(monkeypatch, "gpt-5.7-nova", resolve = _resolve)
         assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+    finally:
+        forget_subscription_models("codex-1")
+
+
+def test_chat_asks_for_reconnection_rather_than_another_model(monkeypatch):
+    """A dead connection is not a bad model choice, and the message has to say so.
+
+    The catalog is unreadable because the credentials are, so refusing with "choose a
+    curated model" would send the user to fix a selection that may be perfectly valid.
+    """
+    forget_subscription_models("codex-1")
+
+    async def _needs_reauth(_provider_id):
+        raise codex_auth.CodexAuthError("ChatGPT authorization expired. Reconnect.")
+
+    try:
+        refused = _codex_chat_gate(monkeypatch, "gpt-5.7-nova", resolve = _needs_reauth)
+        assert refused.status_code == 401
+        assert "Reconnect" in str(refused.detail)
+        assert "Choose a curated Codex model." not in str(refused.detail)
     finally:
         forget_subscription_models("codex-1")
 

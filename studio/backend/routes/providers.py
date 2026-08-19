@@ -102,6 +102,7 @@ def _validate_provider_auth_contract(
     updating: bool,
     clear_api_key: bool = False,
     provider_id: str | None = None,
+    persisted_models: list[str] | None = None,
 ) -> None:
     if info.get("auth_kind") != "chatgpt_oauth":
         return
@@ -115,6 +116,10 @@ def _validate_provider_auth_contract(
     # A plan can expose slugs newer than the seed; read only what was already listed.
     if provider_id:
         allowed |= openai_codex_client.offered_subscription_model_ids(provider_id)
+    # Already accepted on this row once, so an upstream outage must not make an
+    # unrelated edit such as a rename unsavable. New slugs still need catalog proof.
+    if persisted_models:
+        allowed |= set(persisted_models)
     if not models or not set(models).issubset(allowed):
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
 
@@ -282,17 +287,25 @@ async def update_provider_config(
         max_output_tokens_requested,
         payload.max_output_tokens,
     )
-    if (
-        existing_info.get("auth_kind") == "chatgpt_oauth"
-        and payload.models
-        and not set(payload.models).issubset(set(existing_info["default_models"]))
-    ):
-        # The catalog is process-local: a restart between the picker's fetch and this
-        # save would otherwise reject a slug the plan really does list. Refresh first,
-        # on the same terms as the chat gate, so both paths authorize alike. Only a
-        # slug outside the seed needs it, and reaching upstream when it is down would
-        # make an ordinary save wait out the 20s connect / 120s read timeout.
-        await openai_codex_client.ensure_subscription_models(provider_id)
+    persisted_models = list(existing.get("models") or [])
+    if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
+        # Only a slug that is neither seeded nor already saved here needs the plan
+        # catalog. Reaching upstream for the others would make an ordinary save wait out
+        # the 20s connect / 120s read timeout whenever ChatGPT is unreachable, and would
+        # fail an unrelated edit to a connection whose selection was accepted long ago.
+        unproven = (
+            set(payload.models)
+            - set(existing_info["default_models"])
+            - set(persisted_models)
+        )
+        if unproven:
+            try:
+                await openai_codex_client.ensure_subscription_models(provider_id)
+            except (
+                openai_codex_auth.CodexAuthError,
+                openai_codex_client.CodexReauthorizationError,
+            ) as exc:
+                raise HTTPException(status_code = 401, detail = str(exc)) from exc
     _validate_provider_auth_contract(
         existing_info,
         encrypted_api_key = payload.encrypted_api_key,
@@ -301,6 +314,7 @@ async def update_provider_config(
         updating = True,
         clear_api_key = payload.clear_api_key,
         provider_id = provider_id,
+        persisted_models = persisted_models,
     )
 
     if payload.clear_api_key and payload.encrypted_api_key:

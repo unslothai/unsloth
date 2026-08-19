@@ -371,6 +371,11 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
     try:
         access_token, account_id = await codex_auth.resolve_access(provider_id)
         await list_subscription_models(provider_id, access_token, account_id)
+    except (codex_auth.CodexAuthError, CodexReauthorizationError):
+        # The connection needs reconnecting, which is a different answer from "this plan
+        # does not list that model". Callers turn this into the reauthorization error the
+        # user can act on instead of a misleading model-choice rejection.
+        raise
     except Exception:
         return set()
     return offered_subscription_model_ids(provider_id)
