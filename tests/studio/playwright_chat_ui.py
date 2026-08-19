@@ -132,21 +132,7 @@ def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
-
-    def await_pill():
-        """Wait the pill out on the composer's budget, not expect's 5s default.
-
-        The chat route is lazy, so the shell can be mounted while the chunk is
-        still loading and the page is showing the root Suspense fallback. Every
-        reload below uses domcontentloaded, which returns long before that chunk
-        resolves, so asserting straight after one races it. Seen on main
-        (aa32c1861) as `Aria snapshot: - text: Loading...` on both the Windows
-        and macOS smokes.
-        """
-        pill.wait_for(state = "visible", timeout = 60_000)
-        expect(pill).to_be_visible()
-
-    await_pill()
+    expect(pill).to_be_visible()
 
     def expect_mode(label):
         expect(pill).to_have_attribute("data-pill-label", label)
@@ -197,10 +183,29 @@ def exercise_permission_mode_controls(page, shoot):
         else:
             route.continue_()
 
+    # Every reload in this block used to be followed by a bare
+    # `expect(pill).to_be_visible()` on the default 5s expect timeout.
+    # `domcontentloaded` fires long before React has mounted the composer, and on
+    # a 3-core macOS runner with a paravirtual GPU that gap is regularly wider
+    # than 5s. That is the failure that took studio-mac-ui-smoke red at 35672fc9b
+    # and again at bfcaea465, both times on this exact locator, with green runs on
+    # either side -- a race, not a regression.
+    #
+    # The composer-mount step already settles the network before waiting, for the
+    # same reason and with the same note about macOS. This does the same after
+    # each reload. It asserts exactly what it asserted before; it just stops
+    # asking before the answer can exist.
+    def reload_and_wait_for_pill():
+        page.reload(wait_until = "domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout = 30_000)
+        except Exception:
+            pass  # best-effort -- proceed even if network never idles
+        expect(pill).to_be_visible(timeout = 30_000)
+
     page.route("**/api/chat/settings", refuse_settings_hydration)
     set_legacy_confirm(None)
-    page.reload(wait_until = "domcontentloaded")
-    await_pill()
+    reload_and_wait_for_pill()
 
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
@@ -226,7 +231,7 @@ def exercise_permission_mode_controls(page, shoot):
 
     # Pointer and compact-layout coverage.
     page.set_viewport_size({"width": 390, "height": 844})
-    await_pill()
+    expect(pill).to_be_visible()
     box = pill.bounding_box()
     if box is None or box["x"] < 0 or box["x"] + box["width"] > 390:
         fail(f"permission pill is clipped in compact layout: {box!r}")
@@ -244,8 +249,7 @@ def exercise_permission_mode_controls(page, shoot):
     try:
         for legacy_value, expected_label in migration_cases:
             set_legacy_confirm(legacy_value)
-            page.reload(wait_until = "domcontentloaded")
-            await_pill()
+            reload_and_wait_for_pill()
             expect_mode(expected_label)
     finally:
         page.unroute("**/api/chat/settings", refuse_settings_hydration)
@@ -256,8 +260,7 @@ def exercise_permission_mode_controls(page, shoot):
     choose("Ask for approval")
     expect_mode("Ask for approval")
     set_legacy_confirm("false")
-    page.reload(wait_until = "domcontentloaded")
-    await_pill()
+    reload_and_wait_for_pill()
     expect_mode("Ask for approval")
     cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if cached != "ask":
@@ -296,8 +299,7 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Full access overwrote persisted mode with {stored!r}")
 
-    page.reload(wait_until = "domcontentloaded")
-    await_pill()
+    reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
     # Leave the full chat smoke in the fresh-install default.
