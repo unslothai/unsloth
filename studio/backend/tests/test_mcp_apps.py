@@ -71,7 +71,25 @@ def test_no_envelope_without_a_declared_template():
 def test_envelope_carries_the_template_and_its_seed_data():
     flat = _flatten_result(_result(_text("cpu 12%"), structured = {"cpu": 12}), UI)
     assert flat.startswith("cpu 12%\n")
-    assert _envelope(flat) == {"resourceUri": UI, "structuredContent": {"cpu": 12}}
+    assert _envelope(flat) == {
+        "resourceUri": UI, "text": "cpu 12%", "structuredContent": {"cpu": 12},
+    }
+
+
+def test_the_envelope_text_leaves_the_host_image_note_to_the_model():
+    """The view is seeded from the envelope text, so a host note about attached
+    images must not reach it as something the tool said."""
+    flat = _flatten_result(_result(_text("cpu 12%"), _image()), UI)
+    assert _envelope(flat)["text"] == "cpu 12%"
+    # The model still sees the note, so the transcript is unchanged.
+    assert "1 image attached; displayed to the user" in flat
+
+
+def test_the_envelope_keeps_the_tool_s_own_text_blocks_separate_from_errors():
+    """An error prefix is host framing too, so it stays out of the view's seed."""
+    flat = _flatten_result(_result(_text("boom"), is_error = True), UI)
+    assert flat.startswith("Error: boom")
+    assert MCP_UI_SENTINEL not in flat
 
 
 def test_result_meta_rides_along_for_the_tool_result_notification():

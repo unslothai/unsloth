@@ -163,8 +163,9 @@ export function McpAppFrame({
     });
     // The view is sent the tool's whole result: dropping the images would show
     // it a different result than the card beside it renders.
-    const content: Record<string, unknown>[] = resultText
-      ? [{ type: "text", text: resultText }]
+    const seedText = ui.text ?? resultText;
+    const content: Record<string, unknown>[] = seedText
+      ? [{ type: "text", text: seedText }]
       : [];
     for (const image of resultImages ?? []) {
       content.push({
@@ -184,7 +185,15 @@ export function McpAppFrame({
         ...(ui._meta ? { _meta: ui._meta } : {}),
       },
     });
-  }, [postToView, toolArgs, resultText, resultImages, ui.structuredContent, ui._meta]);
+  }, [
+    postToView,
+    toolArgs,
+    resultText,
+    resultImages,
+    ui.text,
+    ui.structuredContent,
+    ui._meta,
+  ]);
 
   const onLoad = useCallback(() => {
     if (!pendingPostRef.current || !html) return;
@@ -231,7 +240,6 @@ export function McpAppFrame({
       switch (method) {
         case "ui/initialize": {
           if (id === undefined) return;
-          initializedRef.current = true;
           respond(id, {
             protocolVersion: UI_PROTOCOL_VERSION,
             hostInfo: { name: HOST_NAME, version: HOST_VERSION },
@@ -263,6 +271,8 @@ export function McpAppFrame({
         }
 
         case "ui/notifications/initialized": {
+          // Only now is the view ready for host-context updates.
+          initializedRef.current = true;
           seedView();
           return;
         }

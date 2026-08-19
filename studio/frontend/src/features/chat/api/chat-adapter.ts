@@ -1018,6 +1018,8 @@ export interface McpImageToolResult {
 /** What the backend appends when a tool declares a ui:// template. */
 export interface McpUiEnvelope {
   resourceUri: string;
+  /** The tool's own text, free of the host notes the flattened body carries. */
+  text?: string;
   structuredContent?: unknown;
   _meta?: Record<string, unknown>;
   /** Seed data was too large to persist; the widget must fetch it itself. */

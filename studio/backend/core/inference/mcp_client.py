@@ -963,6 +963,15 @@ def _ui_envelope(result: Any, ui_resource_uri: str) -> str:
         payload["_meta"] = meta
     if structured is not None:
         payload["structuredContent"] = structured
+    # The view is seeded from this rather than the flattened body, which carries
+    # host notes ("N images attached") the tool never sent.
+    own_text = "\n".join(
+        str(getattr(block, "text", "") or "")
+        for block in getattr(result, "content", None) or []
+        if getattr(block, "text", None)
+    )
+    if own_text:
+        payload["text"] = own_text
     try:
         line = json.dumps(payload)
     except (TypeError, ValueError):
