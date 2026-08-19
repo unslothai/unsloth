@@ -3127,12 +3127,16 @@ _has_intel_xpu_gpu() {
         return 1
     fi
     if command -v sycl-ls >/dev/null 2>&1; then
-        if _run_bounded sycl-ls 2>/dev/null | grep -qi "gpu"; then
+        if _run_bounded sycl-ls 2>/dev/null | grep -Eqi 'intel.*gpu|gpu.*intel'; then
             return 0
         fi
     fi
     if command -v xpu-smi >/dev/null 2>&1; then
-        return 0
+        _xpu_smi_out=$(_run_bounded xpu-smi discovery 2>/dev/null) || _xpu_smi_out=""
+        if printf '%s\n' "$_xpu_smi_out" | grep -qi 'Device Type:[[:space:]]*GPU' && \
+           printf '%s\n' "$_xpu_smi_out" | grep -qi 'Vendor Name:[[:space:]]*Intel'; then
+            return 0
+        fi
     fi
     if [ -d /sys/bus/pci/devices ]; then
         for _pci_dev in /sys/bus/pci/devices/*; do
@@ -3143,7 +3147,7 @@ _has_intel_xpu_gpu() {
                 read -r _d < "$_pci_dev/device" 2>/dev/null || continue
                 _d=$(printf '%s' "$_d" | tr '[:upper:]' '[:lower:]')
                 case "$_d" in
-                    0x56*|0x0bd*|0x7d*|0xe2*)
+                    0x56*|0x0bd*|0x64*|0x7d*|0xe2*)
                         return 0
                         ;;
                 esac
@@ -3623,6 +3627,10 @@ get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
     _fallback_to_intel_or_cpu() {
+        case "$(uname -s):$(uname -m)" in
+            Linux:x86_64|Linux:amd64) : ;;
+            *) echo "$_base/cpu"; return ;;
+        esac
         if _has_intel_xpu_gpu; then
             echo "$_base/xpu"
         else
@@ -3648,7 +3656,7 @@ get_torch_index_url() {
         echo "$_base/$_family"; return
     fi
     # macOS: always CPU (no CUDA support)
-    case "$(uname -s)" in Darwin) _fallback_to_intel_or_cpu; return ;; esac
+    case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.
     # Presence of the binary alone (container leftovers, stale driver
     # packages) is not sufficient: otherwise an AMD-only host would
@@ -4426,6 +4434,7 @@ _torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    xpu)        export UNSLOTH_TORCH_BACKEND="xpu"  ;;
     cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
     # Unknown leaf (odd mirror, /current): unset so a stale inherited value can't leak and
     # the stack probes the GPU.

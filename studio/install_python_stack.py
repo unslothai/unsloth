@@ -4220,18 +4220,19 @@ def _resolve_diffusers_pin_req(pin_file: Path) -> Path:
     cache_dir = Path.home() / ".cache" / "unsloth"
     cache_file = cache_dir / f"diffusers-{url.split('/')[-1]}"
     if not cache_file.is_file():
+        cache_tmp = cache_file.with_name(f".{cache_file.name}.{os.getpid()}.tmp")
         try:
             cache_dir.mkdir(parents = True, exist_ok = True)
             _note(f"Downloading diffusers archive to cache: {url}", _dim)
             req_obj = urllib.request.Request(url, headers = {"User-Agent": "Mozilla/5.0"})
             with (
                 urllib.request.urlopen(req_obj, timeout = 45) as response,
-                open(cache_file, "wb") as out_file,
+                open(cache_tmp, "wb") as out_file,
             ):
                 out_file.write(response.read())
+            os.replace(cache_tmp, cache_file)
         except Exception as e:
-            if cache_file.is_file():
-                cache_file.unlink(missing_ok = True)
+            cache_tmp.unlink(missing_ok = True)
             _note(f"Cache download failed ({e}), falling back to direct install", _red)
 
     if cache_file.is_file():

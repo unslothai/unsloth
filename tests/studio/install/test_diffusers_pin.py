@@ -137,3 +137,13 @@ def test_install_sh_still_delegates_the_core_package_skip():
     """The handoff flag skips core packages while allowing other base entries through."""
     assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding = "utf-8")
     assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding = "utf-8")
+
+
+def test_cached_archive_is_published_atomically():
+    """An interrupted download must not leave a corrupt file that looks cached."""
+    source = STACK.read_text(encoding = "utf-8")
+    function = source[source.index("def _resolve_diffusers_pin_req") :]
+    function = function[: function.index("\n\n# -- Main install sequence")]
+    assert 'open(cache_tmp, "wb")' in function
+    assert "os.replace(cache_tmp, cache_file)" in function
+    assert 'open(cache_file, "wb")' not in function

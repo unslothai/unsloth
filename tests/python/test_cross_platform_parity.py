@@ -407,6 +407,9 @@ class TestCudaLeafDigitParity:
         assert re.search(
             r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
         ), "install.sh backend export must brand cuda only on cu[0-9]*"
+        assert re.search(
+            r'xpu\)\s*export UNSLOTH_TORCH_BACKEND="xpu"', text
+        ), "install.sh backend export must preserve the selected XPU family"
         # An unknown leaf must NOT commit a cuda backend (it unsets instead).
         assert re.search(
             r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text
