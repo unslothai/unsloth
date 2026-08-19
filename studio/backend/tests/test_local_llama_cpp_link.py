@@ -138,6 +138,26 @@ def _run_orphan_scan(
     )
     monkeypatch.setattr(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0))
 
+    # The fake is an orphan by construction, so say so instead of letting the host
+    # decide. _kill_orphaned_servers skips any candidate whose parent is alive, and
+    # _pid_parent_is_alive answers that by looking the PID up for real:
+    # psutil.Process(pid).ppid() then psutil.pid_exists(ppid). Nothing here stubs
+    # psutil.Process -- only process_iter -- so the lookup hits the actual machine.
+    #
+    # The PID is os.getpid() + 888, invented on the assumption that nothing owns it.
+    # On a quiet runner nothing does, NoSuchProcess comes back, the candidate is
+    # treated as an orphan and killed. On a busier one that PID is a real process
+    # with a real live parent, the candidate is skipped, and the test reports
+    # `assert 0 == 1` having exercised the ownership logic correctly. That is what
+    # it did on a staging runner while passing on the org queue for the same commit.
+    #
+    # These two tests are about OWNERSHIP -- link tree spared, real root reaped --
+    # and parent liveness is incidental to both, so it is pinned rather than left to
+    # whatever else happens to be running. test_llama_cpp_wait_for_vram_settle.py
+    # stubs this at every one of its call sites for the same reason; this harness
+    # stubbed the sibling _reap_recorded_pid and missed this one.
+    monkeypatch.setattr(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False))
+
     if scan == "procfs":
         # Linux reads /proc directly. Point it at a fixture tree and intercept the
         # signal, since the fixture's pid is not a real process.
