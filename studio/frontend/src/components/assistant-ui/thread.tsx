@@ -45,6 +45,7 @@ import {
   PROMPT_QUEUE_DRAG_TYPE,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
+  isAttachmentQueueable,
   isPastedTextFile,
   isPromptQueueChord,
   isPromptQueueDragTypes,
@@ -2770,6 +2771,17 @@ const Composer: FC<{
   // same text did before it attached, rather than being refused as a file.
   const canQueuePastedTextPrompt =
     attachmentsAreAllPastedText && composerAcceptsQueueing;
+  const canQueueAttachmentPrompt = isAttachmentQueueable({
+    hasAttachments,
+    attachmentsAreAllPastedText,
+    hasPendingAudio,
+    isComposing,
+    hasPendingAttachments,
+    hasMaterializingImageAttachments,
+    hasMaterializingAudioAttachments,
+    disabled: Boolean(disabled),
+    overlay: Boolean(overlay),
+  });
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
@@ -3595,20 +3607,25 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" | "audio" | "settings" = "indexing") => {
+    (
+      waitingOn: "indexing" | "images" | "audio" | "settings" | "running" =
+        "indexing",
+    ) => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
       const title =
-        waitingOn === "images"
-          ? "Waiting for dropped images"
-          : waitingOn === "audio"
-            ? "Waiting for dropped audio"
-            : waitingOn === "settings"
-              ? "Loading this chat's settings"
-              : "Waiting for documents to finish indexing";
+        waitingOn === "running"
+          ? "Waiting for the current response to finish"
+          : waitingOn === "images"
+            ? "Waiting for dropped images"
+            : waitingOn === "audio"
+              ? "Waiting for dropped audio"
+              : waitingOn === "settings"
+                ? "Loading this chat's settings"
+                : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
-        description: "Your message will send automatically once they are ready.",
+        description: "Your message will send automatically once it is ready.",
         duration: Infinity,
         cancel: { label: "Cancel", onClick: cancelQueuedSend },
       });
@@ -3740,11 +3757,18 @@ const Composer: FC<{
     ],
   );
 
-  // Fire the parked send once indexing clears, unless the user emptied the
+  // Fire the parked send once all waits clear, unless the user emptied the
   // composer while waiting (then drop it quietly). An image dropped after the
   // send was parked has to land first, or indexing finishing early sends the
   // text without it and the image attaches to the next draft.
   useEffect(() => {
+    const liveThreadIsRunning =
+      threadIsRunning || aui.thread().getState().isRunning;
+    const livePromptQueueActive = Boolean(
+      findPromptQueueEntry(usePromptQueueUI.getState(), promptQueueThreadIds),
+    );
+    const livePreStreamRunActive =
+      hasPreStreamRunReservation(preStreamThreadIds);
     // pendingSendRef too: a cancel earlier in this same commit has already
     // dropped the send, while `pendingSend` still reads true from this render.
     if (
@@ -3752,6 +3776,9 @@ const Composer: FC<{
       !pendingSendRef.current ||
       indexingActive ||
       threadScopedSettingsPending ||
+      liveThreadIsRunning ||
+      livePromptQueueActive ||
+      livePreStreamRunActive ||
       hasMaterializingImageAttachments ||
       hasMaterializingAudioAttachments
     ) {
@@ -3788,6 +3815,10 @@ const Composer: FC<{
     pendingSend,
     indexingActive,
     threadScopedSettingsPending,
+    threadIsRunning,
+    promptQueueActive,
+    promptQueueThreadIds,
+    preStreamThreadIds,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
     aui,
@@ -3987,6 +4018,10 @@ const Composer: FC<{
           ) {
             return;
           }
+          if (canQueueAttachmentPrompt) {
+            enqueueSend("running");
+            return;
+          }
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
               liveThreadIsRunning
@@ -3994,7 +4029,7 @@ const Composer: FC<{
                 : "Wait for the prompt queue to finish",
               {
                 description:
-                  "Only text prompts can be queued while a response is running or the prompt queue is active.",
+                  "Only text prompts and ready attachments can be queued while a response is running or the prompt queue is active.",
               },
             );
           }
@@ -4085,6 +4120,7 @@ const Composer: FC<{
     },
     [
       aui,
+      canQueueAttachmentPrompt,
       canQueueCurrentPrompt,
       canQueuePastedTextPrompt,
       queueComposerText,
@@ -4236,7 +4272,11 @@ const Composer: FC<{
               // button, so a running thread shows Stop instead of Queue.
               queueDisabled={
                 disableQueue ||
-                !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
+                !(
+                  canQueueCurrentPrompt ||
+                  canQueuePastedTextPrompt ||
+                  canQueueAttachmentPrompt
+                )
               }
               onQueueClick={() => {
                 if (disableQueue) return;
@@ -4246,6 +4286,10 @@ const Composer: FC<{
                   canQueuePastedTextPrompt &&
                   queuePastedTextPrompt(true)
                 ) {
+                  return;
+                }
+                if (canQueueAttachmentPrompt) {
+                  enqueueSend("running");
                   return;
                 }
                 const queuedPrompt = composerText.trim();

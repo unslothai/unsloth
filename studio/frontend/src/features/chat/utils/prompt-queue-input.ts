@@ -57,6 +57,36 @@ export function hasPendingPromptQueueStart(
 }
 
 /**
+ * Whether a normal attachment can use the queue button while a response is
+ * running. Pasted-text attachments have their own queue path that turns them
+ * back into prompt text; every other attachment must stay in the composer and
+ * be sent through the attachment adapter once the current run is idle.
+ */
+export function isAttachmentQueueable(state: {
+  hasAttachments: boolean;
+  attachmentsAreAllPastedText: boolean;
+  hasPendingAudio: boolean;
+  isComposing: boolean;
+  hasPendingAttachments: boolean;
+  hasMaterializingImageAttachments: boolean;
+  hasMaterializingAudioAttachments: boolean;
+  disabled: boolean;
+  overlay: boolean;
+}): boolean {
+  return (
+    state.hasAttachments &&
+    !state.attachmentsAreAllPastedText &&
+    !state.hasPendingAudio &&
+    !state.isComposing &&
+    !state.hasPendingAttachments &&
+    !state.hasMaterializingImageAttachments &&
+    !state.hasMaterializingAudioAttachments &&
+    !state.disabled &&
+    !state.overlay
+  );
+}
+
+/**
  * Identity of a pasted-text queue start, held for the length of the file read
  * before it, so a submit during that read joins it instead of starting a second
  * read of the same attachment.
