@@ -93,11 +93,6 @@ def _provider_response(row: dict) -> ProviderResponse:
     )
 
 
-def _codex_bundle_account(provider_id: str) -> str | None:
-    bundle = openai_codex_auth.load_oauth_bundle(provider_id)
-    return bundle.get("account_id") if bundle else None
-
-
 def _validate_provider_auth_contract(
     info: dict,
     *,
@@ -108,6 +103,7 @@ def _validate_provider_auth_contract(
     clear_api_key: bool = False,
     provider_id: str | None = None,
     persisted_models: list[str] | None = None,
+    validated_account: str | None = None,
 ) -> None:
     if info.get("auth_kind") != "chatgpt_oauth":
         return
@@ -129,7 +125,7 @@ def _validate_provider_auth_contract(
     else:
         allowed = set(info["default_models"])
         proven = not provider_id or openai_codex_client.saved_models_proven_for(
-            provider_id, _codex_bundle_account(provider_id)
+            provider_id, validated_account
         )
         if (
             persisted_models
@@ -307,13 +303,18 @@ async def update_provider_config(
         payload.max_output_tokens,
     )
     persisted_models = list(existing.get("models") or [])
+    # One reading of who owns this connection, used for every decision in this request:
+    # a second lookup later could name a different account than the one the selection was
+    # actually judged against.
+    validated_account: str | None = None
     if existing_info.get("auth_kind") == "chatgpt_oauth":
         # The OAuth bundle is shared through the installation DB while the catalog is per
         # process, so another worker may have rebound this connection. The chat route
         # makes the same check; without it here a save would persist exactly what every
         # send then refuses.
         current_bundle = openai_codex_auth.load_oauth_bundle(provider_id)
-        current_account = current_bundle.get("account_id") if current_bundle else None
+        validated_account = current_bundle.get("account_id") if current_bundle else None
+        current_account = validated_account
         if current_account and not openai_codex_client.subscription_catalog_matches_account(
             provider_id, current_account
         ):
@@ -344,6 +345,7 @@ async def update_provider_config(
         clear_api_key = payload.clear_api_key,
         provider_id = provider_id,
         persisted_models = persisted_models,
+        validated_account = validated_account,
     )
 
     if payload.clear_api_key and payload.encrypted_api_key:
@@ -425,9 +427,11 @@ async def update_provider_config(
         # Record the proof here rather than when a catalog is read: reading one only
         # shows which account answered, while this is the point where the row's models
         # were actually judged against it and stored.
-        account = _codex_bundle_account(provider_id)
-        if account:
-            await openai_codex_auth.remember_catalog_account(provider_id, account)
+        # The account the selection was judged against, not whatever owns the connection
+        # by now. remember_catalog_account re-reads under the guard and declines to write
+        # when the bundle has moved on, so a rebind in between records nothing.
+        if validated_account:
+            await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
     return _provider_response(row)
 
 

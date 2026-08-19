@@ -983,3 +983,54 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
         assert recorded == []
     finally:
         codex_client.forget_subscription_models(created.id)
+
+
+def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
+    """A rebind between validating and recording must not stamp the new account.
+
+    remember_catalog_account writes only when the bundle still names the account handed
+    to it, so passing the one validation used is what makes the record honest.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    recorded = []
+
+    async def _remember(provider_id, account_id):
+        recorded.append((provider_id, account_id))
+
+    lookups = []
+
+    def _bundle(_pid):
+        lookups.append(1)
+        # The first read is the one this request judges by; a rebind lands after it, so
+        # every later read of the connection names the new account.
+        return {"account_id": "acct-a" if len(lookups) == 1 else "acct-b"}
+
+    monkeypatch.setattr(providers_route.openai_codex_auth, "load_oauth_bundle", _bundle)
+    monkeypatch.setattr(providers_route.openai_codex_auth, "remember_catalog_account", _remember)
+
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    codex_client.forget_subscription_models(created.id)
+    lookups.clear()
+    try:
+        asyncio.run(
+            providers_route.update_provider_config(
+                created.id,
+                ProviderUpdate(models = ["gpt-5.4"]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert recorded == [(created.id, "acct-a")]
+    finally:
+        codex_client.forget_subscription_models(created.id)
