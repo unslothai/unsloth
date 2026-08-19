@@ -1751,7 +1751,9 @@ def test_a_batch_mixing_a_search_with_an_ordinary_tool_keeps_its_transcript_span
     text = rendered[1] if isinstance(rendered, tuple) else rendered
     live = conversation_archive.branch_message_texts(group)
 
-    assert conversation_archive._document_matches_one_run([{"text": text}], live, len(group)) is True
+    assert (
+        conversation_archive._document_matches_one_run([{"text": text}], live, len(group)) is True
+    )
 
     _archive(group)
     scope = store.conversation_archive_scope(THREAD)
