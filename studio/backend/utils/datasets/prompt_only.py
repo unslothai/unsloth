@@ -154,9 +154,7 @@ def prepare_prompt_only_dataset(
             messages.append({"role": "user", "content": prompt_text})
             prompt_value = messages
         else:
-            prompt_value = (
-                f"{system_prompt}\n\n{prompt_text}" if system_prompt else prompt_text
-            )
+            prompt_value = f"{system_prompt}\n\n{prompt_text}" if system_prompt else prompt_text
         row = {"prompt": prompt_value}
         if answer_column is not None:
             answer_value = example[answer_column]

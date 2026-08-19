@@ -719,7 +719,6 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
-
     @model_validator(mode = "after")
     def _validate_grpo(self) -> "TrainingStartRequest":
         # getattr for the same reason as _validate_lora_variant_flags: model_construct()
@@ -839,9 +838,7 @@ class TrainingProgress(BaseModel):
     reward_breakdown: Optional[Dict[str, float]] = Field(
         None, description = "GRPO: mean reward per selected reward function"
     )
-    kl: Optional[float] = Field(
-        None, description = "GRPO: KL divergence against the reference model"
-    )
+    kl: Optional[float] = Field(None, description = "GRPO: KL divergence against the reference model")
     completion_length: Optional[float] = Field(
         None, description = "GRPO: mean generated completion length in tokens"
     )

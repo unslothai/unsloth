@@ -157,14 +157,10 @@ class TestRewardPresets(unittest.TestCase):
         )
 
     def test_build_reward_functions_applies_weights_and_keeps_names(self):
-        functions, names = build_reward_functions(
-            [{"id": "reasoning_format_match", "weight": 3.0}]
-        )
+        functions, names = build_reward_functions([{"id": "reasoning_format_match", "weight": 3.0}])
         self.assertEqual(names, ["reasoning_format_match"])
         self.assertEqual(functions[0].__name__, "reasoning_format_match")
-        self.assertEqual(
-            functions[0](["p"], ["<think>a</think><answer>b</answer>"]), [3.0]
-        )
+        self.assertEqual(functions[0](["p"], ["<think>a</think><answer>b</answer>"]), [3.0])
 
     def test_build_reward_functions_rejects_bad_input(self):
         with self.assertRaises(ValueError):
@@ -172,9 +168,7 @@ class TestRewardPresets(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_reward_functions([{"id": "response_length", "weight": 0}])
         with self.assertRaises(ValueError):
-            build_reward_functions(
-                [{"id": "response_length"}, {"id": "response_length"}]
-            )
+            build_reward_functions([{"id": "response_length"}, {"id": "response_length"}])
 
 
 class TestPromptOnlyDataset(unittest.TestCase):
@@ -251,9 +245,7 @@ class TestGrpoStartRequest(unittest.TestCase):
 
     def test_num_generations_must_divide_the_effective_batch(self):
         with pytest.raises(ValueError):
-            TrainingStartRequest(
-                **_base_request(batch_size = 1, gradient_accumulation_steps = 3)
-            )
+            TrainingStartRequest(**_base_request(batch_size = 1, gradient_accumulation_steps = 3))
 
     def test_rollout_lengths_must_fit_in_max_seq_length(self):
         with pytest.raises(ValueError):
