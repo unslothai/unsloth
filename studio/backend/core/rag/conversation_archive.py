@@ -284,6 +284,7 @@ def archive_turns(
     thread_id: str,
     evicted: list[dict],
     live: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
 ) -> int:
     """Index the evicted turns for ``thread_id``. Returns how many were newly written.
 
@@ -319,7 +320,7 @@ def archive_turns(
     scope = store.conversation_archive_scope(thread_id)
     # Conversation order, read once from the persisted thread. See `_transcript_positions`
     # for why it cannot be the order these turns reach the archive.
-    positions = _transcript_positions(thread_id)
+    positions = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
     conn = None
@@ -561,7 +562,78 @@ def degraded() -> bool:
 _ARCHIVED = "archived"
 
 
-def _active_chain(messages: list[dict]) -> list[dict]:
+# How many leaves a branch seed will try. A thread accumulates one leaf per abandoned
+# retry, and each candidate costs a walk plus a render, so this bounds the search on a
+# thread that has been retried hundreds of times. Newest leaves are tried first, and the
+# branch the user is on is one of them in every case this exists for.
+_BRANCH_SEED_MAX_LEAVES = 32
+
+
+def _walk_from(by_id: dict, parent_of: dict, leaf) -> list[dict]:
+    """The rows from ``leaf`` back to the root, oldest first."""
+    chain: list[dict] = []
+    seen: set = set()
+    current = leaf
+    while current is not None and current not in seen:
+        seen.add(current)
+        record = by_id.get(current)
+        if record is None:
+            break
+        chain.append(record)
+        current = parent_of.get(current)
+    chain.reverse()
+    return chain
+
+
+def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> Optional[str]:
+    """Which stored leaf the REQUEST is on, by matching its text. None when nothing does.
+
+    The newest stored row is not the branch the request is on. Switching to a sibling,
+    continuing there and switching back leaves the abandoned branch holding the greatest
+    created_at, and the frontend says so outright in `refresh-context-usage.ts`: after a
+    retry the newest stored leaf is a branch the user left. Measured on a thread with one
+    such switch, the walk read the abandoned branch and BOTH of the request branch's
+    evicted turns matched no position, taking MAX + 1 over an archive the other branch had
+    already pushed up, which the recall header presents as superseding.
+
+    Matched on text, not id: the wire carries no message ids. Scored rather than compared,
+    since the newest branch message is usually not persisted yet and the evicted turns are
+    no longer in the fitted conversation.
+    """
+    if not branch:
+        return None
+    wanted = {
+        text
+        for text in (_normalise_cased(_probe_text(message)) for message in _as_wire(branch))
+        if text
+    }
+    if not wanted:
+        return None
+    parents = {parent for parent in parent_of.values() if parent is not None}
+    order = {message.get("id"): index for index, message in enumerate(messages)}
+    leaves = sorted(
+        (identifier for identifier in by_id if identifier not in parents),
+        key = lambda identifier: order.get(identifier, -1),
+        reverse = True,
+    )
+    best = None
+    best_score = 0
+    for leaf in leaves[:_BRANCH_SEED_MAX_LEAVES]:
+        texts = {
+            text
+            for text in (
+                _normalise_cased(_probe_text(message))
+                for message in _as_wire(_walk_from(by_id, parent_of, leaf))
+            )
+            if text
+        }
+        score = sum(1 for text in wanted if text in texts)
+        if score > best_score:
+            best, best_score = leaf, score
+    return best
+
+
+def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     """The rows on ONE branch, oldest first, rather than the whole stored DAG.
 
     `list_chat_messages` is an unfiltered SELECT ordered by time, but a thread is a tree:
@@ -593,18 +665,11 @@ def _active_chain(messages: list[dict]) -> list[dict]:
         previous = identifier
     if not by_id:
         return list(messages)
-    chain: list[dict] = []
-    seen: set = set()
-    current = messages[-1].get("id")
-    while current is not None and current not in seen:
-        seen.add(current)
-        record = by_id.get(current)
-        if record is None:
-            break
-        chain.append(record)
-        current = parent_of.get(current)
-    chain.reverse()
-    return chain or list(messages)
+    # The request's own branch when it can be found, the newest row when it cannot: a
+    # zero-match seed must not collapse the chain, since empty positions empty every seat
+    # and send every turn to MAX + 1, which is worse than reading the wrong branch.
+    seed = _branch_seed(messages, by_id, parent_of, branch) or messages[-1].get("id")
+    return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
 def _as_wire(messages: list[dict]) -> list[dict]:
@@ -694,7 +759,7 @@ def _as_wire(messages: list[dict]) -> list[dict]:
     return wire
 
 
-def _transcript_positions(thread_id: str) -> Optional[list[str]]:
+def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
     """The thread's saved messages as normalised probe text, in the order they were said.
 
     The ordinal has to come from the CONVERSATION, not from the moment a turn happened to
@@ -722,7 +787,7 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # Grouped with the evictor's own grouper, so a position is a TURN's index and not a
     # message's: the ordinal is compared against other turns, and `archive_messages`
     # already records how many messages a turn holds.
-    wire = _as_wire(_active_chain(messages))
+    wire = _as_wire(_active_chain(messages, branch))
     return [
         [_normalise_cased(_probe_text(message)) for message in group]
         for group in group_turns(wire)
