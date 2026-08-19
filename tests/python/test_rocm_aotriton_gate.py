@@ -87,7 +87,9 @@ def test_install_ps1_persists_the_gate_for_pinned_rocm_indexes_too():
     inside the auto-reroute would leave those installs on the MATH path."""
     source = _INSTALL_PS1.read_text(encoding = "utf-8")
     persist = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
-    pinned_route = source.index('if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {')
+    pinned_route = source.index(
+        "if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {"
+    )
     assert pinned_route < persist, "the AOTriton persistence must follow the pinned-index routing"
     # And it only fires once a ROCm index actually won, not on every install.
     guard = source.rindex("if ($ROCmIndexUrl) {", 0, persist)
