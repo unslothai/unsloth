@@ -723,6 +723,31 @@ def test_opencode_native_auto_probes_old_opencode_only_in_install_dir(monkeypatc
     assert start._opencode_supports_native_auto() is False
 
 
+def test_opencode_command_prefers_installed_v2(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/local/bin/opencode2" if name == "opencode2" else None,
+    )
+    assert start._opencode_command() == ("opencode2", True)
+
+
+def test_opencode_command_falls_back_to_v1(monkeypatch):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    assert start._opencode_command() == ("opencode", False)
+
+
+def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
+    install_dir = tmp_path / ".opencode" / "bin"
+    install_dir.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"opencode2": install_dir}))
+
+    assert start._opencode_command() == ("opencode2", True)
+
+
 def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
     # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so the
     # augmentation must keep those default dirs instead of collapsing to just the install dir
@@ -1179,6 +1204,8 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
 @pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
 def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     events = []
+    if agent == "opencode":
+        monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
 
     def require(name, hint, launch):
         assert name == agent
@@ -1327,6 +1354,8 @@ def fake_studio(tmp_path, monkeypatch):
     # --no-launch session configs land under tmp instead of the real Unsloth dir.
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: None)
+    # Most existing assertions cover the stable V1 command; V2 has focused cases below.
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
     # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
@@ -4435,6 +4464,35 @@ def test_opencode_subagent_inline_merges_inherited_filters_without_binary(monkey
     assert inline["subagent_depth"] == 1
 
 
+def test_opencode_v2_subagent_uses_native_depth_without_debug_probe(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT",
+        json.dumps({"enabled_providers": ["anthropic"], "subagent_depth": 2}),
+    )
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("V2 debug config is not a resolved object"),
+    )
+
+    inline = start._opencode_subagent_inline_config(
+        tmp_path / "opencode.json", {}, command = "opencode2", v2 = True
+    )
+
+    assert "subagent_depth" not in inline
+    assert inline["enabled_providers"] == ["anthropic", start._OPENCODE_PROVIDER]
+    assert inline["experimental"] == {
+        "subagent_depth": 2,
+        "policies": [
+            {
+                "action": "provider.use",
+                "resource": start._OPENCODE_PROVIDER,
+                "effect": "allow",
+            }
+        ],
+    }
+
+
 def _opencode_inline_config(output: str) -> dict:
     # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
     # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
@@ -4523,8 +4581,22 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
+def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode2", "--standalone"]
+    assert _opencode_inline_config(result.output)["model"] == (
+        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    )
+
+
 def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
-    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    monkeypatch.setattr(
+        start, "_opencode_subagent_inline_config", lambda path, permission, **kwargs: {}
+    )
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -4590,7 +4662,7 @@ def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio,
     monkeypatch.setattr(start, "_require_agent_for_launch", require)
     inspected = {}
 
-    def inline(path, permission):
+    def inline(path, permission, **kwargs):
         inspected["binary"] = start._which_with_install_dirs("opencode")
         return {}
 
@@ -4607,7 +4679,9 @@ def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio,
 def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
     # A project opencode.json outranks the session file, so the agent must ride in
     # OPENCODE_CONFIG_CONTENT where a repo's own agent.unsloth cannot field-merge over it.
-    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    monkeypatch.setattr(
+        start, "_opencode_subagent_inline_config", lambda path, permission, **kwargs: {}
+    )
     result = CliRunner().invoke(
         start.start_app,
         ["opencode", "--as-subagent", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"],
@@ -4621,10 +4695,10 @@ def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch
 
 
 def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio, monkeypatch):
-    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda *_: True)
     captured = {}
 
-    def inline(path, permission):
+    def inline(path, permission, **kwargs):
         captured["permission"] = permission
         return {"permission": permission}
 
@@ -4973,6 +5047,38 @@ def test_yolo_opencode_run_uses_native_auto(fake_studio):
     assert "permission" not in _opencode_inline_config(result.output)
 
 
+def test_yolo_opencode_v2_run_uses_standalone_and_native_auto(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == [
+        "opencode2",
+        "run",
+        "hello",
+        "--standalone",
+        "--auto",
+    ]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_yolo_opencode_v2_mini_uses_permission_fallback(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "mini"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode2", "mini", "--standalone"]
+    assert _opencode_inline_config(result.output)["permission"]["edit"] == "allow"
+
+
 def test_yolo_opencode_tui_resume_uses_native_auto(fake_studio):
     result = CliRunner().invoke(
         start.start_app,
@@ -4996,7 +5102,7 @@ def test_no_yolo_opencode_run_omits_native_auto(fake_studio):
 
 def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
-    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda *_: True)
     captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
     assert captured["command"][1:] == [
         "--model",
@@ -5004,6 +5110,16 @@ def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
         "--auto",
     ]
     assert "permission" not in json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
+
+
+def test_yolo_opencode_v2_bare_launch_omits_root_model(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode2")
+    captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
+
+    assert captured["command"][0].endswith("opencode2")
+    assert captured["command"][1:] == ["--standalone", "--auto"]
+    assert "--model" not in captured["command"]
 
 
 def test_yolo_opencode_native_auto_clears_prior_config_fallback(fake_studio, tmp_path):

@@ -366,17 +366,29 @@ _OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
     "completion acp mcp attach debug providers auth agent upgrade uninstall serve web "
     "models stats export import github pr session plugin plug db console generate".split()
 )
+_OPENCODE_V2_SUBCOMMANDS = frozenset(
+    "acp api debug console auth mcp plugin models export import mini run service pair serve".split()
+)
 _OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
-    "-h --help -v --version --print-logs --pure --mdns".split()
+    "-h --help -v --version --print-logs --pure --mdns --standalone --wizard".split()
 )
 _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
-    "--log-level --port --hostname --mdns-domain --cors".split()
+    "--log-level --port --hostname --mdns-domain --cors --server --completions --cpu-profile".split()
 )
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_supports_native_auto() -> bool:
-    executable = _which_with_install_dirs("opencode")
+def _opencode_command(launch: bool = True) -> tuple[str, bool]:
+    resolver = _which_with_install_dirs if launch else shutil.which
+    if resolver("opencode2"):
+        return "opencode2", True
+    return "opencode", False
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if command == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
     if executable is None:
         # No local binary: a --no-launch recipe may run elsewhere, and _run installs the
         # current release on launch -- either way assume native --auto is available.
@@ -421,12 +433,17 @@ def _opencode_subcommand(args: list[str]) -> Optional[str]:
     return None
 
 
-def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], bool]:
+def _opencode_native_auto_args(
+    args: list[str], yolo: bool, *, v2: bool = False
+) -> tuple[list[str], bool]:
     """Add OpenCode's native --auto when the selected command supports it."""
     routed = list(args)
     if not yolo:
         return routed, False
-    if _opencode_subcommand(routed) in _OPENCODE_NON_AUTO_SUBCOMMANDS:
+    subcommand = _opencode_subcommand(routed)
+    if v2 and subcommand in _OPENCODE_V2_SUBCOMMANDS and subcommand != "run":
+        return routed, False
+    if not v2 and subcommand in _OPENCODE_NON_AUTO_SUBCOMMANDS:
         return routed, False
     separator = routed.index("--") if "--" in routed else len(routed)
     # --mini's runMini TUI forces auto=false and never forwards --auto, so appending it is
@@ -436,6 +453,22 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
     if "--auto" not in routed[:separator]:
         routed.insert(separator, "--auto")
     return routed, True
+
+
+def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
+    """Keep session-only config on the V2 server that consumes it."""
+    routed = list(args)
+    separator = routed.index("--") if "--" in routed else len(routed)
+    head = routed[:separator]
+    if "--standalone" in head or "--server" in head or any(
+        arg.startswith("--server=") for arg in head
+    ):
+        return routed
+    subcommand = _opencode_subcommand(routed)
+    if subcommand in _OPENCODE_V2_SUBCOMMANDS and subcommand not in {"run", "mini"}:
+        return routed
+    routed.insert(separator, "--standalone")
+    return routed
 
 
 def _hermes_install_hint() -> str:
@@ -2726,7 +2759,12 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
-def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
+def _opencode_subagent_inline_config(
+    path: Path,
+    permission: dict,
+    command: str = "opencode",
+    v2: bool = False,
+) -> dict:
     """Keep the local provider visible without hiding the parent's allowed providers."""
     inline: dict = {}
     inherited = os.environ.get("OPENCODE_CONFIG_CONTENT")
@@ -2762,15 +2800,31 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     merge_provider_filters(inline)
     effective = inline
 
-    executable = _which_with_install_dirs("opencode")
-    if executable is None:
+    executable = None if v2 else _which_with_install_dirs(command)
+    if v2:
+        experimental = inline.get("experimental")
+        if not isinstance(experimental, dict):
+            experimental = {}
+        policies = experimental.get("policies")
+        if not isinstance(policies, list):
+            policies = []
+        experimental["policies"] = [
+            *policies,
+            {"action": "provider.use", "resource": _OPENCODE_PROVIDER, "effect": "allow"},
+        ]
+        depth = experimental.get("subagent_depth", inline.pop("subagent_depth", None))
+        experimental["subagent_depth"] = (
+            depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+        )
+        inline["experimental"] = experimental
+    elif executable is None:
         typer.echo(
             f"Warning: OpenCode is not installed, so provider filters could not be checked. "
             f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
             err = True,
         )
     else:
-        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, ["opencode"]))
+        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, [command]))
         try:
             resolved = subprocess.run(
                 [executable, "debug", "config"],
@@ -2793,10 +2847,11 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
 
         merge_provider_filters(effective)
 
-    depth = effective.get("subagent_depth")
-    inline["subagent_depth"] = (
-        depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
-    )
+    if not v2:
+        depth = effective.get("subagent_depth")
+        inline["subagent_depth"] = (
+            depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+        )
     if permission:
         inline["permission"] = permission
     return inline
@@ -3149,7 +3204,9 @@ def _augment_path_with_install_dirs() -> None:
         home = Path.home()
     except (RuntimeError, OSError):
         home = None
-    candidates = [home / ".local" / "bin"] if home is not None else []
+    candidates = (
+        [home / ".local" / "bin", home / ".opencode" / "bin"] if home is not None else []
+    )
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:
@@ -4609,8 +4666,9 @@ def opencode(
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
-    install_hint = _npm_install_hint("opencode-ai")
-    _require_agent_for_launch("opencode", install_hint, launch)
+    command_name, opencode_v2 = _opencode_command(launch)
+    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    _require_agent_for_launch(command_name, install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -4635,9 +4693,18 @@ def opencode(
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
         # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
-        route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
-        command = ["opencode", *opencode_args]
+        route_native_auto = (
+            yolo
+            and _opencode_supports_native_auto(command_name)
+            and (launch or bool(ctx.args))
+        )
+        opencode_args = list(ctx.args)
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            opencode_args, route_native_auto, v2 = opencode_v2
+        )
+        command = [command_name, *opencode_args]
         with _session_config("opencode-subagent", launch, persist = persist) as cfg:
             config_path = cfg / "opencode.json"
             session_permission = write_opencode_config(
@@ -4649,7 +4716,12 @@ def opencode(
                 as_subagent = True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
-            inline_config = _opencode_subagent_inline_config(config_path, session_permission)
+            inline_config = _opencode_subagent_inline_config(
+                config_path,
+                session_permission,
+                command = command_name,
+                v2 = opencode_v2,
+            )
             # A project opencode.json outranks the session file and could field-merge its
             # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
             inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
@@ -4678,20 +4750,30 @@ def opencode(
     # subcommand such as `run <prompt>`; a leading --model would land before that
     # subcommand and break it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto()
+    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
     if ctx.args:
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
-        command = ["opencode", *opencode_args]
-    elif launch:
+        opencode_args = list(ctx.args)
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
         opencode_args, native_auto = _opencode_native_auto_args(
-            ["--model", opencode_model],
-            route_native_auto,
+            opencode_args, route_native_auto, v2 = opencode_v2
         )
-        command = ["opencode", *opencode_args]
+        command = [command_name, *opencode_args]
+    elif launch:
+        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            opencode_args,
+            route_native_auto,
+            v2 = opencode_v2,
+        )
+        command = [command_name, *opencode_args]
     else:
         # Append-safe base: `opencode --auto run ...` parses as the TUI with a project
         # "run", not the run subcommand. Command unknown here, so keep the config fallback.
-        command = ["opencode"]
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
+        command = [command_name, *opencode_args]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
     # already survives exit; reopen the last one by passing `opencode --continue` through.
     with _session_config("opencode", launch, persist = persist) as cfg:

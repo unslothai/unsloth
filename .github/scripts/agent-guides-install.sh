@@ -71,8 +71,8 @@ case "$AGENT" in
     npm_retry "@openai/codex" || install_fail "npm install -g @openai/codex failed"
     ;;
   opencode)
-    # start.py install_hint: npm install -g opencode-ai
-    npm_retry "opencode-ai" || install_fail "npm install -g opencode-ai failed"
+    # Exercise the V2 path; start.py still falls back to an installed V1 `opencode`.
+    npm_retry "@opencode-ai/cli@beta" || install_fail "npm install -g @opencode-ai/cli@beta failed"
     ;;
   openclaw)
     # start.py install_hint: curl -fsSL https://openclaw.ai/install.sh | bash
