@@ -1026,21 +1026,37 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
         list_chat_messages = lambda thread_id: [
             {"role": "user", "content": "q"},
             # The abandoned sibling, which is the one that reset.
-            {"role": "assistant", "content": "Done",
-             "metadata": {"custom": {"contextTruncation": {
-                 "fits": True, "dropped_messages": 12, "checkpoint": True}}}},
+            {
+                "role": "assistant",
+                "content": "Done",
+                "metadata": {
+                    "custom": {
+                        "contextTruncation": {
+                            "fits": True,
+                            "dropped_messages": 12,
+                            "checkpoint": True,
+                        }
+                    }
+                },
+            },
             # The live reply, which never did.
-            {"role": "assistant", "content": "Not done yet, still working",
-             "metadata": {"custom": {"contextTruncation": {
-                 "fits": True, "dropped_messages": 12}}}},
+            {
+                "role": "assistant",
+                "content": "Not done yet, still working",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 12}}
+                },
+            },
         ]
     )
     package = types.ModuleType("storage")
     package.studio_db = siblings
     monkeypatch.setitem(_sys.modules, "storage", package)
     monkeypatch.setitem(_sys.modules, "storage.studio_db", siblings)
-    swallowed = [{"role": "user", "content": "q"},
-                 {"role": "assistant", "content": "Not done yet, still working"}]
+    swallowed = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Not done yet, still working"},
+    ]
     assert inference_routes._thread_has_checkpoint("t1", swallowed) is False
 
     # The same thread shape after a ROLLING compaction: archived, never reset.
