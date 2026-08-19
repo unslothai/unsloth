@@ -502,6 +502,14 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if manifest and not await asyncio.to_thread(get_auto_unload_keep_kv):
                         _delete_resume_files(manifest)
                         manifest = None
+                    # Last word before the teardown. Every settings read above is SQLite off
+                    # this loop, so a request can register _pending and park on the gate while
+                    # one runs; _is_idle counts _pending precisely so the loop never unloads
+                    # out from under a waiter.
+                    if not _is_idle(ttl):
+                        if manifest:
+                            _delete_resume_files(manifest)
+                        continue
                     try:
                         await asyncio.to_thread(backend.unload_model)
                     except Exception:

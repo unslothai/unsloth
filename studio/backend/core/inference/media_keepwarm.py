@@ -385,6 +385,11 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             status.get("h3_task"),
         ):
             return
+        # Last word before the teardown. The reads above are SQLite off this loop, so a
+        # request can register _pending and park on the gate while one runs; is_idle counts
+        # _pending precisely so the loop never unloads out from under a waiter.
+        if not tracker.is_idle(ttl):
+            return
         await asyncio.to_thread(backend.unload)
         # Drop ownership only if nothing came back meanwhile, and check it under the arbiter
         # lock so a same-owner load that re-registered keeps it. Mirrors /images/unload.

@@ -473,9 +473,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -722,6 +722,66 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert unloads == [1]  # freed once, not repeatedly
     stash = kw.get_last_unloaded_model()
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
+
+
+def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(monkeypatch):
+    # _pending records a request blocked on the unload gate so the idle loop never frees a
+    # model out from under it. The pin setting is a SQLite read and now runs off the loop, so a
+    # chat request can register while it is in flight -- after _is_idle already answered. The
+    # loop has to take the idle question again before it tears anything down.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
+    monkeypatch.setattr(kw, "_last_unloaded_model", None)
+
+    # keep_kv is read once per tick, after _is_idle has already passed and immediately before
+    # the guard's pin read, so it marks exactly the stretch the request has to land in. The
+    # pre-idle pin check earlier in the tick must not fire, or _is_idle would answer False
+    # there and the tick would never reach the window at all.
+    inside_the_unload_block = {"flag": False}
+    landed = []
+
+    def _keep_kv_marks_the_block():
+        inside_the_unload_block["flag"] = True
+        return False
+
+    def _api_only_while_a_request_lands():
+        if inside_the_unload_block["flag"]:
+            inside_the_unload_block["flag"] = False
+            kw._note_pending()
+            landed.append(1)
+        return False
+
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", _keep_kv_marks_the_block)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", _api_only_while_a_request_lands)
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+            if landed or unloads:
+                break
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert landed, "the tick never reached the guard's pin read, so the window was never hit"
+    assert unloads == [], "the loop freed the model out from under a request on the gate"
 
 
 def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
@@ -3373,8 +3433,9 @@ def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_target_is_vision",
-        lambda path, variant = None, need_image = True: probed.append((path, variant, need_image))
-        or True,
+        lambda path, variant = None, need_image = True: (
+            probed.append((path, variant, need_image)) or True
+        ),
     )
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
@@ -3709,12 +3770,12 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
     assert len(assistant) == 1
     content = str(assistant[0].get("content", ""))
-    assert (
-        "<tool_call>" in content
-    ) is expect_markup, "the count must render the same replayed history the completion does"
-    assert (
-        "offline_tool[ARGS]" in content
-    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    assert ("<tool_call>" in content) is expect_markup, (
+        "the count must render the same replayed history the completion does"
+    )
+    assert "offline_tool[ARGS]" in content, (
+        "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    )
 
 
 _PASSTHROUGH_CATALOG = [
@@ -4010,9 +4071,9 @@ def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
     body = _counted_body(payload)
     assert body["input_tokens"] == 1234
     names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
-    assert (
-        "mcp__s1__lookup" in names
-    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    assert "mcp__s1__lookup" in names, (
+        "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    )
 
 
 def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
@@ -4280,9 +4341,9 @@ def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch
             raise
         total = None
 
-    assert (
-        total is None
-    ), "a total counted across a model change must not be published as either model's"
+    assert total is None, (
+        "a total counted across a model change must not be published as either model's"
+    )
     assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
 
 
@@ -4567,9 +4628,9 @@ def test_a_count_never_spawns_mcp_servers():
         and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
     ]
     assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
-    assert all(
-        isinstance(v, ast.Constant) and v.value is False for v in assigned
-    ), "a count must never enable MCP discovery"
+    assert all(isinstance(v, ast.Constant) and v.value is False for v in assigned), (
+        "a count must never enable MCP discovery"
+    )
 
     called = {
         node.func.id
@@ -7755,9 +7816,9 @@ def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
     backend.is_loaded = identity is not None
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     fast = inference_route._loaded_identity_satisfies(requested)
-    assert not (
-        fast and not inference_route._loaded_satisfies(requested)
-    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+    assert not (fast and not inference_route._loaded_satisfies(requested)), (
+        f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+    )
 
 
 def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
