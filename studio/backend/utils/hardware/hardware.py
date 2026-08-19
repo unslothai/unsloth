@@ -3831,6 +3831,39 @@ def get_visible_gpu_count() -> int:
     return _visible_gpu_count
 
 
+def _rocr_relative_visibility(value: str) -> Optional[str]:
+    """``value`` (physical ids, the way ROCR_VISIBLE_DEVICES names them) re-expressed
+    as ordinals into the ROCr-filtered agent list, or None when it does not apply.
+
+    HIP indexes what ROCr left, not the host, so a HIP pin stacked on an inherited
+    ROCr mask means a different device: under ``ROCR_VISIBLE_DEVICES=1,0`` a HIP
+    mask of "1" is physical GPU 0, and an id past the agent count selects nothing
+    at all. Dropping the ROCr mask instead would re-expose the agents it hides --
+    including one an arch gate just excluded, which HSA can crash on merely
+    enumerating -- so translate, the same post-ROCr ordinals llama.cpp's
+    ``prefer_rocr`` path emits.
+
+    Only where ROCr is the layer in force: Linux, a numeric ROCr mask, no inherited
+    HIP mask (that one is already ROCr-relative). Ids from another space are left
+    alone. An identity mask translates to itself, so any host that never set ROCR
+    by hand is unchanged.
+    """
+    if sys.platform == "win32" or "HIP_VISIBLE_DEVICES" in os.environ:
+        return None
+    rocr = os.environ.get("ROCR_VISIBLE_DEVICES")
+    if rocr is None:
+        return None
+    try:
+        agents = [int(token.strip()) for token in rocr.split(",") if token.strip()]
+        wanted = [int(token.strip()) for token in value.split(",") if token.strip()]
+    except ValueError:
+        # UUID/MIG tokens on either side: no ordinal to name them back to.
+        return None
+    if not agents or not wanted or any(gpu_id not in agents for gpu_id in wanted):
+        return None
+    return ",".join(str(agents.index(gpu_id)) for gpu_id in wanted)
+
+
 def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
     if gpu_ids is None:
         return
@@ -3903,6 +3936,14 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         logger.info("Applied gpu_ids: ZE_AFFINITY_MASK='%s'", value)
         return
 
+    # HIP indexes the agents ROCr left, so a pin stacked on an inherited ROCr mask
+    # has to carry ROCr-relative ordinals rather than physical ids. Needs no ROCm
+    # probe of its own: it is inert unless ROCR_VISIBLE_DEVICES is set, which no
+    # non-ROCm host does.
+    _relative = _rocr_relative_visibility(value)
+    if _relative is not None:
+        value = _relative
+
     os.environ["CUDA_VISIBLE_DEVICES"] = value
     # Keep ROCm visibility env vars in sync. Workers may call apply_gpu_ids()
     # before detect_hardware() (IS_ROCM still False), so also mirror when the
@@ -3928,13 +3969,11 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
             )
     if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
-        # ROCR_VISIBLE_DEVICES operates at the HSA agent level and uses
-        # different indexing semantics to HIP_VISIBLE_DEVICES. Setting it
-        # to a physical GPU index breaks multi-GPU ROCm systems where the
-        # parent already set ROCR_VISIBLE_DEVICES (e.g. "0,1"): narrowing
-        # to "1" causes torch.cuda.is_available() to return False in the
-        # worker subprocess. HIP_VISIBLE_DEVICES is sufficient for GPU
-        # selection on ROCm -- leave ROCR_VISIBLE_DEVICES inherited.
+        # An inherited ROCR_VISIBLE_DEVICES stays inherited: it hides agents at the
+        # HSA layer, and narrowing it in step with HIP made torch.cuda.is_available()
+        # False in the worker, the two masks stacking. HIP alone is enough to select
+        # -- as long as its ids are ROCr-relative, which is what the translation
+        # above ensures.
     _visible_gpu_count = None
     if _is_rocm:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s' (rocm)", value)

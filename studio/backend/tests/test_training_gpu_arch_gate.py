@@ -17,6 +17,7 @@ shapes the field logs on #7669 document.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from unittest.mock import patch
@@ -25,6 +26,7 @@ import pytest
 
 from utils.hardware.hardware import (
     DeviceType,
+    apply_gpu_ids,
     auto_select_gpu_ids,
     rocm_gpu_ids_without_torch_kernels,
 )
@@ -359,3 +361,86 @@ class TestSelectorWiring:
             ),
         ):
             return auto_select_gpu_ids("unsloth/test")[0]
+
+
+class TestThePinLandsOnTheKeptCard:
+    """Dropping an id only helps if the pin built from what survives selects the
+    same card. ``apply_gpu_ids`` writes HIP_VISIBLE_DEVICES and leaves an inherited
+    ROCr mask in place, and HIP indexes the agents ROCr left -- so a physical id
+    written straight through addresses a different device, or none at all."""
+
+    def _rocr(self, monkeypatch, mask, *, devices = ("gfx1101", "gfx1036")):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", True)
+        monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 2)
+        _install(monkeypatch, _fake_torch([_props(arch) for arch in devices]))
+        os.environ.pop("HIP_VISIBLE_DEVICES", None)
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        os.environ["ROCR_VISIBLE_DEVICES"] = mask
+
+    def test_a_reordered_mask_pins_the_covered_card(self, monkeypatch):
+        # ROCR=1,0 -> torch ordinal 1 is physical 0, the uncovered iGPU. Writing
+        # the surviving physical id 1 into HIP verbatim picks ROCr agent #1,
+        # which IS physical 0: the card the gate just excluded.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "1,0")
+            assert rocm_gpu_ids_without_torch_kernels() == {0}
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "0"
+            assert os.environ["CUDA_VISIBLE_DEVICES"] == "0"
+            # ROCr keeps hiding what it was hiding; clearing it would hand the
+            # child every agent, the gfx1036 among them.
+            assert os.environ["ROCR_VISIBLE_DEVICES"] == "1,0"
+
+    def test_a_nonzero_mask_pins_in_range(self, monkeypatch):
+        # ROCR=2,3 leaves two agents, so HIP="3" is out of range and the worker
+        # sees no GPU at all rather than the covered one.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "2,3")
+            assert rocm_gpu_ids_without_torch_kernels() == {3}
+            apply_gpu_ids([2], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "0"
+
+    def test_an_identity_mask_is_written_unchanged(self, monkeypatch):
+        # The ordinary case, and every host that never set ROCR by hand.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "0,1")
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
+            assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+
+    def test_an_inherited_hip_mask_is_already_relative(self, monkeypatch):
+        # HIP is then the layer that produced the ids, so translating again
+        # would map them a second time.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "1,0")
+            os.environ["HIP_VISIBLE_DEVICES"] = "1,0"
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
+
+    def test_a_uuid_rocr_mask_is_left_alone(self, monkeypatch):
+        # No ordinal to name a UUID back to; the gate is inert here too.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "GPU-DEADBEEFDEADBEEF,1")
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
+
+    def test_windows_writes_physical_ids(self, monkeypatch):
+        # No ROCr layer there, so a stray ROCR var is not the mapping's source
+        # and HIP ids are physical.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "1,0")
+            monkeypatch.setattr(sys, "platform", "win32")
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
+
+    def test_a_cuda_host_is_untouched(self, monkeypatch):
+        with patch.dict(os.environ):
+            monkeypatch.setattr(sys, "platform", "linux")
+            monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", False)
+            _install(monkeypatch, _fake_torch([_props("gfx1101")], vendor = "nvidia"))
+            for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+                os.environ.pop(var, None)
+            apply_gpu_ids([1, 3], backend = DeviceType.CUDA.value)
+            assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+            assert "HIP_VISIBLE_DEVICES" not in os.environ
