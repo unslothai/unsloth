@@ -571,14 +571,22 @@
     }
   }
 
-  function materializeBlobMedia(original, cloned, bounds) {
+  function hasSensitiveUrl(value) {
+    return /[?&](?:access_token|auth|authorization|sig|signature|token|x-amz-signature)=/i.test(
+      value,
+    );
+  }
+
+  function materializeEphemeralMedia(original, cloned, bounds) {
     var tag = original.tagName;
     var source = original.currentSrc || original.getAttribute("src") || "";
-    if (source.slice(0, 5) !== "blob:") return;
+    if (source.slice(0, 5) !== "blob:" && !hasSensitiveUrl(source)) return;
 
-    // Audio controls remain a useful visual shell without their expiring
-    // source. Images and video frames can additionally carry their rendered
-    // pixels across the document boundary through a bounded data URL.
+    // Audio controls remain a useful visual shell without their expiring or
+    // bearer-bypassing source. Images and video frames can additionally carry
+    // their rendered pixels through a bounded data URL; cross-origin frames
+    // may refuse canvas capture, in which case the protected URL is still
+    // removed rather than persisted.
     if (tag !== "IMG" && tag !== "VIDEO") {
       cloned.removeAttribute("src");
       return;
@@ -708,7 +716,7 @@
         } else {
           mirrorFieldState(original, cloned);
           mirrorScrollState(original, cloned);
-          materializeBlobMedia(original, cloned, bounds);
+          materializeEphemeralMedia(original, cloned, bounds);
           materializeCanvas(original, cloned, bounds);
         }
       }
@@ -729,12 +737,17 @@
         // SVG fill="url(#gradient-id)" and aria-labelledby.
         element.removeAttribute("autofocus");
         element.removeAttribute("srcdoc");
-        ["src", "srcset", "poster"].forEach(function (name) {
-          var value = element.getAttribute(name);
-          if (value && value.indexOf("blob:") !== -1) {
-            element.removeAttribute(name);
-          }
-        });
+        ["src", "srcset", "poster", "href", "action", "formaction"].forEach(
+          function (name) {
+            var value = element.getAttribute(name);
+            if (
+              value &&
+              (value.indexOf("blob:") !== -1 || hasSensitiveUrl(value))
+            ) {
+              element.removeAttribute(name);
+            }
+          },
+        );
         Array.from(element.attributes).forEach(function (attribute) {
           if (attribute.name.toLowerCase().startsWith("on")) {
             element.removeAttribute(attribute.name);

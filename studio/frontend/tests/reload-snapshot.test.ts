@@ -1454,7 +1454,7 @@ test("coalesces a transcript larger than the snapshot cap", () => {
   assert.ok(html.length < 3 * 1024 * 1024);
 });
 
-test("materializes visible blob images and drops expiring media URLs", () => {
+test("materializes visible ephemeral media and drops protected URLs", () => {
   const environment = createEnvironment({
     navigationType: "navigate",
     styleSheets: ["/assets/index-abc123.css"],
@@ -1476,6 +1476,16 @@ test("materializes visible blob images and drops expiring media URLs", () => {
             src: "blob:https://studio.test/generated-audio",
           },
         },
+        {
+          tag: "video",
+          rect: [100, 1300, 700, 950],
+          videoWidth: 1280,
+          videoHeight: 720,
+          attributes: {
+            src:
+              "/api/inference/video/gallery/clip/file-signed?token=clip.123.secret",
+          },
+        },
       ],
     },
   });
@@ -1486,7 +1496,9 @@ test("materializes visible blob images and drops expiring media URLs", () => {
   const { html } = storedSnapshot(environment.storage);
   assert.match(html, /src="data:image\/webp;base64,retained-frame"/);
   assert.match(html, /<audio controls="">/);
+  assert.match(html, /<video poster="data:image\/webp;base64,retained-frame">/);
   assert.doesNotMatch(html, /blob:/);
+  assert.doesNotMatch(html, /clip\.123\.secret|[?&]token=/);
 });
 
 test("keeps trusted chart CSS while stripping every other style", () => {
