@@ -17,7 +17,6 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -7203,24 +7202,15 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
     assert backend.generate(prompt = "after", steps = 2)["images"]
 
 
-class _RecordingCondition(threading.Condition):
-    def __init__(
-        self,
-        lock,
-        waiting: threading.Event,
-        waiting_again: Optional[threading.Event] = None,
-    ):
-        super().__init__(lock)
-        self._waiting = waiting
-        self._waiting_again = waiting_again
-        self._wait_count = 0
+class _RecordingGate(threading.Event):
+    """Teardown gate that reports every time a generation parks on it."""
+
+    def __init__(self, parked: threading.Event):
+        super().__init__()
+        self._parked = parked
 
     def wait(self, timeout = None):
-        self._wait_count += 1
-        if self._wait_count == 1:
-            self._waiting.set()
-        elif self._waiting_again is not None:
-            self._waiting_again.set()
+        self._parked.set()
         return super().wait(timeout)
 
 
@@ -7267,8 +7257,7 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monk
     )
     assert backend.generate(prompt = "before", steps = 2)["images"]
 
-    waiting = threading.Event()
-    waiting_again = threading.Event()
+    parked = threading.Event()
     denoise_entered = threading.Event()
     pipe_type = type(backend._state.pipe)
     real_call = pipe_type.__call__
@@ -7278,9 +7267,10 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monk
         return real_call(self, *args, **kwargs)
 
     monkeypatch.setattr(pipe_type, "__call__", record_denoise)
-    backend._teardown_drained = _RecordingCondition(backend._lock, waiting, waiting_again)
+    backend._teardown_drained = _RecordingGate(parked)
     with backend._lock:
-        backend._teardown_waiters = 2
+        backend._reserve_teardown_locked()
+        backend._reserve_teardown_locked()
 
     outcome: dict = {}
     worker = threading.Thread(
@@ -7288,14 +7278,13 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monk
         daemon = True,
     )
     worker.start()
-    assert waiting.wait(5), "generation did not yield to the pending teardown"
+    assert parked.wait(5), "generation did not yield to the pending teardown"
 
+    parked.clear()
     with backend._lock:
         backend._release_teardown_locked()
-        # Exercise the predicate against a spurious wake-up. It must go back to sleep
-        # while the second reservation is still live.
-        backend._teardown_drained.notify_all()
-    assert waiting_again.wait(5), "generation did not re-wait for the final teardown"
+    assert parked.wait(5), "generation did not re-park behind the final teardown"
+    assert not backend._teardown_drained.is_set(), "the gate opened with a reservation live"
     assert not denoise_entered.is_set(), "generation denoised before every teardown drained"
 
     with backend._lock:
@@ -7389,7 +7378,7 @@ def test_cancel_stops_every_generation_queued_behind_teardown(fake_runtime, tmp_
         family_override = "z-image",
     )
     with backend._lock:
-        backend._teardown_waiters = 1
+        backend._reserve_teardown_locked()
 
     errors: list[str] = []
 
@@ -7428,6 +7417,169 @@ def test_cancel_stops_every_generation_queued_behind_teardown(fake_runtime, tmp_
                 backend._release_teardown_locked()
 
 
+class _SlotYieldLock:
+    """Generation-lock wrapper that reports the release yielding the slot to a teardown."""
+
+    def __init__(self, lock, yielded):
+        self._lock = lock
+        self._yielded = yielded
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+        self._yielded.set()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
+    fake_runtime, tmp_path
+):
+    # A replacement holds _lock for the whole of its model construction, so a generation
+    # parked behind the teardown must not need that lock to notice Stop. Waiting on a
+    # Condition over _lock does need it -- Condition.wait() reacquires the lock before it
+    # returns, timeout included -- which left the request blocked for the length of the load.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    with backend._lock:
+        backend._reserve_teardown_locked()
+
+    yielded = threading.Event()
+    backend._generate_lock = _SlotYieldLock(backend._generate_lock, yielded)
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "queued", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    assert yielded.wait(5), "generation did not yield the slot to the teardown"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("the queued generation never published a cancel event")
+
+    # Stand in for the construction phase: begin_load holds _lock from the teardown release
+    # to the end of the load, which is where the queued request used to go deaf to Stop.
+    with backend._lock:
+        assert backend.cancel_generate() is True
+        worker.join(5)
+        assert not worker.is_alive(), "Stop could not reach the queued generation"
+    assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+    assert not backend._queued_generate_cancels
+
+    with backend._lock:
+        backend._release_teardown_locked()
+
+
+class _SlotContentionLock:
+    """Generation-lock wrapper that reports a failed (contended) acquisition."""
+
+    def __init__(self, lock, contended):
+        self._lock = lock
+        self._contended = contended
+
+    def acquire(self, *args, **kwargs):
+        acquired = self._lock.acquire(*args, **kwargs)
+        if not acquired:
+            self._contended.set()
+        return acquired
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_cancel_spares_a_request_only_serialized_behind_the_active_one(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Two image requests can be in flight at once: POST /images/generate and the
+    # OpenAI-compatible POST /v1/images/generations both call generate() and neither has a
+    # busy guard, so the second simply waits on _generate_lock. Stop is about the generation
+    # the page is showing, so it must not fail that second request with the cancel sentinel
+    # -- the same untrue "cancelled" this PR exists to remove.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    denoising = threading.Event()
+    release_active = threading.Event()
+    contended = threading.Event()
+    calls: list[int] = []
+    real_call = _FakePipe.__call__
+
+    def _call(self, **kwargs):
+        first = not calls
+        calls.append(1)
+        if first:
+            denoising.set()
+            assert release_active.wait(5), "the active generation was never released"
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+    backend._generate_lock = _SlotContentionLock(backend._generate_lock, contended)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
+    active.start()
+    assert denoising.wait(5), "the first generation never started denoising"
+    serialized = threading.Thread(
+        target = generate, args = ("serialized", "serialized"), daemon = True
+    )
+    serialized.start()
+    assert contended.wait(5), "the second request never queued on the generation lock"
+
+    assert backend.cancel_generate() is True
+    release_active.set()
+    active.join(5)
+    serialized.join(5)
+    assert not active.is_alive() and not serialized.is_alive()
+
+    assert isinstance(outcomes["active"], RuntimeError)
+    assert str(outcomes["active"]) == DIFFUSION_CANCELLED_MSG
+    assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
+    assert outcomes["serialized"]["images"]
+
+
 def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
@@ -7447,7 +7599,6 @@ def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tm
         assert teardown_reserved.wait(5), "teardown did not reserve after admission"
 
     backend._lock = _AdmissionHookLock(backend, after_admission)
-    backend._teardown_drained = threading.Condition(backend._lock)
 
     def teardown():
         assert start_teardown.wait(5), "generation never reached admission"
@@ -7457,7 +7608,7 @@ def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tm
                 saw_active_cancel.append(cancel is not None)
                 if cancel is not None:
                     cancel.set()
-            backend._teardown_waiters += 1
+            backend._reserve_teardown_locked()
             teardown_reserved.set()
         with backend._generate_lock:
             with backend._lock:
@@ -7500,10 +7651,10 @@ def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tm
         family_override = "z-image",
     )
 
-    waiting = threading.Event()
-    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    parked = threading.Event()
+    backend._teardown_drained = _RecordingGate(parked)
     with backend._lock:
-        backend._teardown_waiters = 1
+        backend._reserve_teardown_locked()
 
     outcome: dict = {}
 
@@ -7515,7 +7666,7 @@ def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tm
 
     worker = threading.Thread(target = generate, daemon = True)
     worker.start()
-    assert waiting.wait(5), "generation did not wait for unload"
+    assert parked.wait(5), "generation did not wait for unload"
 
     with backend._lock:
         backend._unload_locked()
