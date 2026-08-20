@@ -1486,7 +1486,9 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     return _positive_int_or_none(getattr(llama_backend, "context_length", None))
 
 
-def _openai_llama_admission_tokens(payload, *, budget: Optional[int], capacity: int) -> Optional[int]:
+def _openai_llama_admission_tokens(
+    payload, *, budget: Optional[int], capacity: int
+) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
     Uses the dense estimator, not the plain one. Undercounting is the failure this
@@ -1519,7 +1521,10 @@ def _openai_llama_admission_tokens(payload, *, budget: Optional[int], capacity: 
 
 
 def _openai_llama_admission_reserve(
-    *, request: Optional[Request], llama_backend, payload = None
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -1530,8 +1535,12 @@ def _openai_llama_admission_reserve(
         config = config,
         budget = budget,
         tokens = _openai_llama_admission_tokens(
-            payload, budget = budget, capacity = capacity,
-        ) if payload is not None else None,
+            payload,
+            budget = budget,
+            capacity = capacity,
+        )
+        if payload is not None
+        else None,
     )
     return reservation, config
 

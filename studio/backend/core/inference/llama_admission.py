@@ -306,7 +306,13 @@ class _Waiter:
 
 class LlamaAdmissionLease:
     __slots__ = (
-        "_queue", "_slot", "_released", "_release_lock", "_parked", "_budgeted", "_tokens",
+        "_queue",
+        "_slot",
+        "_released",
+        "_release_lock",
+        "_parked",
+        "_budgeted",
+        "_tokens",
     )
 
     def __init__(
@@ -591,7 +597,11 @@ class LlamaAdmissionQueue:
             return True
         return self._committed + tokens <= self._budget
 
-    def _can_admit_locked(self, reserved: int, tokens: int = 0) -> bool:
+    def _can_admit_locked(
+        self,
+        reserved: int,
+        tokens: int = 0,
+    ) -> bool:
         # Slots still held above a shrunk capacity keep occupying the backend, so
         # count every held slot against the ceiling, not just the ids below it.
         # ``reserved`` holds slots back for approved holders waiting to resume;
@@ -602,7 +612,11 @@ class LlamaAdmissionQueue:
         # n_ctx, so the pool can hand out more slots than the one cache can serve.
         return self._fits_budget_locked(tokens)
 
-    def _take_slot_locked(self, reserved: int, tokens: int = 0) -> Optional[int]:
+    def _take_slot_locked(
+        self,
+        reserved: int,
+        tokens: int = 0,
+    ) -> Optional[int]:
         if not self._can_admit_locked(reserved, tokens):
             return None
         slot = self._free.pop()
@@ -681,7 +695,11 @@ class LlamaAdmissionQueue:
         if slot < self._capacity:
             self._free.append(slot)
 
-    def release(self, slot: Optional[int], tokens: int = 0) -> None:
+    def release(
+        self,
+        slot: Optional[int],
+        tokens: int = 0,
+    ) -> None:
         with self._lock:
             self._release_slot_locked(slot)
             # Floored at 0 so a double release cannot drive the pool negative and

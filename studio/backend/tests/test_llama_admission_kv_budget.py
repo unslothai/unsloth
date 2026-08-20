@@ -35,7 +35,14 @@ def _config(**overrides):
     return LlamaAdmissionConfig(**overrides)
 
 
-async def _reserve(queue, *, capacity, tokens, budget, config = None):
+async def _reserve(
+    queue,
+    *,
+    capacity,
+    tokens,
+    budget,
+    config = None,
+):
     return queue.reserve(
         capacity = capacity,
         config = config or _config(),
@@ -51,6 +58,7 @@ def _run(coro):
 class TestTheBudgetIsEnforced:
     def test_two_requests_that_together_overflow_the_cache_do_not_both_run(self):
         """The live failure, in miniature. 1500 + 1500 against 2048."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
@@ -67,6 +75,7 @@ class TestTheBudgetIsEnforced:
 
     def test_small_requests_still_run_concurrently(self):
         """The regression guard: this must not become "one request at a time"."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             leases = []
@@ -81,6 +90,7 @@ class TestTheBudgetIsEnforced:
     def test_a_lone_oversized_request_is_admitted_rather_than_stranded(self):
         """It will be refused by llama-server, with a message naming both counts.
         Refusing it here would strand it forever, since nothing else is running."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             reservation = await _reserve(queue, capacity = 4, tokens = 3000, budget = 2048)
@@ -105,6 +115,7 @@ class TestTheBudgetIsEnforced:
     def test_a_double_release_returns_the_tokens_only_once(self):
         """A second subtraction would drive the pool negative and let the budget
         admit callers the cache cannot hold."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
@@ -119,6 +130,7 @@ class TestTheBudgetIsEnforced:
 class TestBackwardsCompatibility:
     def test_no_budget_reproduces_slot_only_admission(self):
         """Every caller that does not pass a budget must behave exactly as before."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             leases = []
@@ -135,11 +147,19 @@ class TestBackwardsCompatibility:
             queue = LlamaAdmissionQueue("test")
             config = _config(kv_budget = False)
             first = await _reserve(
-                queue, capacity = 4, tokens = 1500, budget = 2048, config = config,
+                queue,
+                capacity = 4,
+                tokens = 1500,
+                budget = 2048,
+                config = config,
             )
             assert first.lease_nowait() is not None
             second = await _reserve(
-                queue, capacity = 4, tokens = 1500, budget = 2048, config = config,
+                queue,
+                capacity = 4,
+                tokens = 1500,
+                budget = 2048,
+                config = config,
             )
             return second.lease_nowait()
 
@@ -173,7 +193,6 @@ class TestTheRouteHelpers:
         from types import SimpleNamespace
 
         import routes.inference as routes_inference
-
         for value in (None, 0, -1, "nonsense"):
             backend = SimpleNamespace(context_length = value)
             assert routes_inference._openai_llama_admission_budget(backend) is None
@@ -188,7 +207,9 @@ class TestTheRouteHelpers:
             max_tokens = 256,
         )
         cost = routes_inference._openai_llama_admission_tokens(
-            payload, budget = 8192, capacity = 4,
+            payload,
+            budget = 8192,
+            capacity = 4,
         )
         assert cost is not None and cost > 256, "the prompt must be counted, not just the output"
 
@@ -202,7 +223,9 @@ class TestTheRouteHelpers:
             max_tokens = 4096,
         )
         cost = routes_inference._openai_llama_admission_tokens(
-            payload, budget = 2048, capacity = 4,
+            payload,
+            budget = 2048,
+            capacity = 4,
         )
         # Clamped so the queue admits it alone rather than stranding it.
         assert cost == 2048
@@ -214,7 +237,9 @@ class TestTheRouteHelpers:
 
         payload = SimpleNamespace(prompt = "raw completion text", max_tokens = 128)
         cost = routes_inference._openai_llama_admission_tokens(
-            payload, budget = 2048, capacity = 4,
+            payload,
+            budget = 2048,
+            capacity = 4,
         )
         # Not the whole budget (that would serialise /completions) and not nothing
         # (that would restore the overcommit).
@@ -226,6 +251,11 @@ class TestTheRouteHelpers:
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(messages = [{"role": "user", "content": "hi"}], max_tokens = 8)
-        assert routes_inference._openai_llama_admission_tokens(
-            payload, budget = None, capacity = 4,
-        ) is None
+        assert (
+            routes_inference._openai_llama_admission_tokens(
+                payload,
+                budget = None,
+                capacity = 4,
+            )
+            is None
+        )
