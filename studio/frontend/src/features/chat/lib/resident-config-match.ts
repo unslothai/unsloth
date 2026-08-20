@@ -24,6 +24,7 @@ type ResidentRuntime = Pick<
   | "requested_n_batch"
   | "requested_n_ubatch"
   | "tensor_parallel"
+  | "disable_vision"
   | "chat_template_override"
   | "requested_llama_extra_args"
   | "gpu_memory_mode"
@@ -350,6 +351,14 @@ const SETTING_CHECKS: SettingCheck[] = [
       (resolveTensorParallel(c.llamaExtraArgs, c.tensorParallel) &&
         s.tensor_parallel !== true &&
         s.tensor_parallel_dropped_by_arch_gate === true),
+  },
+  {
+    // Not nullable, so it always has an opinion; a status omitting it ran with the
+    // projector. The backend reloads when this disagrees, so adopting a resident
+    // server that disagrees would drop the setting and keep the VRAM spent.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
   },
   {
     // Blank-trimmed on both ends: the applier and the load both send "" as null.

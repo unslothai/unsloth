@@ -72,6 +72,7 @@ const BLANK = {
   nBatch: null,
   nUbatch: null,
   tensorParallel: false,
+  disableVision: false,
   chatTemplateOverride: null,
 };
 
@@ -228,6 +229,12 @@ const FIELDS: FieldCase[] = [
   {
     key: "tensorParallel",
     statusKey: "tensor_parallel",
+    same: true,
+    different: false,
+  },
+  {
+    key: "disableVision",
+    statusKey: "disable_vision",
     same: true,
     different: false,
   },
