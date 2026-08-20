@@ -17801,8 +17801,7 @@ class LlamaCppBackend:
                         cmd.extend(["--ctx-checkpoints", str(int(ctx_checkpoints))])
                     else:
                         logger.info(
-                            "llama-server has no --ctx-checkpoints; skipping the "
-                            "requested %s.",
+                            "llama-server has no --ctx-checkpoints; skipping the requested %s.",
                             ctx_checkpoints,
                         )
                 if cache_ram is not None:

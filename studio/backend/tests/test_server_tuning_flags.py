@@ -148,9 +148,10 @@ def test_the_requested_mode_strips_inherited_aliases(memory_settings):
 
 def test_keep_resident_owns_the_mode(memory_settings):
     memory_settings["keep_resident"] = True
-    assert apply_load_mode_policy(
-        [], supports_load_mode = True, requested_load_mode = "dio"
-    ) == ([], [])
+    assert apply_load_mode_policy([], supports_load_mode = True, requested_load_mode = "dio") == (
+        [],
+        [],
+    )
 
 
 def test_keep_resident_releases_the_mode_when_the_weights_are_not_host_resident(memory_settings):
@@ -169,33 +170,29 @@ def test_keep_resident_releases_the_mode_when_the_weights_are_not_host_resident(
 @pytest.mark.parametrize("mode", ["none", "mlock", "mmap+mlock"])
 def test_no_ram_reserve_vetoes_the_reserving_modes(memory_settings, mode):
     memory_settings["no_ram_reserve"] = True
-    assert apply_load_mode_policy(
-        [], supports_load_mode = True, requested_load_mode = mode
-    ) == ([], [])
+    assert apply_load_mode_policy([], supports_load_mode = True, requested_load_mode = mode) == ([], [])
 
 
 @pytest.mark.parametrize("mode", ["mmap", "dio"])
 def test_no_ram_reserve_leaves_the_non_reserving_modes(memory_settings, mode):
     # Neither holds a full host copy, so there is nothing for the setting to veto.
     memory_settings["no_ram_reserve"] = True
-    managed, _ = apply_load_mode_policy(
-        [], supports_load_mode = True, requested_load_mode = mode
-    )
+    managed, _ = apply_load_mode_policy([], supports_load_mode = True, requested_load_mode = mode)
     assert managed == ["--load-mode", mode]
 
 
 def test_a_build_without_load_mode_falls_back_to_the_deprecated_spellings(memory_settings):
-    assert apply_load_mode_policy(
-        [], supports_load_mode = False, requested_load_mode = "mmap+mlock"
-    )[0] == ["--mlock"]
-    assert apply_load_mode_policy(
-        [], supports_load_mode = False, requested_load_mode = "none"
-    )[0] == ["--no-mmap"]
+    assert apply_load_mode_policy([], supports_load_mode = False, requested_load_mode = "mmap+mlock")[
+        0
+    ] == ["--mlock"]
+    assert apply_load_mode_policy([], supports_load_mode = False, requested_load_mode = "none")[0] == [
+        "--no-mmap"
+    ]
     # No pre-enum spelling for these two, so they are skipped rather than approximated
     for mode in ("mmap", "dio"):
-        assert apply_load_mode_policy(
-            [], supports_load_mode = False, requested_load_mode = mode
-        )[0] == []
+        assert (
+            apply_load_mode_policy([], supports_load_mode = False, requested_load_mode = mode)[0] == []
+        )
 
 
 def test_the_panel_and_the_policy_agree_on_which_modes_no_reserve_vetoes():
@@ -303,9 +300,7 @@ def test_dedupe_reloads_on_a_tuning_change(changed):
     backend._requested_load_mode = "dio"
     backend._requested_ctx_checkpoints = 8
     backend._requested_cache_ram = 2048
-    intent = _intent(
-        **{"load_mode": "dio", "ctx_checkpoints": 8, "cache_ram": 2048, **changed}
-    )
+    intent = _intent(**{"load_mode": "dio", "ctx_checkpoints": 8, "cache_ram": 2048, **changed})
     assert backend._runtime_matches_intent(intent, None) is False
 
 
@@ -364,9 +359,7 @@ def test_override_store_drops_values_the_loader_would_refuse():
 def test_override_store_drops_a_draft_dtype_without_a_separate_drafter():
     # ngram loads no draft model, so there is no draft context for the dtype to
     # apply to; storing it would show an edit the loader ignores.
-    entry = normalize_model_override(
-        {"speculative_type": "ngram", "spec_draft_cache_type": "q8_0"}
-    )
+    entry = normalize_model_override({"speculative_type": "ngram", "spec_draft_cache_type": "q8_0"})
     assert "spec_draft_cache_type" not in entry
 
 

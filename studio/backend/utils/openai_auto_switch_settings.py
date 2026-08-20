@@ -432,9 +432,7 @@ DRAFT_N_MAX_SPEC_TYPES = frozenset(
 )
 # Only these load a separate draft model, and so a draft context the draft KV
 # cache dtype applies to (mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI).
-SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset(
-    {"dspark", "draft-dspark", "dflash", "draft-dflash"}
-)
+SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
 # Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is llama.cpp's own
 # default, so it is not stored: an entry holding it would pin what a later build
 # is free to redefine.

@@ -607,9 +607,7 @@ _SPEC_DRAFT_CACHE_K_FLAGS: frozenset[str] = frozenset(
 _SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
     {"-ctvd", "--cache-type-v-draft", "--spec-draft-type-v"}
 )
-_SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = (
-    _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
-)
+_SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
@@ -1205,7 +1203,6 @@ def apply_load_mode_policy(
         return [], tokens
     try:
         from utils.model_memory_settings import get_model_memory_settings
-
         keep_resident, no_ram_reserve = get_model_memory_settings()
     except Exception:
         # Settings unavailable (bare unit-test import): nothing to defer to.
@@ -1228,9 +1225,7 @@ def apply_load_mode_policy(
         # replaced, and only for the values that had one.
         legacy = _LEGACY_LOAD_MODE_FLAGS.get(mode)
         if not legacy:
-            logger.info(
-                "llama-server has no --load-mode; skipping the requested %r mode.", mode
-            )
+            logger.info("llama-server has no --load-mode; skipping the requested %r mode.", mode)
             return [], tokens
         return list(legacy), strip_shadowing_flags(
             tokens,
