@@ -853,17 +853,44 @@ def _clear_mps_cache() -> None:
         logger.debug("Failed to clear MPS cache: %s", e)
 
 
+def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
+    """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
+    if hip_ids is None or not hip_ids:
+        return hip_ids
+
+    from . import amd
+
+    smi_to_hip = amd.get_hip_id_by_gpu_index()
+    if smi_to_hip is None:
+        # Identity is still provable on a host with exactly one physical GPU.
+        if hip_ids == [0] and amd.get_physical_gpu_count() == 1:
+            return [0]
+        logger.debug("Skipping amd-smi VRAM query: HIP GPU mapping is unavailable")
+        return None
+
+    hip_to_smi = {hip_id: smi_id for smi_id, hip_id in smi_to_hip.items()}
+    if any(hip_id not in hip_to_smi for hip_id in hip_ids):
+        logger.debug("Skipping amd-smi VRAM query: HIP GPU mapping is incomplete")
+        return None
+    return [hip_to_smi[hip_id] for hip_id in hip_ids]
+
+
 def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
     """System-wide free bytes without attaching a CUDA/HIP primary context."""
     parent_visible_spec = _get_parent_visible_gpu_spec()
 
     # Prefer the vendor CLI. Both nvidia-smi and amd-smi run out of process, so
     # querying an idle backend does not leave a context resident in this process.
-    result = _smi_query(
-        "get_visible_gpu_utilization",
-        parent_visible_spec["numeric_ids"],
-        parent_cuda_visible_devices = parent_visible_spec["raw"],
-    )
+    visible_ids = parent_visible_spec["numeric_ids"]
+    if IS_ROCM:
+        visible_ids = _amd_smi_ids_for_hip_ids(visible_ids)
+    result = None
+    if visible_ids is not None:
+        result = _smi_query(
+            "get_visible_gpu_utilization",
+            visible_ids,
+            parent_cuda_visible_devices = parent_visible_spec["raw"],
+        )
     if result is not None:
         for device in result.get("devices", []):
             if device.get("visible_ordinal") != idx:

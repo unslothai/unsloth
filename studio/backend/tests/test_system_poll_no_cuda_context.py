@@ -235,6 +235,62 @@ def test_gpu_summary_pairs_rocm_apu_free_with_driver_total(monkeypatch):
     assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
 
 
+def test_context_free_rocm_smi_translates_hip_ordinals(monkeypatch):
+    from utils.hardware import amd
+
+    gib = 1 << 30
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 1, 1: 0})
+
+    # amd-smi GPU 1 is HIP 0 and owns the 96 GiB pool. Passing HIP ids through
+    # unchanged would instead publish GPU 0's 1 GiB free for torch device 0.
+    readings = {0: (15.0, 16.0), 1: (2.0, 96.0)}
+
+    def _smi(_name, visible_ids, **_kwargs):
+        return {
+            "available": True,
+            "devices": [
+                {
+                    "index": smi_id,
+                    "visible_ordinal": ordinal,
+                    "vram_used_gb": readings[smi_id][0],
+                    "vram_total_gb": readings[smi_id][1],
+                }
+                for ordinal, smi_id in enumerate(visible_ids)
+            ],
+        }
+
+    monkeypatch.setattr(hw, "_smi_query", _smi)
+
+    assert hw._context_free_cuda_memory_info(0, 96 * gib) == 94 * gib
+
+
+def test_context_free_rocm_smi_declines_without_an_id_mapping(monkeypatch):
+    from utils.hardware import amd
+
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: None)
+    monkeypatch.setattr(amd, "get_physical_gpu_count", lambda: 2)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("an unproven amd-smi/HIP mapping must be declined"),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 16 << 30) is None
+
+
 # ========== Inventory parity ==========
 
 
