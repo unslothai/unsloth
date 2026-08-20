@@ -225,6 +225,11 @@ def test_failed_main_retag_restores_the_previous_projector(tmp_path, monkeypatch
         root,
         extra_layers = ("application/vnd.ollama.image.projector",),
     )
+
+    def deny_symlink(*_args, **_kwargs):
+        raise OSError("symlinks disabled")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
     ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
     model_path = ollama.materialize_ollama_model_ref(ref)
@@ -265,6 +270,9 @@ def test_materialization_lease_blocks_a_concurrent_retag(tmp_path, monkeypatch):
     tag_file = _write_ollama_store(root)
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
     ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    alternate_ref = ref.replace("%2F", "%2f")
+    assert alternate_ref != ref
     lease = ollama.acquire_ollama_model_ref(ref)
 
     replacement_digest = "b" * 64
@@ -278,7 +286,7 @@ def test_materialization_lease_blocks_a_concurrent_retag(tmp_path, monkeypatch):
 
     def retag():
         started.set()
-        ollama.materialize_ollama_model_ref(ref)
+        ollama.materialize_ollama_model_ref(alternate_ref)
         finished.set()
 
     worker = threading.Thread(target = retag)
