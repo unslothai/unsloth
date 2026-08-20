@@ -19,15 +19,34 @@ class TestNoTorchBackendAutoInInstallSh:
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
-        # Fallback block: from "GPU detection failed" to the next "fi".
+        # Fallback block: from "GPU detection failed" to the `fi` that closes the
+        # branch it opens. Matching the *next* `fi` is wrong as soon as the branch
+        # contains a nested `if` -- #8670 added one inside the `case` arm that picks
+        # the desktop install spec, so a plain first-`fi` scan ended the block at
+        # that inner `fi` and reported the legitimate fallback install one line
+        # below it as an out-of-block use. Track depth so only the matching `fi`
+        # closes the block; anything genuinely outside the fallback still fails.
         fallback_start = None
         fallback_end = None
+        depth = 0
         for i, line in enumerate(lines):
-            if fallback_start is None and "GPU detection failed" in line:
-                fallback_start = i
-            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
-                fallback_end = i
-                break
+            stripped = line.strip()
+            if fallback_start is None:
+                if "GPU detection failed" in line:
+                    fallback_start = i
+                continue
+            # One-line `if ...; then ...; fi` opens and closes on the same line, so
+            # count both spellings rather than treating the line as either/or.
+            if re.match(r"^if\b", stripped):
+                depth += 1
+            if re.search(r"(^|;\s*)fi\s*(;|$)", stripped):
+                if depth == 0:
+                    fallback_end = i
+                    break
+                depth -= 1
+        assert fallback_end is not None, (
+            "could not find the `fi` closing install.sh's GPU-detection fallback block"
+        )
         fallback_range = (
             range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
         )

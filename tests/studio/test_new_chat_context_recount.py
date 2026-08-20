@@ -281,6 +281,13 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
+// No fixture in this file attaches a clip, and the real helper returns undefined when it
+// finds none, so this is that answer. The video decline itself is pinned by
+// studio/frontend/tests/pr9057-video-simulation.test.ts.
+function findLatestUserVideoBase64(_messages: any): string | undefined {
+  return undefined;
+}
+
 // The real predicate's rule, so a test can put an image on a branch and see it declined.
 function messagesContainImage(messages: any): boolean {
   const isImage = (p: any) => p?.type === "image" && Boolean(p?.image);
@@ -498,8 +505,53 @@ __RESTORE__
 """
 
 
+def _assert_prelude_covers_refresh_imports(prelude: str, body: str) -> None:
+    """Every name refresh-context-usage.ts imports and uses must exist in the prelude.
+
+    _refresh_module_body() drops the import block, so a name the module starts importing
+    is an unbound identifier in the harness. refreshContextUsage runs its whole body
+    inside a try whose catch is deliberately bare (background recount must not interrupt
+    chat), so the ReferenceError is swallowed, the count never happens and every
+    expectation in this file fails as `assert 0 == 1` instead of saying what is missing.
+    That is exactly how #9056 landed 41 red tests: it added a findLatestUserVideoBase64
+    bail with no stub here.
+    """
+    imported: set[str] = set()
+    for match in re.finditer(r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", read(REFRESH), re.M):
+        for spec in match.group(1).split(","):
+            spec = spec.strip()
+            # `import { type Foo }` is erased at runtime, so it can never be a
+            # ReferenceError and must not be demanded of the prelude.
+            if not spec or spec.startswith("type "):
+                continue
+            name = spec.split(" as ")[-1].strip()
+            if name:
+                imported.add(name)
+    for match in re.finditer(r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", read(REFRESH), re.M):
+        imported.add(match.group(1))
+    # A name only discussed in a comment is not a use.
+    code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", body, flags = re.S))
+    missing = sorted(
+        name
+        for name in imported
+        if re.search(rf"\b{re.escape(name)}\b", code)
+        and not re.search(
+            rf"^(?:export\s+)?(?:async\s+)?(?:function\s+|const\s+|let\s+|var\s+|class\s+){re.escape(name)}\b",
+            prelude,
+            re.M,
+        )
+    )
+    assert not missing, (
+        f"refresh-context-usage.ts imports {missing} and the sliced body uses them, but "
+        "HARNESS_PRELUDE does not define them. Add a stub that answers what the real "
+        "collaborator answers, or every scenario here fails as a silent zero count "
+        "instead of saying what is actually missing."
+    )
+
+
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
+    _assert_prelude_covers_refresh_imports(prelude, _refresh_module_body())
     render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects(_new_chat_effects())).replace(
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
     )

@@ -297,6 +297,15 @@ function saveSpeculativeType(_x: any) {}
 function persistGpuMemoryModeOnLoad(..._a: any[]) {}
 function reasoningCapsFromLoad(_x: any) { return {}; }
 function resolveToolsEnabledOnLoad(_x: any) { return {}; }
+// The real resolver is `storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp)`:
+// a stored answer from hydration or the composer toggle wins, and otherwise the
+// backend's family default applies. Nothing in this slice hydrates or toggles the
+// preference, so storedPreserveThinking is always null here and the stub is exactly
+// the default arm. Returning a constant instead would make these scenarios agree with
+// the harness rather than with the adapter.
+function resolvePreserveThinkingOnLoad(resp: any) {
+  return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
+}
 function loadedGpuMemoryFields(_x: any) { return {}; }
 function resolveLoadedSpeculativeSettings(_x: any) { return {}; }
 function isMultimodalResponse(_x: any) { return false; }
