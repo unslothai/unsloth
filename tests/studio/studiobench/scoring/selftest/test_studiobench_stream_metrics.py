@@ -258,9 +258,11 @@ def test_an_action_running_during_generation_does_not_set_the_worst_streaming_fr
     ]
     m = _stream_measures(windows)
     assert m["stream_max_frame_ms"].value == pytest.approx(286.0)
-    # ... but its SSE task chains still count toward the targeted numerator, because those ARE
-    # the stream's own work wherever they happened.
-    assert "2 streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
+    # And its SSE task chains are excluded from the targeted numerator too. Measured on a
+    # standard-tier 10K null, an `action:keystroke` chain cost 23.77 ms per burst against 1.69 ms
+    # in the gap windows either side: the chain runs until the event loop drains, so the typing
+    # lands inside it and is billed to the stream.
+    assert "1 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
 
 
 # ── refusing rather than reporting zero ──────────────────────────────────────────────────────

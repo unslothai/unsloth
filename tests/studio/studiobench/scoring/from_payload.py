@@ -246,22 +246,29 @@ def _stream_windows(windows: Sequence[Mapping[str, Any]]) -> tuple[list[Mapping[
 def _unaided(windows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     """Of the streaming windows, the ones with no scripted action running in them.
 
-    THE TWO NUMERATORS NEED DIFFERENT WINDOW SETS, and conflating them was a real defect in the
-    first version of this metric rather than a refinement.
+    EVERY streaming quantity is taken from these, including the targeted numerator, and that is a
+    correction the measurements forced rather than a position held from the start.
 
-    `delta_task_ms` is attributable by construction: it sums only the task chains an SSE chunk
-    started, so it does not matter what else shared the window, and it should see every streaming
-    window or it under-counts the stream.
+    The first version of this metric fed `delta_task_ms` from every streaming window, on the
+    reasoning that a task chain an SSE chunk started is attributable to the stream wherever it
+    happened. That reasoning is wrong, and a standard-tier 10K null shows exactly how. The chain
+    is measured from the chunk to the moment the event loop next reaches a macrotask, so ANY work
+    that lands in between is charged to it. Three of the film's slots run during generation on
+    purpose, and in `action:keystroke` on one cell the chain cost 23.77 ms per burst against 1.69
+    ms in the gap windows either side of it. That is typing, billed to the stream.
 
-    Everything derived from a WHOLE WINDOW -- blocked time, the frame distribution, the worst
-    frame -- charges the entire window to the stream. Three of the film's slots run during
-    generation on purpose (`scroll_during_generation` twice and `keystroke`), so those windows
-    carry scrolling and typing cost. Measured on a fast-tier 100K null, admitting them put a
-    1,738 ms worst frame into `stream_max_frame_ms` when the unaided streaming stretch beside it
-    peaked at 286 ms. That is a scroll, reported as a streaming stall.
+    The window-wide quantities -- blocked time, the frame distribution, the worst frame -- fail
+    the same way and more obviously, because they charge the whole window. On a fast-tier 100K
+    null, admitting the action windows put a 1,738 ms worst frame into `stream_max_frame_ms` when
+    the unaided stretch beside it peaked at 286 ms: a scroll, reported as a streaming stall.
 
-    So the window-wide quantities are taken from the GAP windows only: the quiet stretches where
-    the stream is doing its work unaided, which is what those metrics claim to describe.
+    So the streaming phase, for scoring, is the quiet stretches where the stream is doing its work
+    unaided. Measured against the alternative on the same payload this also has the narrower null
+    floor (32.9% against 36.0%), which is the weaker argument of the two but points the same way.
+
+    Restricting FURTHER -- to the opening turn only -- was tried and is much worse (101.5%),
+    because fewer windows average less and one outlier then owns the cell. More streaming windows
+    is better as long as every one of them is unaided.
     """
     return [w for w in windows if str(w.get("kind") or "") == "gap"]
 
@@ -304,17 +311,16 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
             for k, u in unit_by_key.items()
         }
 
-    # The TARGETED numerator, over every streaming window: an SSE task chain is attributable to
-    # the stream no matter what else shared the window.
+    # Every streaming quantity comes from the UNAIDED windows. See _unaided for why the targeted
+    # numerator is not exempt from that, which is the one thing here that measurement overturned.
+    unaided = _unaided(picked)
     chars = 0
     delta_task_ms = 0.0
-    for w in picked:
+    for w in unaided:
         sc = (w.get("instruments") or {}).get("stream_cost") or {}
         chars += int(sc.get("reply_chars_delta") or 0)
         delta_task_ms += float(sc.get("delta_task_ms") or 0.0)
 
-    # Everything WINDOW-WIDE, over the unaided streaming windows only. See _unaided.
-    unaided = _unaided(picked)
     unaided_chars = 0
     blocked_ms = 0.0
     blocked_reason: str | None = None
@@ -351,7 +357,7 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
         window_ms += float(w.get("duration_ms") or 0.0)
 
     out: dict[str, Measure] = {}
-    note = f"{len(picked)} streaming window(s), {chars} streamed characters"
+    note = f"{len(unaided)} unaided streaming window(s), {chars} streamed characters"
     unaided_note = (
         f"{len(unaided)} unaided streaming window(s), {unaided_chars} streamed characters"
     )
