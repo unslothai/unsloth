@@ -1046,6 +1046,7 @@ def _claim_operation(backend_request: Optional[str]) -> bool:
             return False
         _job.update(_flow.new_job())
         _job.update(
+            job_id = _flow.new_job_id(),
             state = _JOB_RUNNING,
             operation = "switch" if backend_request is not None else "update",
             requested_backend = backend_request,

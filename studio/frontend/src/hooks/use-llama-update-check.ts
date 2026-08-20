@@ -24,6 +24,7 @@ const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
 const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
+  job_id: string | null;
   state: "idle" | "running" | "success" | "error";
   operation: "update" | "switch" | null;
   requested_backend: "auto" | "cpu" | "cuda" | "rocm" | "vulkan" | null;
@@ -55,6 +56,7 @@ export interface LlamaUpdateStatus {
 function parseJob(value: unknown): LlamaUpdateJob {
   const job = (value ?? {}) as Record<string, unknown>;
   return {
+    job_id: typeof job.job_id === "string" ? job.job_id : null,
     state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
     operation:
       job.operation === "update" || job.operation === "switch"
@@ -78,6 +80,22 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
   };
+}
+
+function llamaJobMarker(job: LlamaUpdateJob): string {
+  // Current backends provide an opaque id. The composite only keeps this
+  // frontend compatible with older backends that predate that field.
+  return (
+    job.job_id ??
+    JSON.stringify([
+      job.operation,
+      job.requested_backend,
+      job.started_at,
+      job.finished_at,
+      job.from_tag,
+      job.to_tag,
+    ])
+  );
 }
 
 function parseStatus(value: unknown): LlamaUpdateStatus | null {
@@ -185,7 +203,7 @@ export function useLlamaUpdateCheck({
   // re-pin the applying toast with the timer already cleared.
   const pollInFlightGeneration = useRef<number | null>(null);
   const pollGeneration = useRef(0);
-  const terminalRecheckGeneration = useRef<number | null>(null);
+  const terminalRecheckJob = useRef<string | null>(null);
   const statusRequestSequence = useRef(0);
   const latestAppliedStatusRequest = useRef(0);
   const surfaceIfAvailableRef = useRef<
@@ -255,7 +273,7 @@ export function useLlamaUpdateCheck({
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
       const generation = ++pollGeneration.current;
-      terminalRecheckGeneration.current = null;
+      terminalRecheckJob.current = null;
       pollTimer.current = setInterval(async () => {
         if (pollInFlightGeneration.current === generation) return;
         pollInFlightGeneration.current = generation;
@@ -281,19 +299,18 @@ export function useLlamaUpdateCheck({
           setApplying(presentation.applying);
           setVisible(presentation.visible);
           if (presentation.running) {
-            if (terminalRecheckGeneration.current === generation) {
-              terminalRecheckGeneration.current = null;
-            }
+            terminalRecheckJob.current = null;
             return;
           }
+          const terminalJob = llamaJobMarker(s.job);
           // A valid poll after a terminal observation completes a previously
           // failed reconciliation without repeating completion side effects.
-          if (terminalRecheckGeneration.current === generation) {
+          if (terminalRecheckJob.current === terminalJob) {
             pollGeneration.current += 1;
             clearPollTimer();
             return;
           }
-          terminalRecheckGeneration.current = generation;
+          terminalRecheckJob.current = terminalJob;
           if (s.job.state === "success") {
             void refreshHardwareInfo();
             // The update unloads the running model server-side, so the chat
@@ -339,7 +356,14 @@ export function useLlamaUpdateCheck({
           surfaceReconciled(reconciled);
           if (generation !== pollGeneration.current) return;
           if (reconciledPresentation.running) {
-            terminalRecheckGeneration.current = null;
+            terminalRecheckJob.current = null;
+            return;
+          }
+          if (
+            llamaJobMarker(reconciled.status.job) !== terminalRecheckJob.current
+          ) {
+            // A distinct job finished during reconciliation. Leave the timer
+            // alive so its completion effects run through the normal path.
             return;
           }
           pollGeneration.current += 1;

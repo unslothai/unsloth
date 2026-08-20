@@ -33,7 +33,8 @@ const runTick = new AsyncFunction(
   "generation",
   "requestStatus",
   "pollGeneration",
-  "terminalRecheckGeneration",
+  "terminalRecheckJob",
+  "llamaJobMarker",
   "llamaStatusRequestIsStale",
   "latestAppliedStatusRequest",
   "setStatus",
@@ -50,10 +51,11 @@ const runTick = new AsyncFunction(
 
 type JobState = "running" | "success" | "error" | "idle";
 
-function status(state: JobState, updateAvailable: boolean) {
+function status(state: JobState, updateAvailable: boolean, jobId = "job-1") {
   return {
     update_available: updateAvailable,
     job: {
+      job_id: jobId,
       state,
       operation: "update" as const,
       started_at: "2026-08-18T13:02:21Z",
@@ -77,10 +79,12 @@ function harness(responses: Snapshot[], latestApplied = 0) {
     timerActive: true,
     adopted: [] as Snapshot[],
     done: [] as unknown[],
+    hardwareRefreshes: 0,
+    reloadNotifications: 0,
   };
   const pollInFlightGeneration = { current: null as number | null };
   const pollGeneration = { current: 1 };
-  const terminalRecheckGeneration = { current: null as number | null };
+  const terminalRecheckJob = { current: null as string | null };
   const latestAppliedStatusRequest = { current: latestApplied };
 
   const adopt = (next: Snapshot) => {
@@ -111,7 +115,8 @@ function harness(responses: Snapshot[], latestApplied = 0) {
       return Promise.resolve(responses[responseIndex++]);
     },
     pollGeneration,
-    terminalRecheckGeneration,
+    terminalRecheckJob,
+    (job: ReturnType<typeof status>["job"]) => job.job_id,
     llamaStatusRequestIsStale,
     latestAppliedStatusRequest,
     (next: ReturnType<typeof status>) => {
@@ -130,8 +135,12 @@ function harness(responses: Snapshot[], latestApplied = 0) {
     () => {
       state.timerActive = false;
     },
-    () => undefined,
-    () => undefined,
+    () => {
+      state.hardwareRefreshes += 1;
+    },
+    () => {
+      state.reloadNotifications += 1;
+    },
     (next: unknown) => state.done.push(next),
     { current: adopt },
   ];
@@ -148,6 +157,10 @@ function harness(responses: Snapshot[], latestApplied = 0) {
       requests: responseIndex,
       latestApplied: latestAppliedStatusRequest.current,
       done: state.done,
+    }),
+    effectCounts: () => ({
+      hardwareRefreshes: state.hardwareRefreshes,
+      reloadNotifications: state.reloadNotifications,
     }),
   };
 }
@@ -210,6 +223,45 @@ test("a failed terminal reconciliation keeps polling until a valid status arrive
         reloadRequired: false,
       },
     ],
+  });
+});
+
+test("a distinct terminal job runs its completion effects during reconciliation", async () => {
+  const poll = harness([
+    { requestId: 1, status: status("success", true, "job-1") },
+    { requestId: 2, status: null },
+    { requestId: 3, status: status("success", true, "job-2") },
+    { requestId: 4, status: status("success", false, "job-2") },
+  ]);
+  await poll.tick();
+  assert.deepEqual(poll.effectCounts(), {
+    hardwareRefreshes: 1,
+    reloadNotifications: 1,
+  });
+
+  await poll.tick();
+  assert.deepEqual(poll.snapshot(), {
+    applying: false,
+    visible: false,
+    timerActive: false,
+    requests: 4,
+    latestApplied: 4,
+    done: [
+      {
+        ok: true,
+        tag: "b10472-mix-4b653db",
+        reloadRequired: false,
+      },
+      {
+        ok: true,
+        tag: "b10472-mix-4b653db",
+        reloadRequired: false,
+      },
+    ],
+  });
+  assert.deepEqual(poll.effectCounts(), {
+    hardwareRefreshes: 2,
+    reloadNotifications: 2,
   });
 });
 

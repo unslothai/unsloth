@@ -452,6 +452,7 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 
     res = upd.start_update()
     assert res["started"] is True
+    assert len(res["job"]["job_id"]) == 32
     assert res["job"]["from_tag"] == "b9493"
     assert res["job"]["progress"] == 0.0
 
@@ -462,6 +463,7 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
             break
         time.sleep(0.05)
     assert job["state"] == "success", job
+    assert job["job_id"] == res["job"]["job_id"]
     assert job["to_tag"] == "b9518"
     assert job["reload_required"] is False
     assert "--install-dir" in captured["cmd"]
