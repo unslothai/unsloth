@@ -58,11 +58,20 @@ DENSE = {
 }
 
 
-def _plan(tmp_path, *, weights_mib, n_parallel, spec, vram_mib=CARD_MIB, n_ctx=0,
-          metadata=HYBRID, gpus=1):
+def _plan(
+    tmp_path,
+    *,
+    weights_mib,
+    n_parallel,
+    spec,
+    vram_mib = CARD_MIB,
+    n_ctx = 0,
+    metadata = HYBRID,
+    gpus = 1,
+):
     """Return the generated placement plan."""
     memory = [(i, vram_mib, vram_mib) for i in range(gpus)]
-    backend, gguf = _backend(tmp_path, vulkan=False, memory=memory)
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
 
     def read(_path):
         for key, value in metadata.items():
@@ -71,7 +80,7 @@ def _plan(tmp_path, *, weights_mib, n_parallel, spec, vram_mib=CARD_MIB, n_ctx=0
     backend._read_gguf_metadata = read
     backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
     del backend._can_estimate_kv  # the real one, now that the dims are set
-    backend.probe_server_capabilities = lambda _binary=None: {
+    backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": "draft-mtp",
         "supports_ngram_mod": True,
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -79,11 +88,9 @@ def _plan(tmp_path, *, weights_mib, n_parallel, spec, vram_mib=CARD_MIB, n_ctx=0
         "supports_kv_unified": True,
         "supports_fit_ctx": True,
     }
-    cmd = _launch(
-        backend, gguf, speculative_type=spec, n_ctx=n_ctx, n_parallel=n_parallel
-    )["cmd"]
+    cmd = _launch(backend, gguf, speculative_type = spec, n_ctx = n_ctx, n_parallel = n_parallel)["cmd"]
 
-    def flag(name, default=None):
+    def flag(name, default = None):
         return cmd[cmd.index(name) + 1] if name in cmd else default
 
     return {
@@ -101,40 +108,36 @@ class TestTheLaunchedCountOwnsTheContext:
     @pytest.mark.parametrize(
         "weights_mib,asked,slots,ctx",
         [
-            (9_600, 4, 3, 5_888),   # main: 3 slots, 4096
+            (9_600, 4, 3, 5_888),  # main: 3 slots, 4096
             (10_200, 4, 2, 7_680),  # main: 2 slots, 4096
             (10_200, 8, 2, 7_680),  # main: 2 slots, 4096
         ],
     )
-    def test_auto_context_follows_the_reduction(
-        self, tmp_path, weights_mib, asked, slots, ctx
-    ):
-        got = _plan(tmp_path, weights_mib=weights_mib, n_parallel=asked, spec="off")
+    def test_auto_context_follows_the_reduction(self, tmp_path, weights_mib, asked, slots, ctx):
+        got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = asked, spec = "off")
         assert (got["slots"], got["fit"]) == (slots, "off")
         assert got["ctx"] == got["ceiling"] == ctx
 
     @pytest.mark.parametrize("weights_mib,asked,final", [(9_600, 4, 3), (10_200, 4, 2)])
-    def test_reducing_to_a_count_matches_starting_at_it(
-        self, tmp_path, weights_mib, asked, final
-    ):
+    def test_reducing_to_a_count_matches_starting_at_it(self, tmp_path, weights_mib, asked, final):
         """A reduced plan matches one started at its final slot count."""
-        reduced = _plan(tmp_path, weights_mib=weights_mib, n_parallel=asked, spec="off")
-        direct = _plan(tmp_path, weights_mib=weights_mib, n_parallel=final, spec="off")
+        reduced = _plan(tmp_path, weights_mib = weights_mib, n_parallel = asked, spec = "off")
+        direct = _plan(tmp_path, weights_mib = weights_mib, n_parallel = final, spec = "off")
         assert reduced["slots"] == direct["slots"] == final
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
     def test_the_published_ceiling_is_not_the_4096_anchor(self, tmp_path):
         """The published ceiling follows the final slot count."""
-        got = _plan(tmp_path, weights_mib=10_200, n_parallel=4, spec="off")
+        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
         assert got["ceiling"] == 7_680
 
     def test_a_layer_split_across_two_cards_re_fits_the_same_way(self, tmp_path):
         """The same invariant holds for a two-card layer split."""
         reduced = _plan(
-            tmp_path, weights_mib=14_000, n_parallel=4, spec="off", vram_mib=8_704, gpus=2
+            tmp_path, weights_mib = 14_000, n_parallel = 4, spec = "off", vram_mib = 8_704, gpus = 2
         )
         direct = _plan(
-            tmp_path, weights_mib=14_000, n_parallel=2, spec="off", vram_mib=8_704, gpus=2
+            tmp_path, weights_mib = 14_000, n_parallel = 2, spec = "off", vram_mib = 8_704, gpus = 2
         )
         assert (reduced["slots"], reduced["fit"]) == (2, "off")
         assert reduced["ctx"] == reduced["ceiling"] == 8_448
@@ -145,20 +148,20 @@ class TestAutoSpeculationStillDecidesBeforeTheReduction:
     """Pin the existing behavior where Auto admits MTP before slot reduction."""
 
     def test_a_direct_one_slot_request_drops_the_drafter_and_keeps_context(self, tmp_path):
-        got = _plan(tmp_path, weights_mib=10_200, n_parallel=1, spec="auto")
+        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 1, spec = "auto")
         assert (got["slots"], got["ctx"], got["spec"]) == (1, 18_688, "ngram-mod")
 
     @pytest.mark.parametrize("asked", [4, 8])
     def test_a_reduced_request_still_carries_the_drafter_it_admitted(self, tmp_path, asked):
-        got = _plan(tmp_path, weights_mib=10_200, n_parallel=asked, spec="auto")
+        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = asked, spec = "auto")
         assert (got["slots"], got["spec"]) == (1, "draft-mtp")
         # The retained MTP reserve keeps this below the direct one-slot context.
         assert got["ctx"] == 9_984
 
     def test_the_gap_narrows_and_never_widens(self, tmp_path):
         """The refit narrows the pre-existing gap."""
-        direct = _plan(tmp_path, weights_mib=10_200, n_parallel=1, spec="auto")
-        reduced = _plan(tmp_path, weights_mib=10_200, n_parallel=4, spec="auto")
+        direct = _plan(tmp_path, weights_mib = 10_200, n_parallel = 1, spec = "auto")
+        reduced = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "auto")
         assert reduced["ctx"] <= direct["ctx"]
         assert direct["ctx"] - reduced["ctx"] < direct["ctx"] - 4096
 
@@ -166,25 +169,25 @@ class TestAutoSpeculationStillDecidesBeforeTheReduction:
 class TestWhatMustNotMove:
     def test_an_explicit_context_is_still_honored_verbatim(self, tmp_path):
         """An explicit context remains unchanged after slot reduction."""
-        got = _plan(tmp_path, weights_mib=8_400, n_parallel=4, spec="off", n_ctx=32768)
+        got = _plan(tmp_path, weights_mib = 8_400, n_parallel = 4, spec = "off", n_ctx = 32768)
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 2, "off")
         # The measured ceiling still follows the final slot count.
         assert got["ceiling"] == 35_840
 
     def test_an_explicit_context_that_forces_offload_is_unchanged(self, tmp_path):
         """An explicit context that requires offload is unchanged."""
-        got = _plan(tmp_path, weights_mib=10_200, n_parallel=4, spec="off", n_ctx=32768)
+        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", n_ctx = 32768)
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 4, "on")
         assert got["ceiling"] == 4096
 
     def test_a_count_that_needs_no_reduction_is_untouched(self, tmp_path):
         """A plan that needs no slot reduction is unchanged."""
-        got = _plan(tmp_path, weights_mib=6_000, n_parallel=4, spec="off")
+        got = _plan(tmp_path, weights_mib = 6_000, n_parallel = 4, spec = "off")
         assert (got["slots"], got["fit"], got["ctx"]) == (4, "off", 51_200)
 
     def test_weights_that_fit_nowhere_still_offload(self, tmp_path):
         """Oversized weights still fall back to offload."""
-        got = _plan(tmp_path, weights_mib=11_400, n_parallel=4, spec="off")
+        got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
         assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", 4096, 4096)
 
     @pytest.mark.parametrize(
@@ -194,13 +197,9 @@ class TestWhatMustNotMove:
             (10_000, 1, 6_144),  # main: 1 slot,  4096
         ],
     )
-    def test_a_dense_target_gains_only_its_compute_buffer(
-        self, tmp_path, weights_mib, slots, ctx
-    ):
+    def test_a_dense_target_gains_only_its_compute_buffer(self, tmp_path, weights_mib, slots, ctx):
         """Dense models also recover slot-scaled compute-buffer capacity."""
-        got = _plan(
-            tmp_path, weights_mib=weights_mib, n_parallel=4, spec="off", metadata=DENSE
-        )
+        got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = DENSE)
         assert (got["slots"], got["ctx"]) == (slots, ctx)
 
 
@@ -227,8 +226,8 @@ class TestTheSearchPredicate:
                 LlamaCppBackend._GPU_PIN_VRAM_FRACTION,
                 0,
                 1,
-                n_ubatch=512,
-                include_requested=include_requested,
+                n_ubatch = 512,
+                include_requested = include_requested,
             )
 
         assert fit(True) == ([0], False, 2)
@@ -255,9 +254,7 @@ class TestTheLoggedReserveFollowsTheLaunch:
         seen = []
         for asked in (2, 4, 8):
             lines.clear()
-            got = _plan(
-                tmp_path, weights_mib=8_000, n_parallel=asked, spec="auto", vram_mib=9_728
-            )
+            got = _plan(tmp_path, weights_mib = 8_000, n_parallel = asked, spec = "auto", vram_mib = 9_728)
             reserves = set(re.findall(r"MTP reserve: ([\d.]+) GB", "\n".join(lines)))
             assert reserves, "the reserve was never logged"
             seen.append((got["slots"], got["ctx"], got["spec"], reserves))

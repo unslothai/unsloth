@@ -16228,9 +16228,7 @@ class LlamaCppBackend:
                                     flash_attn = planned_flash_attn,
                                     split_extra_bytes = _cc_split_extra(ctx),
                                     ubatch_for_slots = _ubatch_for_slots,
-                                    mtp_bytes_for_slots = (
-                                        lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)
-                                    ),
+                                    mtp_bytes_for_slots = (lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)),
                                     include_requested = True,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
