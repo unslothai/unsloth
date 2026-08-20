@@ -31,6 +31,11 @@ from core.inference import tools
 def _unknown_window(monkeypatch):
     """Default to "no model loaded" so each test states the window it means."""
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
+    # The request-scoped window is module state that outlives a test, and execute_tool
+    # sets it deliberately. Restore it so one test cannot decide another's budget.
+    token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
+    yield
+    tools._REQUEST_CONTEXT_TOKENS.reset(token)
 
 
 def _window(monkeypatch, ctx):
@@ -178,3 +183,63 @@ class TestTheWindowIsReadPerRequest:
     def test_execute_tool_scopes_the_window_for_the_call(self):
         tools.execute_tool("render_html", {"html": "<p>x</p>"}, context_tokens = 4864)
         assert tools._REQUEST_CONTEXT_TOKENS.get() == 4864
+
+
+class TestToolResultsAlsoFitTheWindow:
+    """The code tools had the same fixed-cap defect as fetched pages.
+
+    Observed live on a 5120-token window: two requests refused at 7043 and 6684 tokens,
+    both on the terminal/python tools, whose 16,000-character cap is about 4,000 tokens
+    on its own. The result lands in the NEWEST turn, which the fit protects, so
+    compaction cannot drop the one thing that does not fit and the request is
+    irreducible rather than merely large.
+    """
+
+    def test_a_small_window_shrinks_the_tool_result_cap(self, monkeypatch):
+        _window(monkeypatch, 5120)
+
+        budget = tools._tool_result_char_budget()
+
+        assert budget < tools._MAX_OUTPUT_CHARS
+        # Roughly 1,800 tokens rather than 4,000, which is what brought the live
+        # 7,043-token request back under a 5,120-token window.
+        assert budget <= 5120 * 4 * tools._PAGE_CONTEXT_SHARE
+
+    def test_a_large_window_keeps_the_full_cap(self, monkeypatch):
+        for ctx in (32_768, 131_072, 262_144):
+            _window(monkeypatch, ctx)
+            assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
+
+    def test_an_unknown_window_keeps_the_full_cap(self):
+        # Not knowing must never shrink a result: that would silently degrade every
+        # provider path where the local backend is not the one answering.
+        assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
+
+    def test_an_external_request_keeps_the_full_cap(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        token = tools._REQUEST_CONTEXT_TOKENS.set(0)
+        try:
+            assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
+        finally:
+            tools._REQUEST_CONTEXT_TOKENS.reset(token)
+
+    def test_truncate_resolves_its_limit_per_call(self, monkeypatch):
+        """Bound at import, the default would freeze before any model is loaded."""
+        _window(monkeypatch, 5120)
+        text = "x" * 20_000
+
+        out = tools._truncate(text)
+
+        assert len(out) < len(text)
+        assert "truncated to" in out
+
+    def test_an_explicit_limit_still_wins(self, monkeypatch):
+        _window(monkeypatch, 5120)
+
+        assert tools._truncate("x" * 500, limit = 100).startswith("x" * 100)
+        assert tools._truncate("x" * 50, limit = 100) == "x" * 50
+
+    def test_a_result_that_fits_is_returned_untouched(self, monkeypatch):
+        _window(monkeypatch, 262_144)
+
+        assert tools._truncate("all good") == "all good"

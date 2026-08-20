@@ -11683,6 +11683,31 @@ def _loaded_context_tokens() -> int | None:
     return None
 
 
+def _result_char_budget(cap: int) -> int:
+    """`cap`, lowered to what the serving window can actually hold.
+
+    Shared by fetched pages and by terminal/python results, because the failure is the
+    same: a fixed character cap has no relation to the loaded context, so on a small
+    window one result fills most of it. That result lands in the NEWEST turn, which the
+    fit protects, so compaction cannot drop the very thing that does not fit and the
+    request goes irreducible. Measured live on a 5120-token window: 7043 and 6684 token
+    requests refused, both on the code tools, whose 16,000-character cap is about 4,000
+    tokens on its own.
+    """
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    if not ctx:
+        return cap
+    return max(_MIN_PAGE_CHARS, min(cap, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+
+
+def _tool_result_char_budget() -> int:
+    """The terminal/python cap, sized to the window. See `_result_char_budget`."""
+    return _result_char_budget(_MAX_OUTPUT_CHARS)
+
+
 def _page_char_budget() -> int:
     """`_MAX_PAGE_CHARS`, lowered to what the serving window can actually hold.
 
@@ -13163,7 +13188,11 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
-def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+def _truncate(text: str, limit: int | None = None) -> str:
+    # Resolved per call, not bound at import: the default would freeze the constant
+    # before any model is loaded, which is exactly when the window is still unknown.
+    if limit is None:
+        limit = _tool_result_char_budget()
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the
