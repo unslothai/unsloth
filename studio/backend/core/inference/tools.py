@@ -11702,7 +11702,13 @@ def _result_char_budget(cap: int) -> int:
     ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
     if not ctx:
         return cap
-    return max(_MIN_PAGE_CHARS, min(cap, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+    # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result
+    # worth reading when the WINDOW is the thing making it small; it is not a licence to
+    # hand the model more than the install configured. Unclamped, an install running
+    # `UNSLOTH_TOOL_RESULT_MAX_CHARS=500` got 500 characters from the hosted path and
+    # 2,000 from this one, the moment a local window became readable -- the one function
+    # whose job is to LOWER the cap raising it fourfold instead.
+    return min(cap, max(_MIN_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
 
 
 def _tool_result_char_budget() -> int:
@@ -11772,6 +11778,76 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
     return length
 
 
+def _loaded_token_counter(ctx: int):
+    """The tokenizer of the model serving this request, or None when there is not one.
+
+    Same probe as `_loaded_context_tokens`: whatever can answer for the window can also
+    price a string exactly, and `llama_cpp` already hands this same counter to the RAG
+    admission check for exactly this reason. Gated on the backend's own window matching
+    the one the budget was sized against, so a resident GGUF never prices a request that
+    a different model (native, or an external endpoint) is actually answering.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
+        llama = get_llama_cpp_backend()
+        if not getattr(llama, "is_loaded", False):
+            return None
+        if getattr(llama, "context_length", None) != ctx:
+            return None
+        counter = getattr(llama, "count_chat_tokens", None)
+        if not callable(counter):
+            return None
+    except Exception:  # noqa: BLE001 -- no tokenizer is "unknown", never an error
+        return None
+
+    def _count(chunk: str):
+        try:
+            spent = counter([{"role": "tool", "content": chunk}], None, None, strict = False)
+        except Exception:  # noqa: BLE001 -- same rule: fall back to the estimate
+            logger.debug("result budget: exact count failed", exc_info = True)
+            return None
+        return int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+
+    return _count
+
+
+# Measured: English costs one pass (it fits on the first count), base64 two, and the
+# third is slack for text whose density changes along its length. Bounded rather than a
+# binary search because each pass is a llama-server round trip.
+_EXACT_FIT_PASSES = 3
+
+
+def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) -> int:
+    """`chars`, shrunk until the prefix really costs `token_budget`. Never grown.
+
+    The estimate below charges every ASCII character a flat 0.25 tokens, which is an
+    English rate and wrong in the same direction for the ASCII the code tools print most:
+    measured with Qwen3-4B and Llama-3.2 on a 5,120-token window, where the character cap
+    admits 7,168 characters against a 1,792-token share, `base64 payload.bin` came back at
+    5,361 tokens, `hexdump -C` at 5,540 and `sha256sum *` at 5,109 -- 105-108% of the
+    WHOLE window, in the newest turn, which the fit protects. A four-message thread (one
+    8-token question and one such result) was refused irreducible at 5,475 tokens against
+    a 3,840-token prompt budget. No character rule closes that: the same rule that charges
+    a 76-character base64 line its real 57 tokens charges English prose 40% more than it
+    costs and shrinks every page that was already fine. So when a tokenizer is serving the
+    request, ask it; when none is, keep the estimate exactly as it was.
+    """
+    counter = _loaded_token_counter(ctx)
+    if counter is None:
+        return chars
+    for _ in range(_EXACT_FIT_PASSES):
+        spent = counter(text[:chars])
+        if spent is None or spent <= token_budget:
+            return chars
+        fitted = int(chars * token_budget / spent)
+        # The floor still applies, and stopping here saves a round trip that cannot
+        # change the answer.
+        if fitted <= _MIN_PAGE_CHARS:
+            return _MIN_PAGE_CHARS
+        chars = fitted
+    return chars
+
+
 def _dense_char_limit(text: str, max_chars: int) -> int:
     """`max_chars`, lowered when `text` tokenises denser than four characters per token.
 
@@ -11786,7 +11862,11 @@ def _dense_char_limit(text: str, max_chars: int) -> int:
         return max_chars
     # Kept a float, so English text lands on exactly the character budget rather than
     # one character short of it.
-    fitted = _dense_prefix_chars(text, ctx * _PAGE_CONTEXT_SHARE)
+    share = ctx * _PAGE_CONTEXT_SHARE
+    fitted = _dense_prefix_chars(text, share)
+    # And measured rather than estimated when the serving model can measure it: the rule
+    # above is honest about non-ASCII and still optimistic about dense ASCII.
+    fitted = _exact_prefix_chars(text, min(fitted, max_chars), share, ctx)
     # Never above what the caller allowed, and never below the floor that keeps a page
     # worth reading. An explicit cap smaller than the floor still wins.
     return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
