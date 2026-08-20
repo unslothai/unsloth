@@ -351,6 +351,7 @@ from state.tool_approvals import (
     new_approval_id,
     wait_tool_decision,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -2065,7 +2066,7 @@ def _gguf_snapshot_files(snapshot: Path) -> list[str]:
     return [
         p.relative_to(snapshot).as_posix()
         for p in snapshot.rglob("*")
-        if p.is_file() and p.name.lower().endswith(".gguf")
+        if p.is_file() and p.name.lower().endswith(".gguf") and not is_appledouble_metadata(p)
     ]
 
 
@@ -2402,7 +2403,29 @@ def _companion_snapshot_sibling(
     return str(candidate) if _drafter_split_is_complete(candidate) else None
 
 
+def _pick_dspark(candidates: list[str]) -> Optional[str]:
+    """The DSpark drafter a listing offers, or None. Module level for the same reason
+    ``_pick_mmproj`` is: both are handed a live repo listing as well as a snapshot."""
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from utils.models.model_config import dspark_preference_key
+
+    # Every GGUF under dspark/ qualifies, so a sidecar ranks equal to its sibling and sorts first.
+    files = sorted(
+        (
+            name
+            for name in drop_shadowed_appledouble_names(list(candidates))
+            if _is_dspark_drafter_path(name)
+        ),
+        key = dspark_preference_key,
+    )
+    return files[0] if files else None
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
+    # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
+    candidates = drop_shadowed_appledouble_names(list(candidates))
     mmproj_files = sorted(
         f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
     )
@@ -2611,10 +2634,13 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     Prefer exact quant-label matches over loose substring matches so a request
     for ``stories260K`` does not resolve to ``stories260K-be.gguf``.
     """
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
     variant_key = variant.strip().lower()
+    # A repo listing has no bytes to read; a local one arrives already filtered on its headers.
     main_files = [
         f
-        for f in files
+        for f in drop_shadowed_appledouble_names(list(files))
         if f.lower().endswith(".gguf")
         and not _is_companion_gguf_path(f)
         # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
@@ -9645,9 +9671,11 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
 
             files = list_repo_files(hf_repo, token = hf_token)
+            from hub.utils.gguf import drop_shadowed_appledouble_names
+
             gguf_files = [
                 f
-                for f in files
+                for f in drop_shadowed_appledouble_names(list(files))
                 if f.lower().endswith(".gguf")
                 and not _is_companion_gguf_path(f)
                 and not _is_big_endian_gguf_path(f)
@@ -11376,14 +11404,6 @@ class LlamaCppBackend:
         if caps_probe is None:
             caps_probe = self.probe_server_capabilities
 
-        def _pick_dspark(candidates: list[str]) -> Optional[str]:
-            from utils.models.model_config import dspark_preference_key
-            files = sorted(
-                (name for name in candidates if _is_dspark_drafter_path(name)),
-                key = dspark_preference_key,
-            )
-            return files[0] if files else None
-
         cached = _companion_snapshot_sibling(near_path, _pick_dspark) if near_path else None
         if not cached and _hf_env_offline():
             cached = self._cached_repo_dspark_drafter(
@@ -12693,6 +12713,30 @@ class LlamaCppBackend:
                 "Tensor parallelism is not supported for this model's "
                 "architecture. Turn off Tensor Parallelism in the model "
                 "settings and reload."
+            )
+
+        # llama.cpp prints the four bytes it found with %c, so a binary header arrives as
+        # unprintable characters; the generic fallback then blamed the user's memory (#8566).
+        if "invalid magic characters" in lowered:
+            # Not necessarily the main model: the projector and drafter report this too.
+            base = os.path.basename(gguf_path) if gguf_path else ""
+            named = f", loading {base}" if base else ""
+            # A "._" model path proves the volume keeps xattrs in companions, whichever file
+            # llama-server actually opened, and dot_clean is the remedy for the volume.
+            remedy = (
+                'This volume has no native extended attributes, so macOS keeps them in "._" '
+                'companions: run "dot_clean -m" on the folder to remove them, or keep models '
+                "on an APFS disk."
+                if base.startswith("._")
+                else "Re-download the model, or pick a different file."
+            )
+            return LlamaCppBackend._with_startup_diagnostics(
+                f"llama-server opened a file that is not a GGUF{named}: it does not start with "
+                "the GGUF magic. It may be that file or a companion loaded with it, such as a "
+                f"vision projector or a drafter, which llama-server does not always name. {remedy}",
+                output,
+                log_path,
+                secrets,
             )
 
         # Detect Ollama source up front so the arch branch can keep the

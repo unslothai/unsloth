@@ -118,6 +118,17 @@ async function getInferenceStatus() {
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
 }
+// chat-runtime-store.ts:
+//   return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
+// No scenario here sets a stored preference, so the stub is the model-family
+// default the backend resolves, verbatim from resolve-preserve-thinking-default.ts:
+//   Boolean(resp.supports_preserve_thinking && resp.preserve_thinking_default)
+// Present because the sliced region calls it; without it every scenario in this
+// file fails on the harness guard rather than on anything it means to test.
+function resolvePreserveThinkingOnLoad(resp: any) {
+  return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
+}
+
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
     ? (status.model_identifier ?? status.active_model)
