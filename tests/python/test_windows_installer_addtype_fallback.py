@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -89,7 +90,11 @@ def _run_powershell(script: str, env: dict[str, str] | None = None) -> subproces
     os.close(handle)
     try:
         Path(name).write_text(script, encoding = "utf-8-sig")
-        return subprocess.run(
+        # run_pwsh, not subprocess.run: every test in this file reads this result as
+        # "did the Add-Type fallback chain survive", and an interpreter that aborted at
+        # startup produces the same empty stdout as a helper that never ran its fallback.
+        # See tests/_shared/unsloth_pwsh_runner.py.
+        return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
             capture_output = True,
             text = True,
