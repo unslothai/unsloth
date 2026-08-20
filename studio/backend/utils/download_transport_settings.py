@@ -46,7 +46,6 @@ def _has_prior_studio_use() -> bool:
     """
     try:
         from storage.studio_db import get_connection
-
         conn = get_connection()
         try:
             for table in _PRIOR_USE_TABLES:
@@ -65,7 +64,6 @@ def _has_prior_studio_use() -> bool:
 
     try:
         from hub.utils import state_dir
-
         manifests = state_dir.manifests_dir()
         if manifests is not None and manifests.is_dir():
             return any(manifests.iterdir())
@@ -82,9 +80,7 @@ def seeded_default_transport_mode() -> str:
     with _seed_lock:
         if _seeded_default is None:
             _seeded_default = (
-                LEGACY_DOWNLOAD_TRANSPORT
-                if _has_prior_studio_use()
-                else DEFAULT_DOWNLOAD_TRANSPORT
+                LEGACY_DOWNLOAD_TRANSPORT if _has_prior_studio_use() else DEFAULT_DOWNLOAD_TRANSPORT
             )
     return _seeded_default
 
@@ -93,7 +89,6 @@ def get_download_transport_mode() -> str:
     """The install's download transport, seeding and persisting one on first read."""
     try:
         from storage.studio_db import get_app_setting
-
         stored = normalize_transport_mode(get_app_setting(DOWNLOAD_TRANSPORT_SETTING_KEY, None))
     except Exception as exc:  # noqa: BLE001 - fall back rather than fail a download
         logger.debug("download transport read failed (%s)", exc)
@@ -104,7 +99,6 @@ def get_download_transport_mode() -> str:
     seeded = seeded_default_transport_mode()
     try:
         from storage.studio_db import upsert_app_settings
-
         upsert_app_settings({DOWNLOAD_TRANSPORT_SETTING_KEY: seeded})
         logger.info("Seeded the download transport for this install: %s", seeded)
     except Exception as exc:  # noqa: BLE001 - an unwritable db just re-seeds next time

@@ -101,6 +101,7 @@ def test_a_prior_download_manifest_counts_as_use(monkeypatch, tmp_path):
     manifests = tmp_path / "manifests"
     manifests.mkdir()
     (manifests / "some-repo.json").write_text("{}")
+
     # No db rows at all: the manifest alone has to be enough, since a user who only ever downloaded
     # models writes nothing else.
     def no_db(*_args, **_kwargs):

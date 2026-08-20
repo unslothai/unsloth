@@ -72,7 +72,6 @@ def installed_transport_mode() -> str:
     """The transport this install defaults to, or HTTP if the setting cannot be read."""
     try:
         from utils.download_transport_settings import get_download_transport_mode
-
         return get_download_transport_mode()
     except Exception as exc:  # noqa: BLE001 - never let a settings read block a download
         logger.debug("Download transport setting unreadable, using HTTP: %s", exc)
