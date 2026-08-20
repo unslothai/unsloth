@@ -455,16 +455,20 @@ class TestToolLoopsReserveTheirUpperBound:
     """
 
     @staticmethod
-    def _cost(payload, budget = 2048, capacity = 4):
+    def _cost(
+        payload,
+        budget = 2048,
+        capacity = 4,
+    ):
         import routes.inference as routes_inference
-
         return routes_inference._openai_llama_admission_tokens(
-            payload, budget = budget, capacity = capacity,
+            payload,
+            budget = budget,
+            capacity = capacity,
         )
 
     def test_a_tool_request_reserves_the_whole_cache(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -474,7 +478,6 @@ class TestToolLoopsReserveTheirUpperBound:
 
     def test_two_tool_requests_do_not_run_together(self):
         from types import SimpleNamespace
-
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -495,14 +498,17 @@ class TestToolLoopsReserveTheirUpperBound:
         from types import SimpleNamespace
 
         payload = SimpleNamespace(
-            messages = [{"role": "user", "content": "hi"}], max_tokens = 16, tools = None,
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = 16,
+            tools = None,
         )
         assert self._cost(payload) < 2048
 
     def test_an_empty_tool_list_is_not_a_tool_loop(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
-            messages = [{"role": "user", "content": "hi"}], max_tokens = 16, tools = [],
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = 16,
+            tools = [],
         )
         assert self._cost(payload) < 2048
