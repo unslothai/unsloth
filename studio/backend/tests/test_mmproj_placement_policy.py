@@ -1285,3 +1285,85 @@ def test_a_pinned_projector_costs_the_shared_pool_beside_a_discrete_card(tmp_pat
     ref_cmd = _launch(reference, ref_gguf)["cmd"]
 
     assert pinned_ctx == int(ref_cmd[ref_cmd.index("-c") + 1])
+def _estimator_config(model_path, mmproj_path = None):
+    return SimpleNamespace(
+        gguf_file = str(model_path),
+        gguf_mmproj_file = str(mmproj_path) if mmproj_path else None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = True,
+    )
+
+
+def test_the_guard_charges_a_projector_only_the_environment_names(tmp_path, monkeypatch):
+    """The loader keeps an inherited audio-only LLAMA_ARG_MMPROJ when Vision is off.
+
+    It is GPU-resident like any other projector, and this config never names it, so
+    charging nothing let the coexistence guard admit a chat load the running
+    training job cannot afford -- the direction that costs someone else's job.
+    """
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    config = _estimator_config(model)
+
+    bare = _estimate_gguf_required_gb(config, disable_vision = True)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        charged = _estimate_gguf_required_gb(config, disable_vision = True)
+    # An image-capable one is scrubbed out of the child, so it must stay uncharged.
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
+        dropped = _estimate_gguf_required_gb(config, disable_vision = True)
+
+    assert bare is not None and charged is not None and dropped is not None
+    assert round((charged - bare) * 1024) == 1
+    assert dropped == bare
+
+
+def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(
+    tmp_path, monkeypatch
+):
+    """argv beats the environment (arg.cpp applies set_env first), so exactly one
+    projector loads. Charging both billed a single file twice and refused loads
+    that fit."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    resolved = tmp_path / "mmproj-F16.gguf"
+    resolved.write_bytes(b"\x00" * (1 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (2 * MIB))
+
+    # What the launch really costs: weights plus the one projector argv names.
+    expected = _estimate_gguf_required_gb(_estimator_config(model, resolved))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    charged = _estimate_gguf_required_gb(_estimator_config(model, resolved))
+
+    assert expected is not None and charged is not None
+    # The 2 MiB ambient file is not in it, so the env changed nothing.
+    assert charged == expected
+
+
+def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, monkeypatch):
+    """--no-mmproj sets params.no_mmproj, which stops Studio resolving one of its own
+    and stops the HF download, but server-context.cpp gates the load on a non-empty
+    mmproj.path and never reads that field. The inherited projector loads straight
+    through the opt-out, so the guard has to keep charging it."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    config = _estimator_config(model)
+
+    bare = _estimate_gguf_required_gb(config)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    charged = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
+
+    assert bare is not None and charged is not None
+    assert round((charged - bare) * 1024) == 1

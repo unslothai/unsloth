@@ -6890,6 +6890,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dflash,
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
+            _mmproj_env_is_audio_only,
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
@@ -7089,8 +7090,39 @@ def _estimate_gguf_required_gb(
         # else: a local --model-draft that is not on disk, so no drafter loads and
         # none is charged. A repository reserve there 409s a load over a typo.
 
+        # A projector this config never named: llama-server reads LLAMA_ARG_MMPROJ
+        # straight into params.mmproj.path, so an inherited one loads and takes VRAM
+        # that nothing above charged. Two things stop it, and only two. Studio's own
+        # --mmproj overrides the env, argv being applied after set_env, so exactly one
+        # file loads and charging both bills one projector twice. And under the vision
+        # switch the loader keeps only an audio-only file, asked through the loader's
+        # own helper so the two cannot answer differently.
+        #
+        # NOT the extras opt-out, deliberately. --no-mmproj / --no-mmproj-auto set
+        # params.no_mmproj, which stops Studio resolving a projector of its own and
+        # stops the HF auto-download, but server-context.cpp gates the load on a
+        # non-empty mmproj.path and never reads that field. So an inherited path loads
+        # straight through the opt-out and has to be charged.
+        #
+        # Added to the return rather than to total_bytes, which decides local-vs-remote
+        # above and must stay the main weight's verdict. The remote branch charges the
+        # repo's own projector instead; an inherited local file alongside a remote repo
+        # is charged nowhere, as before this.
+        _env_mmproj_bytes = 0
+        _env_mmproj = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+        if (
+            _env_mmproj
+            and not getattr(config, "gguf_mmproj_file", None)
+            and (not disable_vision or _mmproj_env_is_audio_only(_env_mmproj))
+            and Path(_env_mmproj).is_file()
+            and _same_file_key(_env_mmproj) not in _sized_keys
+        ):
+            _env_mmproj_bytes = LlamaCppBackend._get_gguf_size_bytes(_env_mmproj)
+
         if total_bytes > 0:
-            return (total_bytes + _extras_bytes) / (1024**3) + _estimate_gguf_kv_gb(
+            return (
+                total_bytes + _extras_bytes + _env_mmproj_bytes
+            ) / (1024**3) + _estimate_gguf_kv_gb(
                 main,
                 max_seq_length,
                 llama_extra_args,
