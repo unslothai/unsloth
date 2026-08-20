@@ -17459,9 +17459,7 @@ class LlamaCppBackend:
                 # that into has_audio_input, so the composer would offer attachments
                 # the server cannot process.
                 _mmproj_probe = launch_mmproj_path or (
-                    ""
-                    if _pv_mmproj_unpinnable
-                    else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
+                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
