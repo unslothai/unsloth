@@ -27,6 +27,8 @@ import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import { THREAD_MESSAGE_VIRTUALIZATION_ENABLED } from "@/components/assistant-ui/thread-feature-flags";
+import { VirtualizedThreadMessages } from "@/components/assistant-ui/thread-message-virtualizer";
 import {
   proplessSlot,
   threadMessageKind,
@@ -1495,6 +1497,14 @@ const ThreadMessage: FC = () => {
 // being rebuilt, and the bail-out below it would never get to run.
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
+// The same component, for the windowed path. ThreadPrimitive.MessageByIndex only takes the map
+// form, but supplying `Message` alone resolves to ThreadMessage for every role and edit state
+// through assistant-ui's fallback chain (UserMessage ?? Message, AssistantMessage ?? Message, and
+// every *EditComposer ?? EditComposer ?? *Message ?? Message), so both paths render the same
+// component and ThreadMessage keeps making the choice. Hoisted for the same reason as the slot
+// above: MessageByIndex is memoized on the identity of each component in this object.
+const virtualizedThreadMessageComponents = { Message: ThreadMessage };
+
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
 // would otherwise reconcile the whole message list.
 export const Thread: FC<{
@@ -1731,6 +1741,11 @@ export const Thread: FC<{
             scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
+              // Disables browser scroll anchoring, but only where the
+              // virtualizer owns scroll position. See the rule in index.css for
+              // why this is not unconditional.
+              THREAD_MESSAGE_VIRTUALIZATION_ENABLED &&
+                "aui-stream-viewport-virtualized",
               hideComposer
                 ? "pt-4"
                 : // + the chat-model notice, which is an opaque absolute bar
@@ -1747,9 +1762,16 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages>
-              {renderThreadMessage}
-            </ThreadPrimitive.Messages>
+            {THREAD_MESSAGE_VIRTUALIZATION_ENABLED ? (
+              <VirtualizedThreadMessages
+                scrollElement={viewportEl}
+                components={virtualizedThreadMessageComponents}
+              />
+            ) : (
+              <ThreadPrimitive.Messages>
+                {renderThreadMessage}
+              </ThreadPrimitive.Messages>
+            )}
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),

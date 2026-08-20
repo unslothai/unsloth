@@ -2859,6 +2859,27 @@ html[data-chat-font] .aui-root {
 	padding-bottom: var(--aui-scroll-stabilizer, 0px);
 }
 
+/* Applied to the same viewport only while the message list is windowed
+   (THREAD_MESSAGE_VIRTUALIZATION_ENABLED, see
+   components/assistant-ui/thread-feature-flags.ts).
+
+   A virtualizer positions items itself and corrects scrollOffset itself, so it
+   has to be the only thing moving scrollTop. Chromium's CSS scroll anchoring
+   moves scrollTop too, and correcting an anchor shift in document space on top
+   of that double-corrects, which is where the anchoring bugs in the progressive
+   mount work came from.
+
+   Deliberately NOT unconditional. The unwindowed path currently DEPENDS on
+   browser scroll anchoring: useIntentAwareAutoScroll's upward-intent test
+   measures growth in distance-from-bottom rather than raw scrollTop delta
+   precisely because a browser scroll-anchors when content above collapses, so
+   scrollTop and scrollHeight drop together and the distance is unchanged.
+   Turning anchoring off for everyone would make a reasoning-pane collapse read
+   as a deliberate scroll up and detach the user from a live stream. */
+.aui-stream-viewport-virtualized {
+	overflow-anchor: none;
+}
+
 .dark .aui-thread-viewport {
 	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
 }
