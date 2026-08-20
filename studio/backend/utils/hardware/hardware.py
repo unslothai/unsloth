@@ -872,6 +872,20 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             allocated = torch.cuda.memory_allocated(idx)
             reserved = torch.cuda.memory_reserved(idx)
 
+            # Why driver free: "total - allocated" sees neither this process's
+            # reserved cache nor any other process's allocations, so the summary
+            # could report a card as free while a model is resident. This feeds
+            # /system-info, whose consumers include training-method
+            # auto-selection — an overstated free picks a method that OOMs on
+            # launch. trusted_mem_get_info applies the platform's free
+            # over-report caps; if the probe fails, reserved (which includes
+            # allocated) is the best in-process bound.
+            try:
+                free, _driver_total = trusted_mem_get_info(idx)
+            except Exception as e:
+                logger.debug("mem_get_info probe failed; free VRAM from reserved: %s", e)
+                free = max(0, total - reserved)
+
             return {
                 "available": True,
                 "backend": _backend_label(device),
@@ -880,7 +894,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": reserved / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100,
             }
         except Exception as e:
@@ -903,6 +917,14 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             allocated = torch.xpu.memory_allocated(idx)
             reserved = torch.xpu.memory_reserved(idx)
 
+            # Same rationale as the CUDA path: driver free, reserved as the
+            # fallback bound (see above).
+            try:
+                free, _driver_total = trusted_mem_get_info(idx, module = torch.xpu)
+            except Exception as e:
+                logger.debug("xpu mem_get_info probe failed; free VRAM from reserved: %s", e)
+                free = max(0, total - reserved)
+
             return {
                 "available": True,
                 "backend": _backend_label(device),
@@ -911,7 +933,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": reserved / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100,
             }
         except Exception as e:

@@ -247,6 +247,10 @@ class TestGetGpuMemoryInfo:
             patch("torch.cuda.get_device_properties", return_value = mock_props),
             patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
             patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
+            # Driver truth: another process holds 1 GiB and torch's cache holds
+            # 6, so only 9 of 16 GiB are actually free — not total - allocated.
+            patch("torch.cuda.mem_get_info", return_value = (9 * (1024**3), 16 * (1024**3))),
+            patch("utils.hardware.hardware.rocm_windows_free_is_untrusted", return_value = False),
         ):
             result = get_gpu_memory_info()
 
@@ -255,8 +259,31 @@ class TestGetGpuMemoryInfo:
         assert result["device_name"] == "NVIDIA Test GPU"
         assert abs(result["total_gb"] - 16.0) < 0.01
         assert abs(result["allocated_gb"] - 4.0) < 0.01
-        assert abs(result["free_gb"] - 12.0) < 0.01
+        assert abs(result["free_gb"] - 9.0) < 0.01
         assert abs(result["utilization_pct"] - 25.0) < 0.1
+
+    @needs_torch
+    def test_cuda_free_falls_back_to_reserved_when_probe_fails(self):
+        mock_props = MagicMock()
+        mock_props.total_memory = 16 * (1024**3)
+        mock_props.name = "NVIDIA Test GPU"
+
+        def _boom():
+            raise RuntimeError("driver unavailable")
+
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("torch.cuda.current_device", return_value = 0),
+            patch("torch.cuda.get_device_properties", return_value = mock_props),
+            patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
+            patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
+            patch("utils.hardware.hardware.trusted_mem_get_info", side_effect = _boom),
+        ):
+            result = get_gpu_memory_info()
+
+        # Reserved includes allocated, so the fallback bound is 16 - 6, not
+        # the old allocated-only 12.
+        assert abs(result["free_gb"] - 10.0) < 0.01
 
     # --- MLX-specific mocked test ---
 
