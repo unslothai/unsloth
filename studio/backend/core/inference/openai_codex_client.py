@@ -429,9 +429,13 @@ async def list_subscription_models(
             # done. Record it against that token the way the streaming path does, or
             # auth_status keeps reporting connected, the editor never offers Reconnect
             # and every later catalog load repeats this.
-            codex_auth.mark_reauthorization_required(
-                provider_id, expected_access_token = access_token
-            )
+            # Under the same guard the streaming error path uses: the read and the write
+            # inside are one step, so a rotation landing between them cannot be undone by
+            # writing the rejected bundle back with the marker on it.
+            async with codex_auth.provider_oauth_write_guard(provider_id):
+                codex_auth.mark_reauthorization_required(
+                    provider_id, expected_access_token = access_token
+                )
             raise CodexReauthorizationError(
                 "ChatGPT authorization expired. Reconnect this connection.",
                 status = 401,

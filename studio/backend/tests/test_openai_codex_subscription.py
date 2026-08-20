@@ -2600,3 +2600,52 @@ def test_a_cold_worker_rejects_credentials_for_another_account(monkeypatch):
         assert codex_client.subscription_catalog_stale("codex-1") is True
     finally:
         forget_subscription_models("codex-1")
+
+
+def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
+    """Read and write have to be one step, or a rotation in between is written back over.
+
+    The streaming error path already takes this guard; the catalog path is the same kind
+    of write and needs the same protection.
+    """
+    import httpx
+
+    forget_subscription_models("provider-24")
+    order = []
+
+    class AlwaysRejecting:
+        async def get(self, _url, headers = None, params = None):
+            return httpx.Response(401, json = {"detail": "expired"})
+
+        async def aclose(self):
+            return None
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "fresh-token", "acct-1"
+
+    @asynccontextmanager
+    async def _guard(provider_id):
+        order.append(("enter", provider_id))
+        try:
+            yield
+        finally:
+            order.append(("exit", provider_id))
+
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: AlwaysRejecting())
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", _guard)
+    monkeypatch.setattr(
+        codex_auth,
+        "mark_reauthorization_required",
+        lambda provider_id, expected_access_token = None: order.append(("mark", provider_id)),
+    )
+    try:
+        with pytest.raises(CodexReauthorizationError):
+            asyncio.run(list_subscription_models("provider-24", "stale", "acct-1"))
+        assert order == [
+            ("enter", "provider-24"),
+            ("mark", "provider-24"),
+            ("exit", "provider-24"),
+        ]
+    finally:
+        forget_subscription_models("provider-24")
