@@ -283,6 +283,16 @@ export const de = {
         engineModel: "Lokale Transkription",
         engineModelDescription:
           "Führt ein Spracherkennungsmodell (STT) lokal aus und funktioniert offline. Zuerst herunterladen und laden; nach einer Zeit ohne Nutzung wird es automatisch wieder entladen.",
+        engineCustom: "Benutzerdefinierter Endpunkt",
+        engineCustomDescription:
+          "Sendet Audioaufnahmen an einen OpenAI-kompatiblen STT-Server aus Ihren Verbindungen.",
+        connectionLabel: "Verbindung",
+        connectionDescription:
+          "Fügen Sie unter Verbindungen einen OpenAI-kompatiblen Server und optional einen API-Schlüssel hinzu.",
+        connectionPlaceholder: "Verbindung auswählen",
+        customModelLabel: "Modell",
+        customModelDescription:
+          "Modellname, der an /v1/audio/transcriptions gesendet wird.",
         sttModelLabel: "Spracherkennungsmodell",
         sttModelDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung.",
@@ -346,6 +356,7 @@ export const de = {
         languageLabel: "Diktatsprache",
         languageDescription: "Zu erkennende Sprache",
         languageAuto: "Automatisch (Browsersprache)",
+        languageAutoDetect: "Automatisch (Sprache erkennen)",
       },
       dictionary: {
         sectionTitle: "Diktatwörterbuch",
