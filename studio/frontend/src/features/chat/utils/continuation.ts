@@ -532,8 +532,16 @@ export function createAutoContinueTab({
     messageId: string | null | undefined,
     options?: { now?: number },
   ) => boolean;
-  renew: (holder: string, options?: { now?: number }) => Promise<void>;
-  release: (holder: string, options?: { now?: number }) => Promise<void>;
+  renew: (
+    messageId: string | null | undefined,
+    holder: string,
+    options?: { now?: number },
+  ) => Promise<void>;
+  release: (
+    messageId: string | null | undefined,
+    holder: string,
+    options?: { now?: number },
+  ) => Promise<void>;
   reset: () => void;
 } {
   /**
@@ -593,7 +601,14 @@ export function createAutoContinueTab({
     }
   }
 
-  /** Drop what has lapsed, so the key cannot grow with every truncated reply. */
+  /**
+   * Drop what has lapsed, so the key cannot grow with every truncated reply.
+   *
+   * The one mutation here that is deliberately not per message. It only ever removes
+   * records that are already dead by their own expiry -- `liveLease` reads them as free
+   * whether they are in the key or not -- so it cannot end anybody's hold, and it is the
+   * only thing bounding the size of a key every tab writes to.
+   */
   function prune(
     leases: Record<string, Lease>,
     now: number,
@@ -669,43 +684,49 @@ export function createAutoContinueTab({
     return "started";
   }
 
-  /** Every lease `holder` took, in the order they were taken. */
-  function heldBy(holder: string): string[] {
-    const out: string[] = [];
-    for (const [id, held] of ownTokens) {
-      if (held.holder === holder) {
-        out.push(id);
-      }
-    }
-    return out;
+  /** Whether `holder` is the one this tab took `messageId`'s lease for. */
+  function heldFor(messageId: string, holder: string): boolean {
+    return ownTokens.get(messageId)?.holder === holder;
   }
 
   /**
-   * Rewrite the leases `holder` took with a new expiry. Runs inside the lock.
+   * Rewrite ONE lease with a new expiry, if this holder is the one that took it. Runs
+   * inside the lock, and reports whether the lease is still this tab's to stamp.
    *
-   * Scoped to the holder, never to the whole map: another runtime in this same tab may be
-   * mid-run, and restamping its lease to a settle window would end its hold without its
-   * knowledge and let another tab start the duplicate.
+   * One message, never a holder's whole set. A holder is a runtime, and a runtime outlives
+   * the run inside it: rounds of the same turn are claimed one after another under the same
+   * holder, and the next round is claimed BEFORE the finished one is given back, because
+   * React runs the bar's effect before the thread's. Anything that operated on "every lease
+   * this holder owns" would settle the round that just started along with the round that
+   * ended.
    */
-  function restamp(holder: string, expires: number, now: number): void {
+  function restamp(
+    messageId: string,
+    holder: string,
+    expires: number,
+    now: number,
+  ): boolean {
+    const held = ownTokens.get(messageId);
+    if (!held || held.holder !== holder) {
+      return false;
+    }
     const store = leaseSeam();
-    const mine = heldBy(holder);
-    if (!store || mine.length === 0) {
-      return;
+    if (!store) {
+      return false;
     }
     try {
       const leases = prune(readLeases(store), now);
-      for (const id of mine) {
-        if (leases[id]?.token !== ownTokens.get(id)?.token) {
-          // Lapsed, or taken over while this tab was not looking. Not ours to stamp.
-          ownTokens.delete(id);
-          continue;
-        }
-        leases[id] = { token: leases[id].token, expires };
+      if (leases[messageId]?.token !== held.token) {
+        // Lapsed, or taken over while this tab was not looking. Not ours to stamp.
+        ownTokens.delete(messageId);
+        return false;
       }
+      leases[messageId] = { token: held.token, expires };
       store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(leases));
+      return true;
     } catch {
       // An unwritable seam holds no lease of ours to renew or release either.
+      return false;
     }
   }
 
@@ -743,29 +764,34 @@ export function createAutoContinueTab({
       // `claim` itself.
       return continued.has(messageId) || Boolean(liveLease(messageId, now));
     },
-    async renew(holder, { now = Date.now() } = {}) {
-      if (heldBy(holder).length === 0) {
+    async renew(messageId, holder, { now = Date.now() } = {}) {
+      if (!messageId) {
+        return;
+      }
+      if (!heldFor(messageId, holder)) {
         return;
       }
       await exclusively(
-        () => restamp(holder, now + AUTO_CONTINUE_LEASE_TTL_MS, now),
-        undefined,
+        () => restamp(messageId, holder, now + AUTO_CONTINUE_LEASE_TTL_MS, now),
+        false,
       );
     },
-    async release(holder, { now = Date.now() } = {}) {
-      const mine = heldBy(holder);
-      if (mine.length === 0) {
+    async release(messageId, holder, { now = Date.now() } = {}) {
+      if (!messageId) {
+        return;
+      }
+      if (!heldFor(messageId, holder)) {
         return;
       }
       await exclusively(
-        () => restamp(holder, now + AUTO_CONTINUE_LEASE_SETTLE_MS, now),
-        undefined,
+        () =>
+          restamp(messageId, holder, now + AUTO_CONTINUE_LEASE_SETTLE_MS, now),
+        false,
       );
-      // Held no longer: nothing renews these, and they lapse at the settle window. Only
-      // this holder's, so a second runtime in the same tab keeps renewing its own.
-      for (const id of mine) {
-        ownTokens.delete(id);
-      }
+      // Held no longer: nothing renews this one, and it lapses at the settle window. Only
+      // this message, so the next round of the same turn -- claimed under this same holder
+      // before this release lands -- keeps its own lease and its own renewals.
+      ownTokens.delete(messageId);
     },
     reset() {
       continued.clear();
@@ -824,33 +850,42 @@ export function wasAutoContinued(messageId: string | null | undefined): boolean 
 }
 
 /**
- * Keep `holder`'s leases alive while the run behind them is still going.
+ * Keep ONE message's lease alive while the run resuming it is still going.
  *
  * Called on a timer for as long as that runtime's thread is running. Without it the TTL
  * would have to guess the longest continuation anyone might generate, and a slow local
  * model on a big Max Tokens would outlive that guess and have its message taken by another
  * tab mid-stream.
  *
- * Per holder, because a tab can be running more than one thread: compare mode mounts a
- * runtime per pane, and each renews only what it claimed.
+ * Named by message and by holder, not by holder alone. The holder keeps two panes of
+ * compare mode apart; the message id is what keeps one round of a turn apart from the next,
+ * which the same holder claims moments later.
  */
-export function renewAutoContinueLeases(holder: string): Promise<void> {
-  return tab.renew(holder);
+export function renewAutoContinueLease(
+  messageId: string,
+  holder: string,
+): Promise<void> {
+  return tab.renew(messageId, holder);
 }
 
 /**
- * Give `holder`'s leases back when its run reaches a terminal state, cancelled included.
+ * Give ONE message's lease back when the run resuming it reaches a terminal state,
+ * cancelled included.
  *
- * They are cut to the settle window rather than deleted, so a tab still showing the
+ * It is cut to the settle window rather than deleted, so a tab still showing the
  * pre-continuation branch cannot immediately start the duplicate this file exists to
- * prevent, and the full TTL is left to mean one thing only: the holder crashed.
+ * prevent, and the full TTL is left to mean one thing only: the holder stopped answering.
  *
- * Per holder for the same reason renewal is: in compare mode the pane that finishes first
- * would otherwise release the pane still generating, whose renewals would then find
- * nothing held and whose message would be free to claim one settle window later.
+ * By message, because a holder can own two at once and they are not in the same state. A
+ * turn that hits Max Tokens again is claimed by the bar's effect before this thread's
+ * effect observes the first run ending, so a holder-wide release settles a round that has
+ * only just begun, and one settle window later another tab takes it.
  */
-export function releaseAutoContinueLeases(holder: string): Promise<void> {
-  return tab.release(holder);
+export function releaseAutoContinueLease(
+  messageId: string,
+  holder: string,
+): Promise<void> {
+  return tab.release(messageId, holder);
 }
 
 /**

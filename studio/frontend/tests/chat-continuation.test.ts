@@ -818,7 +818,7 @@ test("a running continuation keeps its lease past the TTL", async () => {
   );
   // Three renewals at the interval the keeper uses, still inside the run.
   for (let tick = 1; tick <= 3; tick += 1) {
-    await running.renew(PANE, {
+    await running.renew("m1", PANE, {
       now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
     });
   }
@@ -841,7 +841,7 @@ test("a finished run gives its lease back, without handing over a stale branch",
     await running.claim("m1", { now: start, holder: PANE }),
     "started",
   );
-  await running.release(PANE, { now: start });
+  await running.release("m1", PANE, { now: start });
   assert.equal(
     await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS - 1 }),
     "held-elsewhere",
@@ -851,13 +851,76 @@ test("a finished run gives its lease back, without handing over a stale branch",
     "started",
   );
   // And a release holds nothing, so a later renewal cannot resurrect it.
-  await running.renew(PANE, { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 2 });
+  await running.renew("m1", PANE, {
+    now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 2,
+  });
   assert.equal(
     await createAutoContinueTab({ storage, locks }).claim("m1", {
       now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 3,
     }),
     "held-elsewhere",
   );
+});
+
+/**
+ * Two rounds of one turn, in the order the app produces them.
+ *
+ * A round ends on another Max Tokens cut, so the bar under the new reply claims the next
+ * message while the thread is still winding the finished run down: React runs child
+ * effects before parent ones, so the claim lands before the keeper observes `isRunning`
+ * going false. `release` therefore has to name the message whose run ended, and nothing
+ * wider: the same holder owns both.
+ */
+async function sequentialRounds(
+  locks: ReturnType<typeof lockManagerFake> | null,
+) {
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+
+  assert.equal(
+    startedARun(await tab.claim("round-1", { now: start, holder: PANE })),
+    true,
+  );
+  // The next round, claimed before the finished one is given back.
+  assert.equal(
+    startedARun(await tab.claim("round-2", { now: start, holder: PANE })),
+    true,
+  );
+  await tab.release("round-1", PANE, { now: start });
+
+  // The second round is the live one, and its keeper is still renewing it.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    await tab.renew("round-2", PANE, {
+      now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
+    });
+  }
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(
+    await otherTab.claim("round-2", { now: past }),
+    "held-elsewhere",
+    "the round that just started keeps its lease",
+  );
+  // The round that did finish settles on the usual schedule.
+  assert.equal(
+    await otherTab.claim("round-1", {
+      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+    }),
+    "started",
+  );
+}
+
+test("the next round keeps its lease when the last one is released", async () => {
+  // No lock manager, where the claim resolves soonest and so lands earliest.
+  await sequentialRounds(null);
+});
+
+test("the next round keeps its lease with a lock manager in the way", async () => {
+  // And with one, because the effect ordering is not guaranteed in our favour there
+  // either -- the fix must not depend on which path ran.
+  await sequentialRounds(lockManagerFake());
 });
 
 test("one compare pane finishing does not release the other pane's lease", async () => {
@@ -888,11 +951,11 @@ test("one compare pane finishing does not release the other pane's lease", async
   );
 
   // The base pane finishes first. Only its own lease goes back.
-  await compareTab.release(base, { now: start });
+  await compareTab.release("base-m1", base, { now: start });
 
   // The lora pane is still generating, and its keeper is still renewing.
   for (let tick = 1; tick <= 3; tick += 1) {
-    await compareTab.renew(lora, {
+    await compareTab.renew("lora-m1", lora, {
       now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
     });
   }
@@ -921,7 +984,7 @@ test("a renewal touches this tab's leases and nobody else's", async () => {
 
   await mine.claim("m1", { now: start, holder: PANE });
   await theirs.claim("m2", { now: start, holder: PANE });
-  await mine.renew(PANE, { now: start + AUTO_CONTINUE_LEASE_RENEW_MS });
+  await mine.renew("m1", PANE, { now: start + AUTO_CONTINUE_LEASE_RENEW_MS });
 
   const leases = JSON.parse(store.get(AUTO_CONTINUE_LEASE_KEY) ?? "{}");
   assert.equal(
