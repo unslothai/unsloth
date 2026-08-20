@@ -1385,20 +1385,26 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Tensor Parallelism</span>
-          <InfoHint>
-            No effect on a single GPU. On multi-GPU setups, improves tokens/sec
-            for dense models. MoE models don't benefit.
-          </InfoHint>
+      {/* withoutUnsupportedDiffusionSettings forces tensorParallel back to false on a
+          diffusion model and the diffusion runner never reads it, so the switch flipped
+          back under the pointer. Same gate, and the same reason, as the Vision and
+          batch rows around it. */}
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Tensor Parallelism</span>
+            <InfoHint>
+              No effect on a single GPU. On multi-GPU setups, improves tokens/sec
+              for dense models. MoE models don't benefit.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.tensorParallel}
+            onCheckedChange={(checked) => update({ tensorParallel: checked })}
+          />
         </div>
-        <Switch
-          className="panel-switch shrink-0"
-          checked={config.tensorParallel}
-          onCheckedChange={(checked) => update({ tensorParallel: checked })}
-        />
-      </div>
+      )}
 
       {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a
           diffusion model and the diffusion runner never reads it, so the switch would
