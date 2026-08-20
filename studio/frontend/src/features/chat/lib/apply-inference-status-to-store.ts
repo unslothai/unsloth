@@ -571,11 +571,12 @@ export function applyActiveModelStatusToStore(
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
   }
 
-  // A resident model can arrive through startup hydration, a CLI load, or an
-  // external switch instead of performLoad. Status carries the base family
-  // recommendation, so layer the active Qwen mode over it just as performLoad
-  // does. Model memory still wins because this remains a defaults update.
-  if (status.inference && supportsReasoning && hydratingExistingModel) {
+  // Every status merge carries the base family recommendation, including the
+  // refresh immediately after performLoad. Layer the active Qwen mode over it
+  // so that refresh cannot undo performLoad's thinking table. This also covers
+  // startup/CLI/external adoption, while model memory still wins because this
+  // remains a defaults update.
+  if (status.inference && supportsReasoning) {
     const current = useChatRuntimeStore.getState();
     const qwenParams = resolveQwenThinkingParams(
       checkpointId,

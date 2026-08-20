@@ -52,7 +52,7 @@ test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
   }
 });
 
-test("status adoption is wired to the active Qwen thinking table", () => {
+test("every status merge is wired to the active Qwen thinking table", () => {
   const source = readFileSync(
     new URL(
       "../src/features/chat/lib/apply-inference-status-to-store.ts",
@@ -62,7 +62,7 @@ test("status adoption is wired to the active Qwen thinking table", () => {
   );
   assert.match(
     source,
-    /resolveQwenThinkingParams\(\s*checkpointId,\s*reasoningAlwaysOn \|\| current\.reasoningEnabled,\s*\)/,
+    /if \(status\.inference && supportsReasoning\) \{[\s\S]*?resolveQwenThinkingParams\(\s*checkpointId,\s*reasoningAlwaysOn \|\| current\.reasoningEnabled,\s*\)/,
   );
 });
 
