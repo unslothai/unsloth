@@ -18,13 +18,13 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
-  CellularNetworkIcon,
   CloudIcon,
   ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
+  HomeWifiIcon,
   KeyboardIcon,
   Message01Icon,
   PaintBrush02Icon,
@@ -192,7 +192,7 @@ const TABS: TabDef[] = [
   {
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
-    icon: CellularNetworkIcon,
+    icon: HomeWifiIcon,
   },
   {
     id: "connections",
