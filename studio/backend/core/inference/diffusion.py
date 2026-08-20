@@ -1186,11 +1186,15 @@ class DiffusionBackend:
         try:
             while True:
                 # A replacement holds this lock throughout construction. Timed acquisition keeps
-                # a queued HTTP request responsive to Stop without weakening that barrier.
-                while not self._generate_lock.acquire(timeout = 0.1):
+                # a queued HTTP request responsive to Stop without weakening that barrier, and
+                # publishing the event BEFORE the first attempt leaves no window in which Stop
+                # answers false, settles the page's button, and lets this run after the load.
+                while True:
                     self._track_queued_cancel(cancel)
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    if self._generate_lock.acquire(timeout = 0.1):
+                        break
                 with self._lock:
                     if not self._teardown_waiters:
                         # Lock order is state -> cancellation everywhere teardown touches both.

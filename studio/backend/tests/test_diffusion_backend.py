@@ -7493,6 +7493,75 @@ def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
         backend._release_teardown_locked()
 
 
+class _FirstAcquireHookLock:
+    """Generation-lock wrapper that runs a hook before the first acquisition attempt."""
+
+    def __init__(self, lock, on_first_acquire):
+        self._lock = lock
+        self._on_first_acquire = on_first_acquire
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        if not self._fired:
+            self._fired = True
+            self._on_first_acquire()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_stop_reaches_a_queued_generation_before_its_first_lock_attempt(fake_runtime, tmp_path):
+    # A replacement can already own the slot when the request arrives, so publishing the cancel
+    # event only after the first timed acquisition failed left a 100 ms hole: Stop answered
+    # false, the page settled its button back to Generate, and the generation still ran once the
+    # load finished.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    with backend._lock:
+        backend._reserve_teardown_locked()
+
+    stop_answered: list[bool] = []
+    backend._generate_lock = _FirstAcquireHookLock(
+        backend._generate_lock, lambda: stop_answered.append(backend.cancel_generate())
+    )
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "queued", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    try:
+        worker.join(5)
+        assert not worker.is_alive(), "the queued generation did not unwind"
+        assert stop_answered == [True], "Stop did not see the request before it queued"
+        assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+        assert not backend._queued_generate_cancels
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+        worker.join(5)
+
+
 class _SlotContentionLock:
     """Generation-lock wrapper that reports a failed (contended) acquisition."""
 
