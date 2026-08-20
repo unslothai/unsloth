@@ -89,8 +89,8 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
-// Keep the download header and one row visible when collapsible cards report
-// only their borders to the squeeze probe.
+// Keep the download header and one row visible when a collapsible card reports
+// only its borders to the squeeze probe.
 const MIN_CARD_ROOM = 128;
 // Room the stack asks for before it has been measured. Deliberately small: guessing
 // high is what parked the loaded models card mid-window with the corner underneath it
@@ -256,9 +256,33 @@ export function stackMaxHeight(
   return Math.min(ownMargin, roomBelow(frame, viewportHeight, bottomInset));
 }
 
-/** Hold a collapsible rail to a usable floor without exceeding its full height. */
-export function usableFloorRoom(squeezed: number, natural: number): number {
+/** What one card will not give up: its own floor, or a usable slice of it. */
+function cardFloorRoom(squeezed: number, natural: number): number {
   return Math.max(squeezed, Math.min(natural, MIN_CARD_ROOM));
+}
+
+/**
+ * How short the rail can be and still show every card in it.
+ *
+ * Per card, never over their sum. The update banner carries a min-height of its
+ * own -- 189px at the default font scale -- so it answers any minimum asked of
+ * the rail as a whole while the min-h-0 download panel beside it still measures
+ * its borders. A rail floored as one number therefore accepted the 200px band
+ * the welcome composer leaves at 1366x640, and the panel came back as an 8px
+ * strip: the same hairline as the docked case below.
+ *
+ * Bounded by the rail's natural height, so a card shorter than the minimum is
+ * asked for what it has rather than for room it would not fill.
+ */
+export function usableFloorRoom(
+  cards: readonly { squeezed: number; natural: number }[],
+  natural: number,
+): number {
+  const floor = cards.reduce(
+    (total, card) => total + cardFloorRoom(card.squeezed, card.natural),
+    STACK_GAP * Math.max(0, cards.length - 1),
+  );
+  return Math.min(Math.round(floor), natural);
 }
 
 export type StackGeometry = { bottom: number; maxHeight: number };
@@ -425,11 +449,16 @@ export function useStackGeometry(): StackPlacement {
   }));
   const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [floorRoom, setFloorRoom] = useState(ASSUMED_STACK_HEIGHT);
+  // How far the rail can actually be squeezed, which is not the same question as
+  // how far it may be: a card clipped inside its own min-h-0 box takes the cap
+  // without the rail overflowing, so the placement asks `floorRoom` and the
+  // scroll reading below asks this.
+  const [collapsedRoom, setCollapsedRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [persistentTail, setPersistentTail] = useState(0);
   // Whether the rail is ACTUALLY scrolling, read off the node at its real cap.
   // The derived answer below is a prediction, and a prediction can be wrong: the
-  // cards are only assumed to collapse to `floorRoom`, so whenever they stop
-  // short of it the box overflows a cap that `floorRoom > maxHeight` says it
+  // cards are only assumed to collapse to `collapsedRoom`, so whenever they stop
+  // short of it the box overflows a cap that `collapsedRoom > maxHeight` says it
   // fits inside. That combination is a rail that scrolls while it is still
   // click-through, which costs it its scrollbar and strands every card above the
   // fold where no pointer can reach them.
@@ -448,6 +477,7 @@ export function useStackGeometry(): StackPlacement {
       if (node.childElementCount === 0) {
         setNeededRoom((current) => (current === 0 ? current : 0));
         setFloorRoom((current) => (current === 0 ? current : 0));
+        setCollapsedRoom((current) => (current === 0 ? current : 0));
         return;
       }
       // Drop the cap and put it back in one synchronous block, so scrollHeight
@@ -483,6 +513,11 @@ export function useStackGeometry(): StackPlacement {
       const scrolled = node.scrollTop;
       node.style.maxHeight = "none";
       const natural = node.scrollHeight;
+      // Card by card as well as in total, since a card is floored against its
+      // own height rather than the rail's. Same probe, so no extra layout.
+      const grown = [...node.children].map(
+        (child) => child.getBoundingClientRect().height,
+      );
       // Taken here, uncapped, and not after the cap goes back on. The tail
       // panels are min-h-0 with their own scrollers, so under a tight cap they
       // measure as almost nothing, the placement reads that as a tail it can
@@ -504,7 +539,14 @@ export function useStackGeometry(): StackPlacement {
       // hold `natural` when it only has to hold `floor` is what made a 3px
       // shortfall at 1280x830 give up on dodging the composer entirely.
       node.style.maxHeight = "0px";
-      const floor = usableFloorRoom(node.scrollHeight, natural);
+      const collapsed = node.scrollHeight;
+      const floor = usableFloorRoom(
+        [...node.children].map((child, index) => ({
+          squeezed: child.getBoundingClientRect().height,
+          natural: grown[index],
+        })),
+        natural,
+      );
       node.style.maxHeight = capped;
       if (node.scrollTop !== scrolled) {
         node.scrollTop = scrolled;
@@ -536,6 +578,9 @@ export function useStackGeometry(): StackPlacement {
       );
       setNeededRoom((current) => (current === natural ? current : natural));
       setFloorRoom((current) => (current === floor ? current : floor));
+      setCollapsedRoom((current) =>
+        current === collapsed ? current : collapsed,
+      );
       // How much of the stack, measured up from the corner, the reader cannot
       // dismiss. The loaded models indicator and the download panel are last,
       // so a covering placement puts them nearest the bottom edge: over Send
@@ -619,15 +664,20 @@ export function useStackGeometry(): StackPlacement {
     // latches: the stack is capped and scrolling for a frame, the placement
     // then changes to one that fits, and nothing resizes afterwards to correct
     // the flag, so a rail with nothing to scroll to keeps the pointer input it
-    // took. The cards absorb everything between their floor and their natural
-    // height, so a cap below the floor is exactly when the rail has to scroll.
-    // A pixel of slack, since the floor is a rounded scrollHeight and the cap
-    // is not.
+    // took. The cards absorb everything down to the height they collapse at, so
+    // a cap below that is exactly when the rail has to scroll. A pixel of slack,
+    // since the reading is a rounded scrollHeight and the cap is not.
+    //
+    // `collapsedRoom` and not `floorRoom`: the floor is the room the cards need
+    // to stay readable, and a card that gives up more than that is clipped
+    // rather than scrolled. Asking the floor here would hand the rail pointer
+    // input, and with it the clicks passing over its gutter, for a fold that
+    // does not exist.
     //
     // Or the box is simply scrolling, whatever the prediction says. The two
-    // agree wherever the cards do collapse to the floor they measured, so this
+    // agree wherever the cards do collapse to the height they measured, so this
     // only ever adds the case the prediction misses; it cannot take pointer
     // input away from a rail that the derived reading already claimed.
-    overflowing: floorRoom > geometry.maxHeight + 1 || domOverflowing,
+    overflowing: collapsedRoom > geometry.maxHeight + 1 || domOverflowing,
   };
 }

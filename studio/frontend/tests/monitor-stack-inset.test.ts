@@ -353,6 +353,9 @@ const NOTE_DOCKED: MonitorFrame = {
 };
 // One download row under the panel's header, measured in the same window.
 const ONE_CARD = 121;
+// The download panel alone in the rail, which is what the report had.
+const alone = (squeezed: number, natural: number) =>
+  usableFloorRoom([{ squeezed, natural }], natural);
 
 test("the strip the composer's footnote leaves is not room for the rail", () => {
   const geometry = stackGeometry(
@@ -360,7 +363,7 @@ test("the strip the composer's footnote leaves is not room for the rail", () => 
     CHAT_W,
     NOTE_H,
     ONE_CARD,
-    usableFloorRoom(2, ONE_CARD),
+    alone(2, ONE_CARD),
   );
   assert.ok(geometry.bottom > 16, "5px under the note is not a placement");
   assert.ok(
@@ -371,11 +374,66 @@ test("the strip the composer's footnote leaves is not room for the rail", () => 
 });
 
 test("the floor is a card the reader can see, not what the rail can shrink to", () => {
-  assert.equal(usableFloorRoom(2, ONE_CARD), ONE_CARD);
-  assert.equal(usableFloorRoom(2, 40), 40);
-  assert.equal(usableFloorRoom(300, 480), 300);
+  assert.equal(alone(2, ONE_CARD), ONE_CARD);
+  assert.equal(alone(2, 40), 40);
+  assert.equal(alone(300, 480), 300);
   // Long lists still scroll rather than asking for their full height.
-  assert.ok(usableFloorRoom(2, 480) < 480);
+  assert.ok(alone(2, 480) < 480);
+});
+
+// The same window with the app update card up as well. Its min-height is its
+// own floor, so a rail floored as one number is already past the minimum while
+// the panel beside it is still measuring its borders.
+const BANNER_FLOOR = 189;
+const BANNER_NATURAL = 196;
+const PANEL_BORDERS = 2;
+const RAIL_CARDS = [
+  { squeezed: BANNER_FLOOR, natural: BANNER_NATURAL },
+  { squeezed: PANEL_BORDERS, natural: ONE_CARD },
+];
+const RAIL_NATURAL = BANNER_NATURAL + 8 + ONE_CARD;
+
+test("a banner's own floor does not answer for the panel beside it", () => {
+  const floor = usableFloorRoom(RAIL_CARDS, RAIL_NATURAL);
+  assert.ok(
+    floor > BANNER_FLOOR + 8 + PANEL_BORDERS,
+    "the panel is asked for as well as the banner",
+  );
+  // Shorter than the minimum, so it is asked for whole rather than for room it
+  // could not fill.
+  assert.equal(floor, BANNER_FLOOR + 8 + ONE_CARD);
+});
+
+// A 1366x768 laptop, where the browser leaves a 640px viewport: the welcome
+// composer sits with exactly 200px under it, which holds the banner and left
+// the download panel an 8px strip with no scrollbar to reach it by.
+const NOTE_W = 1366;
+const NOTE_WELCOME_H = 640;
+const NOTE_WELCOME: MonitorFrame = {
+  left: 450,
+  top: 304,
+  right: 1186,
+  bottom: 416,
+  coverable: true,
+};
+
+test("a band that only holds the banner is not room for the rail", () => {
+  const geometry = stackGeometry(
+    NOTE_WELCOME,
+    NOTE_W,
+    NOTE_WELCOME_H,
+    RAIL_NATURAL,
+    usableFloorRoom(RAIL_CARDS, RAIL_NATURAL),
+    ONE_CARD + 8,
+  );
+  assert.ok(
+    NOTE_WELCOME_H - geometry.bottom - geometry.maxHeight >= 0,
+    "the rail stays on the page",
+  );
+  assert.ok(
+    geometry.maxHeight - BANNER_FLOOR - 8 >= ONE_CARD,
+    "and the panel is more than its borders",
+  );
 });
 
 // Preserve #8462: the 163px welcome-screen band still keeps the corner.
@@ -385,7 +443,7 @@ test("the welcome band still keeps the corner under a real floor", () => {
     WIDE_W,
     WIDE_H,
     328,
-    usableFloorRoom(2, 328),
+    alone(2, 328),
   );
   assert.equal(geometry.bottom, 16, "the panel belongs in the corner");
 });
