@@ -17,8 +17,11 @@ import {
 import { useMemo } from "react";
 import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
 
+// Kept in step with chat's CHAT_LOCAL_SOURCES; tests/picker-local-sources-parity.test.ts
+// pins the two together.
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
+  "omlx",
   "models_dir",
   "custom",
 ]);

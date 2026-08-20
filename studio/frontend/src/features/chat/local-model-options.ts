@@ -15,6 +15,7 @@ import type { LoraModelOption } from "@/features/model-picker/components/model-s
  */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "lmstudio",
+  "omlx",
   "models_dir",
   "custom",
 ]);
@@ -23,6 +24,8 @@ function baseModelLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "custom":
       return "Custom Folders";
     default:
@@ -51,7 +54,8 @@ export function chatLocalModelOptions(
     options.push({
       id: model.id,
       name:
-        model.source === "lmstudio" && model.model_id
+        (model.source === "lmstudio" || model.source === "omlx") &&
+        model.model_id
           ? model.model_id
           : model.display_name,
       baseModel: baseModelLabel(model.source),

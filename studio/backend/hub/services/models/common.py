@@ -27,7 +27,7 @@ from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
-LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
+LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "custom"]
 
 
 def _safe_is_dir(path) -> bool:

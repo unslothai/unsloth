@@ -270,6 +270,56 @@ def lmstudio_model_dirs() -> list[Path]:
     return dirs
 
 
+def omlx_model_dirs() -> list[Path]:
+    """Return oMLX (app.omlx) model directories that exist on disk."""
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    # oMLX lists LM Studio's directory among its own roots. That root is already
+    # scanned as source="lmstudio", so claiming it here would scan it twice.
+    # Keep HF cache roots: models--* scanning misses oMLX's flat <publisher>__<model> folders.
+    for other in lmstudio_model_dirs():
+        try:
+            seen.add(other.resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    def _add(p: Path) -> None:
+        try:
+            resolved = p.resolve()
+        except (OSError, RuntimeError, ValueError):
+            return
+        if resolved not in seen and p.is_dir():
+            seen.add(resolved)
+            dirs.append(p)
+
+    # oMLX declares its own roots; read them rather than guessing paths.
+    settings_path = Path.home() / ".omlx" / "settings.json"
+    if settings_path.is_file():
+        try:
+            with open(settings_path, encoding = "utf-8-sig") as f:
+                settings = json.load(f)
+            model_settings = settings.get("model") or {}
+            configured = model_settings.get("model_dirs")
+            if isinstance(configured, str):
+                configured = [configured]
+            elif not isinstance(configured, list):
+                configured = []
+            single = model_settings.get("model_dir")
+            if isinstance(single, str) and single:
+                configured = [single, *configured]
+            for entry in configured:
+                if isinstance(entry, str) and entry:
+                    _add(Path(entry).expanduser())
+        except Exception:
+            pass
+
+    # oMLX default models directory
+    _add(Path.home() / ".omlx" / "models")
+
+    return dirs
+
+
 def well_known_model_dirs() -> list[Path]:
     """Return directories commonly used by other local LLM tools.
 
