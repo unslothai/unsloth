@@ -2812,7 +2812,6 @@ def test_arch_to_task_tags_speech_archs_as_speech():
     for arch in models_route._SPEECH_GGUF_ARCHS:
         assert models_route._arch_to_task(arch) == models_route._SPEECH_TASK
     from core.inference.llama_cpp import LlamaCppBackend
-
     assert models_route._SPEECH_GGUF_ARCHS == set(LlamaCppBackend._SPEECH_ARCHES)
 
 
