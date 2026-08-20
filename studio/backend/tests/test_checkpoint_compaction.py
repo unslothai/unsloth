@@ -1928,10 +1928,13 @@ def test_a_short_correction_survives_a_long_earlier_instruction():
     the abandoned request, precisely because an earlier turn happened to be wordy.
     """
     messages = [
-        {"role": "user", "content": (
-            "Build a Flappy Bird game in HTML with a canvas, gravity, pipes that scroll, "
-            "a score counter and a game over screen that lets the player restart."
-        )},
+        {
+            "role": "user",
+            "content": (
+                "Build a Flappy Bird game in HTML with a canvas, gravity, pipes that scroll, "
+                "a score counter and a game over screen that lets the player restart."
+            ),
+        },
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Actually make it Tetris"},
         {"role": "assistant", "content": "ok"},
