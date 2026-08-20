@@ -1323,17 +1323,19 @@ def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
     calls = [
         line.strip()
         for line in body.splitlines()
-        if ("_RemoveDataDirKeepingWslIcon $defaultDataDir" in line
-            or "_RemoveStudioPrivateTempTrees -Paths" in line)
+        if (
+            "_RemoveDataDirKeepingWslIcon $defaultDataDir" in line
+            or "_RemoveStudioPrivateTempTrees -Paths" in line
+        )
     ]
     assert calls, "neither call is in the script body"
     for index, line in enumerate(calls):
         if "_RemoveDataDirKeepingWslIcon" not in line:
             continue
         assert "-Preserve" in line, f"data dir removed without the preserved list: {line}"
-        assert index > 0 and "_RemoveStudioPrivateTempTrees" in calls[index - 1], (
-            f"the data dir is removed before the temp sweep runs: {line}"
-        )
+        assert (
+            index > 0 and "_RemoveStudioPrivateTempTrees" in calls[index - 1]
+        ), f"the data dir is removed before the temp sweep runs: {line}"
 
     blocks = "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", uninstall)
