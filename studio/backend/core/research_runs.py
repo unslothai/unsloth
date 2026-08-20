@@ -21,6 +21,7 @@ import httpx
 from auth import storage as auth_storage
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
+from core.inference.stream_errors import describe_stream_error, error_message_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
@@ -1428,8 +1429,12 @@ class ResearchSupervisor:
                             continue
                         try:
                             chunk = json.loads(data)
-                            if isinstance(chunk, dict) and "error" in chunk:
-                                raise RuntimeError("Local model stream failed")
+                            _stream_error = error_message_from_chunk(chunk)
+                            if _stream_error is not None:
+                                # The server's own text names the cause and, for a context
+                                # refusal, both token counts. Flattening it to a fixed
+                                # string left the user with nothing to act on.
+                                raise RuntimeError(describe_stream_error(_stream_error))
                             normalized_usage = _normalize_completion_usage(
                                 chunk.get("usage") if isinstance(chunk, dict) else None
                             )
