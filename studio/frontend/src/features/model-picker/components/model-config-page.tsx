@@ -1385,10 +1385,9 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      {/* withoutUnsupportedDiffusionSettings forces tensorParallel back to false on a
-          diffusion model and the diffusion runner never reads it, so the switch flipped
-          back under the pointer. Same gate, and the same reason, as the Vision and
-          batch rows around it. */}
+      {/* withoutUnsupportedDiffusionSettings forces tensorParallel back to false and
+          the diffusion runner never reads it, so the switch flipped back under the
+          pointer. Same gate as the Vision and batch rows around it. */}
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
