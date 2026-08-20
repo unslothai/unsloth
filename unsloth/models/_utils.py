@@ -94,6 +94,7 @@ __all__ = [
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "_redirect_embedding_targets",
+    "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -4482,6 +4483,15 @@ def _redirect_embedding_targets(
     saved = [] if modules_to_save is None else list(modules_to_save)
     saved.extend(module for module in moved if module not in saved)
     return remaining, saved, tuple(moved), preserved_direct_target
+
+
+def _raise_if_fast_inference_modules_to_save(model, modules_to_save):
+    """Reject trainable saved modules that vLLM cannot keep synchronized."""
+    if hasattr(model, "vllm_engine") and modules_to_save is not None:
+        raise NotImplementedError(
+            "Unsloth: Currently fast inference does not work with training "
+            "embeddings or lm_head."
+        )
 
 
 def _select_moe_detection_targets(

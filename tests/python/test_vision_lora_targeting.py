@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 
+import pytest
 import torch
 
 
@@ -132,6 +133,31 @@ def test_embedding_redirect_keeps_lm_head_lora_for_fast_inference():
     assert modules_to_save is None
     assert moved == ()
     assert direct_target is False
+
+
+def test_embedding_redirect_rejects_embed_tokens_for_fast_inference():
+    from unsloth.models._utils import (
+        _raise_if_fast_inference_modules_to_save,
+        _redirect_embedding_targets,
+    )
+
+    class FastInferenceModel:
+        vllm_engine = object()
+
+    adjusted, modules_to_save, moved, direct_target = _redirect_embedding_targets(
+        ["q_proj", "embed_tokens", "lm_head"],
+        None,
+        preserve_lm_head_target = True,
+        preserve_embedding_target = False,
+        redirect_lm_head = False,
+    )
+
+    assert adjusted == ["q_proj", "lm_head"]
+    assert modules_to_save == ["embed_tokens"]
+    assert moved == ("embed_tokens",)
+    assert direct_target is False
+    with pytest.raises(NotImplementedError, match = "fast inference"):
+        _raise_if_fast_inference_modules_to_save(FastInferenceModel(), modules_to_save)
 
 
 def test_embedding_redirect_deduplicates_preserved_target():

@@ -1938,7 +1938,7 @@ class FastBaseModel:
                 modules_to_save,
                 allow_redirect = finetune_language_layers,
                 preserve_lm_head_target = True,
-                preserve_embedding_target = True,
+                preserve_embedding_target = not hasattr(model, "vllm_engine"),
                 redirect_lm_head = not hasattr(model, "vllm_engine"),
             )
         )
@@ -1947,6 +1947,7 @@ class FastBaseModel:
                 f"Unsloth: `{m}` should be placed in `modules_to_save`, not "
                 f"`target_modules`. We will move it for you, but update your code."
             )
+        _raise_if_fast_inference_modules_to_save(model, modules_to_save)
 
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
