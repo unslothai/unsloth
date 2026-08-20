@@ -37,6 +37,7 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 from core.inference.video_families import detect_video_family, supported_video_family_names
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
@@ -498,12 +499,20 @@ def get_trainer(family: str) -> Callable[..., str]:
 # Per-family training defaults surfaced by the Train UI: starting points, not hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
-    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big flow-matching DiTs.
-    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20},
+    # Plain "constant" ignores lr_warmup_steps, so warmup defaults must use a
+    # warmup-capable scheduler.
+    "flux.1": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     "qwen-image": {
         "lora_rank": 16,
         "learning_rate": 5e-5,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
@@ -514,12 +523,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     "flux.2-dev": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
@@ -529,6 +540,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 32,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     # MiniMax-H3. ``resolution`` is the canvas SHORT EDGE, and 768 is the one the released
@@ -540,6 +552,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
     },
@@ -1047,6 +1060,16 @@ class DiffusionLoraConfig:
                 f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
                 f"got {self.lr_scheduler!r}"
             )
+        # Do not rewrite the scheduler here: it is part of checkpoint identity, so doing so would
+        # make legacy runs with ("constant", warmup > 0) impossible to resume.
+        try:
+            lr_warmup_steps = int(self.lr_warmup_steps or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"lr_warmup_steps must be a whole number, got {self.lr_warmup_steps!r}"
+            ) from exc
+        if lr_warmup_steps < 0:
+            raise ValueError("lr_warmup_steps must be >= 0")
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
         # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
@@ -1228,6 +1251,7 @@ class DiffusionLoraConfig:
         return replace(
             self,
             learning_rate = learning_rate,
+            lr_warmup_steps = lr_warmup_steps,
             lora_alpha = alpha,
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
@@ -1381,7 +1405,11 @@ def discover_image_caption_pairs(
     if not root.is_dir():
         raise FileNotFoundError(f"data_dir is not a directory: {data_dir}")
 
-    images = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
+    # The caption lookup resolves to the caption's own companion, which exists, so the pair
+    # reads as a real one.
+    images = drop_appledouble_metadata(
+        sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
+    )
 
     # 1. metadata.jsonl / captions.jsonl (either name accepted).
     meta_caption: dict[str, str] = {}

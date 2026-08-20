@@ -184,6 +184,8 @@ export const ru = {
       closeAriaLabel: "Закрыть настройки",
       searchPlaceholder: "Поиск по настройкам…",
       searchNoResults: "Настройки не найдены.",
+      panelFailed: "Не удалось загрузить этот раздел.",
+      panelReload: "Перезагрузить",
     },
     tabs: {
       general: "Общие",
@@ -198,6 +200,50 @@ export const ru = {
       agents: "Агенты",
       debugging: "Журналы",
       voice: "Голос",
+      keyboardShortcuts: "Сочетания",
+    },
+    keyboardShortcuts: {
+      title: "Сочетания клавиш",
+      description:
+        "Измените любое сочетание или очистите его, чтобы освободить комбинацию для браузера или ОС.",
+      searchPlaceholder: "Поиск сочетаний…",
+      noResults: "Ни одно сочетание не соответствует запросу.",
+      unassigned: "Не назначено",
+      recording: "Нажмите клавиши…",
+      recordingHint: "Нажмите новую комбинацию или Esc для отмены.",
+      needsModifier: "Добавьте ⌘, Ctrl или Alt. Одиночная клавиша перехватит ввод текста.",
+      conflict: "Используется также другим сочетанием",
+      conflictShadowed: "Эта комбинация занята другим сочетанием, и выполняется оно",
+      edit: "Изменить сочетание",
+      clear: "Удалить сочетание",
+      reset: "Вернуть значение по умолчанию",
+      resetAll: "Сбросить всё до значений по умолчанию",
+      groups: {
+        general: "Общие",
+        chat: "Чат",
+      },
+      actions: {
+        newChat: {
+          label: "Новый чат",
+          description: "Начать новый чат",
+        },
+        searchChats: {
+          label: "Поиск по чатам",
+          description: "Открыть окно поиска по чатам",
+        },
+        toggleSidebar: {
+          label: "Показать/скрыть боковую панель",
+          description: "Показать или скрыть боковую панель",
+        },
+        openSettings: {
+          label: "Открыть настройки",
+          description: "Открыть окно настроек",
+        },
+        openKeyboardShortcuts: {
+          label: "Сочетания клавиш",
+          description: "Открыть этот список сочетаний",
+        },
+      },
     },
     debugging: {
       logSection: "Файл журнала",
@@ -285,6 +331,8 @@ export const ru = {
         allowMicrophone: "Разрешить доступ к микрофону",
         micAccessBlocked:
           "Доступ к микрофону заблокирован. Разрешите доступ к микрофону для этой страницы Unsloth и повторите попытку.",
+        micAccessBlockedDesktop:
+          "Доступ к микрофону заблокирован. Повторите попытку и выберите «Разрешить» или включите микрофон в системных настройках конфиденциальности.",
         micAccessUnsupported:
           "Доступ к микрофону не поддерживается в этом браузере или контексте.",
         systemDefault: "По умолчанию в системе",
@@ -359,6 +407,7 @@ export const ru = {
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
+        openAudioAction: "Открыть Аудио",
         voiceLabel: "Голос",
         voiceDescription: "Лучшие голоса на этом устройстве",
         speedLabel: "Скорость",
@@ -368,6 +417,7 @@ export const ru = {
         previewDescription: "Воспроизвести короткий пример",
         previewFailed: "Не удалось воспроизвести пример синтеза речи",
         previewAction: "Прослушать",
+        preparingAction: "Генерация…",
         stopAction: "Остановить",
         ttsLabel: "Синтез речи",
         notSupported: "Не поддерживается в этом браузере",
@@ -815,6 +865,24 @@ export const ru = {
         switchFailed: "Не удалось изменить бэкенд llama.cpp.",
         switchInterrupted: "Переключение было прервано до завершения.",
         envLocked: "Значение {backend} задано переменной окружения UNSLOTH_LLAMA_CPP_BACKEND, она важнее этой настройки.",
+        customPath: {
+          label: "Пользовательская папка llama.cpp",
+          description: "Используйте собственную сборку llama-server.",
+          hint: "Выберите папку llama.cpp с llama-server или сборку, где он находится в build/bin. Пользовательская среда используется для чата GGUF, эмбеддингов и поддерживаемых голосовых моделей. Переменные окружения по-прежнему имеют приоритет.",
+          automatic: "Автоматически (в комплекте)",
+          bundled: "Используется среда llama.cpp, установленная Unsloth.",
+          active: "Ваш llama-server будет использован при следующей загрузке модели.",
+          environmentManaged: "Управляется переменной окружения {variable}.",
+          missingBinary: "llama-server больше недоступен в этой папке. Выберите другую папку или используйте комплектную среду.",
+          reloadRequired: "Перезагрузите модель, чтобы использовать выбранный llama-server.",
+          change: "Изменить",
+          saving: "Сохранение...",
+          useBundled: "Использовать комплектный",
+          chooseTitle: "Выбрать папку llama.cpp",
+          chooseAction: "Использовать эту папку",
+          saved: "Папка llama.cpp обновлена",
+          saveError: "Не удалось обновить папку llama.cpp",
+        },
         backends: {
           auto: "Автоматически",
           cpu: "CPU",
@@ -827,6 +895,7 @@ export const ru = {
           notInstalled: "Управляемая установка llama.cpp не найдена, поэтому менять нечего.",
           localLink: "llama.cpp, это локальный каталог, который вы подключили сами, и Unsloth его не заменяет.",
           sourceBuild: "Этот llama.cpp собран из исходников, его бэкенд нельзя переключить отсюда.",
+          customPath: "Выбрана пользовательская папка llama.cpp. Её сборка определяет вычислительный бэкенд.",
           unresolved: "Не удалось проверить доступные бэкенды. Проверьте подключение и повторите попытку.",
         },
         // Не отображается: дополнительные слова для поиска по настройкам.
@@ -1023,6 +1092,12 @@ export const ru = {
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      projectAttachments: "Общий доступ к файлам в проекте",
+      projectAttachmentsDescription:
+        "Поведение по умолчанию для файлов, прикрепленных в чате, который относится к проекту: индексировать их для всего проекта, чтобы любой чат в нем мог их использовать. Каждый чат может изменить это в меню вложений.",
+      rememberParamsPerModel: "Запоминать настройки для каждой модели",
+      rememberParamsPerModelDescription:
+        "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
@@ -1112,6 +1187,9 @@ export const ru = {
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
       manageAction: "Управлять",
+      manageChats: "Управление чатами",
+      manageChatsDescription:
+        "Выберите несколько чатов, чтобы переместить, закрепить, архивировать, экспортировать или удалить их.",
       exportArchivedChats: "Экспорт",
       exportingArchivedChats: "Экспорт…",
       exportedOneArchivedChat: "Экспортирован 1 архивный чат",

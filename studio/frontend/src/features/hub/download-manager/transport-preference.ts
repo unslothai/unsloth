@@ -81,6 +81,14 @@ export function useTransportMode(): [
   return [mode, set];
 }
 
+/** Whether an interrupted HTTP transfer leaves resumable bytes on this backend.
+ * False until the capabilities land, so a card never flashes a resume promise
+ * it may have to take back. */
+export function useHttpPartialsResumable(): boolean {
+  const { capabilities } = useDownloadTransportCapabilities();
+  return capabilities?.partials_resumable === true;
+}
+
 export function useDownloadTransportCapabilities(): TransportCapabilitiesState {
   const [state, setState] = useState<TransportCapabilitiesState>({
     capabilities: null,

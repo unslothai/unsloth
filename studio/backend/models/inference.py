@@ -35,6 +35,11 @@ class LoadRequest(BaseModel):
         pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description = "Opaque client attempt ID for scoped in-flight cancellation",
     )
+
+    force_reload: bool = Field(
+        False,
+        description = "Start a fresh runtime even when the active settings already match",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -678,6 +683,13 @@ class _InferenceRuntimeFields(BaseModel):
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    has_video_input: bool = Field(
+        False,
+        description = (
+            "Whether llama-server accepts video input for this model, from its /props "
+            "modalities. False unless the mmproj, the build and ffmpeg all support it."
+        ),
+    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -712,7 +724,11 @@ class _InferenceRuntimeFields(BaseModel):
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
+        description = "Whether the template understands the optional preserve_thinking kwarg",
+    )
+    preserve_thinking_default: bool = Field(
+        False,
+        description = "Default preserve_thinking value resolved for the active model family",
     )
     supports_tools: bool = Field(
         False,
@@ -806,6 +822,18 @@ class _InferenceRuntimeFields(BaseModel):
             "Why an automatic GGUF load was downgraded to CPU. "
             "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
             "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
+    )
+
+    mmproj_fallback_reason: Optional[
+        Literal["cpu_offload", "projector_incompatible", "projector_startup_failure"]
+    ] = Field(
+        None,
+        description = (
+            "How an automatic GGUF multimodal-projector recovery changed the load. "
+            "'cpu_offload' keeps vision with the projector on CPU; "
+            "'projector_incompatible' and 'projector_startup_failure' mean the "
+            "model recovered text-only."
         ),
     )
     n_cpu_moe: int = Field(
@@ -1062,6 +1090,81 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "layers than the drafting wins back -- updating won't help; choose "
             "MTP in Settings to force it. "
             "None when the requested strategy engaged or was not requested."
+        ),
+    )
+    spec_fallback_binary_changed: Optional[bool] = Field(
+        None,
+        description = (
+            "For a 'binary_no_mtp' / 'binary_outdated' stand-down only: whether a "
+            "different llama-server is installed than the live one launched from, "
+            "which is the necessary condition in "
+            "LlamaCppBackend.spec_binary_fallback_can_retry. False -> an identical "
+            "/load cannot repair the drafter and dedupes, so a client need not "
+            "reload for it. None for every other reason, and on a backend too old "
+            "to report it."
+        ),
+    )
+    spec_probe_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "The capability probe has started answering since a launch it degraded, so "
+            "an identical /load is rejected once to re-derive the runtime "
+            "(_runtime_matches_intent's _capability_probe_inconclusive arm). No "
+            "speculative mode gates it. None on a backend too old to report it."
+        ),
+    )
+    spec_dflash_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "A DFlash sidecar fetch failed retryably, which under Auto records no "
+            "spec_fallback_reason at all, so an identical /load is rejected to fetch "
+            "again. Applies to the 'auto' and 'dflash' modes. None on a backend too old "
+            "to report it."
+        ),
+    )
+    spec_dspark_sidecar_absent: Optional[bool] = Field(
+        None,
+        description = (
+            "The DSpark drafter is absent rather than transiently unfetchable, which is "
+            "the permanent state of every repo but one. _runtime_matches_intent excludes "
+            "it from the drafter_not_found retry arm, so an identical /load dedupes and a "
+            "client need not reload for it. None on a backend too old to report it."
+        ),
+    )
+    tensor_parallel_dropped_by_arch_gate: Optional[bool] = Field(
+        None,
+        description = (
+            "The GPU architecture gate normalized a tensor-parallel request to layer "
+            "mode, so tensor_parallel reads false while the request that produced it was "
+            "true. _runtime_matches_intent accepts the same true request against this "
+            "runtime. None on a backend too old to report it."
+        ),
+    )
+    gpu_placement_paravirtual: Optional[bool] = Field(
+        None,
+        description = (
+            "Metal is a virtualised Apple GPU, so paravirtual_normalized_request rewrites "
+            "every GGUF request to manual / zero layers / no split / no MoE before the "
+            "duplicate-load comparators run. Placement cannot tell two requests apart "
+            "here. None on a backend too old to report it."
+        ),
+    )
+    audio_probe_pending: bool = Field(
+        False,
+        description = (
+            "The post-launch audio probe did not finish and has to be retried. The route "
+            "refuses its own already-loaded answer while this is true so load_model can "
+            "re-probe, and nothing else does, so a client must not skip /load for it."
+        ),
+    )
+    diffusion_split_supported: Optional[bool] = Field(
+        None,
+        description = (
+            "A diffusion launch right now would honour --ngl. _runtime_matches_intent "
+            "rejects an otherwise identical request once this is true and gpu_layers "
+            "differs from diffusion_requested_ngl, so a split an older shim dropped can "
+            "be applied. None off a diffusion runner, and on a backend too old to report "
+            "it."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -1396,6 +1499,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    video_base64: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Base64-encoded video (mp4/mov/webm/mkv/avi) for video-input "
+            "models. GGUF only: llama-server samples frames with ffmpeg."
+        ),
+    )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -1441,7 +1551,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
-            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. External "
             "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
             "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
             "OpenAI Responses. If None, all local tools are enabled and no "
@@ -1458,7 +1568,7 @@ class ChatCompletionRequest(BaseModel):
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     permission_mode: Optional[str] = Field(
         None,
@@ -1489,14 +1599,15 @@ class ChatCompletionRequest(BaseModel):
             "the process default."
         ),
     )
-    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
-            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
-            "context window. 'error' (default) returns a 400 with "
-            "code=context_length_exceeded. 'truncate_middle' drops middle "
-            "turn-groups (system prompt, first turn, and recent turns kept; "
-            "tool calls stay paired with their results) and retries."
+            "[x-unsloth] Local GGUF context-overflow behavior. 'error' (default) "
+            "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
+            "limited to client-tool or response_format passthrough and retries after "
+            "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
+            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
@@ -2038,6 +2149,7 @@ class ChatCompletionChunk(BaseModel):
     choices: list[ChunkChoice]
     usage: Optional[CompletionUsage] = None
     timings: Optional[dict] = None
+    context_truncated: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────
