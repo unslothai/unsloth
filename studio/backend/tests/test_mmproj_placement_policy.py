@@ -745,24 +745,65 @@ def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
     assert seen.get("include_mmproj") is True
 
 
-def test_the_vision_switch_does_not_record_an_inherited_audio_encoder(tmp_path, monkeypatch):
-    """The capability probe falls back to the ambient LLAMA_ARG_MMPROJ, which the
-    switch then scrubs out of the child. Reading it anyway recorded an audio encoder
-    the launched server does not have, and that becomes has_audio_input, so the
-    composer would offer attachments the server cannot process."""
+def _ambient_mmproj(tmp_path, monkeypatch):
     ambient = tmp_path / "ambient-mmproj.gguf"
     ambient.write_bytes(b"\x00" * (1 * MIB))
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
     backend._resolve_launch_mmproj_path = lambda **_kw: None
+    return backend, gguf
+
+
+def test_the_vision_switch_does_not_record_an_inherited_audio_encoder(tmp_path, monkeypatch):
+    """The capability probe falls back to the ambient LLAMA_ARG_MMPROJ, which the
+    switch then scrubs out of the child. Reading it anyway recorded an audio encoder
+    the launched server does not have, and that becomes has_audio_input, so the
+    composer would offer attachments the server cannot process.
+
+    A projector serving both modalities is the case that still scrubs: llama.cpp
+    cannot load half of it, so switching vision off takes the audio with it."""
+    backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, True)):
+        result = _launch(backend, gguf, disable_vision = True)
+
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+    assert backend._mmproj_has_audio is False
+
+
+def test_the_vision_switch_keeps_an_inherited_audio_only_encoder(tmp_path, monkeypatch):
+    """The other half of the same rule, which the resolved path already had: an
+    ultravox / Voxtral / Qwen3-ASR projector declares audio and no vision, so there is
+    no image tower for the switch to turn off. Scrubbing it took the model's audio
+    input away and handed back no image VRAM, and the probe agreed with the scrub, so
+    the loss was silent on both sides.
+    """
+    backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
 
     import utils.models.gguf_metadata as _meta
 
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
         result = _launch(backend, gguf, disable_vision = True)
 
+    assert result["env"].get("LLAMA_ARG_MMPROJ")
+    # And the probe follows the scrub, so the composer is told what the child has.
+    assert backend._mmproj_has_audio is True
+    assert backend._mmproj_accepts_image is False
+
+
+def test_an_inherited_projector_that_reads_images_still_goes(tmp_path, monkeypatch):
+    """The asymmetry is deliberate: only a readable audio-only declaration is kept.
+    An image-capable one is exactly what the switch is for."""
+    backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
+        result = _launch(backend, gguf, disable_vision = True)
+
     assert "LLAMA_ARG_MMPROJ" not in result["env"]
-    assert backend._mmproj_has_audio is False
 
 
 def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):

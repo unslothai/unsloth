@@ -3518,6 +3518,26 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     )
 
 
+def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
+    """True only when *path* names a readable projector with no vision tower.
+
+    Anything else -- unset, absent from disk, unreadable, or declaring images -- is
+    False, so the caller clears it. Deliberately asymmetric: keeping a projector the
+    user switched off is the worse mistake of the two, and an unknown declaration
+    reads image-capable upstream.
+    """
+    if not path:
+        return False
+    try:
+        from utils.models.gguf_metadata import mmproj_capabilities
+
+        has_audio, accepts_image = mmproj_capabilities(str(path))
+    except Exception as e:
+        logger.debug(f"inherited mmproj capability read failed: {e}")
+        return False
+    return has_audio and not accepts_image
+
+
 # Both spellings of the projector-placement boolean. llama.cpp pairs them as one
 # option and takes the last occurrence, so naming either one in the pass-through
 # extras is the user taking ownership of the placement.
@@ -17502,9 +17522,18 @@ class LlamaCppBackend:
                 # the launched server does not have, and _apply_detected_audio turns
                 # that into has_audio_input, so the composer would offer attachments
                 # the server cannot process.
+                #
+                # Unless the switch is going to keep it: an inherited audio-only
+                # encoder survives the scrub below, so the server really does have it
+                # and the same reasoning says to record it. One predicate for both, off
+                # the same inherited value, so the probe cannot describe a child the
+                # scrub did not build.
+                _dv_env_mmproj_kept = disable_vision and _mmproj_env_is_audio_only(
+                    os.environ.get("LLAMA_ARG_MMPROJ")
+                )
                 _mmproj_probe = launch_mmproj_path or (
                     ""
-                    if (_pv_mmproj_unpinnable or disable_vision)
+                    if (_pv_mmproj_unpinnable or (disable_vision and not _dv_env_mmproj_kept))
                     else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
@@ -18535,8 +18564,18 @@ class LlamaCppBackend:
                 # server that is still multimodal, and the fit budget that gave the
                 # projector's bytes to context is short by exactly those bytes.
                 if disable_vision:
-                    for _dv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
-                        env.pop(_dv_mmproj_var, None)
+                    # With the same audio-only exception the resolved path gets, and for
+                    # the same reason: a projector is not always a vision tower, so
+                    # clearing an inherited ultravox / Voxtral / Qwen3-ASR encoder takes
+                    # the model's audio input away and gives no image VRAM back. Asked of
+                    # the file rather than assumed, and unknown still reads image-capable,
+                    # so the switch is honored wherever it might mean anything.
+                    if not _mmproj_env_is_audio_only(env.get("LLAMA_ARG_MMPROJ")):
+                        env.pop("LLAMA_ARG_MMPROJ", None)
+                    # No such reprieve for the URL: it names a download that has not
+                    # happened, so there is no file to classify and nothing to do but
+                    # honor the switch.
+                    env.pop("LLAMA_ARG_MMPROJ_URL", None)
                 if _paravirtual_cpu_forced:
                     for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
                         env.pop(_pv_mmproj_var, None)
