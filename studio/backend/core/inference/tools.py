@@ -10856,6 +10856,8 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 _PAGE_CONTEXT_SHARE = 0.35
 # Below this a page is too clipped to answer from, so the fetch is not worth making small.
 _MIN_PAGE_CHARS = 2000
+# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+_HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
@@ -11731,9 +11733,69 @@ def _page_char_budget() -> int:
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
 
 
+def _window_context_tokens() -> int | None:
+    """The window this request is served by, or None when it cannot be read."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    return ctx if ctx else None
+
+
+def _dense_prefix_chars(text: str, token_budget: float) -> int:
+    """How many leading characters of `text` cost at most `token_budget` tokens.
+
+    Four characters per token is an English rate. Measured with Qwen3, Llama 3.2 and
+    tiktoken on real fetched pages, CJK prose runs 1.3-1.6 characters per token, and the
+    percent-escaped links a CJK page is full of (`%E7%9F%A5`) run 1.3-1.5: both are the
+    same non-ASCII bytes, one spelled in ASCII. Charging them a token each, the rule
+    `context_window.estimate_messages_tokens_dense` already uses, keeps the share the
+    caller asked to reserve a share instead of the whole budget.
+
+    One pass, so it costs nothing next to the fetch it sizes.
+    """
+    spent = 0.0
+    index = 0
+    length = len(text)
+    while index < length:
+        start = index
+        if text[index] == "%" and _HEX_PAIR_RE.match(text, index + 1):
+            spent += 3.0  # a non-ASCII byte spelled in ASCII; charge it like one
+            index += 3
+        else:
+            spent += 1.0 if ord(text[index]) > 127 else 0.25
+            index += 1
+        # Cut on whole characters (and whole escapes), so the tail is never half a
+        # percent-escape the model has to guess at.
+        if spent > token_budget:
+            return start
+    return length
+
+
+def _dense_char_limit(text: str, max_chars: int) -> int:
+    """`max_chars`, lowered when `text` tokenises denser than four characters per token.
+
+    Without this the window-derived caps above reserve their share only for English. On
+    the 4,864-token window this PR was measured against, the 6,809-character page budget
+    is 35% of the window in English and 3,800-4,500 real tokens of a Chinese or Japanese
+    page: 80-95% of the whole prompt budget, in the newest turn, which the fit protects.
+    That is the same irreducible refusal the budget exists to prevent.
+    """
+    ctx = _window_context_tokens()
+    if not ctx or len(text) <= _MIN_PAGE_CHARS:
+        return max_chars
+    # Kept a float, so English text lands on exactly the character budget rather than
+    # one character short of it.
+    fitted = _dense_prefix_chars(text, ctx * _PAGE_CONTEXT_SHARE)
+    # Never above what the caller allowed, and never below the floor that keeps a page
+    # worth reading. An explicit cap smaller than the floor still wins.
+    return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
+
+
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
         return "(page returned no readable text)"
+    max_chars = _dense_char_limit(text, max_chars)
     if len(text) > max_chars:
         return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
     return text
@@ -13193,6 +13255,10 @@ def _truncate(text: str, limit: int | None = None) -> str:
     # before any model is loaded, which is exactly when the window is still unknown.
     if limit is None:
         limit = _tool_result_char_budget()
+    # Same correction as a fetched page: a character cap reserves its share of the window
+    # only for English, and a command that prints CJK or percent-escaped text costs two to
+    # three times what the cap assumed.
+    limit = _dense_char_limit(text, limit)
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the

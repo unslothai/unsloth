@@ -243,3 +243,90 @@ class TestToolResultsAlsoFitTheWindow:
         _window(monkeypatch, 262_144)
 
         assert tools._truncate("all good") == "all good"
+
+
+class TestADenseResultIsSizedByWhatItCosts:
+    """A character cap reserves its share of the window only for English.
+
+    Measured with Qwen3-4B, Llama-3.2 and tiktoken on the real pages the tool fetches:
+    English markdown runs 4.1 characters per token, so 35% of the window is 35%. Chinese
+    and Japanese prose run 1.3-1.6, and the percent-escaped links a CJK page is full of
+    (`/wiki/%E7%9F%A5%E8%AF%86`) run 1.3-1.5. Before this correction, zh.wikipedia and
+    ja.wikipedia articles cut to the 4,864-token budget came back at 3,558-4,511 real
+    tokens: 79-95% of the WHOLE prompt budget, in the newest turn, which the fit protects.
+    That is the irreducible refusal this budget exists to prevent, reproduced.
+    """
+
+    # One paragraph of CJK prose with the wiki-style escaped links that come with it.
+    _CJK_PAGE = ("人工智能是一门研究如何使机器具备智能行为的学科，"
+                 "涵盖[机器学习](/wiki/%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0)、"
+                 "[语言处理](/wiki/%E8%87%AA%E7%84%B6%E8%AF%AD%E8%A8%80%E5%A4%84%E7%90%86)"
+                 "和[电脑视觉](/wiki/%E8%AE%A1%E7%AE%97%E6%9C%BA%E8%A7%86%E8%A7%89)。") * 200
+    _EN_PAGE = ("Artificial intelligence is the study of machines that perceive their "
+                "environment and take actions that maximise the chance of a goal. ") * 200
+
+    def _dense_tokens(self, text):
+        from core.inference.context_window import estimate_messages_tokens_dense
+
+        return estimate_messages_tokens_dense([{"role": "tool", "content": text}])
+
+    def test_a_cjk_page_is_cut_to_the_share_it_was_promised(self, monkeypatch):
+        _window(monkeypatch, 4864)
+
+        out = tools._truncate_page_text(self._CJK_PAGE, tools._page_char_budget())
+
+        # The whole point: what lands in the turn costs about the share reserved for it,
+        # not the entire window. A little over for the truncation notice itself.
+        assert self._dense_tokens(out) <= int(4864 * tools._PAGE_CONTEXT_SHARE) + 64
+        # And this is not a no-op: the characters the flat budget would have admitted
+        # do not fit the share by either measure, the repo's dense estimate or the rule
+        # here (which the real tokenizers above put at 79-95% of the prompt budget).
+        flat = self._CJK_PAGE[: tools._page_char_budget()]
+        assert self._dense_tokens(flat) > int(4864 * tools._PAGE_CONTEXT_SHARE)
+        assert tools._dense_prefix_chars(flat, 4864 * tools._PAGE_CONTEXT_SHARE) < len(flat)
+
+    def test_an_english_page_is_left_exactly_as_it_was(self, monkeypatch):
+        """The blast radius: text that really does run four characters per token keeps
+        every character the character budget gave it."""
+        _window(monkeypatch, 4864)
+        budget = tools._page_char_budget()
+
+        assert tools._dense_char_limit(self._EN_PAGE, budget) == budget
+
+    def test_percent_escaped_links_are_charged_like_the_bytes_they_encode(self):
+        """`%E7%9F%A5` is three non-ASCII bytes spelled in ASCII and tokenises like them,
+        so charging it four characters per token undercounts it three-fold."""
+        escaped = "%E7%9F%A5" * 100
+
+        # 300 escapes, a token each for the three bytes they spell: 900 tokens, where
+        # four characters per token would have called the same text 225.
+        assert tools._dense_prefix_chars(escaped, 900) == len(escaped)
+        assert tools._dense_prefix_chars(escaped, 450) == len(escaped) // 2
+        # Cut on a whole escape, never halfway through one.
+        assert tools._dense_prefix_chars(escaped, 451) % 3 == 0
+
+    def test_a_dense_result_never_falls_below_the_readable_floor(self, monkeypatch):
+        _window(monkeypatch, 1024)
+
+        out = tools._truncate_page_text(self._CJK_PAGE, tools._page_char_budget())
+
+        assert len(out) >= tools._MIN_PAGE_CHARS
+
+    def test_an_unknown_window_leaves_a_dense_page_alone(self):
+        """Same rule as the char budget: not knowing must never shrink a fetch."""
+        assert tools._dense_char_limit(self._CJK_PAGE, tools._MAX_PAGE_CHARS) == tools._MAX_PAGE_CHARS
+
+    def test_a_dense_terminal_result_is_sized_too(self, monkeypatch):
+        """The code tools print CJK and escaped URLs as readily as a page carries them."""
+        _window(monkeypatch, 5120)
+
+        out = tools._truncate(self._CJK_PAGE)
+
+        assert self._dense_tokens(out) <= int(5120 * tools._PAGE_CONTEXT_SHARE) + 64
+        assert "truncated to" in out
+
+    def test_an_explicit_limit_is_still_a_ceiling_not_a_floor(self, monkeypatch):
+        """A caller that pins a size smaller than the floor keeps it."""
+        _window(monkeypatch, 4864)
+
+        assert tools._dense_char_limit(self._CJK_PAGE, 200) == 200
