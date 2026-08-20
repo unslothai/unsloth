@@ -2557,7 +2557,12 @@ class AnthropicToolResultBlock(BaseModel):
 # redacted_thinking, a provider block a resumed session replays, or a future type)
 # is accepted as an unknown block and dropped by the converter, rather than 400-ing
 # the whole request on strict validation.
-_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
+    {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
+)
+# Thinking blocks are replayed only in assistant turns; the converter drops them
+# from user content, so accepting them there would silently lose a user turn.
+_USER_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
 
 
 class AnthropicUnknownBlock(BaseModel):
@@ -2574,11 +2579,29 @@ class AnthropicUnknownBlock(BaseModel):
         return v
 
 
+class AnthropicThinkingBlock(BaseModel):
+    # Clients replay thinking blocks with tool results (Anthropic's tool-use
+    # protocol requires it), so the request model must accept them; conversion
+    # drops them from the prompt.
+    type: Literal["thinking"]
+    thinking: str = ""
+    signature: str = ""
+    model_config = {"extra": "allow"}
+
+
+class AnthropicRedactedThinkingBlock(BaseModel):
+    type: Literal["redacted_thinking"]
+    data: str = ""
+    model_config = {"extra": "allow"}
+
+
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicThinkingBlock,
+    AnthropicRedactedThinkingBlock,
     AnthropicUnknownBlock,
 ]
 
@@ -2654,7 +2677,7 @@ class AnthropicMessage(BaseModel):
                 # Guard the value: a non-string type is unsupported too, and a
                 # membership test on an unhashable value would raise TypeError
                 # (escaping as a 500 instead of a clean 400).
-                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                if not isinstance(btype, str) or btype not in _USER_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data
 
@@ -2666,6 +2689,18 @@ class AnthropicTool(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     input_schema: Optional[dict] = None
+    model_config = {"extra": "allow"}
+
+
+class AnthropicThinkingConfig(BaseModel):
+    # Deliberately `str`, not a Literal. Anthropic ships thinking types beyond
+    # enabled/disabled (adaptive tiers), and Claude Code sends them -- a strict
+    # Literal turns an unrecognized value into a hard 400, which is worse than
+    # the silent drop this replaced. Only "disabled" means off; treat anything
+    # else as a request to think.
+    type: str = "enabled"
+    # Accepted for wire compatibility; llama-server has no thinking budget.
+    budget_tokens: Optional[int] = None
     model_config = {"extra": "allow"}
 
 
@@ -2694,6 +2729,17 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
+    # Anthropic's native extended-thinking control. Only `type` is honored:
+    # llama-server has no thinking-token budget, so `budget_tokens` is accepted
+    # and ignored rather than 400'd (Claude Code always sends it alongside).
+    thinking: Optional[AnthropicThinkingConfig] = None
+    # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
+    # over `thinking` when both are present, matching enable_tools precedence.
+    enable_thinking: Optional[bool] = None
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    preserve_thinking: Optional[bool] = None
     session_id: Optional[str] = None
     thread_id: Optional[str] = Field(
         None,
@@ -2717,6 +2763,14 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
     )
     model_config = {"extra": "allow"}
+
+    def resolved_enable_thinking(self) -> Optional[bool]:
+        """Effective on/off, preferring the x-unsloth field over `thinking`."""
+        if self.enable_thinking is not None:
+            return self.enable_thinking
+        if self.thinking is not None:
+            return self.thinking.type != "disabled"
+        return None
 
     @model_validator(mode = "before")
     @classmethod
@@ -2793,7 +2847,20 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
+class AnthropicResponseThinkingBlock(BaseModel):
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    # Anthropic signs thinking blocks so they can be replayed on a later turn.
+    # Nothing local can produce a valid signature, so it stays empty; clients
+    # that only render the trace do not check it.
+    signature: str = ""
+
+
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock,
+    AnthropicResponseToolUseBlock,
+    AnthropicResponseThinkingBlock,
+]
 
 
 class AnthropicMessagesResponse(BaseModel):
