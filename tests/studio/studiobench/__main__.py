@@ -380,7 +380,7 @@ def run(args, ab_ref = None) -> int:
         resources.read_text("scene/surfaces.js"),
     ]
     if extra_init:
-        page_scripts.append(extra_init_source)
+        page_scripts.append(_isolated_probe(extra_init, extra_init_source))
         _log(
             f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and is NOT "
             f"a clean measurement of the build"
@@ -409,6 +409,19 @@ def run(args, ab_ref = None) -> int:
         bundle.page.on(
             "console",
             lambda m: _log(f"  [page] {m.text}") if m.text.startswith(console_prefix) else None,
+        )
+    if extra_init:
+        # A probe that throws on load is the same silence as a probe that was never installed, and
+        # the console filter above cannot show it because a failing probe never gets as far as
+        # printing its own prefix. Attached only when a probe was asked for, so an ordinary run is
+        # unchanged. `console.error` from the isolation wrapper arrives here as a console message
+        # rather than a page error, so both channels are listened to.
+        bundle.page.on("pageerror", lambda err: _log(f"  [page error] {err}"))
+        bundle.page.on(
+            "console",
+            lambda m: _log(f"  [page error] {m.text}")
+            if m.type == "error" and "SBENCH_EXTRA_INIT_SCRIPT" in m.text
+            else None,
         )
 
     procs = []
@@ -666,6 +679,40 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         passed = manifest["not_reached_hard"] == 0 and manifest["digests_scoped"]
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
+
+
+def _isolated_probe(path: str, source: str) -> str:
+    """The external script, ordered with the scene scripts but PARSED ON ITS OWN.
+
+    Concatenation bought a guarantee Playwright does not give (it says the evaluation order of
+    several init scripts is undefined) and sold a worse one in exchange: the browser parses the
+    joined text as ONE unit, so a single syntax error anywhere in the external file means dom.js,
+    parity.js and surfaces.js never execute either. The run then has no `window.__sb` at all, the
+    probe prints nothing, and the two failures are indistinguishable from an arm that did not fire.
+
+    So the source is embedded as a STRING and evaluated at runtime. The outer unit parses whatever
+    the file contains, the scene scripts run first because they are earlier in the same unit, and a
+    malformed probe degrades to a caught, reported `SyntaxError` instead of taking the harness with
+    it. Indirect eval (`(0, eval)`) so the source evaluates in global scope, exactly as a separate
+    init script would.
+    """
+    return (
+        "(function () {\n"
+        "  try {\n"
+        f"    (0, eval)({json.dumps(source)});\n"
+        "  } catch (err) {\n"
+        f"    var where = {json.dumps(path)};\n"
+        "    try {\n"
+        "      window.console.error(\n"
+        "        'SBENCH_EXTRA_INIT_SCRIPT ' + where + ' failed to evaluate: ' + err +\n"
+        "        '. The scene scripts are unaffected, but this probe reported nothing, which is '"
+        " +\n"
+        "        'NOT the same as an arm that did not fire.'\n"
+        "      );\n"
+        "    } catch (ignored) {}\n"
+        "  }\n"
+        "})();\n"
+    )
 
 def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     """Render the A/B table from the payload the run just wrote.

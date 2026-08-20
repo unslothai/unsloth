@@ -78,10 +78,27 @@ def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
 
     read_at = main_src.index("extra_init_source = Path(extra_init).read_text")
     assert read_at < main_src.index("install_studio(ref, home)")
-    assert read_at < main_src.index("page_scripts.append(extra_init_source)")
+    assert read_at < main_src.index("_isolated_probe(extra_init, extra_init_source)")
     assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
     # Read once, used later. A second read at launch time would reintroduce the window.
     assert main_src.count("Path(extra_init).read_text") == 1
+
+
+def test_a_malformed_probe_cannot_take_the_scene_scripts_with_it(main_src: str):
+    """Concatenation makes the browser parse the joined text as ONE unit.
+
+    So a single syntax error in the external file would stop dom.js, parity.js and surfaces.js
+    executing too, leaving no `window.__sb` at all and a silence that reads like an arm that did
+    not fire. The source is embedded as a string and evaluated at runtime instead, so the parse
+    failure is caught and reported and the scene scripts are untouched.
+    """
+
+    assert "def _isolated_probe(" in main_src
+    assert "page_scripts.append(_isolated_probe(extra_init, extra_init_source))" in main_src
+    # Indirect eval, so the source evaluates in global scope exactly as a separate init script
+    # would rather than in the wrapper's scope.
+    assert "(0, eval)(" in main_src
+    assert 'bundle.page.on("pageerror"' in main_src
 
 
 def test_the_probe_exists_and_is_not_a_stub(probe_src: str):
