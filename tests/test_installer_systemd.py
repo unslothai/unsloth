@@ -35,11 +35,11 @@ def test_install_sh_documents_systemd_env_vars():
 def test_systemd_defaults_to_loopback_not_all_interfaces():
     """Opting into systemd must not quietly expose Studio on every interface (#9308)."""
     install_source = INSTALL_SH.read_text(encoding = "utf-8")
-    assert 'UNSLOTH_SYSTEMD_HOST:-127.0.0.1' in install_source
-    assert 'UNSLOTH_SYSTEMD_HOST:-0.0.0.0' not in install_source
+    assert "UNSLOTH_SYSTEMD_HOST:-127.0.0.1" in install_source
+    assert "UNSLOTH_SYSTEMD_HOST:-0.0.0.0" not in install_source
 
     script = SYSTEMD_INSTALL_SH.read_text(encoding = "utf-8")
-    assert 'UNSLOTH_SYSTEMD_HOST:-127.0.0.1' in script
+    assert "UNSLOTH_SYSTEMD_HOST:-127.0.0.1" in script
     assert '_HOST="0.0.0.0"' not in script
 
 
