@@ -55,17 +55,41 @@ def _index_of(predicate) -> int:
     return -1
 
 
-def test_the_cache_holds_uvs_downloads_and_not_the_venv() -> None:
+# What this action is allowed to cache, and the argument for each. Anything else has
+# to be added here in a diff someone reads, with its own argument written down.
+#
+#   .uv-cache            uv's download cache. Content-addressed by URL and hash, so a
+#                        stale entry cannot serve wrong content; the worst it can do
+#                        is miss.
+#   studio/frontend/dist the built frontend. NOT a download, so it does not get the
+#                        argument above and needs its own: it is a directory of static
+#                        assets with no absolute paths, no interpreter coupling and no
+#                        console scripts, which is exactly what makes a venv unsafe to
+#                        cache and this safe. Its key hashes the same inputs
+#                        studio/setup.sh checks before rebuilding, so a hit means the
+#                        build inputs are byte-identical rather than merely similar.
+#                        tests/studio/test_frontend_dist_cache.py holds that agreement
+#                        together and is where the reasoning lives.
+CACHEABLE_PATHS = (".uv-cache", "studio/frontend/dist")
+
+
+def test_the_cache_holds_downloads_and_build_output_but_never_the_venv() -> None:
     """
     A venv cache would have to reason about the editable overlay, a moving
-    unsloth-zoo pin, and absolute paths in console scripts. A download cache
-    reasons about none of that, which is why this one is safe at all.
+    unsloth-zoo pin, and absolute paths in console scripts. Neither of the two
+    things this action caches reasons about any of that, which is why they are safe
+    at all. The forbidden list below is the invariant with teeth and applies to
+    every cache step regardless of which allowed path it uses.
     """
     for step in _steps():
         if "cache" not in str(step.get("uses", "")):
             continue
         path = str((step.get("with") or {}).get("path", ""))
-        assert ".uv-cache" in path, f"cache step points at {path!r}, not uv's download cache"
+        assert any(allowed in path for allowed in CACHEABLE_PATHS), (
+            f"cache step points at {path!r}, which is not one of the paths this action "
+            f"is allowed to cache ({', '.join(CACHEABLE_PATHS)}). Add it to "
+            f"CACHEABLE_PATHS with the argument for why restoring it cannot be wrong."
+        )
         for forbidden in (".unsloth", "site-packages", "unsloth_studio", "venv"):
             assert forbidden not in path, (
                 f"cache step points at {path!r}, which is an INSTALL, not a download "
