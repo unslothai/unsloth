@@ -101,3 +101,19 @@ def test_embedding_redirect_keeps_a_lora_target_with_both_embeddings():
     assert modules_to_save == ["embed_tokens"]
     assert moved == ("embed_tokens",)
     assert direct_lm_head is True
+
+
+def test_embedding_redirect_keeps_lm_head_lora_for_fast_inference():
+    from unsloth.models._utils import _redirect_embedding_targets
+
+    adjusted, modules_to_save, moved, direct_lm_head = _redirect_embedding_targets(
+        ["q_proj", "lm_head"],
+        None,
+        preserve_lm_head_target = True,
+        redirect_lm_head = False,
+    )
+
+    assert adjusted == ["q_proj", "lm_head"]
+    assert modules_to_save is None
+    assert moved == ()
+    assert direct_lm_head is False

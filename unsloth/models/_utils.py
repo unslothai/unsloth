@@ -4452,12 +4452,15 @@ def _redirect_embedding_targets(
     *,
     allow_redirect = True,
     preserve_lm_head_target = False,
+    redirect_lm_head = True,
 ):
     """Move embedding targets to modules_to_save without emptying legacy LoRA targets."""
     if type(target_modules) not in (list, tuple) or not allow_redirect:
         return target_modules, modules_to_save, (), False
 
-    embedding_modules = frozenset(("embed_tokens", "lm_head"))
+    embedding_modules = {"embed_tokens"}
+    if redirect_lm_head:
+        embedding_modules.add("lm_head")
     moved = [module for module in target_modules if module in embedding_modules]
     remaining = [module for module in target_modules if module not in embedding_modules]
     preserved_lm_head = False

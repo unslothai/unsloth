@@ -3322,6 +3322,7 @@ class FastLlamaModel:
             target_modules,
             modules_to_save,
             preserve_lm_head_target = True,
+            redirect_lm_head = not hasattr(model, "vllm_engine"),
         )
         for module in _moved_embedding_modules:
             if module == "embed_tokens":
