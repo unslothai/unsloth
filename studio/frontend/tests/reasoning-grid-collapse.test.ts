@@ -128,8 +128,9 @@ test("the flag is off by default", () => {
 
 test("the reasoning pane picks its primitive from the flag on all three slots", () => {
   const code = codeOf(REASONING);
-  // Three primitive slots plus the streaming-height release below, which needs the same margin.
-  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 5);
+  // Three primitive slots, plus the streaming-height release and the scroll lock, which both
+  // have to outlast the transition rather than the nominal duration.
+  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 6);
   assert.ok(code.includes("<UnmeasuredCollapsible {...rootProps}>"));
   assert.ok(code.includes("<Collapsible {...rootProps}>"));
   assert.ok(code.includes("UnmeasuredCollapsibleTrigger"));
@@ -146,6 +147,23 @@ test("the streaming height cap outlives the grid collapse, but only on the grid 
     code.includes("ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS"),
   );
   assert.ok(code.includes("const closeDelay = GRID_COLLAPSE_REASONING_ENABLED"));
+});
+
+test("the scroll lock outlasts the grid collapse, and the shared hook's other callers do not move", () => {
+  const code = codeOf(REASONING);
+  // The lock is armed in the click handler, a commit before the transition starts, so an exact
+  // ANIMATION_DURATION releases the container mid-collapse.
+  assert.match(
+    code,
+    /useCollapseScrollLock\(\s*collapsibleRef,\s*GRID_COLLAPSE_REASONING_ENABLED/,
+  );
+  // tool-group and tool-fallback share the hook but keep the height keyframes, so they must
+  // still pass the plain duration.
+  for (const other of [TOOL_GROUP, TOOL_FALLBACK]) {
+    assert.ok(
+      codeOf(other).includes("useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION)"),
+    );
+  }
 });
 
 test("the flag-on reasoning content runs no height keyframes", () => {

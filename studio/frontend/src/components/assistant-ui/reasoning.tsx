@@ -84,7 +84,17 @@ function ReasoningRoot({
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  // The lock starts in the click handler; the grid transition only starts once React has
+  // committed the `0fr` class, so an exact ANIMATION_DURATION releases the scroll container
+  // while the row is still shrinking and lets the remaining height change shift the thread.
+  // Same margin as the collapse backstop, and only on the grid path: `tool-group` and
+  // `tool-fallback` still animate height and keep the plain duration.
+  const lockScroll = useCollapseScrollLock(
+    collapsibleRef,
+    GRID_COLLAPSE_REASONING_ENABLED
+      ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS
+      : ANIMATION_DURATION,
+  );
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
