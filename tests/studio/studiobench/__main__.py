@@ -708,6 +708,23 @@ def assert_liveness(args) -> int:
     per cell. This turns the README's advice to check `ran` before reading a timing into something
     a machine does, which is the only way it gets done every time.
 
+    TWO KINDS OF NOT RUN, and they are not the same finding.
+
+    A SCENE problem is the harness lying: the action was never planned, the button was not there,
+    the thread was shorter than the viewport. That is always a failure, on any machine, because it
+    means a column of the report is empty and nothing said so.
+
+    A MISSED SLOT is a fact about the machine. The scene is a fixed-duration film on the wall
+    clock (see `scene/schedule.py`), so a machine too slow to reach a slot records `slot_missed`
+    and the film rolls on BY DESIGN, precisely so a slow machine does not silently take a
+    different path through a different-length session. Failing on that turns an honest reading
+    into an error, and on a two-core shared CI runner it makes the gate a speed test of the runner.
+
+    So they are counted apart. Scene problems always fail. Missed slots are always PRINTED, and
+    fail once they pass `--allow-slot-misses`, which defaults to 0 so a measurement run on a quiet
+    machine keeps the strict behaviour and only a caller who knows its machine is contended
+    loosens it, in one visible place.
+
     Offline, so a payload from anyone's laptop or from CI checks identically.
     """
     path = Path(args.assert_liveness)
@@ -716,7 +733,8 @@ def assert_liveness(args) -> int:
         return 2
 
     allowed = {a.strip() for a in (args.allow_not_run or "").split(",") if a.strip()}
-    cells, problems = 0, []
+    slack = max(0, int(getattr(args, "allow_slot_misses", 0) or 0))
+    cells, problems, missed = 0, [], []
     for line in path.read_text(encoding = "utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -736,10 +754,11 @@ def assert_liveness(args) -> int:
             name = action.get("action") or action.get("name") or "?"
             if name in allowed:
                 continue
-            if not action.get("ran"):
+            if action.get("slot_missed"):
+                # A machine-speed fact, whether or not the action also reports ran=False.
+                missed.append(f"{where}: {name} missed its slot ({action.get('reason') or '?'})")
+            elif not action.get("ran"):
                 problems.append(f"{where}: {name} NOT RUN ({action.get('reason') or 'no reason'})")
-            elif action.get("slot_missed"):
-                problems.append(f"{where}: {name} missed its slot")
 
     if cells == 0:
         # An empty payload passing every check is the same false negative in a different costume.
@@ -747,11 +766,22 @@ def assert_liveness(args) -> int:
         return 2
     for line in problems:
         _log(f"  {line}")
+    for line in missed:
+        _log(f"  {line}")
+    over = len(missed) > slack
     _log(
-        f"{cells} cell(s), {len(problems)} liveness problem(s)"
+        f"{cells} cell(s), {len(problems)} scene problem(s), {len(missed)} missed slot(s) "
+        f"against a slack of {slack}"
         + (f", {len(allowed)} action(s) allowed not to run" if allowed else "")
     )
-    return 1 if problems else 0
+    if missed and not over:
+        # Said out loud rather than passed over: a run with missed slots has holes in its table,
+        # and the only thing this exit code claims is that the harness was not the cause.
+        _log(
+            "  the missed slots above are machine speed, not a harness fault, but every one of "
+            "them is a hole in this run's table. Do not quote a number from this payload."
+        )
+    return 1 if (problems or over) else 0
 
 
 def main(argv: list) -> int:
@@ -810,6 +840,18 @@ def main(argv: list) -> int:
         help = "comma-separated action names --assert-liveness may excuse. Use only "
         "for an action a platform genuinely cannot perform, and say which in "
         "the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--allow-slot-misses",
+        metavar = "N",
+        dest = "allow_slot_misses",
+        type = int,
+        default = 0,
+        help = "how many MISSED SLOTS --assert-liveness tolerates before failing. A "
+        "missed slot is a fact about the machine, not about the harness, and the "
+        "film is designed to roll on through one. Default 0, which is right for a "
+        "quiet measurement machine; raise it only on a contended runner, where the "
+        "gate is proving the plumbing works rather than that the runner is fast",
     )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)

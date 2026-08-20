@@ -143,6 +143,20 @@ separate subsystems, is code that could never fire reporting as "no effect":
 Check `ran` before you read a timing. Check that a potency counter moved before you believe an
 ablation.
 
+`--assert-liveness` separates two things that both print as NOT RUN and mean opposite things:
+
+- A **scene problem** is the harness lying: the action was never planned, the button was not in the
+  DOM, the thread was shorter than the viewport. That always fails, on any machine.
+- A **missed slot** is a fact about the machine. The scene is a fixed-duration film on the wall
+  clock, so a machine too slow to reach a slot records the miss and the film rolls on by design,
+  rather than quietly taking a different path through a shorter session.
+
+`--allow-slot-misses` tolerates the second and never the first. It defaults to **0**, which is the
+setting a measurement is taken under. Raise it only where the gate is proving the plumbing works
+rather than that the machine is fast, which is what CI does on a two-core runner. A tolerated miss
+still prints, and the tool still says the payload is not quotable, because a missed slot leaves a
+hole in the table whether or not the exit code is 0.
+
 ### Both sides must be the same film
 
 The floor table refuses two payloads from different tiers, and it refuses two payloads built on
