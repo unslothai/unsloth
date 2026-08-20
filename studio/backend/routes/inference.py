@@ -186,6 +186,12 @@ _install_httpcore_asyncgen_silencer()
 # that bounded work out of the default executor, which drives local token streaming.
 _STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
 
+
+# Lease waiters must not consume default workers needed by the current holder.
+_OLLAMA_LEASE_EXECUTOR = ThreadPoolExecutor(
+    max_workers = 2, thread_name_prefix = "inference-ollama-lease"
+)
+
 # Stop has to preempt exactly when the box is busy, so it gets its own workers for the same reason
 # the probes above do. Every /images/generate sits in the default executor for the whole run (it
 # blocks on the backend's serial _generate_lock), so concurrent generations can occupy that pool
@@ -5059,8 +5065,22 @@ async def _lease_ollama_model_ref(
 ) -> Optional[str]:
     if not is_ollama_manifest_ref(request.model_path):
         return None
+    loop = asyncio.get_running_loop()
+    lease_future = loop.run_in_executor(
+        _OLLAMA_LEASE_EXECUTOR, acquire_ollama_model_ref, request.model_path
+    )
     try:
-        lease = await asyncio.to_thread(acquire_ollama_model_ref, request.model_path)
+        lease = await asyncio.shield(lease_future)
+    except asyncio.CancelledError:
+
+        def _release_cancelled_lease(done):
+            try:
+                done.result().release()
+            except BaseException:
+                pass
+
+        lease_future.add_done_callback(_release_cancelled_lease)
+        raise
     except ValueError as exc:
         logger.warning("inference.ollama_materialize_failed: %s", exc)
         raise HTTPException(

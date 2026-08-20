@@ -300,6 +300,68 @@ def test_materialization_lease_blocks_a_concurrent_retag(tmp_path, monkeypatch):
     assert Path(lease.path).read_bytes() == b"GGUF-replacement"
 
 
+def test_waiting_route_lease_does_not_starve_the_default_executor(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import ExitStack
+
+    from hub.services.models import ollama
+    from models.inference import ValidateModelRequest
+    from routes import inference
+
+    root = tmp_path / "ollama-route-lease"
+    tag_file = _write_ollama_store(root)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+    request = ValidateModelRequest(model_path = ref)
+
+    real_acquire = inference.acquire_ollama_model_ref
+    waiter_started = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+
+    def observed_acquire(model_ref):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            is_waiter = calls == 2
+        if is_waiter:
+            waiter_started.set()
+        return real_acquire(model_ref)
+
+    monkeypatch.setattr(inference, "acquire_ollama_model_ref", observed_acquire)
+
+    async def scenario():
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers = 1))
+        first_stack = ExitStack()
+        second_stack = ExitStack()
+        await inference._lease_ollama_model_ref(
+            request, operation = "validate-model", stack = first_stack
+        )
+        waiter = asyncio.create_task(
+            inference._lease_ollama_model_ref(
+                request, operation = "validate-model", stack = second_stack
+            )
+        )
+        for _ in range(100):
+            if waiter_started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert waiter_started.is_set()
+        try:
+            progressed = await asyncio.wait_for(asyncio.to_thread(lambda: True), timeout = 1)
+        except TimeoutError:
+            progressed = False
+        finally:
+            first_stack.close()
+        await asyncio.wait_for(waiter, timeout = 1)
+        second_stack.close()
+        return progressed
+
+    assert asyncio.run(scenario())
+
+
 def test_projector_removal_deletes_the_stale_link(tmp_path, monkeypatch):
     from hub.services.models import ollama
 
