@@ -580,6 +580,9 @@ def _mmproj_gate(
         ),
         "model_path": "/m.gguf",
         "mmproj_path": None,
+        # This harness is about the paravirtual gate, so vision is on; the toggle's
+        # own effect on the same block is covered in test_mmproj_placement_policy.py.
+        "disable_vision": False,
         "_paravirtual_cpu_forced": paravirtual,
         "server_caps": caps,
         "is_vision": is_vision,

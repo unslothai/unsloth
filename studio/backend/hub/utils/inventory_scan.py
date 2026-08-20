@@ -32,6 +32,7 @@ from hub.utils.gguf import (
     gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
+    is_imatrix_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
@@ -783,7 +784,12 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
+        if (
+            not is_gguf_filename(rel)
+            or is_mmproj_filename(rel)
+            or is_mtp_drafter_path(rel)
+            or is_imatrix_filename(rel)
+        ):
             continue
         # Metadata vouching for a quant marks a torn snapshot ready: a set whose sidecars are
         # all present but whose weights are not answers the shard count exactly as the real

@@ -1781,7 +1781,7 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     llama_backend = SimpleNamespace(
         base_url = "http://127.0.0.1:8080",
         context_length = 4096,
-        count_chat_tokens = lambda messages, _unused, tools: 7,
+        count_chat_tokens = lambda messages, _unused, tools, **_kwargs: 7,
     )
 
     async def _build():
