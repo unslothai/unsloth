@@ -277,3 +277,41 @@ test("a compare pane with no saved config does not inherit the live Vision value
     "the store-derived fallback should be gone entirely, not just unused",
   );
 });
+
+test("the Vision row is gated out for diffusion models", () => {
+  // withoutUnsupportedDiffusionSettings forces disableVision back to false and the
+  // diffusion runner never reads it, so an ungated row is a switch that flips back
+  // under the pointer and changes nothing if it did not. The batch rows above it are
+  // gated for exactly this reason.
+  assert.match(
+    CONFIG_PAGE,
+    /disableVision: false,/,
+    "withoutUnsupportedDiffusionSettings no longer clears disableVision",
+  );
+
+  const lines = CONFIG_PAGE.split("\n");
+  const visionAt = lines.findIndex((line) =>
+    line.includes("checked={!config.disableVision}"),
+  );
+  assert.notEqual(visionAt, -1, "no Vision switch to gate");
+
+  // The nearest JSX conditional boundary above the switch. A `)}` first means the
+  // gate closed before the row, i.e. the row is not inside it.
+  let nearest = "none";
+  for (let i = visionAt; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line === "{!isDiffusion && (") {
+      nearest = "!isDiffusion";
+      break;
+    }
+    if (line === ")}") {
+      nearest = "closed";
+      break;
+    }
+  }
+  assert.equal(
+    nearest,
+    "!isDiffusion",
+    "the Vision row is not inside a !isDiffusion gate",
+  );
+});

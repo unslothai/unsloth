@@ -1219,23 +1219,28 @@ function GgufAdvancedSettings({
         />
       </div>
 
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Vision</span>
-          <InfoHint>
-            Loads the vision projector so the model can read images. Turning it
-            off frees the VRAM the projector would use, which can leave room for
-            more layers on the GPU. Text generation is unaffected either way.
-            Models that ship no projector have nothing to load, so the setting
-            does nothing for them.
-          </InfoHint>
+      {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a
+          diffusion model and the diffusion runner never reads it, so the switch would
+          flip back under the pointer. Gated for the same reason the batch rows are. */}
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Vision</span>
+            <InfoHint>
+              Loads the vision projector so the model can read images. Turning it
+              off frees the VRAM the projector would use, which can leave room for
+              more layers on the GPU. Text generation is unaffected either way.
+              Models that ship no projector have nothing to load, so the setting
+              does nothing for them.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={!config.disableVision}
+            onCheckedChange={(checked) => update({ disableVision: !checked })}
+          />
         </div>
-        <Switch
-          className="panel-switch shrink-0"
-          checked={!config.disableVision}
-          onCheckedChange={(checked) => update({ disableVision: !checked })}
-        />
-      </div>
+      )}
 
       <GpuMemorySettings
         config={config}
