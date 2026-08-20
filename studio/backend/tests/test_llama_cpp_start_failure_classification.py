@@ -753,6 +753,51 @@ class TestMacOSLoaderFailures:
         assert "llama-server failed to start." in msg
 
 
+class TestANonGgufFile:
+    # What llama.cpp prints when the bytes are not a GGUF. It formats the four it found with %c,
+    # so an AppleDouble sidecar's 0x00051607 arrives as unprintable characters (#8566).
+    _OUT = (
+        "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
+        "gguf_init_from_reader: invalid magic characters: '\ufffd\ufffd\ufffd\ufffd', "
+        "expected 'GGUF'\n"
+        "llama_server: exiting due to model loading error"
+    )
+
+    def test_it_is_reported_as_not_a_gguf(self, tmp_path):
+        log = tmp_path / "llama-1-port-8080.log"
+        msg = _classify(self._OUT, "/models/._muse-UD-Q2_K_XL.gguf", "local/muse", 1, None, log)
+
+        assert "not a GGUF" in msg
+        # The two things the generic fallback used to blame, neither of which is the cause.
+        assert "enough memory" not in msg.lower()
+        assert not msg.startswith("llama-server failed to start.")
+        # The echoed bytes are unreadable, so the path is the only usable identifier.
+        assert "._muse-UD-Q2_K_XL.gguf" in msg
+        assert "companion" in msg
+        # The remedy for the volume, not the generic re-download (#8566).
+        assert "dot_clean -m" in msg
+        assert "llama-server output:" in msg
+        assert f"Full log: {log}" in msg
+
+    def test_it_does_not_call_an_ordinary_main_model_the_bad_file(self):
+        # The message must not settle which file was invalid, nor promise the output does.
+        assert "is not a GGUF" in _classify(self._OUT, None, "local/muse", 1)
+        msg = _classify(self._OUT, "/models/model-Q4_K_M.gguf", "local/m", 1)
+        assert "model-Q4_K_M.gguf" in msg and "companion" in msg
+        assert "names it" not in msg
+        # An ordinary path is no evidence about the volume, so it keeps the generic remedy.
+        assert "dot_clean" not in msg and "Re-download the model" in msg
+
+    def test_a_dyld_failure_still_outranks_it(self):
+        # Ordering only matters when both appear; the loader diagnosis is the more specific one.
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libggml.dylib\n"
+            "gguf_init_from_reader: invalid magic characters: '????', expected 'GGUF'"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "not a GGUF" not in msg
+
+
 class TestStartupDiagnostics:
     _UNKNOWN_OUT = (
         "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
