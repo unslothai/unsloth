@@ -189,8 +189,11 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
     return out
 
 
-def verdict_for(stat: dict, floor: dict | None,
-                is_count: bool = False) -> tuple[float | None, str]:
+def verdict_for(
+    stat: dict,
+    floor: dict | None,
+    is_count: bool = False,
+) -> tuple[float | None, str]:
     """The three gates, in the order that makes a failure most informative.
 
     Gate 1, the per-metric floor, is `max(|null delta|, null spread)` rather than the spread alone.

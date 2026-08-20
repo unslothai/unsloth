@@ -210,17 +210,13 @@ def test_a_count_that_fell_reads_as_a_loss_and_never_as_faster(tmp_path):
 
 def test_a_count_that_rose_is_reported_but_not_as_a_slowdown(tmp_path):
     stats = F.summarise([count_payload(tmp_path, "r", [(3000.0, 400000.0)] * 4)])
-    _f, v = F.verdict_for(
-        stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True
-    )
+    _f, v = F.verdict_for(stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True)
     assert v == "gained"
 
 
 def test_an_unchanged_count_is_void_like_any_other_metric_under_the_floor(tmp_path):
     stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 400000.0)] * 4)])
-    _f, v = F.verdict_for(
-        stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True
-    )
+    _f, v = F.verdict_for(stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True)
     assert v == "VOID (under floor)"
 
 
