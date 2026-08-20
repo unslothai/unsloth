@@ -39,7 +39,8 @@ from contextvars import ContextVar
 # model hand the full 16,000 characters to a small OpenAI-compatible endpoint.
 _UNSET_CONTEXT_TOKENS = object()
 _REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
-    "unsloth_request_context_tokens", default = _UNSET_CONTEXT_TOKENS,
+    "unsloth_request_context_tokens",
+    default = _UNSET_CONTEXT_TOKENS,
 )
 
 import uuid
