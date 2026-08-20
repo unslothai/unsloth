@@ -691,6 +691,7 @@ class ExportBackend:
         hf_token: Optional[str] = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export merged model (for PEFT models).
@@ -774,7 +775,9 @@ class ExportBackend:
                 _shadow_pp = None
                 try:
                     from utils.transformers_version import llmcompressor_shadow_pythonpath
-                    _shadow_pp = llmcompressor_shadow_pythonpath()
+                    _shadow_pp = llmcompressor_shadow_pythonpath(
+                        allow_provision = install_missing_dependencies,
+                    )
                 except Exception as e:
                     logger.warning(f"llm-compressor-main shadow unavailable: {e}")
                 if _shadow_pp:
@@ -831,7 +834,10 @@ class ExportBackend:
                     )
                 else:
                     self.current_model.save_pretrained_merged(
-                        save_directory, self.current_tokenizer, save_method = save_method
+                        save_directory,
+                        self.current_tokenizer,
+                        save_method = save_method,
+                        install_missing_dependencies = install_missing_dependencies,
                     )
 
                 # Compressed / torchao writes to the "<dir>-<suffix>" sibling; report that as output.
@@ -910,6 +916,7 @@ class ExportBackend:
                         save_method = hub_save_method,
                         token = hf_token,
                         private = private,
+                        install_missing_dependencies = install_missing_dependencies,
                     )
                 logger.info(f"Model pushed successfully to {repo_id}")
 

@@ -432,6 +432,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
                 compressed_method = cmd.get("compressed_method"),
+                install_missing_dependencies = cmd.get("install_missing_dependencies", False),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
