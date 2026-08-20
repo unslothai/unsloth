@@ -89,6 +89,41 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Calibration importance matrices published beside the weights. Unsloth ships
+# imatrix_unsloth.dat and imatrix_unsloth.gguf_file, whose suffixes keep them out
+# of a GGUF listing, but some repos publish the same file as imatrix_unsloth.gguf
+# (unsloth/Qwen3.8-27B-GGUF) and it then reaches every GGUF path as if it were
+# weights: the variant menu grew a ~13 MB row labelled "GGUF", since the quant
+# extractor finds no token in the name.
+#
+# An imatrix holds per-tensor activation statistics, not a model. llama-quantize
+# reads one at QUANTIZE time and llama-server never opens it, so it is neither a
+# selectable variant nor a companion to fetch -- unlike mmproj and the MTP
+# drafter, it is excluded outright.
+#
+# Anchored at an END of the stem, never a substring, for the reason
+# is_mtp_drafter_path documents: a name that merely contains the word (a
+# hypothetical ``Qwen3-Imatrix-Tuned-Q4_K_M.gguf``) is a real model, while every
+# published imatrix leads or closes with it -- ``imatrix.gguf``,
+# ``imatrix_unsloth.gguf``, ``<model>-imatrix.gguf``, ``<model>.imatrix``.
+_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+
+
+def is_imatrix_filename(path: str) -> bool:
+    """True for a calibration imatrix, in any of the suffixes repos publish it under.
+
+    Must be excluded everywhere mmproj is, or the imatrix is advertised as a quant,
+    downloaded as weights and, being a valid GGUF container, handed to the loader.
+
+    CANONICAL COPY. Two mirrors must change in lockstep:
+    utils/models/model_config.py ``_is_imatrix_path`` (utils cannot import hub) and
+    core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports).
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
+
+
 # Separate-file drafter kinds. dspark and dflash are the same DeepSeek V4 Flash
 # drafter: the folder it ships in and the architecture it reports.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
@@ -289,6 +324,7 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
         if is_gguf_filename(name)
         and not is_mmproj_filename(name)
         and not is_mtp_drafter_path(name)
+        and not is_imatrix_filename(name)
         and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
@@ -853,6 +889,11 @@ def list_partial_gguf_variants_from_state(
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
                     continue
+                if is_imatrix_filename(expected.path):
+                    # A manifest written before imatrix filtering can still name one;
+                    # it is neither the variant's weights nor a companion fetched with
+                    # them, so it counts towards neither size.
+                    continue
                 if is_mtp_drafter_path(expected.path):
                     # Downloaded with every variant (like mmproj) but not a
                     # selectable quant; count it so the shown download size
@@ -972,7 +1013,7 @@ def list_gguf_variants(
             continue
         if not _is_selectable_repo_gguf(repo_id, filename):
             continue
-        if is_mtp_drafter_path(filename):
+        if is_mtp_drafter_path(filename) or is_imatrix_filename(filename):
             continue
         if is_mmproj_filename(filename):
             has_vision = True
@@ -1037,6 +1078,8 @@ def list_local_gguf_variants(
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
+            continue
+        if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
             # An empty projector is an interrupted download; an audio-only one is not vision.
