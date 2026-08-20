@@ -510,6 +510,18 @@ function Install-UnslothStudio {
             # bound by the legacy path limit.
             $leaf = "ust-" + $PID + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
             $candidate = Join-Path $root $leaf
+            # Which of these did not exist BEFORE the probe touched anything. Only
+            # those may be unwound below: a pre-provisioned "Unsloth Studio\temp"
+            # with custom ACLs, or an empty junction pointing somewhere else, is
+            # configuration this installer did not create and must not remove
+            # merely for being empty and correctly named.
+            $preAbsent = @{}
+            $walk = $candidate
+            for ($seen = 0; $seen -lt 4; $seen++) {
+                if ([string]::IsNullOrEmpty($walk)) { break }
+                $preAbsent[$walk] = (-not (Test-Path -LiteralPath $walk))
+                $walk = [System.IO.Path]::GetDirectoryName($walk)
+            }
             if (Test-StudioDirectoryUsable -Path $candidate -CreateIfMissing) {
                 Remove-StudioStalePrivateTempDirectories -Root $root
                 return $candidate
@@ -525,7 +537,13 @@ function Install-UnslothStudio {
             $unwind = $candidate
             for ($depth = 0; $depth -lt 4; $depth++) {
                 try {
+                    if (-not $preAbsent[$unwind]) { break }
                     if (-not (Test-Path -LiteralPath $unwind -PathType Container)) { break }
+                    $item = Get-Item -LiteralPath $unwind -Force -ErrorAction Stop
+                    # A relocation junction is somebody's configuration even when the
+                    # probe created it, and unlinking it is not "taking back what we
+                    # made". Leave it and stop.
+                    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { break }
                     if (@(Get-ChildItem -LiteralPath $unwind -Force -ErrorAction Stop).Count -gt 0) { break }
                     [System.IO.Directory]::Delete($unwind, $false)
                 } catch { break }

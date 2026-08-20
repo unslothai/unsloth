@@ -1269,7 +1269,7 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
             [
                 preamble,
                 block,
-                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}')",
+                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}'",
                 'Write-Output "DONE:1"',
             ]
         )
@@ -1293,7 +1293,7 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
             [
                 preamble,
                 block,
-                f"_RemoveStudioPrivateTempTrees -Paths @('{linked}')",
+                f"_RemoveStudioPrivateTempTrees -Paths @('{linked}') -PrimaryPath '{linked}'",
                 'Write-Output "DONE:2"',
             ]
         )
@@ -1303,6 +1303,87 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     assert (
         victim / "ust-1234-abcdef03" / "precious.txt"
     ).exists(), "the sweep walked through a link"
+
+
+@requires_pwsh
+def test_a_pre_existing_fallback_parent_is_not_unwound(tmp_path: Path):
+    """Only what the probe created may be taken back.
+
+    A pre-provisioned "Unsloth Studio\temp" with its own ACLs, or an empty
+    relocation junction, is configuration this installer did not create. Empty
+    and correctly named is not the same as ours.
+    """
+    local_app_data = tmp_path / "localappdata"
+    provisioned = local_app_data / "Unsloth Studio" / "temp"
+    provisioned.mkdir(parents = True)
+    user_profile = tmp_path / "userprofile"
+    user_profile.mkdir()
+
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(local_app_data)
+    env["USERPROFILE"] = str(user_profile)
+
+    result = _run_powershell(
+        _script(
+            """
+function Test-StudioDirectoryUsable {
+    param([string]$Path, [switch]$CreateIfMissing)
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    return $false
+}
+Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
+""",
+            sabotage = False,
+            names = (
+                "Write-StudioLine",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+            ),
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
+    # The candidate the probe made is gone; the directory that was already there stays.
+    assert not list(provisioned.glob("ust-*"))
+    assert provisioned.is_dir(), "a pre-existing temp directory was unwound"
+    # And the tree the probe DID create under the other root is still taken back.
+    assert not (user_profile / ".unsloth" / ".cache").exists()
+
+
+@requires_pwsh
+def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_path: Path):
+    """The alternate LocalAppData spelling can be another user's profile.
+
+    install.ps1 reads a missing owner.pid as unknown rather than abandoned,
+    because an installer killed before writing it leaves a live Studio holding
+    the directory. Deleting that out of somebody else's profile is not this
+    uninstall's business. Under our own profile the shape is enough, since that
+    is what is being removed.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+
+    mine = tmp_path / "mine" / "Unsloth Studio" / "temp"
+    theirs = tmp_path / "theirs" / "Unsloth Studio" / "temp"
+    for root in (mine, theirs):
+        root.mkdir(parents = True)
+        (root / "ust-1234-abcdef01").mkdir()
+
+    result = _run_powershell(
+        "\n".join([
+            preamble,
+            block,
+            f"_RemoveStudioPrivateTempTrees -Paths @('{mine}','{theirs}') -PrimaryPath '{mine}'",
+            'Write-Output "DONE:1"',
+        ])
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert not (mine / "ust-1234-abcdef01").exists(), "our own profile should be reclaimed"
+    assert (theirs / "ust-1234-abcdef01").is_dir(), "another profile was swept without a recorded owner"
 
 
 @requires_pwsh
@@ -1366,7 +1447,8 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
                 '$ErrorActionPreference = "Stop"',
                 "function _Substep { param([string]$Msg, [string]$Color) }",
                 block,
-                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}')",
+                # The profile being uninstalled, so shape alone is enough here.
+                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}'",
                 'Write-Output "DONE:1"',
             ]
         )

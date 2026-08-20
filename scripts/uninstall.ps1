@@ -149,7 +149,12 @@ Environment:
     # recursive delete of anything it did not create. Nothing here follows a link:
     # Directory.Delete with $false removes a reparse point without touching its target.
     function _RemoveStudioPrivateTempTrees {
-        param([string[]]$Paths)
+        param(
+            [string[]]$Paths,
+            # The spelling this uninstall is actually for. Any OTHER spelling can be
+            # a different user's profile, so it gets the stricter rule below.
+            [string]$PrimaryPath
+        )
         foreach ($temp in @($Paths)) {
             if ([string]::IsNullOrWhiteSpace($temp)) { continue }
             if (-not (Test-Path -LiteralPath $temp -PathType Container)) { continue }
@@ -172,6 +177,8 @@ Environment:
                 _Substep "skipped (reparse point): $temp" "Yellow"
                 continue
             }
+            $isPrimary = (-not [string]::IsNullOrWhiteSpace($PrimaryPath)) -and
+                [string]::Equals($temp.TrimEnd('\','/'), $PrimaryPath.TrimEnd('\','/'), [System.StringComparison]::OrdinalIgnoreCase)
             $entries = @()
             try { $entries = @(Get-ChildItem -LiteralPath $temp -Force -ErrorAction Stop) } catch { continue }
             foreach ($entry in $entries) {
@@ -198,6 +205,15 @@ Environment:
                         _Substep "in use by pid ${ownerPid}, left alone: $($entry.FullName)" "Yellow"
                         continue
                     }
+                } elseif (-not $isPrimary) {
+                    # No recorded owner, and this is not the profile being uninstalled.
+                    # install.ps1 reads that state as UNKNOWN rather than abandoned,
+                    # because an installer killed before writing owner.pid leaves a live
+                    # Studio holding the directory; deleting another user's live %TEMP%
+                    # is not this uninstall's business. Under our own profile the shape
+                    # is enough, since that is what is being removed.
+                    _Substep "no recorded owner in another profile, left alone: $($entry.FullName)" "Yellow"
+                    continue
                 }
                 try {
                     if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
@@ -603,6 +619,9 @@ Environment:
     # with it is not.
     $knownLocalAppData = $null
     try { $knownLocalAppData = [Environment]::GetFolderPath('LocalApplicationData') } catch { $knownLocalAppData = $null }
+    # The first non-blank spelling is the one _AppDataRoot would have resolved, so
+    # it is the profile this uninstall is for.
+    $primaryPrivateTemp = if ($defaultDataDir) { Join-Path $defaultDataDir "temp" } else { $null }
     $privateTempDirs = @()
     foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {
         if ([string]::IsNullOrWhiteSpace($root)) { continue }
@@ -767,7 +786,7 @@ Environment:
     if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir.
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
-    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs
+    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
@@ -859,7 +878,7 @@ Environment:
     # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
     # keeps the icon -- see the helper.)
     if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
-    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs
+    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."
