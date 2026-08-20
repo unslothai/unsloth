@@ -136,6 +136,12 @@ def test_retagged_manifest_replaces_one_hardlink_and_invalidates_loaded_identity
     replacement_blob.write_bytes(b"GGUF-replacement")
     manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
     manifest["layers"][0]["digest"] = f"sha256:{replacement_digest}"
+
+    replacement_config_digest = "c" * 64
+    (root / "blobs" / f"sha256-{replacement_config_digest}").write_text(
+        json.dumps({"file_type": "Q8_0"}), encoding = "utf-8"
+    )
+    manifest["config"] = {"digest": f"sha256:{replacement_config_digest}"}
     tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
 
     second_path = ollama.materialize_ollama_model_ref(ref)

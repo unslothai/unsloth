@@ -302,7 +302,6 @@ def _ollama_model_info_from_manifest(
     stem_hash = hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
     model_link_dir = links_root / stem_hash if links_root is not None else None
     safe_name = repo_name.replace("/", "-")
-    quant = f"-{file_type}" if file_type else ""
 
     for layer in layers:
         if not isinstance(layer, dict):
@@ -329,7 +328,7 @@ def _ollama_model_info_from_manifest(
     if materialize_links:
         if model_link_dir is None:
             return invalid_manifest("link directory is unavailable")
-        link_name = f"{safe_name}-{tag}{quant}.gguf"
+        link_name = f"{safe_name}-{tag}.gguf"
         mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
         if projector_blob is not None:
             if not _make_ollama_blob_link(model_link_dir, mmproj_name, projector_blob):
