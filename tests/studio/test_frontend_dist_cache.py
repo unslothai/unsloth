@@ -211,9 +211,9 @@ def _staleness_inputs_ps1() -> set[str]:
     for name in re.findall(r'"([^"]+)"', sub.group(1)):
         found.add(f"studio/frontend/{name}")
     # The non-recursive top-level file sweep over $FrontendDir itself.
-    assert re.search(r"Get-ChildItem -Path \$FrontendDir -File", body), (
-        "setup.ps1's staleness check no longer scans the top-level frontend files"
-    )
+    assert re.search(
+        r"Get-ChildItem -Path \$FrontendDir -File", body
+    ), "setup.ps1's staleness check no longer scans the top-level frontend files"
     found.add("studio/frontend")
     return found
 
@@ -285,9 +285,7 @@ def test_no_exclusion_hides_a_path_the_rebuild_check_reads() -> None:
     """
     hashed, excluded = _key_patterns()
     reads = _staleness_inputs_sh() | _staleness_inputs_ps1()
-    offenders = sorted(
-        e for e in excluded if any(r == e or r.startswith(e + "/") for r in reads)
-    )
+    offenders = sorted(e for e in excluded if any(r == e or r.startswith(e + "/") for r in reads))
     assert not offenders, (
         f"the dist cache key excludes {offenders}, which the installers' rebuild check "
         f"DOES read. An edit there would not change the key, so the cache would hit and "
@@ -412,9 +410,9 @@ def test_the_posix_touch_still_touches() -> None:
     assert len(posix) == 1, f"expected exactly one POSIX touch branch, got {len(posix)}"
     step = posix[0]
     assert step.get("shell") == "bash", step.get("shell")
-    assert re.search(r"^\s*touch\s+\"?\$?\{?DIST", _code(step), re.M), (
-        f"the POSIX branch no longer touches the dist directory: {_code(step)!r}"
-    )
+    assert re.search(
+        r"^\s*touch\s+\"?\$?\{?DIST", _code(step), re.M
+    ), f"the POSIX branch no longer touches the dist directory: {_code(step)!r}"
 
 
 # What each branch has to do AFTER stamping the directory, expressed as the two things
@@ -456,7 +454,7 @@ def test_each_touch_reads_its_work_back(os_name: str) -> None:
         f"the {os_name} touch branch does not compare the restored dist against its "
         f"sources after stamping it: {body!r}"
     )
-    tail = body[at.start():]
+    tail = body[at.start() :]
     assert "::error::" in tail and "exit 1" in tail, (
         f"the {os_name} touch branch compares, then cannot fail on the result, so a "
         f"stamp that did not take is silent: {tail!r}"
@@ -577,9 +575,9 @@ def test_a_cache_hit_that_rebuilt_anyway_fails_the_job() -> None:
         f"installer is supposed to build, so asserting there would fail every cold run."
     )
     body = _code(step)
-    assert "building frontend" in body, (
-        "the reuse assertion does not look for the rebuild marker both installers emit"
-    )
+    assert (
+        "building frontend" in body
+    ), "the reuse assertion does not look for the rebuild marker both installers emit"
     # Each guarded condition, and the failure that must follow it. Counting `exit 1`s
     # instead let a mutation through: turning the missing-log branch into a warning plus
     # `exit 0` left the total unchanged, because the `exit 1` beneath it stayed.
@@ -724,9 +722,9 @@ def test_a_nested_checkout_caller_must_pass_a_prefix_that_can_match() -> None:
             for s in steps
             if "actions/checkout" in str(s.get("uses", ""))
             and (s.get("with") or {}).get("path")
-            and not str((s.get("with") or {}).get("repository") or "").rstrip("/").endswith(
-                ("/unsloth",)
-            )
+            and not str((s.get("with") or {}).get("repository") or "")
+            .rstrip("/")
+            .endswith(("/unsloth",))
             or (
                 "actions/checkout" in str(s.get("uses", ""))
                 and (s.get("with") or {}).get("path")
@@ -794,7 +792,9 @@ def test_every_restored_dist_is_also_saved_and_wired_to_its_restore() -> None:
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
-        restore = next((s for s in steps if "frontend-dist-restore" in str(s.get("uses", ""))), None)
+        restore = next(
+            (s for s in steps if "frontend-dist-restore" in str(s.get("uses", ""))), None
+        )
         save = next((s for s in steps if "frontend-dist-save" in str(s.get("uses", ""))), None)
         if restore is None and save is None:
             continue
@@ -841,9 +841,7 @@ def test_at_least_one_producer_actually_fills_the_cache() -> None:
         if "frontend-dist-save" in str(s.get("uses", ""))
         and str((s.get("with") or {}).get("save", "true")) != "false"
     }
-    assert producers, (
-        "no job saves the frontend dist cache, so every restore can only ever miss"
-    )
+    assert producers, "no job saves the frontend dist cache, so every restore can only ever miss"
 
 
 def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
