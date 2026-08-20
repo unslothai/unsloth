@@ -1115,10 +1115,19 @@ async def _shared_compat_local_inventory_scan(
     requested_sources = sources
 
     def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
-        # Tag each model with its task so the Images picker can filter to diffusion.
+        # Tag each model with its task and native-audio type for the model pickers.
         # Inside the shared flight so overlapping callers reuse one classified result
         # instead of each repeating the GGUF header reads.
-        return [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+        from core.inference.native_audio import native_audio_type_from_local_path
+        return [
+            model.model_copy(
+                update = {
+                    "task": _local_model_task(model),
+                    "audio_type": native_audio_type_from_local_path(model.path),
+                }
+            )
+            for model in models
+        ]
 
     async def collect(
         expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
@@ -2391,7 +2400,11 @@ async def scan_model_remote_code(
         except Exception:
             _primary_preexisting = True
         requested_scan_target = scan_target
-        requested_security_targets = [requested_scan_target]
+        from core.inference.native_audio import native_audio_security_targets
+
+        requested_security_targets = native_audio_security_targets(
+            requested_scan_target, hf_token = hf_token
+        )
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -4405,6 +4418,12 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         except Exception:
             pass
         return None
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        if native_audio_type_from_local_path(path):
+            return "text-to-speech"
+    except Exception:
+        pass
     if _local_is_diffusers(model):
         # A local diffusers pipeline can be a VIDEO family, not just image; tag it text-to-video so it surfaces in the Video picker.
         try:

@@ -14,8 +14,53 @@ export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
 export type SttEngine = "transformers" | "gguf" | "mtmd";
 
-const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
+const TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "csm",
+  "bicodec",
+  "dac",
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
 const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+const NATIVE_TTS_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
+export const MOSS_TTS_DEFAULT_SECONDS = 15;
+export const MOSS_TTS_MAX_FRAMES = 32768;
+export const MOSS_TTS_MAX_SECONDS =
+  MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
+
+export function mossTtsFramesForSeconds(
+  seconds: number,
+  maxFrames = MOSS_TTS_MAX_FRAMES,
+): number {
+  return Math.min(
+    Math.max(1, Math.floor(maxFrames)),
+    Math.max(1, Math.floor(seconds * MOSS_TTS_FRAMES_PER_SECOND)),
+  );
+}
+
+export function mossTtsMaxFrames(
+  audioType?: string | null,
+  contextLength?: number | null,
+): number | null {
+  if (audioType !== "moss_tts_local" && audioType !== "moss_tts_nano") {
+    return null;
+  }
+  const detected = Math.floor(Number(contextLength));
+  return Number.isFinite(detected) && detected > 0
+    ? detected
+    : MOSS_TTS_MAX_FRAMES;
+}
 
 export function isTtsAudioType(
   audioType?: string | null,
@@ -26,6 +71,26 @@ export function isTtsAudioType(
       (isGguf
         ? GGUF_TTS_AUDIO_TYPES.has(audioType)
         : TTS_AUDIO_TYPES.has(audioType)),
+  );
+}
+
+export function trainedTtsCheckpointIsLoadable(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  return !audioType || !NATIVE_TTS_AUDIO_TYPES.has(audioType) || exportType === "merged";
+}
+
+export function trainedTtsCheckpointIsRunnableOnMac(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  if (exportType === "gguf") return true;
+  return Boolean(
+    exportType === "merged" &&
+      audioType &&
+      NATIVE_TTS_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
   );
 }
 
@@ -113,18 +178,20 @@ export function exactGgufLoadSelector(
 
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
 
-/** MLX has no TTS decoder. A Mac TTS pick is runnable only when it already is
- * GGUF or its curated family publishes a GGUF sibling. */
+/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX;
+ * other Mac picks still need GGUF or a family GGUF sibling. */
 export function macTtsPickAction({
   isMac,
   isGguf,
   ggufSibling,
+  nativeRuntime = false,
 }: {
   isMac: boolean;
   isGguf: boolean;
   ggufSibling: string | null;
+  nativeRuntime?: boolean;
 }): MacTtsPickAction {
-  if (!isMac || isGguf) return "allow";
+  if (!isMac || isGguf || nativeRuntime) return "allow";
   return ggufSibling ? "use-gguf-sibling" : "reject";
 }
 

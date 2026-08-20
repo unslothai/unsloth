@@ -498,6 +498,26 @@ class TestCheckConfigNeeds550:
     @pytest.mark.parametrize(
         "cfg",
         (
+            {"architectures": ["HiggsAudioV2ForConditionalGeneration"]},
+            {"model_type": "higgs_audio_v2"},
+            {"architectures": ["HiggsMultimodalQwen3ForConditionalGeneration"]},
+            {"model_type": "higgs_multimodal_qwen3"},
+        ),
+        ids = (
+            "higgs-tts2-architecture",
+            "higgs-tts2-model-type",
+            "higgs-tts3-architecture",
+            "higgs-tts3-model-type",
+        ),
+    )
+    def test_higgs_tts_uses_transformers_550(self, tmp_path: Path, cfg: dict):
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_550(str(tmp_path)) is True
+
+    @pytest.mark.parametrize(
+        "cfg",
+        (
             {"architectures": ["KimiK3ForConditionalGeneration"]},
             {"model_type": "kimi_k3"},
             {"architectures": ["LocateAnythingForConditionalGeneration"]},

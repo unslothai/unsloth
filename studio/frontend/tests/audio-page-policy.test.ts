@@ -446,13 +446,10 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });
 
-test("macOS hides trained TTS checkpoints that are not GGUF", () => {
-  // MLX has no TTS decoder, so a LoRA or merged safetensors row deterministically fails
-  // with "not supported on the MLX backend yet". The catalog rows are already filtered to
-  // families with a GGUF sibling; these have none.
+test("the trained-model list applies the native-aware macOS policy", () => {
   assert.match(
     audioPageSource,
-    /\.filter\(\(lora\) => !isMac \|\| lora\.export_type === "gguf"\)/,
+    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(lora\.audio_type, lora\.export_type\)/,
   );
 });
 

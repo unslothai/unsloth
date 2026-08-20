@@ -8,7 +8,31 @@ from __future__ import annotations
 
 import json
 
-from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
+from utils.models.model_config import (
+    _AUDIO_TOKEN_PATTERNS,
+    detect_audio_type_checked,
+    is_audio_input_type,
+)
+
+
+def test_curated_native_audio_repos_are_detected_without_hub_reads():
+    expected = {
+        "bosonai/higgs-tts-2-3b-base": "higgs_tts2",
+        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5": "moss_tts_local",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "moss_tts_nano",
+        "multimodalart/higgs-audio-v3-tts-4b-transformers": "higgs_tts3",
+        "MiniMaxAI/MiniMax-Music3": "minimax_music3",
+    }
+    for repo, audio_type in expected.items():
+        assert detect_audio_type_checked(repo) == (audio_type, True)
+
+
+def test_local_native_audio_model_type_is_detected(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "moss_tts_nano"}),
+        encoding = "utf-8",
+    )
+    assert detect_audio_type_checked(str(tmp_path)) == ("moss_tts_nano", True)
 
 
 def _classify(tokens: list[str]) -> str | None:

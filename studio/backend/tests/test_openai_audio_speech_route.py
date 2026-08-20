@@ -26,7 +26,7 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject):
+    async def _fake_generate(text, payload, request, current_subject, **_kwargs):
         calls.append({"text": text, "payload": payload})
         if generate is not None:
             return await generate(text)

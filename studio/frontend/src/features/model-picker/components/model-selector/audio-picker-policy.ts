@@ -4,6 +4,16 @@
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
+const NATIVE_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+
+const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
+
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -18,6 +28,19 @@ export function shouldRecommendCommunityModels(
   return policy === "recommended";
 }
 
+/** Maps detected audio runtime types to the media tag used by Chat routing. */
+export function audioPipelineTagFor(
+  audioType?: string | null,
+  isLocalCheckpoint = false,
+): string | undefined {
+  if (!audioType) return undefined;
+  if (audioType === "whisper")
+    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
+  return TTS_CODECS.has(audioType) || NATIVE_AUDIO_TYPES.has(audioType)
+    ? "text-to-speech"
+    : undefined;
+}
+
 /** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD
  * artifacts are handled by the catalog before this gate, so an uncurated row must
  * identify a non-GGUF Whisper checkpoint. */
@@ -29,6 +52,7 @@ export function communityAudioRowIsRunnable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   isStt: boolean;
   isTts: boolean;
@@ -37,6 +61,7 @@ export function communityAudioRowIsRunnable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
   if (!isStt && !isTts) {
     return true;
@@ -50,6 +75,8 @@ export function communityAudioRowIsRunnable({
       return false;
     return evidence.some((value) => value.includes("whisper"));
   }
+
+  if (audioType && NATIVE_AUDIO_TYPES.has(audioType)) return true;
 
   // The main-slot TTS backend decodes only the four codec families below.
   // Hub's text-to-speech tag also covers Bark, VITS, SpeechT5, and many other
@@ -80,6 +107,7 @@ export function audioPickIsRoutable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   id: string;
   task: string | null | undefined;
@@ -90,6 +118,7 @@ export function audioPickIsRoutable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
@@ -112,6 +141,7 @@ export function audioPickIsRoutable({
     baseModel,
     tags,
     libraryName,
+    audioType,
   });
 }
 
@@ -123,13 +153,25 @@ export function macTtsHubRowIsRunnable({
   isTts,
   isGguf,
   hasRunnableGgufSibling,
+  audioType,
 }: {
   isMac: boolean;
   isTts: boolean;
   isGguf: boolean;
   hasRunnableGgufSibling: boolean;
+  audioType?: string | null;
 }): boolean {
-  return !isMac || !isTts || isGguf || hasRunnableGgufSibling;
+  return (
+    !isMac ||
+    !isTts ||
+    isGguf ||
+    hasRunnableGgufSibling ||
+    Boolean(
+      audioType &&
+      NATIVE_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
+    )
+  );
 }
 
 export function taskCatalogFormatMatches(

@@ -3469,7 +3469,10 @@ def test_hub_local_rows_are_tagged_with_their_task():
     assert "task" in LocalModelInfo.model_fields
     src = inspect.getsource(local_inventory.list_local_models_response)
     assert "_local_model_task" in src
-    assert 'model_copy(update = {"task"' in src
+    assert "model_copy(" in src
+    assert '"task": _local_model_task' in src
+    assert "native_audio_type_from_local_path(model.path)" in src
+    assert '"audio_type": audio_type' in src
 
 
 def test_pipeline_class_guard_fires_before_any_download():

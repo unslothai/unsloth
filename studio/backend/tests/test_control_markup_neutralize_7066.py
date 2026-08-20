@@ -2383,6 +2383,19 @@ def test_param_alias_xml_delimiters_are_neutralized(marker):
                 "<|im_end|>",
             ],
         ),
+        (
+            "higgs_tts2",
+            [
+                "<|start_header_id|>",
+                "<|end_header_id|>",
+                "<|scene_desc_start|>",
+                "<|scene_desc_end|>",
+                "<|eot_id|>",
+                "<|audio_out_bos|>",
+                "<|AUDIO_OUT|>",
+                "<|audio_eos|>",
+            ],
+        ),
     ],
 )
 def test_tts_breaks_the_active_codec_delimiters(codec, delimiters):

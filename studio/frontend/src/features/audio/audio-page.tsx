@@ -29,6 +29,7 @@ import {
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -71,6 +72,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   isTrackingSttDownload,
   trackSttDownload,
@@ -78,6 +80,7 @@ import {
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
@@ -89,6 +92,7 @@ import {
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
+  getAudioDownloadPlan,
   generateAudio,
   listAudioGallery,
 } from "./api";
@@ -102,24 +106,34 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_FRAMES_PER_SECOND,
+  MOSS_TTS_MAX_FRAMES,
+  mossTtsMaxFrames,
+  mossTtsFramesForSeconds,
   persistedClipForGeneration,
   reconcileSttSelection,
   resolveAudioPickTask,
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
   sttDownloadedArtifacts,
   sttSelectionReady,
 } from "./audio-page-policy";
 import {
   audioCapabilityLine,
+  audioModelRequiresRemoteCode,
   audioModelsForTask,
   audioTaskFor,
   ggufSiblingFor,
+  isMusicGenerationModel,
   macTtsCatalogChoiceIsRunnable,
   sttEngineForRepoId,
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
+  usesNativeAudioRuntime,
 } from "./catalog";
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
@@ -277,6 +291,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // --- TTS (main inference slot) -----------------------------------------
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [audioInstructions, setAudioInstructions] = useState("");
+  const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
   // Sending temperature unconditionally puts it in the request's model_fields_set, which the
   // backend reads as an explicit client override and which then beats the per-model
@@ -288,6 +304,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     setTemperature(value);
   }, []);
   const [maxTokens, setMaxTokens] = useState(2048);
+  const [mossMaxSeconds, setMossMaxSeconds] = useState(MOSS_TTS_DEFAULT_SECONDS);
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
@@ -295,6 +312,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     repoId: string;
     ggufFilename?: string | null;
     loadId?: string | null;
+    audioType?: string | null;
   } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
@@ -374,7 +392,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const stagedTtsGeneration = useRef(0);
   const pendingStagedTtsLoad = useRef<{
     repoId: string;
-    ggufFilename: string;
+    ggufFilename: string | null;
+    loadId?: string | null;
+    audioType?: string | null;
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
@@ -412,6 +432,23 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [srcById, setSrcById] = useState<Record<string, string>>(
     galleryCache.srcById.toRecord(),
   );
+  const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
+  const mossFrameLimit = mossTtsMaxFrames(
+    status?.audio_type,
+    status?.context_length,
+  );
+  const mossMaxSecondsLimit =
+    (mossFrameLimit ?? MOSS_TTS_MAX_FRAMES) / MOSS_TTS_FRAMES_PER_SECOND;
+
+  useEffect(() => {
+    setTemperature(mossFrameLimit !== null ? 1.7 : 0.6);
+    setTemperatureEdited(false);
+    if (mossFrameLimit !== null) {
+      setMossMaxSeconds((current) =>
+        Math.min(current, mossFrameLimit / MOSS_TTS_FRAMES_PER_SECOND),
+      );
+    }
+  }, [mossFrameLimit]);
 
   const {
     attach: attachSettingsScroll,
@@ -543,15 +580,34 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       galleryCache.srcById.touch(clip.id);
       return;
     }
+    const pending = clipSrcLoads.current.get(clip.id);
+    if (pending) return pending;
+    const load = (async () => {
+      try {
+        const fetched = await fetchClipObjectUrl(clip.url);
+        // A delete can finish while protected bytes are in flight. Do not revive its
+        // cache entry after the row is already gone.
+        if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) {
+          URL.revokeObjectURL(fetched.url);
+          return;
+        }
+        galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
+        galleryCache.srcById.prune(
+          galleryCache.selectedId ? [galleryCache.selectedId] : [],
+        );
+        setSrcById(galleryCache.srcById.toRecord());
+      } catch {
+        // Clip may have been deleted server-side; the next gallery refresh drops it.
+        toast.error("Could not load this audio clip. Try selecting it again.");
+      }
+    })();
+    clipSrcLoads.current.set(clip.id, load);
     try {
-      const fetched = await fetchClipObjectUrl(clip.url);
-      galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
-      galleryCache.srcById.prune(
-        galleryCache.selectedId ? [galleryCache.selectedId] : [],
-      );
-      setSrcById(galleryCache.srcById.toRecord());
-    } catch {
-      // Clip may have been deleted server-side; the next gallery refresh drops it.
+      await load;
+    } finally {
+      if (clipSrcLoads.current.get(clip.id) === load) {
+        clipSrcLoads.current.delete(clip.id);
+      }
     }
   }, []);
 
@@ -604,13 +660,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           galleryCache.selectedId = merged[0].id;
           setSelectedId(galleryCache.selectedId);
         }
+        const selected = merged.find(
+          (clip) => clip.id === galleryCache.selectedId,
+        );
+        if (selected) void ensureClipSrc(selected);
         return merged;
       } catch {
         // Same recoverable-poll stance as status.
         return galleryCache.clips;
       }
     },
-    [],
+    [ensureClipSrc],
   );
 
   const loadMore = useCallback(async () => {
@@ -678,7 +738,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     galleryCache.selectedId = id;
     setSelectedId(id);
     if (!keepFallback) setFallbackClip(null);
-  }, []);
+    const clip = galleryCache.clips.find((candidate) => candidate.id === id);
+    if (clip) void ensureClipSrc(clip);
+  }, [ensureClipSrc]);
 
   // --- Model selection ----------------------------------------------------
 
@@ -691,12 +753,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // display repo id instead failed offline, or re-downloaded into the active cache.
       // Chat threads the same field (chat-page.tsx).
       loadId?: string | null,
+      audioType?: string | null,
     ) => {
       // A routed pick that arrives while a previous load is still tearing down would
       // otherwise be dropped here, and the route effect has already cleared ?model=, so
       // nothing retries it. Remembered and replayed from the finally below instead.
       if (ttsLoadInFlight.current) {
-        pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
+        pendingRoutedTtsPick.current = {
+          repoId,
+          ggufFilename,
+          loadId,
+          audioType,
+        };
         return;
       }
       // A load stops every chat on the shared llama-server, so ask the way Chat does
@@ -755,16 +823,37 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setBusy("loading");
       const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
       try {
+        const hfToken = hfApiToken(getHfToken()) ?? null;
+        let trustRemoteCode = false;
+        let approvedRemoteCodeFingerprint: string | null = null;
+        if (audioModelRequiresRemoteCode(repoId, audioType)) {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: loadId || repoId,
+            hfToken,
+            requiresTrustRemoteCode: true,
+            onApprove: (fingerprint) => {
+              trustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fingerprint;
+            },
+          });
+          if (!approved)
+            throw new Error(
+              "Custom code approval is required to load this model.",
+            );
+          if (controller.signal.aborted || !isCurrent()) return;
+        }
         const res = await loadModel(
           {
             model_path: loadId || repoId,
             load_request_id: loadRequestId,
             force_cancel_active: stopDecision.forceCancelActive,
-            hf_token: hfApiToken(getHfToken()) ?? null,
+            hf_token: hfToken,
             max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
             load_in_4bit: false,
             is_lora: false,
             gguf_variant: ggufFilename ?? null,
+            trust_remote_code: trustRemoteCode,
+            approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           },
           {
             signal: controller.signal,
@@ -828,7 +917,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const queued = pendingRoutedTtsPick.current;
     if (!queued) return;
     pendingRoutedTtsPick.current = null;
-    void loadTtsModelRef.current(queued.repoId, queued.ggufFilename, queued.loadId);
+    void loadTtsModelRef.current(
+      queued.repoId,
+      queued.ggufFilename,
+      queued.loadId,
+      queued.audioType,
+    );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {
     stagedTtsGeneration.current += 1;
@@ -912,7 +1006,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         return;
       }
       pendingStagedTtsLoad.current = null;
-      void loadTtsModelRef.current(pending.repoId, pending.ggufFilename);
+      void loadTtsModelRef.current(
+        pending.repoId,
+        pending.ggufFilename,
+        pending.loadId,
+        pending.audioType,
+      );
     },
   });
 
@@ -932,23 +1031,89 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       return;
     }
     pendingStagedTtsLoad.current = null;
-    void loadTtsModelRef.current(pending.repoId, pending.ggufFilename);
+    void loadTtsModelRef.current(
+      pending.repoId,
+      pending.ggufFilename,
+      pending.loadId,
+      pending.audioType,
+    );
   }, [active, busy]);
 
   const loadOrStageTtsModel = useCallback(
-    (
+    async (
       repoId: string,
       ggufFilename: string | null,
       meta: ModelSelectorChangeMeta,
     ) => {
+      const generation = ++stagedTtsGeneration.current;
+      pendingStagedTtsLoad.current = null;
+      stagedTtsLoadDeferred.current = false;
+      stageTtsDownload([]);
+
+      // Hub TTS picks use the same managed path as Chat. Native models can also
+      // depend on a second codec repository, so the selected repo's downloaded
+      // badge is not enough: the cache-aware backend plan owns every missing
+      // checkpoint, config and companion file before model loading begins.
+      if (meta.source === "hub" && !ggufFilename) {
+        let plan;
+        try {
+          plan = await getAudioDownloadPlan(
+            meta.loadId || repoId,
+            hfApiToken(getHfToken()),
+          );
+        } catch (error) {
+          if (generation !== stagedTtsGeneration.current) return;
+          if (meta.isDownloaded === true) {
+            void loadTtsModelRef.current(
+              repoId,
+              ggufFilename,
+              meta.loadId,
+              meta.audioType,
+            );
+            return;
+          }
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : `Could not prepare the download for ${repoId}.`,
+          );
+          return;
+        }
+        if (generation !== stagedTtsGeneration.current) return;
+        const plannedEntries = plan.entries;
+        if (plannedEntries.length > 0) {
+          pendingStagedTtsLoad.current = {
+            repoId,
+            ggufFilename,
+            loadId: meta.loadId,
+            audioType: meta.audioType,
+            generation,
+          };
+          stageTtsDownload(
+            plannedEntries.map((entry) => ({
+              repoId: entry.repo_id,
+              files: entry.files,
+              bytes: entry.bytes,
+              ggufFilename: entry.gguf_filename,
+              checkpoint: entry.checkpoint,
+            })),
+          );
+          return;
+        }
+      }
+
       if (
         meta.source === "hub" &&
         meta.isDownloaded === false &&
         ggufFilename
       ) {
-        const generation = ++stagedTtsGeneration.current;
-        pendingStagedTtsLoad.current = { repoId, ggufFilename, generation };
-        stagedTtsLoadDeferred.current = false;
+        pendingStagedTtsLoad.current = {
+          repoId,
+          ggufFilename,
+          loadId: meta.loadId,
+          audioType: meta.audioType,
+          generation,
+        };
         stageTtsDownload([
           {
             repoId,
@@ -962,11 +1127,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
       // A cached/local/direct pick supersedes any staged auto-load. The manager
       // may keep downloading globally, but its old completion cannot load here.
-      invalidatePendingStagedTts();
-      stageTtsDownload([]);
-      void loadTtsModelRef.current(repoId, ggufFilename, meta.loadId);
+      void loadTtsModelRef.current(
+        repoId,
+        ggufFilename,
+        meta.loadId,
+        meta.audioType,
+      );
     },
-    [invalidatePendingStagedTts, stageTtsDownload],
+    [stageTtsDownload],
   );
 
   const ensureSttLoaded = useCallback(
@@ -1159,15 +1327,28 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const handleModelSelect = useCallback(
     async (id: string, meta: ModelSelectorChangeMeta) => {
       if (busyRef.current !== null) return;
+      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or
+      // every community ASR repo would load into the TTS slot.
+      const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
+      const musicPick =
+        task !== "stt" && isMusicGenerationModel(id, meta.audioType);
+      const selectionGeneration = ++ttsPickGeneration.current;
+      if (musicPick) {
+        const system = await fetchSystemInfo();
+        if (selectionGeneration !== ttsPickGeneration.current) return;
+        if (system?.device_backend !== "cuda") {
+          toast.error(
+            `${id} requires a verified NVIDIA CUDA GPU for local generation.`,
+            { duration: 7000 },
+          );
+          return;
+        }
+      }
       // Selecting a different artifact while recording is a lifecycle change
       // even when it stays in Transcribe mode; never let the old capture submit
       // against a sidecar that this pick is replacing.
       stopAndDiscardRecording();
       deferredSttLoad.current = null;
-      const selectionGeneration = ++ttsPickGeneration.current;
-      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or
-      // every community ASR repo would load into the TTS slot.
-      const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
       if (task === "stt") {
         // An STT pick owns Transcribe: it runs on the sidecar, not the main slot.
         if (!transitionMode("transcribe")) return;
@@ -1198,10 +1379,19 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           id.toLowerCase().endsWith(".gguf"),
       );
       const ggufSibling = isGguf ? null : ggufSiblingFor(id);
-      const macAction = macTtsPickAction({ isMac, isGguf, ggufSibling });
+      const nativeRuntime =
+        usesNativeAudioRuntime(id, meta.audioType) && !musicPick;
+      const macAction = macTtsPickAction({
+        isMac,
+        isGguf,
+        ggufSibling,
+        nativeRuntime,
+      });
       if (macAction === "reject") {
         toast.error(
-          `${id} has no runnable GGUF TTS build. MLX cannot generate text-to-speech from its safetensors checkpoint on this Mac.`,
+          musicPick
+            ? `${id} currently requires an NVIDIA CUDA GPU and cannot run locally on this Mac.`
+            : `${id} has no runnable GGUF TTS build. MLX cannot generate text-to-speech from its safetensors checkpoint on this Mac.`,
           { duration: 7000 },
         );
         return;
@@ -1238,7 +1428,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             busyRef.current = null;
             setBusy(null);
           }
-          loadOrStageTtsModel(ggufSibling, variant.filename, {
+          await loadOrStageTtsModel(ggufSibling, variant.filename, {
             ...meta,
             source: "hub",
             isGguf: true,
@@ -1263,7 +1453,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
         return;
       }
-      loadOrStageTtsModel(id, exactGguf, meta);
+      await loadOrStageTtsModel(id, exactGguf, meta);
     },
     [
       ensureSttLoaded,
@@ -1281,6 +1471,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     quant?: string;
     ggufQuant?: string;
     task?: string;
+    audioType?: string;
+    loadId?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
@@ -1299,7 +1491,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       void navigateSelf({ to: "/audio", search: {}, replace: true });
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}`;
     if (handledRouteModel.current === key) return;
     // The persistent Audio page may still be finishing hidden work. Keep the
     // handoff in the URL and retry it when that work releases the lifecycle.
@@ -1310,9 +1502,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       isLora: false,
       ggufFilename: routeSearch.quant ?? undefined,
       ggufVariant: routeSearch.ggufQuant ?? undefined,
+      loadId: routeSearch.loadId ?? undefined,
+      audioType: routeSearch.audioType ?? undefined,
       // Chat-to-Audio routing cannot preserve the inventory flag, so stage the
       // exact forwarded GGUF. An already-cached job completes immediately.
-      isDownloaded: routeSearch.quant ? false : undefined,
+      isDownloaded: routeSearch.loadId
+        ? true
+        : routeSearch.quant
+          ? false
+          : undefined,
       pipelineTag: routeSearch.task ?? null,
     });
     void navigateSelf({ to: "/audio", search: {}, replace: true });
@@ -1324,6 +1522,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     routeSearch.quant,
     routeSearch.ggufQuant,
     routeSearch.task,
+    routeSearch.audioType,
+    routeSearch.loadId,
     handleModelSelect,
     navigateSelf,
     transitionMode,
@@ -1335,6 +1535,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     status?.active_model &&
       isTtsAudioType(status.audio_type, status.is_gguf === true),
   );
+  const musicGeneration =
+    status?.audio_type === "minimax_music3" ||
+    isMusicGenerationModel(status?.active_model);
+  const mossLocalGeneration = status?.audio_type === "moss_tts_local";
   const handleEject = useCallback(() => {
     if (busy !== null || isRecording) {
       toast.info("Stop the active audio task before ejecting its model.");
@@ -1468,12 +1672,29 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setMode("transcribe");
       return;
     }
+    const instructions = audioInstructions.trim();
+    if (musicGeneration && !instructions) {
+      busyRef.current = null;
+      setBusy(null);
+      toast.error("Add a music description for MiniMax Music 3.");
+      return;
+    }
+    const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
     try {
       const generated = await generateAudio(text, {
-        ...(temperatureEdited ? { temperature } : {}),
-        max_tokens: maxTokens,
+        ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
+        max_tokens:
+          mossFrameLimit !== null
+            ? mossTtsFramesForSeconds(mossMaxSeconds, mossFrameLimit)
+            : maxTokens,
+        ...((musicGeneration || mossLocalGeneration) && instructions
+          ? { audio_instructions: instructions }
+          : {}),
+        ...(mossLocalGeneration && language
+          ? { audio_language: language }
+          : {}),
         signal: controller.signal,
       });
       const refreshed = await refreshGallery();
@@ -1523,6 +1744,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, [
     prompt,
+    audioInstructions,
+    audioLanguage,
+    musicGeneration,
+    mossLocalGeneration,
+    mossFrameLimit,
+    mossMaxSeconds,
     temperature,
     temperatureEdited,
     maxTokens,
@@ -1842,12 +2069,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (cancelled) return;
         setTrainedTtsModels(
           res.loras
-            // MLX has no TTS decoder, so a trained LoRA or merged safetensors checkpoint
-            // deterministically fails with "not supported on the MLX backend yet" on Mac.
-            // The catalog rows are already filtered to families with a GGUF sibling; these
-            // have none, so offering them only produces that error.
-            .filter((lora) => !isMac || lora.export_type === "gguf")
+            // Merged native speech checkpoints bypass MLX through the portable
+            // audio worker. Other safetensors exports still need a GGUF build on Mac.
+            .filter(
+              (lora) =>
+                !isMac ||
+                trainedTtsCheckpointIsRunnableOnMac(lora.audio_type, lora.export_type),
+            )
             .filter((lora) => isTtsAudioType(lora.audio_type))
+            .filter((lora) =>
+              trainedTtsCheckpointIsLoadable(lora.audio_type, lora.export_type),
+            )
             .map((lora) => ({
               id: lora.adapter_path,
               name: audioModelLabel(lora.adapter_path),
@@ -1855,6 +2087,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 lora.export_type === "merged"
                   ? `Fine-tuned - ${lora.base_model || "unknown base"}`
                   : `LoRA - ${lora.base_model || "unknown base"}`,
+              audioType: lora.audio_type ?? null,
             })),
         );
       })
@@ -1870,6 +2103,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // --- Render -------------------------------------------------------------
 
   const selectedClip = clips.find((c) => c.id === selectedId) ?? null;
+  const selectedClipSrc = selectedClip ? srcById[selectedClip.id] : undefined;
   const selectorModels =
     mode === "speak" && isMac
       ? MODELS_BY_MODE.speak.filter((model) =>
@@ -2038,37 +2272,101 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             {mode === "speak" ? (
               <>
                 <Field
-                  label="Text"
-                  hint="What the model should say. Generation runs on the loaded TTS model and lands in the gallery on the right."
+                  label={musicGeneration ? "Lyrics" : "Text"}
+                  hint={
+                    musicGeneration
+                      ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery on the right."
+                      : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery on the right."
+                  }
                 >
                   <Textarea
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
-                    placeholder="Type the sentence to speak…"
+                    placeholder={
+                      musicGeneration
+                        ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
+                        : "Type the sentence to speak…"
+                    }
                     className="min-h-28"
                   />
                 </Field>
+                {musicGeneration || mossLocalGeneration ? (
+                  <Field
+                    label={
+                      musicGeneration ? "Music description" : "Style instructions"
+                    }
+                    hint={
+                      musicGeneration
+                        ? "Describe genre, tempo, mood, vocals, and arrangement. MiniMax Music 3 requires this separately from the lyrics."
+                        : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
+                    }
+                  >
+                    <Textarea
+                      value={audioInstructions}
+                      onChange={(event) =>
+                        setAudioInstructions(event.target.value)
+                      }
+                      placeholder={
+                        musicGeneration
+                          ? "Acoustic pop, 96 BPM, warm female lead, fingerpicked guitar and soft piano…"
+                          : "Warm, measured delivery with a calm conversational tone…"
+                      }
+                      className="min-h-24"
+                    />
+                  </Field>
+                ) : null}
+                {mossLocalGeneration ? (
+                  <Field
+                    label="Language"
+                    hint="Optional, but MOSS Local v1.5 recommends a language tag when known (for example English, Arabic, or French)."
+                  >
+                    <Input
+                      value={audioLanguage}
+                      onChange={(event) => setAudioLanguage(event.target.value)}
+                      placeholder="English"
+                    />
+                  </Field>
+                ) : null}
                 <AdvancedDisclosure
                   open={advancedOpen}
                   onOpenChange={setAdvancedOpen}
-                  description="Generation sampling. Changes apply to the next audio clip."
+                  description={
+                    musicGeneration
+                      ? "Generation length. Changes apply to the next audio clip."
+                      : "Generation sampling. Changes apply to the next audio clip."
+                  }
                 >
-                  <ParamSlider
-                    label="Temperature"
-                    value={temperature}
-                    min={0}
-                    max={1.5}
-                    step={0.05}
-                    onChange={handleTemperatureChange}
-                  />
-                  <ParamSlider
-                    label="Max tokens"
-                    value={maxTokens}
-                    min={256}
-                    max={TTS_MAX_TOKENS}
-                    step={256}
-                    onChange={setMaxTokens}
-                  />
+                  {!musicGeneration ? (
+                    <ParamSlider
+                      label="Temperature"
+                      value={temperature}
+                      min={0}
+                      max={mossFrameLimit !== null ? 2 : 1.5}
+                      step={0.05}
+                      onChange={handleTemperatureChange}
+                    />
+                  ) : null}
+                  {mossFrameLimit !== null ? (
+                    <ParamSlider
+                      label="Max duration (seconds)"
+                      value={mossMaxSeconds}
+                      min={1}
+                      max={mossMaxSecondsLimit}
+                      step={1 / MOSS_TTS_FRAMES_PER_SECOND}
+                      onChange={setMossMaxSeconds}
+                      valueSize={8}
+                      info={`Starts at ${MOSS_TTS_DEFAULT_SECONDS} seconds. This model reports ${mossFrameLimit?.toLocaleString()} frames (${mossMaxSecondsLimit.toLocaleString(undefined, { maximumFractionDigits: 2 })} seconds); the prompt uses part of that context.`}
+                    />
+                  ) : (
+                    <ParamSlider
+                      label="Max tokens"
+                      value={maxTokens}
+                      min={256}
+                      max={TTS_MAX_TOKENS}
+                      step={256}
+                      onChange={setMaxTokens}
+                    />
+                  )}
                 </AdvancedDisclosure>
               </>
             ) : (
@@ -2141,7 +2439,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 disabled={
                   busy === "generating"
                     ? false
-                    : busy !== null || !ttsLoaded || !prompt.trim()
+                    : busy !== null ||
+                      !ttsLoaded ||
+                      !prompt.trim() ||
+                      (musicGeneration && !audioInstructions.trim())
                 }
                 variant={busy === "generating" ? "destructive" : "default"}
               >
@@ -2208,12 +2509,24 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     <p className="line-clamp-2 text-ui-13 text-muted-foreground">
                       {selectedClip.prompt}
                     </p>
-                    {/* Auth-protected bytes, so the element plays the fetched object URL. */}
-                    <audio
-                      controls={true}
-                      src={srcById[selectedClip.id]}
-                      className="w-full"
-                    />
+                    {/* Auth-protected bytes, so mount a fresh player only once this clip's
+                        object URL exists. Reusing one media element while src is empty or
+                        changing left History switches showing stale/broken controls. */}
+                    {selectedClipSrc ? (
+                      <audio
+                        key={selectedClip.id}
+                        controls={true}
+                        src={selectedClipSrc}
+                        className="w-full"
+                      />
+                    ) : (
+                      <div
+                        role="status"
+                        className="flex h-12 w-full items-center justify-center rounded-md border border-border text-ui-12 text-muted-foreground"
+                      >
+                        Loading audio…
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
                       <span>{selectedClip.model}</span>
                       <span>·</span>
@@ -2320,6 +2633,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                         <button
                           type="button"
                           onClick={() => selectClip(clip.id)}
+                          aria-current={clip.id === selectedId ? "true" : undefined}
                           className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                         >
                           <HugeiconsIcon

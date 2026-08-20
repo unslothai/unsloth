@@ -27,7 +27,8 @@ const policy = readFileSync(
   "utf8",
 );
 
-// The four the main-slot TTS backend decodes: snac, csm, bicodec, dac.
+// The codec-backed families decoded by the legacy main-slot backend. Native
+// architecture families are checked against their dedicated backend below.
 const DECODABLE = ["orpheus", "csm", "spark", "outetts"];
 
 test("the curated audio catalog offers no model the backend cannot decode", () => {
@@ -35,8 +36,38 @@ test("the curated audio catalog offers no model the backend cannot decode", () =
   const body = audio.slice(0, audio.indexOf("\n];"));
   assert.doesNotMatch(body, /canonicalId: "[^"]*Llasa[^"]*"/i);
   // The rows that remain are still there, so this cannot pass by emptying the catalog.
-  for (const family of ["orpheus", "csm-1b", "Spark-TTS", "OuteTTS", "whisper"]) {
+  for (const family of [
+    "orpheus",
+    "csm-1b",
+    "Spark-TTS",
+    "OuteTTS",
+    "higgs-tts-2-3b-base",
+    "MOSS-TTS-Local-Transformer-v1.5",
+    "MOSS-TTS-Nano-100M",
+    "higgs-audio-v3-tts-4b-transformers",
+    "MiniMax-Music3",
+    "whisper",
+  ]) {
     assert.match(body, new RegExp(family, "i"), family);
+  }
+});
+
+test("the five native catalog rows are wired to native backend architectures", () => {
+  const backend = readFileSync(
+    new URL("../../backend/core/inference/native_audio.py", import.meta.url),
+    "utf8",
+  ).toLowerCase();
+  for (const repo of [
+    "bosonai/higgs-tts-2-3b-base",
+    "openmoss-team/moss-tts-local-transformer-v1.5",
+    "openmoss-team/moss-tts-nano-100m",
+    "multimodalart/higgs-audio-v3-tts-4b-transformers",
+    "minimaxai/minimax-music3",
+  ]) {
+    assert.match(
+      backend,
+      new RegExp(repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
   }
 });
 

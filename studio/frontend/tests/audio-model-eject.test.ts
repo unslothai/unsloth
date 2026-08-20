@@ -67,7 +67,7 @@ test("a Speak load asks the same question and forces from the answer", () => {
   // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
+    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
   );
   // Declining releases the slot and drops the queued pick, which would else re-ask.
   assert.match(
