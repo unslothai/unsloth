@@ -762,7 +762,10 @@ def main(argv: list) -> int:
         "--tier",
         choices = TIERS,
         default = "quick",
-        help = "quick ~5min (1K,10K), standard ~20min (+100K), full ~60min (+500K,1M)",
+        help = (
+            "fast ~5min (100K only, the iteration loop), quick ~5min (1K,10K, a wiring check), "
+            "standard ~20min (1K,10K,100K), full ~60min (+500K,1M)"
+        ),
     )
     ap.add_argument(
         "--doctor",
@@ -780,7 +783,7 @@ def main(argv: list) -> int:
     ap.add_argument(
         "--ab",
         metavar = "REF",
-        help = "A/B a second ref, interleaved within one session (not yet wired)",
+        help = "A/B a second ref, interleaved within one session; with --attach also pass --attach-b",
     )
     ap.add_argument(
         "--attach-b",

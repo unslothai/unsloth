@@ -15,7 +15,14 @@ answer was produced by not having it.
 2. Confirm   python -m tests.studio.studiobench --tier standard --reps 4    ~20 min
 3. Gate      per-metric floor, sign consistency, stability
 4. Parity    prove you did not change what is rendered
+5. Read      python -m tests.studio.studiobench --report <out>/payload.jsonl --tier standard
 ```
+
+Every step above except the last drives a real Studio and therefore needs credentials. The
+commands are written short here; see **"You need a Studio, and you need its password"** in
+[README.md](README.md) before you run the first one, because a missing `--password` fails as an
+HTTP 401 only after the browser has started, and `--doctor` reports PASS on that configuration.
+Step 5 needs neither Studio nor network.
 
 Steps 3 and 4 are not optional extras. A number that has not cleared them is not evidence.
 

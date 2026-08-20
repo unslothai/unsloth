@@ -6,13 +6,42 @@ A performance benchmark, profiler and A/B simulator for Unsloth Studio that runs
 
 ```
 pip install playwright psutil
-playwright install chromium
+playwright install webkit          # chromium on Windows; see "Which engine" below
 
 python -m tests.studio.studiobench --doctor
 ```
 
 `--doctor` is always the first command. It works on a machine with nothing installed, because every
-heavy import is lazy, and it names what is missing and what each missing piece costs you.
+heavy import is lazy, and it names what is missing and what each missing piece costs you. It does
+NOT check that it can log in to a Studio you point it at, so read the next section before you
+conclude that a `--doctor: PASS` means a run will start.
+
+### You need a Studio, and you need its password
+
+Every command below other than `--doctor` drives a real Studio, and Studio requires
+authentication. There are two ways to give it one.
+
+**Attach to a Studio you are already running.** This is the cheap path, and it needs the
+credentials, which are NOT optional and default to nothing:
+
+```
+python -m tests.studio.studiobench --tier fast \
+    --attach http://127.0.0.1:5401 \
+    --password "$(cat ~/.unsloth/studio/auth/.bootstrap_password)"
+```
+
+`--username` defaults to `unsloth`, `--password` defaults to empty. Without a correct password the
+run aborts with `HTTP 401 from .../api/auth/login` after the browser has already started. If you
+launched Studio with a non-default `UNSLOTH_STUDIO_HOME`, the password file is
+`$UNSLOTH_STUDIO_HOME/auth/.bootstrap_password`.
+
+Note that studiobench **rotates** the password to its own bench value on first login, so a second
+run against the same Studio does not need `--password` again.
+
+**Or let studiobench install and launch its own Studio** with `--branch REF`. No password needed,
+because it owns the instance, but the first run clones this repository and runs `install.sh`, which
+is a multi-gigabyte download budgeted at up to 45 minutes. The wall-clock figures in the table
+below are the measurement only and do not include that install.
 
 Then pick a path. There are two that matter:
 
@@ -25,12 +54,22 @@ Then pick a path. There are two that matter:
 ceiling hunt. Neither is the loop you work in.
 
 ```
-# iterate against a Studio you are already running
-python -m tests.studio.studiobench --tier fast --attach http://127.0.0.1:5401
+# iterate against a Studio you are already running (see the password note above)
+python -m tests.studio.studiobench --tier fast \
+    --attach http://127.0.0.1:5401 \
+    --password "$(cat ~/.unsloth/studio/auth/.bootstrap_password)" \
+    --out outputs/mine
 
 # confirm, letting studiobench install and launch its own Studio from a ref
-python -m tests.studio.studiobench --tier standard --branch main --reps 4
+python -m tests.studio.studiobench --tier standard --branch main --reps 4 --out outputs/mine
+
+# read the payload back as a scored report; writes <out>/summary.md beside it
+python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
 ```
+
+Pass `--out` explicitly. Without it the run invents a `studiobench-<tier>-<timestamp>/` directory
+in whatever your working directory is, which for someone standing in a clone means an untracked
+directory in the repository root.
 
 **The fast tier is a screen, not a result.** One rung, a wider detection floor, direction only. It
 exists so that someone trying a fix does not wait 20 minutes to learn they were wrong. Nothing goes
@@ -226,9 +265,17 @@ negative result is worth more than a fix aimed at the wrong mechanism.
 
 ## Output
 
-`report/payload.jsonl`, one JSON object per line, flushed and fsynced as it is produced, so a
+`<out>/payload.jsonl`, one JSON object per line, flushed and fsynced as it is produced, so a
 renderer crash at rung 4 still ships rungs 1 to 3 plus the crash record. A cell that could not
 complete emits a `cell` row with `completed: false`, its failure mode and its RSS at death.
+(`<out>` is the `--out` directory. `report/` is the source package that renders the payload, not
+an output path.)
+
+`--report <out>/payload.jsonl` scores that file and prints the summary, writing it to
+`<out>/summary.md` as well. It needs no browser, no Studio and no network, which is the point of
+shipping a single-file benchmark: the numbers come back as a file and the analysis happens
+wherever the analyst is. Pass the same `--tier` (or `--rungs`) the run used, or the ladder will
+report rungs you never declared as incomplete.
 
 ## Portability
 
