@@ -89,6 +89,9 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
+// Keep the download header and one row visible when collapsible cards report
+// only their borders to the squeeze probe.
+const MIN_CARD_ROOM = 128;
 // Room the stack asks for before it has been measured. Deliberately small: guessing
 // high is what parked the loaded models card mid-window with the corner underneath it
 // empty. The real height arrives from the stack's ResizeObserver on the next frame.
@@ -251,6 +254,11 @@ export function stackMaxHeight(
   }
   // At least MIN_STACK_ROOM, since anything tighter reaches at this inset.
   return Math.min(ownMargin, roomBelow(frame, viewportHeight, bottomInset));
+}
+
+/** Hold a collapsible rail to a usable floor without exceeding its full height. */
+export function usableFloorRoom(squeezed: number, natural: number): number {
+  return Math.max(squeezed, Math.min(natural, MIN_CARD_ROOM));
 }
 
 export type StackGeometry = { bottom: number; maxHeight: number };
@@ -496,7 +504,7 @@ export function useStackGeometry(): StackPlacement {
       // hold `natural` when it only has to hold `floor` is what made a 3px
       // shortfall at 1280x830 give up on dodging the composer entirely.
       node.style.maxHeight = "0px";
-      const floor = node.scrollHeight;
+      const floor = usableFloorRoom(node.scrollHeight, natural);
       node.style.maxHeight = capped;
       if (node.scrollTop !== scrolled) {
         node.scrollTop = scrolled;

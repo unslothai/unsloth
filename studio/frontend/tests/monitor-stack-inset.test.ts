@@ -9,6 +9,7 @@ import {
   type MonitorFrame,
   stackBottomInset,
   stackGeometry,
+  usableFloorRoom,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
 const W = 1440;
@@ -338,6 +339,55 @@ test("the docked composer is dodged however little the rail insists on", () => {
       `a rail with a ${floor}px floor must still clear Send`,
     );
   }
+});
+
+// The published form leaves a 5px strip above the footnote. A border-only floor
+// used to accept that strip and clip the download panel into a hairline.
+const NOTE_H = 800;
+const NOTE_DOCKED: MonitorFrame = {
+  left: 407,
+  top: 658.53,
+  right: 1143,
+  bottom: 770.53,
+  coverable: true,
+};
+// One download row under the panel's header, measured in the same window.
+const ONE_CARD = 121;
+
+test("the strip the composer's footnote leaves is not room for the rail", () => {
+  const geometry = stackGeometry(
+    NOTE_DOCKED,
+    CHAT_W,
+    NOTE_H,
+    ONE_CARD,
+    usableFloorRoom(2, ONE_CARD),
+  );
+  assert.ok(geometry.bottom > 16, "5px under the note is not a placement");
+  assert.ok(
+    NOTE_H - geometry.bottom <= NOTE_DOCKED.top,
+    "so the rail clears the composer",
+  );
+  assert.ok(geometry.maxHeight >= ONE_CARD, "and the card fits where it lands");
+});
+
+test("the floor is a card the reader can see, not what the rail can shrink to", () => {
+  assert.equal(usableFloorRoom(2, ONE_CARD), ONE_CARD);
+  assert.equal(usableFloorRoom(2, 40), 40);
+  assert.equal(usableFloorRoom(300, 480), 300);
+  // Long lists still scroll rather than asking for their full height.
+  assert.ok(usableFloorRoom(2, 480) < 480);
+});
+
+// Preserve #8462: the 163px welcome-screen band still keeps the corner.
+test("the welcome band still keeps the corner under a real floor", () => {
+  const geometry = stackGeometry(
+    WIDE_WELCOME,
+    WIDE_W,
+    WIDE_H,
+    328,
+    usableFloorRoom(2, 328),
+  );
+  assert.equal(geometry.bottom, 16, "the panel belongs in the corner");
 });
 
 test("a docked composer is dodged whatever the stack measures", () => {
