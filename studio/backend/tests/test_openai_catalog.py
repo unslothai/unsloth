@@ -326,11 +326,20 @@ def test_a_loaded_entry_still_lists_its_sibling_quants(monkeypatch):
     from core.inference.local_model_resolver import _LocalGgufEntry
 
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
-    monkeypatch.setattr(resolver, "_scan", (1.0, {
-        "publisher/qwen3": _LocalGgufEntry(
-            "publisher/Qwen3", "/hf/models--publisher--Qwen3/snapshots/a", ("Q4_K_M", "Q8_0")
-        )
-    }))
+    monkeypatch.setattr(
+        resolver,
+        "_scan",
+        (
+            1.0,
+            {
+                "publisher/qwen3": _LocalGgufEntry(
+                    "publisher/Qwen3",
+                    "/hf/models--publisher--Qwen3/snapshots/a",
+                    ("Q4_K_M", "Q8_0"),
+                )
+            },
+        ),
+    )
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
 
     llama = _FakeLlama()
@@ -346,9 +355,11 @@ def test_a_loaded_entry_still_lists_its_sibling_quants(monkeypatch):
 def test_a_standalone_gguf_lists_no_quants_field(monkeypatch):
     from core.inference.local_model_resolver import _LocalGgufEntry
 
-    monkeypatch.setattr(resolver, "_scan", (1.0, {
-        "qwen3-q4": _LocalGgufEntry("Qwen3-Q4", "/srv/models/Qwen3-Q4.gguf", ())
-    }))
+    monkeypatch.setattr(
+        resolver,
+        "_scan",
+        (1.0, {"qwen3-q4": _LocalGgufEntry("Qwen3-Q4", "/srv/models/Qwen3-Q4.gguf", ())}),
+    )
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
 
