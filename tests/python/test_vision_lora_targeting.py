@@ -132,3 +132,18 @@ def test_embedding_redirect_keeps_lm_head_lora_for_fast_inference():
     assert modules_to_save is None
     assert moved == ()
     assert direct_target is False
+
+
+def test_embedding_redirect_deduplicates_preserved_target():
+    from unsloth.models._utils import _redirect_embedding_targets
+
+    adjusted, modules_to_save, moved, direct_target = _redirect_embedding_targets(
+        ["lm_head", "lm_head"],
+        None,
+        preserve_lm_head_target = True,
+    )
+
+    assert adjusted == ["lm_head"]
+    assert modules_to_save is None
+    assert moved == ()
+    assert direct_target is True

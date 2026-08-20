@@ -4459,6 +4459,7 @@ def _redirect_embedding_targets(
     if type(target_modules) not in (list, tuple) or not allow_redirect:
         return target_modules, modules_to_save, (), False
 
+    target_modules = list(dict.fromkeys(target_modules))
     embedding_modules = {"embed_tokens"}
     if redirect_lm_head:
         embedding_modules.add("lm_head")
