@@ -101,82 +101,35 @@ runs:
     # so what is left is compute, and the only way to stop paying it 13 times is to
     # not do it 13 times.
     #
-    # studio/setup.sh decides whether to rebuild by mtime: it looks for anything
-    # under frontend/ (maxdepth 1, minus bun.lock), frontend/src or frontend/public
-    # NEWER than frontend/dist, and skips the build when it finds nothing. So the key
-    # hashes exactly those three path groups. A hit then means the build inputs are
-    # byte-identical, which is a strictly stronger statement than the mtime test it
-    # rides on, and the restored dist is correct by construction rather than by luck.
+    # Delegated rather than written out here, since #9375, because the Windows jobs
+    # need the identical cache and do not go through this action: they run
+    # `install.ps1` from a hand-written `shell: pwsh` step. Two copies of a key whose
+    # drift is SILENT will drift -- the cache keeps hitting and starts serving a dist
+    # built from inputs the key no longer covers -- so the key has exactly one
+    # definition, in frontend-dist-restore, and that is where its reasoning lives.
     #
-    # tests/studio/test_frontend_dist_cache.py pins the key against the paths setup.sh
-    # actually reads, because the two drifting apart is silent: the cache would keep
-    # hitting and start serving a dist built from inputs no longer in the key.
+    # This action is therefore ROOT-CHECKOUT ONLY, and more explicitly than before.
+    # `uses: ./...` resolves from GITHUB_WORKSPACE and does not accept expressions,
+    # so the two references below cannot be prefixed for a job that checks this repo
+    # out into a subdirectory; such a job fails outright with "Can't find
+    # 'action.yml'". No caller does that today -- every call site is
+    # `./.github/actions/install-unsloth-local` -- and
+    # tests/studio/test_frontend_dist_cache.py asserts it stays true, so the next
+    # person meets a named rule instead of that error message. A nested-checkout job
+    # that wants the dist cache calls frontend-dist-restore/-save directly and passes
+    # their `path-prefix`, which is exactly what the Windows call sites do.
     #
-    # bun.lock is IN the key even though the staleness check excludes it. The check
-    # has to exclude it because the install regenerates it and it would self-trigger
-    # every run; the cache has no such problem, and a lockfile change means different
-    # dependencies and so a different bundle. That is deliberate and makes the cache
-    # safer than the check.
+    # (The runner resolves `./X` as `$GITHUB_WORKSPACE/X` unconditionally -- there is
+    # no branch that consults the referencing action's own directory, and `uses:`
+    # takes no expressions, so this cannot be parameterised. actions/runner#1348 is
+    # the open bug. If the constraint ever needs lifting, the fix is the
+    # self-repository `uses:` syntax that went GA on 2026-07-30, which resolves
+    # against the repo at the running commit rather than the workspace; it needs
+    # runner >= 2.336.0, is unavailable on GHES, and nothing in this repo uses it
+    # yet, so adopting it is a separate decision from this one.)
     - name: Restore the built frontend
       id: fe-dist
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-      continue-on-error: true
-      with:
-        path: studio/frontend/dist
-        # The two negations are load-bearing, not tidiness. `studio/frontend/*` is
-        # RECURSIVE: @actions/glob sets matchDirectories and implicitDescendants true, so a
-        # bare `*` matches the subdirectory ENTRY and then expands it. Verified against the
-        # real library -- `fe/*` yields fe/tests/t.txt, while `fe/*.txt` yields only
-        # fe/top.txt, which is why the docs' non-recursive example does not apply here.
-        # Without these, the key hashed all 457 files under frontend/tests and
-        # frontend/scripts, so editing any frontend TEST evicted a dist whose bundle is
-        # byte-identical. setup.sh reads neither directory, so excluding them makes the key
-        # mean what it already claimed to mean.
-        #
-        # Negations last: they filter everything matched before them. A subdirectory added
-        # later is NOT excluded, so it lands in the key and errs toward rebuilding, which is
-        # the safe direction. Narrowing this to an extension allowlist would fail the other
-        # way, silently serving a stale dist when a new top-level file type appeared.
-        # NO restore-keys, deliberately, and the opposite of the uv cache above. A
-        # near-miss download cache still supplies most of the wheels, which is most of
-        # the win. A near-miss dist is a bundle built from different source: wrong, not
-        # partial. Only an exact match may be served.
-        key: fe-dist-${{ runner.os }}-${{ hashFiles('studio/frontend/*', 'studio/frontend/src/**', 'studio/frontend/public/**', '!studio/frontend/tests/**', '!studio/frontend/scripts/**') }}
-
-    - name: Make the restored frontend outrank its sources
-      if: steps.fe-dist.outputs.cache-hit == 'true'
-      shell: bash
-      run: |
-        # actions/cache restores through tar, which preserves the ORIGINAL mtimes. A
-        # dist restored that way is older than the checkout that just wrote every
-        # source file, so setup.sh's `find -newer dist` would find the whole tree
-        # newer and rebuild anyway -- the cache would cost a download and save
-        # nothing, while looking like it worked. Touching the directory is what makes
-        # the hit count, and it is honest because the key already proved the inputs
-        # are byte-identical.
-        #
-        # The directory only: the staleness check compares against `frontend/dist`
-        # itself, not its contents.
-        if [ ! -d studio/frontend/dist ]; then
-          echo "::error::the frontend dist cache reported a hit but restored no directory"
-          exit 1
-        fi
-        touch studio/frontend/dist
-        echo "restored a prebuilt frontend; setup.sh will report it up to date"
-
-    - name: Refuse a frontend cache key that hashes nothing
-      shell: bash
-      env:
-        FE_KEY: ${{ hashFiles('studio/frontend/*', 'studio/frontend/src/**', 'studio/frontend/public/**', '!studio/frontend/tests/**', '!studio/frontend/scripts/**') }}
-      run: |
-        # hashFiles returns the empty string when a glob matches no file, which would
-        # collapse every commit onto one key and serve an arbitrary dist. That is the
-        # one way this cache can be actively wrong rather than merely useless, and it
-        # would be invisible: the restore succeeds and the build is skipped.
-        if [ -z "$FE_KEY" ]; then
-          echo "::error::hashFiles matched no frontend sources, so the dist cache key is degenerate. The frontend layout moved; update the key and tests/studio/test_frontend_dist_cache.py together."
-          exit 1
-        fi
+      uses: ./.github/actions/frontend-dist-restore
 
     - name: Install Unsloth (--local, --no-torch)
       shell: bash
@@ -212,26 +165,20 @@ runs:
               printf '[%4ds] %s\n' "$SECONDS" "$line"
             done
 
-    # Save on main only, like every other cache in this repo, and for the reason
-    # the HF and Playwright caches record: a PR-scoped entry can only be restored
-    # by re-runs of that same PR, while every PR can restore from the default
-    # branch. Saving on PRs would spend the 50 GiB budget -- measured at 99.3% full
-    # once already -- evicting main's copy, which is the one everyone reads.
+    # Same pair as the restore above, and the other half of the reason to delegate:
+    # this action gets the post-install reuse assertion (a hit followed by a
+    # `building frontend` line fails the job) for free, in the same place the eight
+    # five Windows job-legs get it.
     #
-    # `uv cache prune --ci` first: uv keeps built wheels AND unpacked source
+    # `uv cache prune --ci` further down: uv keeps built wheels AND unpacked source
     # artifacts, and only the former are worth carrying between runners. Without it
-    # this key grows without bound across 39 jobs and re-opens the eviction thrash
+    # that key grows without bound across 39 jobs and re-opens the eviction thrash
     # the GGUF caches were fixed for.
-    # Main only, the rule every cache in this repo follows: a PR-scoped entry can only
-    # be restored by re-runs of that same PR while still counting against the shared
-    # budget, evicting the copy every PR can read.
     - name: Save the built frontend
-      if: github.ref == 'refs/heads/main' && steps.fe-dist.outputs.cache-hit != 'true'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-      continue-on-error: true
+      uses: ./.github/actions/frontend-dist-save
       with:
-        path: studio/frontend/dist
-        key: ${{ steps.fe-dist.outputs.cache-primary-key }}
+        cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+        key: ${{ steps.fe-dist.outputs.key }}
 
     - name: Save the uv download cache
       if: always() && github.ref == 'refs/heads/main' && steps.uv-cache.outputs.cache-hit != 'true'
