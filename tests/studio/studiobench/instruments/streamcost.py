@@ -69,6 +69,8 @@ class StreamCostInstrument(_PageInstrument):
         # (an instrument that raised is disabled for the rest of the cell, and the accumulator
         # would otherwise carry that cell's remaining traffic into this window).
         self._eval("() => window.__sb.streamcost && window.__sb.streamcost.reset()")
+        # O(1), off the wire. This used to be a `querySelectorAll` over the whole document at
+        # both ends of every window; see the long note in streamcost.js for why that had to go.
         self._chars_open = self._eval(
             "() => window.__sb.streamcost && window.__sb.streamcost.replyChars()"
         )
@@ -83,14 +85,24 @@ class StreamCostInstrument(_PageInstrument):
                 "unavailable": self.unavailable or "the page did not answer",
                 "stream_cost_attempted": False,
             }
-        # Forced when the window carried SSE traffic: the open-read is skipped on windows long
-        # past the stream, and a window that unexpectedly streamed must not be scored from a
-        # half-taken pair.
-        saw_traffic = bool(out.get("streaming_observed"))
-        chars_close = self._eval("(f) => window.__sb.streamcost.replyChars(f)", saw_traffic)
+        # No `force` argument any more. The old DOM read was skipped on windows long past the
+        # stream because it was expensive; this one is a counter read, so it is taken on every
+        # window unconditionally and the "the open-read was skipped, so the pair is half-taken"
+        # case cannot arise.
+        chars_close = self._eval("() => window.__sb.streamcost.replyChars()")
         out["stream_cost_attempted"] = True
         out["reply_chars_open"] = self._chars_open
         out["reply_chars_close"] = chars_close
+        # WHERE THE DENOMINATOR CAME FROM, in the payload rather than in this file. A reader
+        # comparing a run recorded before this change with one recorded after is comparing two
+        # different quantities -- the growth of the last mounted message against the characters
+        # delivered to the page -- and nothing else in the row would tell them so.
+        out["reply_chars_source"] = "sse_wire"
+        out["reply_chars_source_note"] = (
+            "counted from the SSE deltas in the decode hook, O(the chunk). Previously read from "
+            "the DOM with a querySelectorAll, which is O(the document) and therefore cheaper on "
+            "an arm that mounts fewer nodes"
+        )
 
         if self._chars_open is None or chars_close is None:
             out["reply_chars_delta"] = None
@@ -100,15 +112,18 @@ class StreamCostInstrument(_PageInstrument):
                 "than the idle gap when the window opened"
             )
         elif chars_close < self._chars_open:
-            # THE REPLY WAS REPLACED, NOT EXTENDED. `send_turn` starts a new assistant message and
-            # `thread_reopen` rebuilds the thread, so the last message can be SHORTER at the close
-            # of a window than it was at the open. That is not negative streaming; it is a
-            # different message. A signed delta here would subtract from the denominator and
-            # inflate the cost per character without anything in the payload saying why.
+            # NOW UNREACHABLE, AND KEPT ANYWAY. The wire counter is cumulative and monotonic, so
+            # it cannot go backwards; if it ever does, the instrument has been reset underneath
+            # itself and the delta is meaningless. Under the old DOM reading this branch fired
+            # legitimately and often: `send_turn` starts a new assistant message and
+            # `thread_reopen` rebuilds the thread, so the LAST message was routinely shorter at
+            # the close of a window than at its open, and those windows lost their denominator
+            # for a reason that had nothing to do with streaming.
             out["reply_chars_delta"] = None
             out["reply_chars_delta_reason"] = (
-                f"the last assistant message shrank from {self._chars_open} to {chars_close} "
-                "characters, so it is a different message and its growth is not measurable here"
+                f"the wire character counter went backwards, from {self._chars_open} to "
+                f"{chars_close}. It is cumulative and monotonic, so this means the page was "
+                "reloaded or the instrument was reinstalled inside the window"
             )
         else:
             out["reply_chars_delta"] = chars_close - self._chars_open
@@ -122,14 +137,32 @@ class StreamCostInstrument(_PageInstrument):
         # Declared even though level 0 is not obliged to: the whole argument for calling this
         # level 0 is that its cost does not grow with the rung, and a claim like that should be
         # checkable from the payload rather than from this docstring.
+        #
+        # THE ONE DOM READ, and it happens HERE, which is after the last window of the cell has
+        # closed and before the next cell's first one opens. Its cost is charged to no window and
+        # therefore to no arm. It exists because the wire count and the DOM count answer different
+        # questions -- what the app was sent, and what it rendered -- and their disagreement is
+        # the cheapest available check that a windowed arm is dropping text rather than merely
+        # not mounting it.
+        wire = self._eval("() => window.__sb.streamcost.wireStats()") or {}
+        dom_chars = self._eval("() => window.__sb.streamcost.replyCharsDom(true)")
         return {
             "overhead_ms": round(self._overhead_ms, 2),
             "overhead_attempted": True,
             "overhead_note": (
                 "measured inside the decode hook and at the window boundaries, not estimated. "
-                "O(1) per SSE chunk, but the reply-length read is a querySelectorAll and so is "
-                "O(the whole DOM): 38.8 ms per cell at 10K and 289.6 ms at 100K before the "
-                "post-stream windows were skipped. It is identical on both arms of an A/B and "
-                "cancels in a paired ratio; it does NOT cancel across rungs"
+                "O(1) per SSE chunk and O(the chunk) for the wire character count; nothing here "
+                "is proportional to the document, the rung or the arm. The reply-length read USED "
+                "to be a querySelectorAll -- O(the whole DOM), 38.8 ms per cell at 10K and "
+                "289.6 ms at 100K -- and was justified on the grounds that it cancels in a paired "
+                "ratio. It does not cancel against an arm that changes the size of the document, "
+                "so it was removed from the paired path entirely"
+            ),
+            "wire": wire,
+            # Outside every window, so this number is not in anybody's frame rate.
+            "last_message_chars_in_dom": dom_chars,
+            "last_message_chars_note": (
+                "read once, after the film, purely as a cross-check against the wire count. Never "
+                "inside a measured window and never used as a denominator"
             ),
         }

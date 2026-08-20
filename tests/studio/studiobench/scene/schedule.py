@@ -303,11 +303,21 @@ class SceneRunner:
         # payload this tool has already written and in the analysis scripts pointed at them;
         # renaming it would break those silently, which is a worse failure than a misleading name
         # that is now documented in INTERFACES.md and contradicted by the kind beside it.
+        # THE CENSUS IS TAKEN BEFORE THE GAP WINDOW OPENS, not at its close. Same defect as the
+        # action windows (workspace task #102) and the same fix, but the placement is different:
+        # a gap window is the QUIET stretch, and its whole purpose is to measure the page doing
+        # nothing but stream. Nineteen querySelectorAll passes over 195,000 elements at the end of
+        # it is not nothing, and it landed on the frame-rate reading for the idle phase.
+        #
+        # Before rather than after, because the gap ends the instant the next slot is due: taking
+        # it afterwards would push the action's start past its own slot and turn an instrument cost
+        # into a missed slot, which is a worse failure than the one being fixed.
+        census = self._census()
         with self.open_window(name, "gap") as window:
+            window.note("census_before_gap", census)
             while (time.monotonic() - t0) * 1000 < until_ms:
                 time.sleep(min(0.2, max(0.01, (until_ms - (time.monotonic() - t0) * 1000) / 1000)))
             window.note("waited_to_ms", until_ms)
-            window.note("census", self._census())
 
     def _run_slot(self, slot: Slot, t0: float) -> dict:
         entry = get_action(slot.action)
@@ -361,23 +371,43 @@ class SceneRunner:
                 result = not_run(f"the action raised {type(exc).__name__}: {exc}")
             window.note("action", slot.action)
             window.note("ran", result.ran)
-            # A CENSUS PER ACTION, taken at the close of every window.
-            #
-            # Not a nicety. The end-of-cell census is taken after the film has finished, and the
-            # film ENDS with thread_reopen and delete_message -- so the "final" census of the
-            # first working run read 0 assistant messages and 0 characters, having faithfully
-            # measured a thread the benchmark had just deleted. A census per window gives the
-            # occupancy at the moment each action ran, which is the denominator every per-action
-            # cost needs anyway, and it makes the peak recoverable no matter what the last action
-            # did. Measured cost on a 1,500-element tree: 0.2ms.
-            window.note("census", self._census())
-            window.note("parity", self._parity())
+
+        # THE CENSUS AND THE PARITY DIGEST ARE TAKEN OUTSIDE THE WINDOW. Workspace task #102.
+        #
+        # Both used to run inside the `with`, one line above this comment, on the strength of a
+        # measurement -- "0.2ms on a 1,500-element tree" -- taken on a tree three orders of
+        # magnitude smaller than the one this benchmark exists to study. At 100K+ tokens the
+        # census walks nineteen querySelectorAll passes over ~195,000 elements and the parity
+        # digest serialises 5.6 MB of structure, and every millisecond of it was being charged to
+        # the action that happened to precede it. Measured cost of the mistake:
+        #
+        #   delete_message   reported 14.3 fps, true 49.0 fps
+        #   message_menu     reported 17.1 fps, true 73.8 fps
+        #
+        # That is not a correction at the margin. It inverted the ranking of the actions this
+        # campaign is about, and it did it in the direction that makes the standing DOM look like
+        # a smaller problem than it is, because the instrument's own cost grows with exactly the
+        # quantity under investigation.
+        #
+        # They still run at the same MOMENT -- immediately after the window closes, before the
+        # scheduler starts waiting for the next slot -- so the digest and the occupancy still come
+        # from one reading of one DOM taken at the end of the action. Only the accounting moved.
+        #
+        # The consequence, stated: the emitted `window` row no longer carries them in its notes,
+        # because the row is emitted when the window closes. They live on the ACTION row, which is
+        # where every consumer already reads them from.
+        census = self._census()
+        parity = self._parity()
 
         over_ms = ((time.monotonic() - t0) * 1000) - deadline_ms
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
-        row["census"] = window.notes.get("census")
-        row["parity"] = window.notes.get("parity")
+        row["census"] = census
+        row["parity"] = parity
+        # The observation cost itself, so it is never invisible again. `census_cost_ms` is the
+        # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
+        # the number is in the payload rather than in someone's hypothesis.
+        row["observation_outside_window"] = True
         # An action that ran but overran its budget has pushed nothing (the next slot has its own
         # absolute start), but it has overlapped the next one, so it is flagged.
         row["over_budget_ms"] = round(over_ms, 1) if over_ms > 0 else 0.0

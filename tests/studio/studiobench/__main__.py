@@ -199,6 +199,7 @@ def run(args, ab_ref = None) -> int:
         wait_for_healthz,
     )
     from .runtime.seeder import Seeder
+    from .runtime.readiness import MODE_FULL, MODE_WINDOWED
     from .runtime.session import CellRunner, build_cells, ensure_probe_image, make_context
     from .runtime import resources
     from .runtime.types import Paths
@@ -419,6 +420,41 @@ def run(args, ab_ref = None) -> int:
     )
 
     image_path = ensure_probe_image(paths)
+    # WHICH SIDE, IF ANY, IS ALLOWED THE WINDOWED READINESS GATE.
+    #
+    # Per side and never global, so an A/B of the shipped build against a virtualised one runs the
+    # base arm on the strict full-mount gate it has always had. A flag that relaxed both sides
+    # would let a base arm that failed to finish mounting sail through and be compared against a
+    # treatment that did the same, which is the exact "flattering garbage" the gate exists to
+    # refuse -- on both arms at once, so the ratio would still look fine.
+    windowed = {
+        name.strip() for name in (getattr(args, "windowed_arm", "") or "").split(",") if name.strip()
+    }
+    unknown = windowed - {s["label"] for s in sides}
+    if unknown:
+        raise SystemExit(
+            f"--windowed-arm names {sorted(unknown)}, which is not an arm in this run "
+            f"({sorted(s['label'] for s in sides)})"
+        )
+    for side in sides:
+        side["readiness_mode"] = MODE_WINDOWED if side["label"] in windowed else MODE_FULL
+        if side["readiness_mode"] == MODE_WINDOWED:
+            _log(
+                f"  {side['label']}: WINDOWED readiness gate. This arm is permitted to mount fewer "
+                "messages than the thread contains; it must publish aria-setsize matching the "
+                "seeded count, mount the end of the thread, settle, and pass the scroll-to-top "
+                "completeness probe. See runtime/readiness.py."
+            )
+            rec.gate(
+                f"windowed_readiness:{side['label']}",
+                True,
+                {
+                    "arm": side["label"],
+                    "reason": "declared on the command line with --windowed-arm",
+                    "note": "structural UI parity is NOT APPLICABLE to this arm; run "
+                    "sweep/ui_parity.py --mode behaviour",
+                },
+            )
     for side in sides:
         side_seeder = Seeder(
             base_url = side["base_url"], auth = side["auth"], model_id = model_id, log = _log
@@ -430,6 +466,7 @@ def run(args, ab_ref = None) -> int:
             seeder = side_seeder,
             corpus = corpus,
             click_probe = bool(getattr(args, "click_probe", False)),
+            readiness_mode = side["readiness_mode"],
             base_url = side["base_url"],
             model_id = model_id,
             tier = args.tier,
@@ -883,6 +920,24 @@ def main(argv: list) -> int:
         help = "comma-separated action names --assert-liveness may excuse. Use only "
         "for an action a platform genuinely cannot perform, and say which in "
         "the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--windowed-arm",
+        metavar = "ARMS",
+        dest = "windowed_arm",
+        # An ENV FALLBACK as well as the flag. `scripts/pr_perf_sweep.py` builds studiobench's
+        # command line itself and is shared with other people's in-flight sweeps, so adding an
+        # argument there mid-run is a hazard; this lets the sweep driver select the gate through
+        # the environment without anybody editing the driver.
+        default = os.environ.get("SBENCH_WINDOWED_ARM", ""),
+        help = "comma-separated arm labels (base, treatment) that mount a WINDOW of the thread "
+        "rather than all of it, and are therefore gated on the windowed readiness signal "
+        "instead of on every message being mounted. Not a relaxation: the named arm must "
+        "publish aria-setsize equal to the seeded message count, mount the end of the "
+        "thread, settle, and pass a scroll-to-top completeness probe. Naming an arm that "
+        "does NOT virtualise makes no difference to it beyond the extra conditions. "
+        "Structural UI parity is not applicable to a windowed arm; score it with "
+        "sweep/ui_parity.py --mode behaviour",
     )
     ap.add_argument(
         "--click-probe",

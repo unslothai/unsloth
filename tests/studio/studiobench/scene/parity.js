@@ -286,6 +286,19 @@
           messages,
           overlays,
           styles,
+          // HOW MUCH OF THE THREAD THIS DIGEST COVERS.
+          //
+          // Every per-message row above is keyed by `i`, its position in the MOUNTED list. On the
+          // shipped build that is also its position in the conversation, so the key is meaningful
+          // and two arms can be compared row by row. On an arm that mounts a window it is not:
+          // msg3 on one side and msg3 on the other are different messages, and comparing their
+          // digests produces a wall of mismatches that says nothing about either build.
+          //
+          // Carrying the two numbers means the comparison layer can REFUSE rather than report
+          // eighteen false differences. Identical on the shipped build, so nothing changes for a
+          // normal pair.
+          mounted_messages: messages.length,
+          thread_total: (dom.threadTotal && dom.threadTotal()) || messages.length,
         };
         if (want_raw) out.raw = whole;
         return out;

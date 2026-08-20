@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from ..runtime.types import ActionContext, ActionResult, not_run
@@ -315,7 +316,16 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
         ran = True,
         expect_ok = ok,
         expect = {
+            # SCOPED TO WHAT IS MOUNTED, and always was. `reasoningTriggers()` is a
+            # querySelectorAll, so on the shipped build it finds every pane in the thread and on a
+            # windowed mount it finds the panes in the window. The assertion below stays
+            # self-consistent either way (it opens N and expects N open), so the action still
+            # passes -- but its COST silently stops being a function of thread length and becomes
+            # a function of window size. That is the arm's point, and it is also the reason this
+            # timing is not comparable between a windowed arm and a full one without the pane
+            # count beside it.
             "panes": raw["panes"],
+            "panes_scope": "mounted",
             "open_after_expand": raw["openCount"],
             "open_after_collapse": raw["afterClose"],
             "highlight_spans_while_open": raw["spansOpen"],
@@ -338,7 +348,9 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
 STOP_CLEANUP_JS = """
 async (timeoutMs) => {
   const D = window.__sb.dom;
-  const before = D.messageCount();
+  // threadTotal, not messageCount. Identical on the shipped build; under a windowed mount the
+  // window refills as the message leaves it, so a cleanup that worked reports after == before.
+  const before = D.threadTotal();
   const removeLast = async () => {
     const target = D.lastAssistantMessage();
     if (!target) return false;
@@ -354,7 +366,7 @@ async (timeoutMs) => {
     return false;
   };
   const dropped = await removeLast();
-  const after = D.messageCount();
+  const after = D.threadTotal();
   return {
     removed: dropped && after < before,
     before, after,
@@ -828,12 +840,54 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     ctx.page.keyboard.press("Control+C")
     ctx.page.wait_for_timeout(250)
     copy_ms = (time.monotonic() - copy_started) * 1000
+    # THE CLIPBOARD, NOT THE SELECTION.
+    #
+    # This action used to score itself on `Selection.toString().length`, and that is not what a
+    # user gets. The two came apart the moment an arm existed that unmounts messages AND handles
+    # the copy event: the selection can only ever cover mounted nodes, while a copy handler that
+    # reads the message store puts the whole conversation on the clipboard. Scored on the
+    # selection, a build that had FIXED the data loss would still be reported as losing data --
+    # the alarm would stay lit for a reason that no longer existed, which is the fastest way to
+    # get an alarm switched off.
+    #
+    # Read back before the selection is cleared, and the failure to read it is reported rather
+    # than treated as an empty clipboard: headless Chromium grants clipboard-read only with the
+    # permission the browser factory requests.
+    clip = None
+    clip_reason = None
+    try:
+        clip = ctx.page.evaluate("async () => await navigator.clipboard.readText()")
+    except Exception as exc:  # noqa: BLE001
+        clip_reason = f"the clipboard could not be read back: {type(exc).__name__}"
+    clipboard_chars = len(clip) if isinstance(clip, str) else None
     ctx.page.evaluate("() => window.getSelection().removeAllRanges()")
+    total = _ev(ctx, "() => window.__sb.dom.threadTotal()")
+    mounted = _ev(ctx, "() => window.__sb.dom.messageCount()")
     ok = raw["chars"] > 0
     return ActionResult(
         ran = True,
         expect_ok = ok,
-        expect = {"selected_chars": raw["chars"]},
+        expect = {
+            "selected_chars": raw["chars"],
+            # WHAT ACTUALLY REACHED THE CLIPBOARD. The user-facing quantity, and the one the
+            # truncation alarm is scored on. A windowed mount cannot SELECT what is not in the
+            # DOM, but it can still COPY it, if the app's copy handler reads the message store --
+            # which is the fix, and which this is the only reading able to see.
+            "clipboard_chars": clipboard_chars,
+            "clipboard_readable": clip_reason is None,
+            "clipboard_note": clip_reason,
+            # And the DOM coverage beside it, so the two can be told apart. Where
+            # `mounted_fraction` is well below 1 and `clipboard_chars` is nonetheless whole, the
+            # copy-from-store path is working; where both are short, the conversation is being
+            # lost. That is a user-visible defect and must not be filed as a measurement problem.
+            "messages_total": total,
+            "messages_mounted": mounted,
+            "mounted_fraction": (
+                round(mounted / total, 3)
+                if isinstance(total, int) and isinstance(mounted, int) and total
+                else None
+            ),
+        },
         timings = {
             "select_all_ms": raw["selectMs"],
             "copy_ms": round(copy_ms, 1),
@@ -843,8 +897,15 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
         # against: the selection is taken over the viewport's DOM, so if the DOM is windowed the
         # selection and every DOM-derived reference shrink together and agree with each other.
         # An absolute floor would need calibrating per rung and per platform, and would still be a
-        # guess. The count below is the real check, and it is paired against the other arm.
-        counts = {"selected_chars": raw["chars"]},
+        # guess. The counts below are the real check, and they are paired against the other arm.
+        #
+        # `clipboard_chars` FIRST, because it is the one a user would notice. `selected_chars` is
+        # kept beside it as the mechanism: if the clipboard held and the selection fell, the copy
+        # handler is reading the store; if both fell, the conversation is being lost.
+        counts = {
+            "clipboard_chars": clipboard_chars,
+            "selected_chars": raw["chars"],
+        },
         reason = None if ok else "select-all selected nothing",
     )
 
@@ -900,7 +961,12 @@ def send_turn(ctx: ActionContext) -> ActionResult:
         return not_run("no composer on the page")
     ctx.page.fill(selector, f"studiobench follow-up {index + 1}")
     ctx.page.wait_for_timeout(80)
-    before = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    # THE THREAD'S LENGTH, not the mounted count. "The thread grew" is a statement about the
+    # conversation; a windowed mount answers it about the viewport, and the answer it gives is
+    # `after == before` for a send that worked perfectly, because the new pair arrives at the
+    # bottom while two messages leave the top of the window.
+    before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
+    mounted_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
     started = time.monotonic()
     ctx.page.keyboard.press("Enter")
 
@@ -911,7 +977,8 @@ def send_turn(ctx: ActionContext) -> ActionResult:
             first_ms = (time.monotonic() - started) * 1000
             break
         ctx.page.wait_for_timeout(50)
-    after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
+    mounted_after = _ev(ctx, "() => window.__sb.dom.messageCount()")
     # A POSITIVE consequence: the turn actually started streaming AND the thread grew. A send that
     # silently failed leaves both unchanged and would otherwise read as an instant send.
     ok = (
@@ -926,6 +993,11 @@ def send_turn(ctx: ActionContext) -> ActionResult:
         expect = {
             "messages_before": before,
             "messages_after": after,
+            # What was MOUNTED either side, kept beside the thread totals. On the shipped build
+            # these two pairs are identical; where they differ, the difference is the size of the
+            # window and it is the reading the whole virtualization arm exists to produce.
+            "mounted_before": mounted_before,
+            "mounted_after": mounted_after,
             "turn_index": index + 1,
             "queued_turns": len(queue),
             "streamed_chars": len(unit["reasoning"]) + len(unit["content"]),
@@ -1064,18 +1136,42 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     thread_id = ctx.args.get("thread_id")
     if not thread_id:
         return not_run("no thread id was supplied to the action")
-    before = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    # The THREAD's length, not the mounted count: a windowed arm that reopens with a different
+    # scroll anchor mounts a different number of rows, and the exact-equality assertion at the end
+    # of this action would then fail for a reason that has nothing to do with the rebuild.
+    before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
+    mounted_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
     if not before:
         return not_run("the thread has no messages to rebuild")
     started = time.monotonic()
-    # Click if the control is really clickable, otherwise NAVIGATE. The sidebar's sticky group
-    # label overlays the New chat button and intercepts the pointer, so the click retries until it
-    # times out on a button that is visible, enabled and stable -- and the action then reports a
-    # rebuild that never happened. `/chat?new=` is what the button itself does.
-    if not _click_or_navigate(
+    leave = _click_or_navigate(
         ctx, 'button[aria-label="New chat"]', f"{ctx.args['base_url']}/chat?new=studiobench"
-    ):
-        return not_run("the thread could not be left, by click or by navigation")
+    )
+    if not leave.ok:
+        return not_run(f"the thread could not be left: {leave.reason}")
+    if leave.navigated:
+        # LOUD, AND FATAL TO THE READING. Workspace task #102.
+        #
+        # This used to be a silent substitution: the New chat click failed, `page.goto` ran
+        # instead, and the action returned a perfectly normal-looking row. But a goto is a FULL
+        # DOCUMENT NAVIGATION -- the SPA is torn down and reparsed, the bundle re-executes, the
+        # runtime rehydrates from IndexedDB -- while the click is a client-side route change that
+        # rebuilds one React subtree. They are not the same operation and they do not cost the same
+        # thing. Read as though it were the click, the substitution produced thread_reopen at
+        # 6.0 fps, which is a number about a page load being quoted as a number about a thread.
+        #
+        # So it is `ran = False` now. The row says the surface went unmeasured, which is the truth,
+        # instead of contributing an instrument artefact to a table of user costs.
+        ctx.log(
+            "    thread_reopen NOT MEASURED: the New chat button could not be clicked, so leaving "
+            f"the thread fell back to a full page navigation ({leave.reason}). A navigation "
+            "reloads the whole app and is not the operation this action exists to time."
+        )
+        return not_run(
+            "the New chat control could not be clicked and a full page navigation was substituted; "
+            "a document reload is not a thread rebuild, so this reading is not a measurement of "
+            f"the action ({leave.reason})"
+        )
     # Unmount FIRST, or "already back" is indistinguishable from "never left".
     closed_ms = None
     deadline = started + 15
@@ -1088,24 +1184,43 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         return not_run("the thread never unmounted, so the rebuild could not be timed")
 
     reopen_started = time.monotonic()
-    if not _click_or_navigate(
+    back = _click_or_navigate(
         ctx, f'[data-thread-id="{thread_id}"]', f"{ctx.args['base_url']}/chat?thread={thread_id}"
-    ):
-        return not_run("the thread could not be reopened, by click or by navigation")
+    )
+    if not back.ok:
+        return not_run(f"the thread could not be reopened: {back.reason}")
+    if back.navigated:
+        ctx.log(
+            "    thread_reopen NOT MEASURED: the sidebar row for the thread could not be clicked, "
+            f"so reopening fell back to a full page navigation ({back.reason})."
+        )
+        return not_run(
+            "the thread's sidebar row could not be clicked and a full page navigation was "
+            f"substituted, so the rebuild was never timed ({back.reason})"
+        )
     reopen_ms = None
     deadline = reopen_started + 60
     while time.monotonic() < deadline:
-        if (_ev(ctx, "() => window.__sb.dom.messageCount()") or 0) >= before:
+        if (_ev(ctx, "() => window.__sb.dom.threadTotal()") or 0) >= before:
             reopen_ms = (time.monotonic() - reopen_started) * 1000
             break
         ctx.page.wait_for_timeout(100)
-    after = _ev(ctx, "() => window.__sb.dom.messageCount()")
+    after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
+    mounted_after = _ev(ctx, "() => window.__sb.dom.messageCount()")
     spans = _ev(ctx, "() => document.querySelectorAll('pre span').length")
     ok = reopen_ms is not None and after == before
     return ActionResult(
         ran = True,
         expect_ok = ok,
-        expect = {"messages_before": before, "messages_after": after, "highlight_spans_after": spans},
+        expect = {
+            "messages_before": before,
+            "messages_after": after,
+            "mounted_before": mounted_before,
+            "mounted_after": mounted_after,
+            "highlight_spans_after": spans,
+            "left_via": leave.path,
+            "reopened_via": back.path,
+        },
         timings = {
             "close_ms": round(closed_ms, 1),
             "reopen_ms": None if reopen_ms is None else round(reopen_ms, 1),
@@ -1114,28 +1229,58 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     )
 
 
-def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> bool:
-    """Click the control a user would click; fall back to the URL it would produce.
+@dataclass
+class Transition:
+    """WHICH ROUTE a state change took, so a substitute can never be read as the original.
 
-    A click is preferred because it exercises the app's own handler. But Playwright's
-    actionability retries do not give up on an element that is visible, enabled and stable and
-    merely covered by something else, which is the sidebar's sticky group label over the New chat
-    button -- so the click burns its whole timeout and the action reports a rebuild that never
-    happened. The navigation is the same state transition by the route the app's own control uses.
+    `ok` alone was the whole return value of `_click_or_navigate`, and it collapsed three
+    outcomes -- the control was clicked, the control failed and a page load was substituted, and
+    nothing worked -- into two. The middle one is the dangerous one: it produces a row that looks
+    like a measurement of a click and is a measurement of a document reload.
+    """
+
+    ok: bool
+    path: str  # "click", "navigate" or "failed"
+    reason: str = ""
+
+    @property
+    def navigated(self) -> bool:
+        return self.path == "navigate"
+
+
+def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transition:
+    """Click the control a user would click; fall back to the URL it would produce, and SAY SO.
+
+    A click is preferred because it exercises the app's own handler. Playwright's actionability
+    retries do not give up on an element that is visible, enabled and stable and merely covered by
+    something else, which is the sidebar's sticky group label over the New chat button -- so the
+    click burns its whole timeout. The navigation reaches the same app state, and for getting the
+    scene somewhere it is a perfectly good tool.
+
+    WHAT IT IS NOT is the same operation, and the caller is now told which one it got. Every
+    caller must decide for itself whether a navigation still answers its question. `thread_reopen`
+    decides that it does not, because a document reload and a subtree rebuild are the two things
+    that action exists to tell apart.
     """
     handle = ctx.page.query_selector(selector)
+    click_error = f"no element matched {selector}"
     if handle is not None:
         try:
             handle.click(timeout = 2000)
-            return True
-        except Exception:  # noqa: BLE001
-            ctx.log(f"    {selector} was not clickable; navigating instead")
+            return Transition(ok = True, path = "click")
+        except Exception as exc:  # noqa: BLE001
+            click_error = f"{selector} was not clickable: {type(exc).__name__}"
+            ctx.log(f"    {click_error}; navigating instead")
     try:
         ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
-        return True
+        return Transition(ok = True, path = "navigate", reason = click_error)
     except Exception as exc:  # noqa: BLE001
         ctx.log(f"    navigation to {url} failed: {type(exc).__name__}: {exc}")
-        return False
+        return Transition(
+            ok = False,
+            path = "failed",
+            reason = f"{click_error}, and the navigation failed too: {type(exc).__name__}",
+        )
 
 
 # ── 14. message menu ────────────────────────────────────────────────
@@ -1241,18 +1386,27 @@ async (timeoutMs) => {
   const button = D.actionButton("Delete message");
   if (!button) return { ran: false, reason: "no Delete button (a running message hides it)" };
   const target = D.lastAssistantMessage();
-  const before = D.messageCount();
+  const before = D.threadTotal();
+  const mountedBefore = D.messageCount();
   const started = performance.now();
   button.click();
   let ms = null;
   // isConnected on the captured node is O(1). Re-counting [data-role] every frame would put an
   // O(messages) query INSIDE the window being timed, growing like the signal.
+  //
+  // THE LIMIT OF isConnected, recorded rather than worked around: it goes false when the node
+  // leaves the document, and a virtualised list unmounts a node for scrolling as readily as for
+  // deleting. Nothing scrolls during this action, so in this scene the two cannot be confused --
+  // but the timing is only trustworthy when the thread total ALSO dropped, which is what
+  // `expect_ok` requires below. A `ms` with an unchanged total is a node that was unmounted, not
+  // a message that was deleted, and it must never be read as a fast delete.
   while (performance.now() - started < timeoutMs) {
     if (target === null || !target.isConnected) { ms = performance.now() - started; break; }
     await window.__sbNextPaint();
   }
   return { ran: true, ms: ms === null ? null : Math.round(ms * 10) / 10,
-           before, after: D.messageCount() };
+           before, after: D.threadTotal(),
+           mountedBefore, mountedAfter: D.messageCount() };
 }
 """
 
@@ -1265,8 +1419,9 @@ def delete_message(ctx: ActionContext) -> ActionResult:
         return not_run(err)
     if not raw.get("ran"):
         return not_run(raw.get("reason", "the delete action did not run"))
-    # The [data-role] count DROPPED. A delete that detached the node but left the count is a
-    # different bug and must not read as a successful delete.
+    # The THREAD TOTAL dropped. A delete that detached the node but left the thread the same
+    # length is a different bug -- or, on a windowed mount, a node the virtualizer recycled -- and
+    # must not read as a successful delete.
     ok = raw["ms"] is not None and raw["after"] < raw["before"]
     return ActionResult(
         ran = True,
@@ -1275,6 +1430,8 @@ def delete_message(ctx: ActionContext) -> ActionResult:
             "messages_before": raw["before"],
             "messages_after": raw["after"],
             "dropped": raw["before"] - raw["after"],
+            "mounted_before": raw.get("mountedBefore"),
+            "mounted_after": raw.get("mountedAfter"),
         },
         timings = {"delete_ms": raw["ms"]},
         reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",

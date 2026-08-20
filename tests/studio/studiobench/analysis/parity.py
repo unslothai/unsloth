@@ -30,6 +30,18 @@ MATCH = "match"
 DIFFER = "differ"
 NOT_COMPARABLE = "not_comparable"
 NOT_EXERCISED = "not_exercised"
+#: THE FOURTH OUTCOME, and it is not a softer NOT_COMPARABLE.
+#:
+#: NOT_COMPARABLE means the reading failed or the two readings are of different things by
+#: accident. NOT_APPLICABLE means the question itself is wrong for this pair: the structural
+#: digest asks "is the same DOM on screen", and an arm whose entire purpose is to put less DOM on
+#: screen answers "no" by construction. Reporting that as a UI difference would be true and
+#: useless -- eighteen red rows, none of them a finding, and the real behavioural questions
+#: drowned underneath them.
+#:
+#: It is kept distinct from NOT_COMPARABLE so a reader can tell "we could not measure this" from
+#: "this measurement does not apply here", and so `derive_unstable` counts neither as evidence.
+NOT_APPLICABLE = "not_applicable"
 
 # Actions whose rendered result legitimately differs between two runs of the SAME build, so a
 # digest mismatch there carries no information about the pull request under test.
@@ -74,6 +86,59 @@ def _messages(capture: dict) -> dict[int, dict]:
 
 def _overlays(capture: dict) -> list[dict]:
     return list(capture.get("overlays") or [])
+
+
+def windowed_mount(capture: Optional[dict]) -> bool:
+    """Did this capture come from a thread that mounts a WINDOW rather than the whole thing?
+
+    Read from the capture's own two numbers rather than from a flag the caller passed in, so an
+    arm cannot be scored as full-mount because somebody forgot to set an option. Captures taken
+    before those numbers existed report neither, and are treated as full-mount, which is what they
+    were.
+    """
+    if not isinstance(capture, dict):
+        return False
+    mounted, total = capture.get("mounted_messages"), capture.get("thread_total")
+    if not isinstance(mounted, int) or not isinstance(total, int):
+        return False
+    return total > mounted
+
+
+def applicability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
+    """Why the STRUCTURAL DIGEST is the wrong question for this pair, or None if it is the right one.
+
+    Two shapes, and both of them are answers rather than failures:
+
+      one arm mounts a window     the digests are of different amounts of DOM on purpose
+      the arms mounted different
+      numbers of messages         the per-message rows are keyed by position in the mounted list,
+                                  so msg3 is not the same message on the two sides and every row
+                                  would be reported as moved
+
+    What replaces it is in `analysis/behaviour.py`: matched scroll positions plus the behavioural
+    invariants that break first when a thread stops mounting everything.
+    """
+    if not isinstance(base, dict) or not isinstance(treat, dict):
+        return None
+    bw, tw = windowed_mount(base), windowed_mount(treat)
+    if bw or tw:
+        which = "both arms" if bw and tw else ("the base arm" if bw else "the treatment arm")
+        return (
+            f"{which} mounts a WINDOW of the thread "
+            f"(base {base.get('mounted_messages')} of {base.get('thread_total')}, treatment "
+            f"{treat.get('mounted_messages')} of {treat.get('thread_total')} messages mounted). "
+            "A structural DOM digest compares what is on screen, and this arm changes what is on "
+            "screen by design, so the comparison cannot distinguish the intended change from an "
+            "unintended one. Score this pair on behavioural invariants instead"
+        )
+    bm, tm = base.get("mounted_messages"), treat.get("mounted_messages")
+    if isinstance(bm, int) and isinstance(tm, int) and bm != tm:
+        return (
+            f"the arms mounted different numbers of messages ({bm} vs {tm}), and the per-message "
+            "digests are keyed by position in the mounted list, so no two rows describe the same "
+            "message"
+        )
+    return None
 
 
 def comparability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
@@ -202,6 +267,18 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             "style_reason": why,
         }
     assert base is not None and treat is not None
+    not_applicable = applicability(base, treat)
+    if not_applicable is not None:
+        return {
+            "verdict": NOT_APPLICABLE,
+            "reason": not_applicable,
+            "moved": [],
+            # The style probe goes with it. Its verdict is `elements` counts matching, and those
+            # counts are element counts over `[data-role]` among other things, so it reports
+            # DIFFER for exactly the same reason and with exactly as much meaning.
+            "style_verdict": NOT_APPLICABLE,
+            "style_reason": not_applicable,
+        }
     style_verdict, style_reason = compare_styles(base, treat)
     if not _any_moved(base, treat):
         return {

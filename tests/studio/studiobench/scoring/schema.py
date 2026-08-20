@@ -125,6 +125,13 @@ EXEMPT_SUBTREE_KEYS = frozenset(
         "streamed_census",
         "seeded_census",
         "expect",
+        # The readiness gate's verdict and the completeness probe's, both written once per cell by
+        # the session layer. Same rule as a census: `from_bottom: 0` is a true statement that the
+        # viewport is exactly at the bottom, `waited_ms: 0` is a thread that was ready on the
+        # first sample, and neither is a measurement of the app. Nothing here is scored; what the
+        # gate produces for the report is a `gate` row, which carries a boolean.
+        "readiness",
+        "completeness",
         "notes",
         "scene",
         "cell",

@@ -302,7 +302,63 @@ An instrument that caches `page` must re-read it in `start_cell`, not in `attach
 
 ---
 
-## 8. Stability
+## 8. The readiness gate, and what a WINDOWED arm must publish
+
+Before any window opens, the session layer waits for the thread to be ready. Until now that meant
+"every seeded message is mounted", which an arm that virtualises the message list can never
+satisfy: it mounts a window by design, so the count never arrives and the cell dies before the
+film starts. The gate is now four conditions rather than one count, and it runs in one of two
+modes. See `runtime/readiness.py` for the full argument.
+
+`full` is the default and is what every normal arm runs. It is STRICTLY STRONGER than what shipped:
+every seeded message mounted, PLUS the thread settled (two samples 600 ms apart agreeing on the
+mounted count, the element count and the viewport's scrollHeight) and the end of the thread present
+(the marker `runtime/seeder.turn_marker` wrote into the last user turn is in the mounted set, at
+its end).
+
+`windowed` is requested per arm with `--windowed-arm treatment`. It drops the mounted-count
+condition and adds four:
+
+| condition | what it requires |
+| --- | --- |
+| `total_declared` / `total_matches_seeded` | every mounted `[data-role]` carries `aria-setsize`, all agreeing, equal to the number of messages the seeder wrote. Waived only when the whole thread is mounted anyway, which is the full-mount condition itself |
+| `posinset_on_every_row` | every mounted message carries `aria-posinset` |
+| `anchored_at_end` | the app reports itself at the bottom (`.aui-thread-scroll-to-bottom` carrying `invisible`), falling back to the scrollTop arithmetic only when it does not |
+| `pin_settled` | `--aui-scroll-stabilizer` is off the viewport, i.e. the autoscroll has finished pinning |
+
+**This is a contract the arm must meet, not a signal that exists today.** Studio ships no
+virtualization and no ordinal attributes anywhere in the chat thread. WAI-ARIA already requires a
+list whose items are not all in the DOM to publish `aria-setsize` and `aria-posinset`, so an arm
+that omits them is unusable with a screen reader whatever it does to the frame rate, and refusing
+to score it is the correct answer rather than an inconvenience.
+
+Once per cell, before the idle window, a `windowed` arm additionally runs
+`probe_thread_completeness`: it scrolls to the top of the thread and requires the FIRST message to
+mount. Standing at the bottom, a correct virtualizer and a thread that has lost its history look
+identical, and this is the only reading that separates them. It is reported as a `thread_complete`
+gate row, not raised.
+
+New payload keys, all additive: `readiness` and `completeness` on the cell row, `mounted_messages`
+and `thread_total` on every parity capture, `mounted_before` / `mounted_after` on `send_turn`,
+`delete_message` and `thread_reopen`, `left_via` / `reopened_via` on `thread_reopen`, and the gate
+rows `thread_ready:{mode}`, `thread_complete` and `windowed_readiness:{arm}`.
+
+`window.__sb.dom.threadTotal()` is the thread's LENGTH as opposed to how much of it is mounted:
+`aria-setsize` when published, `messageCount()` otherwise. On the shipped build the two are the
+same number. Every before/after assertion in `scene/actions.py` now asks `threadTotal()`, because
+"the thread grew" and "the message was deleted" are statements about the conversation and a
+windowed mount answers them about the viewport.
+
+**Structural UI parity is NOT APPLICABLE to a windowed arm.** `analysis/parity.py` returns the
+verdict `not_applicable` for such a pair rather than reporting a difference on every action, and
+`sweep/ui_parity.py` detects it from the payload and switches to `analysis/behaviour.py`: the
+scroll extent, plus the invariants on `select_all_copy`, `select_text`, `copy_markdown`,
+`thread_reopen` and `scroll_after`. What is no longer being asked is whether the mounted messages
+render identically.
+
+---
+
+## 9. Stability
 
 This file is the contract. Layer 1 will not change any name above without editing this file in the
 same commit and saying so at the top. Additive changes (new optional key, new row type, new

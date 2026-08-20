@@ -47,11 +47,13 @@ import collections
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 if __package__ in (None, ""):  # pragma: no cover
     # Running the file directly rather than as a module, which is the first thing anyone tries.
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+from tests.studio.studiobench.analysis import behaviour as B  # noqa: E402
 from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 
 # The DECLARED unstable set, each entry carrying its mechanism. It lives in the studiobench
@@ -101,6 +103,114 @@ def collect(paths: list[Path]) -> dict:
             rep = cid.rsplit(".", 1)[-1]
             out[(shard, rep, r.get("action"))][arm_of(cid)] = r
     return {"pairs": out, "attempted": attempted, "missing": missing}
+
+
+def any_windowed(paths: list[Path]) -> Optional[str]:
+    """Did either arm of this payload mount a WINDOW of the thread rather than all of it?
+
+    DETECTED, not declared. The alternative is a flag the operator sets, and a flag that is
+    forgotten produces a full page of red that reads as eighteen UI regressions. The capture
+    carries `mounted_messages` and `thread_total`, so the payload answers for itself.
+    """
+    for path in paths:
+        for r in rows(path):
+            if r.get("row_type") != "action":
+                continue
+            parity = r.get("parity")
+            if P.windowed_mount(parity):
+                return (
+                    f"{r.get('cell_id')} / {r.get('action')} mounted "
+                    f"{parity.get('mounted_messages')} of {parity.get('thread_total')} messages"
+                )
+    return None
+
+
+def behaviour_report(paths: list[Path], label: str) -> int:
+    """The windowed arm's report: behavioural invariants instead of a structural digest.
+
+    Printed with the reason it is being printed, every time. The one way this could mislead is by
+    quietly replacing a strict check with a looser one, so the banner says outright which question
+    is no longer being asked.
+    """
+    got = collect(paths)
+    results = []
+    for (shard, rep, action), sides in sorted(got["pairs"].items()):
+        if "base" not in sides or "treatment" not in sides:
+            results.append(
+                (
+                    action,
+                    shard,
+                    rep,
+                    {
+                        "verdict": P.NOT_COMPARABLE,
+                        "reason": f"only the {next(iter(sides))} arm recorded this action",
+                        "checks": [],
+                    },
+                )
+            )
+            continue
+        results.append(
+            (action, shard, rep, B.compare_behaviour(sides["base"], sides["treatment"]))
+        )
+
+    print(f"\n{label}  (BEHAVIOURAL MODE)")
+    print(
+        "  One arm of this payload mounts a window of the thread, so the structural DOM digest is\n"
+        "  NOT APPLICABLE: it compares what is on screen, and this arm changes what is on screen\n"
+        "  by design. It would report a difference on every action and prove nothing. What is\n"
+        "  scored instead is the scroll extent plus the behaviours a windowed mount breaks first.\n"
+        "  WHAT IS NO LONGER BEING ASKED: whether the mounted messages render identically. An arm\n"
+        "  that passes everything below can still have changed how a message looks."
+    )
+    if not results:
+        print("  NO ACTION DATA in this payload.")
+        return 2
+
+    broken, unchecked, idle, blind = [], [], [], []
+    matched = 0
+    for action, shard, rep, r in results:
+        verdict = r["verdict"]
+        if verdict == B.BROKEN:
+            broken.append((action, shard, rep, r))
+        elif verdict == P.MATCH:
+            matched += 1
+        elif verdict == P.NOT_EXERCISED:
+            idle.append((action, shard, rep, r))
+        elif verdict == P.NOT_COMPARABLE:
+            blind.append((action, shard, rep, r))
+        else:
+            unchecked.append((action, shard, rep, r))
+
+    print(f"\n  {len(results)} action pairs across {len(paths)} shard(s)")
+    print(f"  invariants held:            {matched}")
+    print(f"  INVARIANTS BROKEN:          {len(broken)}")
+    print(f"  UNCHECKED:                  {len(unchecked)}  (no invariant declared; not a pass)")
+    print(f"  NOT COMPARABLE:             {len(blind)}")
+    print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
+
+    if broken:
+        print("\n  BEHAVIOURAL INVARIANTS BROKEN -- these are user-visible, not measurement noise:")
+        for action, shard, rep, r in broken:
+            print(f"    {action:<26} {shard} {rep}: {r['reason']}")
+    else:
+        print("\n  Every declared behavioural invariant held on both arms.")
+
+    if unchecked:
+        names = sorted({a for a, _s, _r, _v in unchecked})
+        print(
+            f"\n  UNCHECKED -- {len(unchecked)} pair(s) over {len(names)} action(s) with no "
+            f"declared invariant. These surfaces carry NO verdict on this arm:"
+        )
+        for name in names:
+            print(f"    {name}")
+    if blind:
+        print("\n  NOT COMPARABLE:")
+        for action, shard, rep, r in blind[:8]:
+            print(f"    {action:<26} {shard} {rep}: {r['reason']}")
+    if idle:
+        names = sorted({a for a, _s, _r, _v in idle})
+        print(f"\n  NOT EXERCISED: {', '.join(names)}")
+    return 1 if broken else 0
 
 
 def compare_all(paths: list[Path]) -> tuple[list[tuple], dict]:
@@ -162,8 +272,15 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         return 2
 
     stable_bad, unstable_bad, blind, style_bad, idle = [], [], [], [], []
+    inapplicable: list[tuple] = []
     matched = 0
     for action, shard, rep, r in results:
+        if r["verdict"] == P.NOT_APPLICABLE:
+            # NEITHER A PASS NOR A FAIL. The digest is the wrong question for this pair; see
+            # analysis/parity.applicability. It is bucketed separately so it cannot be summed into
+            # either column, and `--mode behaviour` is what answers it instead.
+            inapplicable.append((action, shard, rep, [r.get("reason", "")]))
+            continue
         if r["verdict"] == P.NOT_EXERCISED:
             idle.append((action, shard, rep, [r.get("reason", "")]))
             continue
@@ -185,6 +302,13 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
     print(f"  unstable actions differing: {len(unstable_bad)}  (expected to vary; not a verdict)")
     print(f"  NOT COMPARABLE:             {len(blind)}  (never measured; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
+    if inapplicable:
+        print(
+            f"  NOT APPLICABLE:             {len(inapplicable)}  (a windowed mount; the digest "
+            f"cannot answer this)"
+        )
+        print(f"    {inapplicable[0][3][0]}")
+        print("    Re-run with --mode behaviour to score these on behavioural invariants.")
     print(
         f"  style probe differing:      {len(style_bad)}  (advisory: display/visibility/"
         f"pointer-events)"
@@ -194,6 +318,15 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
         for action, shard, rep, moved in stable_bad:
             print(f"    {action:<26} {shard} {rep}: {', '.join(moved[:4])}")
+    elif matched == 0 and inapplicable:
+        # NOT A PASS, and it must not print like one. Every pair was refused, so "no stable action
+        # rendered differently" would be true, reassuring and about nothing -- the exact shape of
+        # a check that silently does nothing, which is what the NOT COMPARABLE bucket exists to
+        # prevent elsewhere in this file.
+        print(
+            "\n  NOTHING WAS COMPARED. Every pair in this payload is a windowed mount, which the "
+            "structural digest cannot answer. This is not a pass."
+        )
     else:
         print("\n  No stable action rendered differently between the two arms.")
 
@@ -223,7 +356,14 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, rep, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {rep}: {', '.join(moved[:3])}")
-    return 1 if stable_bad else 0
+    if stable_bad:
+        return 1
+    # 2, the same code the empty-payload path uses, and for the same reason: the tool was asked a
+    # question it could not answer. Exiting 0 here would let CI go green on a run where the parity
+    # check was structurally incapable of firing.
+    if matched == 0 and inapplicable:
+        return 2
+    return 0
 
 
 def tier_of(paths: list[Path]) -> set[str]:
@@ -261,7 +401,38 @@ def main(argv: list[str] | None = None) -> int:
         default = [],
         help = "a base-vs-base run to derive the unstable set from",
     )
+    ap.add_argument(
+        "--mode",
+        choices = ("auto", "digest", "behaviour"),
+        default = "auto",
+        help = (
+            "auto (default) reads the payload and switches to behavioural scoring when an arm "
+            "mounted a window of the thread; digest forces the structural comparison; behaviour "
+            "forces the behavioural one"
+        ),
+    )
     args = ap.parse_args(argv)
+
+    # THE MODE DECISION FIRST, before the unstable set is even derived. Deriving an unstable set
+    # from a null control and then not using it because the payload is windowed would print a page
+    # of scoring apparatus that has no bearing on the report underneath it.
+    if args.mode != "digest":
+        for pattern in args.payloads:
+            paths = shards_of(pattern)
+            if not paths:
+                continue
+            why = any_windowed(paths) if args.mode == "auto" else "forced by --mode behaviour"
+            if why:
+                print(f"WINDOWED MOUNT DETECTED: {why}")
+                worst = 0
+                for pattern2 in args.payloads:
+                    paths2 = shards_of(pattern2)
+                    if not paths2:
+                        print(f"\nno payload found for {pattern2}")
+                        worst = max(worst, 2)
+                        continue
+                    worst = max(worst, behaviour_report(paths2, f"UI PARITY: {pattern2}"))
+                return worst
 
     null_paths: list[Path] = []
     for pattern in args.null:

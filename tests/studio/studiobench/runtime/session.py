@@ -39,7 +39,16 @@ from ..scene.actions import paint_floor_ms
 from ..scene.schedule import SceneRunner
 from .browser import cdp_counters, cdp_metrics, dump_diagnostics
 from .lifecycle import StudioAuth
-from .seeder import Seeder, compare_signatures, dom_signature, measure_chars_per_token
+from .readiness import (
+    MODE_FULL,
+    MODE_WINDOWED,
+    MODES,
+    Readiness,
+    ThreadNotReady,
+    probe_thread_completeness,
+    wait_for_thread_ready,
+)
+from .seeder import Seeder, SeededThread, compare_signatures, dom_signature, measure_chars_per_token
 from .types import BenchContext, Cell, Paths, Recorder, Window, make_cell_id, new_session_id
 
 # A 1x1 PNG, written to disk once per run so the image-upload action has a real file to attach.
@@ -161,6 +170,20 @@ class CellRunner:
     # of seconds at small rungs and a great deal at large ones, and it makes the cell's timings
     # incomparable with a cell that did not run it. See `_click_attribution`.
     click_probe: bool = False
+    # WHICH READINESS GATE. `full` is the default and is what every normal arm runs: every seeded
+    # message must be mounted, plus the settle and end-present conditions the gate gained. An arm
+    # that mounts a WINDOW on purpose sets `windowed` and is then held to a different set of
+    # conditions, none of them weaker. See runtime/readiness.py.
+    #
+    # It is a per-TARGET setting, so a base-versus-virtualised A/B runs the base arm on `full` and
+    # only the treatment arm on `windowed`, and the base arm keeps the strict gate it always had.
+    readiness_mode: str = MODE_FULL
+    # Scroll a windowed thread to its top once per cell, before the measured window, to prove the
+    # arm still holds the head of the conversation. Costs a full traversal, so it is off for
+    # `full` (where the whole thread is mounted and there is nothing to prove) and on by default
+    # for `windowed`, where it is the only check that separates a virtualised thread from one that
+    # has lost most of its messages.
+    completeness_probe: Optional[bool] = None
 
     def run(self, cell: Cell, plan: RungPlan) -> dict:
         s = self.session
@@ -195,6 +218,14 @@ class CellRunner:
                 "message": str(exc),
                 "traceback": traceback.format_exc()[-3000:],
             }
+            if isinstance(exc, ThreadNotReady):
+                # WHICH CONDITION, not just that it timed out. The old gate's message was "the
+                # thread mounted 9 of 18 messages", which named a count and left the reader to
+                # guess whether the app was slow, the thread was short or the arm mounts a window
+                # on purpose. The verdict now carries every condition and the last probe reading.
+                row["failure"]["readiness"] = exc.detail
+                row["readiness"] = exc.detail
+                rec.gate(f"thread_ready:{self.readiness_mode}", False, exc.detail)
             self.log(f"  cell FAILED: {type(exc).__name__}: {exc}")
             rec.failure(cell.cell_id, type(exc).__name__, {"message": str(exc)})
             with contextlib.suppress(Exception):
@@ -228,7 +259,34 @@ class CellRunner:
             wait_until = "domcontentloaded",
             timeout = 120_000,
         )
-        self._wait_for_thread(page, seeded.messages)
+        if self.readiness_mode not in MODES:
+            raise ValueError(f"unknown readiness mode {self.readiness_mode!r}")
+        readiness = self._wait_for_thread(page, seeded)
+        row["readiness"] = readiness.as_dict()
+        # RECORDED AS A GATE, so no reader can pick up a windowed cell's frame rate without also
+        # seeing that its readiness was established a different way.
+        rec.gate(f"thread_ready:{self.readiness_mode}", True, readiness.as_dict())
+
+        # THE COMPLETENESS PROBE, before the idle window and therefore before anything is measured.
+        # It scrolls the whole thread, which mounts rows and dirties the page, so it has to be
+        # followed by the idle window rather than preceding a measurement directly.
+        do_probe = (
+            self.completeness_probe
+            if self.completeness_probe is not None
+            else self.readiness_mode == MODE_WINDOWED
+        )
+        if do_probe and seeded.first_marker and seeded.messages > 0:
+            completeness = probe_thread_completeness(
+                page,
+                first_marker = seeded.first_marker,
+                expected_messages = seeded.messages,
+                log = self.log,
+            )
+            row["completeness"] = completeness
+            rec.gate("thread_complete", bool(completeness.get("head_reached")), completeness)
+            # Back to the resting state the gate described, or the idle calibration below runs
+            # against a page that is still settling from the traversal.
+            self._wait_for_thread(page, seeded)
 
         # ── the enforced idle window ────────────────────────────────
         frames = next((i for i in s.instruments if i.name == "frames"), None)
@@ -450,7 +508,7 @@ class CellRunner:
                 wait_until = "domcontentloaded",
                 timeout = 120_000,
             )
-            self._wait_for_thread(page, seeded_thread.messages)
+            self._wait_for_thread(page, seeded_thread)
             # Let the highlighter finish, or the span count is a race rather than a comparison.
             page.wait_for_timeout(4000)
             seeded_sig = dom_signature(page)
@@ -463,24 +521,37 @@ class CellRunner:
         out = compare_signatures(streamed, seeded_sig)
         out["streamed_census"] = streamed
         out["seeded_census"] = seeded_sig
+        out["readiness_mode"] = self.readiness_mode
+        if self.readiness_mode == MODE_WINDOWED:
+            # SAID OUT LOUD RATHER THAN SCORED QUIETLY. Both sides of this check are loaded by the
+            # SAME build, so under a windowed arm both censuses count the mounted window and not
+            # the thread. The comparison is still like for like and its pass still means something
+            # -- the two paths render the same window the same way -- but it is no longer evidence
+            # that seeding reproduces the whole streamed thread, because neither side has the whole
+            # thread in the DOM to compare.
+            out["scope"] = "the mounted window only, not the whole thread"
+            out["caveat"] = (
+                "this arm mounts a window, so `assistant_messages`, `content_spans` and "
+                "`content_code_blocks` are counts over what is mounted at the end of the thread. "
+                "A pass is equivalence of the WINDOW, not of the thread."
+            )
         return out
 
-    def _wait_for_thread(self, page, expected_messages: int) -> None:
-        if expected_messages <= 0:
-            page.wait_for_selector('textarea[aria-label="Message input"]', timeout = 60_000)
-            return
-        deadline = time.monotonic() + MOUNT_TIMEOUT_S
-        last = -1
-        while time.monotonic() < deadline:
-            got = page.evaluate("() => window.__sb.dom.messageCount()")
-            if got >= expected_messages:
-                return
-            if got != last:
-                last = got
-                self.log(f"  mounting: {got}/{expected_messages} messages")
-            page.wait_for_timeout(500)
-        raise TimeoutError(
-            f"the thread mounted {last} of {expected_messages} messages in " f"{MOUNT_TIMEOUT_S}s"
+    def _wait_for_thread(self, page, seeded: SeededThread) -> Readiness:
+        """The readiness gate. See runtime/readiness.py for what it asserts and why.
+
+        The mode is the CELL RUNNER's, not the thread's: an arm declares that it mounts a window
+        and the whole run is then gated that way and labelled that way in every row it writes. A
+        thread cannot be allowed to talk its way past the gate by looking virtualised, because
+        "looks like it mounted fewer nodes on purpose" is indistinguishable from "did not finish".
+        """
+        return wait_for_thread_ready(
+            page,
+            seeded.messages,
+            marker = seeded.last_marker,
+            mode = self.readiness_mode,
+            timeout_s = MOUNT_TIMEOUT_S,
+            log = self.log,
         )
 
     def _click_attribution(self, page, selector: str) -> dict:

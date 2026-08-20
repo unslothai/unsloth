@@ -79,6 +79,38 @@
     messageCount() {
       return qa("[data-role]").length;
     },
+    // HOW LONG THE THREAD IS, as opposed to how much of it is mounted.
+    //
+    // On the shipped build these are the same number and this returns exactly what
+    // messageCount() does, so nothing about an existing run changes. They stop being the same
+    // number the moment an arm mounts a window, and at that point every before/after assertion in
+    // actions.py -- send_turn's "the thread grew", delete's "the count dropped", thread_reopen's
+    // "it came back with the same messages" -- is asking about the THREAD and being answered
+    // about the window. Under a windowed mount those three all read the wrong answer in the same
+    // direction: the window refills as fast as it empties, so a delete that worked reports
+    // `after == before` and fails, and a send that worked reports the same and fails.
+    //
+    // aria-setsize is where a windowed list is already required to publish this: WAI-ARIA says a
+    // list whose items are not all in the DOM must carry aria-setsize and aria-posinset. So this
+    // is not a private channel invented for the benchmark, it is the accessible name for the
+    // quantity, and an arm that does not provide it is one a screen reader cannot navigate.
+    threadTotal() {
+      // On the message, or on the row wrapper a virtualizer positions it in. See the same walk in
+      // runtime/readiness.py: the ordinal belongs on the element that is a member of the set, and
+      // for a windowed list that is the positioned row rather than the message inside it.
+      const first = q("[data-role]");
+      const owner = first ? first.closest("[aria-setsize]") : q("[aria-setsize]");
+      if (owner) {
+        const n = Number(owner.getAttribute("aria-setsize"));
+        if (Number.isFinite(n) && n >= 0) return n;
+      }
+      return qa("[data-role]").length;
+    },
+    // True when the thread is publishing a total that is larger than what it has mounted, i.e.
+    // this really is a windowed mount and not merely a short thread.
+    isWindowed() {
+      return D.threadTotal() > qa("[data-role]").length;
+    },
     assistantMessages() {
       return qa('[data-role="assistant"]');
     },
