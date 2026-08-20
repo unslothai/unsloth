@@ -23,9 +23,7 @@ __all__ = [
 ]
 
 
-_LATEST_REFUSAL: ContextVar[Optional[dict]] = ContextVar(
-    "unsloth_context_refusal", default = None
-)
+_LATEST_REFUSAL: ContextVar[Optional[dict]] = ContextVar("unsloth_context_refusal", default = None)
 
 # Share of the irreducible prompt the latest turn must be before the turn, not the
 # conversation, is named as the problem. Never all of it: the system prompt and template
