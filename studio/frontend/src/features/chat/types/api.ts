@@ -105,6 +105,12 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /**
+   * Load a vision-capable GGUF without its mmproj, freeing the VRAM the
+   * projector would occupy. Image input is unavailable for the session;
+   * text generation is unaffected.
+   */
+  disable_vision?: boolean | null;
   /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
    *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
    *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
@@ -254,6 +260,12 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
+  /** Image input is off because the user asked, not because the mmproj is missing. */
+  vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
@@ -347,6 +359,12 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
+  /** Image input is off because the user asked, not because the mmproj is missing. */
+  vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
