@@ -721,9 +721,7 @@ def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[in
     return max(0, parsed)
 
 
-def resolve_ctx_checkpoints(
-    args: Optional[Iterable[str]], requested: Optional[int]
-) -> int:
+def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
     """The checkpoint count the launch will actually run: extras beat the field."""
     override = parse_ctx_checkpoints_override(args)
     return int(override if override is not None else (requested or 0))

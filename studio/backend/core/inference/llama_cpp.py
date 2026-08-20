@@ -15487,9 +15487,7 @@ class LlamaCppBackend:
                 # explicit request counts at all: the estimator has always charged 0,
                 # and adopting llama.cpp's default of 32 would move the fit for every
                 # model.
-                _effective_ctx_checkpoints = resolve_ctx_checkpoints(
-                    extra_args, ctx_checkpoints
-                )
+                _effective_ctx_checkpoints = resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
                     self.is_embedding_gguf
@@ -16209,9 +16207,7 @@ class LlamaCppBackend:
                     # The control underneath them: emitted before the extras, so an
                     # extra still last-wins and the reserve prices what will run.
                     _budget_draft_cache = (
-                        spec_draft_cache_type.strip().lower()
-                        if spec_draft_cache_type
-                        else None
+                        spec_draft_cache_type.strip().lower() if spec_draft_cache_type else None
                     )
                     if _budget_draft_cache in _VALID_KV_CACHE_TYPES:
                         _mtp_draft_ck = _mtp_draft_ck or _budget_draft_cache
