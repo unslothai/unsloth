@@ -158,6 +158,7 @@ jobs:
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
             tests/studio/test_uv_cache_discipline.py \
+            tests/studio/test_version_compat_bundle.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
             tests/studio/test_workflow_guards_run_unfiltered.py \
             tests/security
