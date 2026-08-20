@@ -263,7 +263,11 @@ def _rocm_inventory_mod(devices):
     return mod
 
 
-def _rocm_test_env(monkeypatch, devices, hip = "6.2.0"):
+def _rocm_test_env(
+    monkeypatch,
+    devices,
+    hip = "6.2.0",
+):
     """Point the inventory helper at a fake ROCm torch with the given HIP
     version (6.2 fills is_integrated authoritatively; 6.1 exercises the
     runtime-not-trusted path)."""

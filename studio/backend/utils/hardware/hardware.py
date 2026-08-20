@@ -1184,7 +1184,6 @@ def _rocm_props_total_is_carve_out(
     if classification is None:
         try:
             from core.training.worker import _rocm_classify_unified_memory
-
             classification = _rocm_classify_unified_memory(props)
         except Exception as e:
             logger.debug("ROCm unified-memory classification failed: %s", e)
@@ -1230,7 +1229,6 @@ def _rocm_probe_and_classify(
         if IS_ROCM:
             try:
                 from core.training.worker import _rocm_classify_unified_memory
-
                 classification = _rocm_classify_unified_memory(props)
             except Exception as e:
                 logger.debug(
@@ -1251,9 +1249,7 @@ def _rocm_probe_and_classify(
         probed[ordinal] = (phys_idx, props, classification)
     hybrid_rocm = False
     if IS_ROCM and len(probed) >= 2:
-        unified_flags = [
-            cls is not None and cls[1] for _, _, cls in probed.values()
-        ]
+        unified_flags = [cls is not None and cls[1] for _, _, cls in probed.values()]
         hybrid_rocm = any(unified_flags) and not all(unified_flags)
         if hybrid_rocm:
             logger.debug(
@@ -1338,9 +1334,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     except Exception as e:
                         # Keep the carve-out rather than dropping the device: an
                         # understated total still beats no device at all.
-                        logger.debug(
-                            "ROCm APU driver total failed for ordinal %d: %s", ordinal, e
-                        )
+                        logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             devices.append(
                 {
                     "index": phys_idx,
