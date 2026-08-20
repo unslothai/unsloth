@@ -162,7 +162,7 @@ def test_a_restored_dist_is_made_newer_than_the_checkout() -> None:
 def test_a_degenerate_key_is_refused() -> None:
     step = _step("hashes nothing")
     assert step is not None, (
-        "nothing refuses an empty hashFiles result. It returns \"\" when a glob matches "
+        'nothing refuses an empty hashFiles result. It returns "" when a glob matches '
         "no file, which collapses every commit onto one key and serves an arbitrary "
         "dist, with the restore succeeding and the build skipped."
     )
@@ -171,9 +171,7 @@ def test_a_degenerate_key_is_refused() -> None:
 
 def test_the_dist_cache_is_saved_on_main_only() -> None:
     step = _step("Save the built frontend")
-    assert step is not None, (
-        "the dist cache is restored but never saved, so it can only ever miss"
-    )
+    assert step is not None, "the dist cache is restored but never saved, so it can only ever miss"
     cond = str(step.get("if", ""))
     assert "refs/heads/main" in cond, (
         f"the dist cache is saved off main: {cond!r}. A PR-scoped entry can only be "
