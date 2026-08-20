@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 
@@ -1305,12 +1306,33 @@ def test_mlx_vlm_cache_preserves_cold_partition_and_full_metadata(monkeypatch):
     full_positions = SimpleNamespace(shape = (3, 1, 1504))
     full_rope = object()
     suffix_positions, suffix_rope = object(), object()
-    language_model = SimpleNamespace(_position_ids = full_positions, _rope_deltas = full_rope)
+    language_calls = []
+
+    class Language:
+        _position_ids, _rope_deltas = full_positions, full_rope
+
+        def __call__(self, *args, **kwargs):
+            language_calls.append((args, kwargs))
+
+    language_model = Language()
     language_model.get_rope_index = lambda *_args: None
-    original = lambda *_args, **_kwargs: SimpleNamespace(
-        position_ids = suffix_positions,
-        rope_deltas = suffix_rope,
-    )
+    embedding_call = {}
+
+    def original(*_args, **kwargs):
+        embedding_call.update(kwargs)
+        return SimpleNamespace(
+            position_ids = suffix_positions,
+            rope_deltas = suffix_rope,
+        )
+
+    suffix_mask = SimpleNamespace(shape = (1, 480))
+
+    class FullMask:
+        shape = (1, 1504)
+
+        def __getitem__(self, key):
+            assert key == (Ellipsis, slice(1024, 1504, None))
+            return suffix_mask
 
     class Model:
         def get_input_embeddings(self, *args, **kwargs):
@@ -1318,13 +1340,58 @@ def test_mlx_vlm_cache_preserves_cold_partition_and_full_metadata(monkeypatch):
 
     model = Model()
     model.language_model = language_model
+    original_language_call = Language.__call__
     state.reused_prefix_length = 1024
+    state.full_token_ids = [0] * 1504
     input_ids = SimpleNamespace(shape = (1, 480))
     with module._temporary_vlm_full_prompt_metadata(model, state):
-        features = model.get_input_embeddings(input_ids, None)
+        features = model.get_input_embeddings(input_ids, None, mask = FullMask())
+        assert embedding_call["mask"] is suffix_mask
         assert features.position_ids is full_positions
         assert features.rope_deltas is full_rope
+        visual_mask = np.zeros((1, 1504), dtype = bool)
+        visual_mask[0, :3] = visual_mask[0, 1026:1028] = True
+        deepstack = [np.arange(5), np.arange(10).reshape(5, 2)]
+        language_model(
+            inputs = np.zeros((1, 480)),
+            cache = [SimpleNamespace(_idx = 1024)],
+            visual_pos_masks = visual_mask,
+            deepstack_visual_embeds = deepstack,
+        )
+        call = language_calls[-1][1]
+        assert np.array_equal(call["visual_pos_masks"], visual_mask[..., 1024:1504])
+        assert all(
+            np.array_equal(got, value[3:5])
+            for got, value in zip(
+                call["deepstack_visual_embeds"],
+                deepstack,
+            )
+        )
+        dense_deepstack = np.arange(2 * 1504 * 3).reshape(2, 1504, 3)
+        language_model(
+            inputs = np.zeros((1, 480)),
+            cache = [SimpleNamespace(_idx = 1024)],
+            visual_pos_masks = visual_mask,
+            deepstack_visual_embeds = dense_deepstack,
+        )
+        call = language_calls[-1][1]
+        assert np.array_equal(call["visual_pos_masks"], visual_mask[..., 1024:1504])
+        assert np.array_equal(
+            call["deepstack_visual_embeds"],
+            dense_deepstack[..., 1024:1504, :],
+        )
+        opaque_deepstack = object()
+        language_model(
+            inputs = np.zeros((1, 480)),
+            cache = [SimpleNamespace(_idx = 1024)],
+            visual_pos_masks = visual_mask,
+            deepstack_visual_embeds = opaque_deepstack,
+        )
+        call = language_calls[-1][1]
+        assert call["visual_pos_masks"] is visual_mask
+        assert call["deepstack_visual_embeds"] is opaque_deepstack
     assert "get_input_embeddings" not in vars(model)
+    assert Language.__call__ is original_language_call
 
     full_per_layer, suffix_per_layer = SimpleNamespace(shape = (1, 1504)), object()
     full_ids = SimpleNamespace(shape = (1, 1504), is_full_prompt = True)
@@ -1339,7 +1406,6 @@ def test_mlx_vlm_cache_preserves_cold_partition_and_full_metadata(monkeypatch):
         )
 
     model.get_input_embeddings = metadata_embeddings
-    state.full_token_ids = [0] * 1504
     with module._temporary_vlm_full_prompt_metadata(model, state):
         features = model.get_input_embeddings(input_ids, None)
         assert features.per_layer_inputs is full_per_layer

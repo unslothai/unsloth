@@ -1176,6 +1176,26 @@ class _ShapeStableVLMPromptCacheState:
         return self._state.update(token_ids, cache)
 
 
+def _vlm_cached_suffix_mask(mask, prefix, suffix_length, full_token_ids):
+    """Align a full 2D prompt mask with the uncached embedding suffix."""
+    shape = getattr(mask, "shape", ())
+    try:
+        prefix = int(prefix)
+        suffix_length = int(suffix_length)
+        full_length = len(full_token_ids or ())
+    except (TypeError, ValueError):
+        return mask
+    if (
+        len(shape) != 2
+        or prefix <= 0
+        or suffix_length <= 0
+        or full_length != prefix + suffix_length
+        or int(shape[-1]) != full_length
+    ):
+        return mask
+    return mask[..., prefix:full_length]
+
+
 @contextmanager
 def _temporary_vlm_full_prompt_metadata(model, cache_state):
     """Keep absolute auxiliary prompt state when a visual prefix is reused."""
@@ -1184,16 +1204,24 @@ def _temporary_vlm_full_prompt_metadata(model, cache_state):
     had_instance_override = "get_input_embeddings" in instance_attributes
     instance_override = instance_attributes.get("get_input_embeddings")
     language_model = getattr(model, "language_model", None)
+    language_class = type(language_model)
+    language_call = getattr(language_class, "__call__", None)
     if cache_state is None or not callable(get_embeddings):
         yield
         return
 
     def preserving_get_embeddings(*args, **kwargs):
-        features = get_embeddings(*args, **kwargs)
         prefix = int(getattr(cache_state, "reused_prefix_length", 0) or 0)
         pixel_values = kwargs.get("pixel_values", args[1] if len(args) > 1 else None)
         input_ids = kwargs.get("input_ids", args[0] if args else None)
         suffix_length = int(getattr(input_ids, "shape", (0, 0))[-1])
+        full_token_ids = getattr(cache_state, "full_token_ids", None)
+        if prefix > 0 and pixel_values is None and "mask" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs["mask"] = _vlm_cached_suffix_mask(
+                kwargs["mask"], prefix, suffix_length, full_token_ids
+            )
+        features = get_embeddings(*args, **kwargs)
         if prefix > 0 and pixel_values is None:
             full_positions = getattr(language_model, "_position_ids", None)
             if (
@@ -1205,7 +1233,6 @@ def _temporary_vlm_full_prompt_metadata(model, cache_state):
                 full_rope_deltas = getattr(language_model, "_rope_deltas", None)
                 if full_rope_deltas is not None and hasattr(features, "rope_deltas"):
                     features.rope_deltas = full_rope_deltas
-            full_token_ids = getattr(cache_state, "full_token_ids", None)
             if getattr(features, "per_layer_inputs", None) is not None and full_token_ids:
                 import mlx.core as mx
 
@@ -1218,10 +1245,69 @@ def _temporary_vlm_full_prompt_metadata(model, cache_state):
                     features.per_layer_inputs = full_per_layer_inputs
         return features
 
+    def preserving_language_call(instance, *args, **kwargs):
+        if instance is not language_model:
+            return language_call(instance, *args, **kwargs)
+        inputs = kwargs.get("inputs", args[0] if args else None)
+        inputs = inputs if inputs is not None else kwargs.get("inputs_embeds")
+        visual_mask = kwargs.get("visual_pos_masks")
+        deepstack = kwargs.get("deepstack_visual_embeds")
+        cache = kwargs.get("cache")
+        if (
+            inputs is not None
+            and visual_mask is not None
+            and getattr(visual_mask, "shape", ())
+            and visual_mask.shape[-1] != inputs.shape[-1]
+            and cache
+            and cache[0] is not None
+        ):
+            first_cache = cache[0]
+            start = getattr(first_cache, "_idx", getattr(first_cache, "offset", 0))
+            item = getattr(start, "item", None)
+            try:
+                start = int(item() if callable(item) else start)
+            except (TypeError, ValueError):
+                start = -1
+            stop = start + int(inputs.shape[-1])
+            if 0 <= start < stop <= int(visual_mask.shape[-1]):
+                aligned_deepstack = deepstack
+                can_align = deepstack is None
+                if deepstack is not None:
+                    n_before = int(visual_mask[..., :start].sum().item())
+                    n_window = int(visual_mask[..., start:stop].sum().item())
+                    n_total = int(visual_mask.sum().item())
+                    if isinstance(deepstack, (list, tuple)):
+                        shapes = [getattr(value, "shape", ()) for value in deepstack]
+                        can_align = all(shape and int(shape[0]) == n_total for shape in shapes)
+                        if can_align:
+                            values = [value[n_before : n_before + n_window] for value in deepstack]
+                            aligned_deepstack = type(deepstack)(values)
+                    else:
+                        deepstack_shape = getattr(deepstack, "shape", ())
+                        if len(deepstack_shape) >= 2:
+                            row_count = int(deepstack_shape[-2])
+                            if row_count == int(visual_mask.shape[-1]):
+                                aligned_deepstack = deepstack[..., start:stop, :]
+                                can_align = True
+                            elif row_count == n_total:
+                                aligned_deepstack = deepstack[
+                                    ..., n_before : n_before + n_window, :
+                                ]
+                                can_align = True
+                if can_align:
+                    kwargs = dict(kwargs)
+                    kwargs["deepstack_visual_embeds"] = aligned_deepstack
+                    kwargs["visual_pos_masks"] = visual_mask[..., start:stop]
+        return language_call(instance, *args, **kwargs)
+
     try:
         model.get_input_embeddings = preserving_get_embeddings
+        if callable(language_call):
+            language_class.__call__ = preserving_language_call
         yield
     finally:
+        if callable(language_call):
+            language_class.__call__ = language_call
         if had_instance_override:
             model.get_input_embeddings = instance_override
         else:
