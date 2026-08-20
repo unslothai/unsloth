@@ -2566,3 +2566,35 @@ def test_a_catalog_with_nothing_offerable_is_not_committed(monkeypatch):
         assert codex_client.subscription_catalog_known("provider-23") is False
     finally:
         forget_subscription_models("provider-23")
+
+
+def test_a_cold_worker_rejects_credentials_for_another_account(monkeypatch):
+    """With no catalog here, the catalog comparison has no opinion to offer.
+
+    The row was authorized from the persisted proof against the account the gate read, so
+    that is what the resolved credentials have to match.
+    """
+    saved = "gpt-5.7-nova"
+    forget_subscription_models("codex-1")
+    reads = []
+
+    def _bundle(_pid):
+        reads.append(1)
+        # The gate reads acct-a and authorizes off the proof; a rebind lands before
+        # resolve_access answers, which then returns acct-b.
+        return {"account_id": "acct-a", "catalog_account_id": "acct-a"}
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "token-b", "acct-b"
+
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", _bundle)
+    try:
+        refused = _codex_chat_gate(
+            monkeypatch, saved, resolve = _resolve, saved_models = [saved]
+        )
+        assert refused.status_code == 400
+        assert "Choose a curated Codex model." in str(refused.detail)
+        # The connection is left needing a fresh catalog before anything is trusted again.
+        assert codex_client.subscription_catalog_stale("codex-1") is True
+    finally:
+        forget_subscription_models("codex-1")

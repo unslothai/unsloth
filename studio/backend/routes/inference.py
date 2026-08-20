@@ -12544,10 +12544,15 @@ async def _proxy_to_external_provider(
             access_token, account_id = await resolve_access(payload.provider_id)
         except CodexAuthError as exc:
             raise HTTPException(status_code = 401, detail = str(exc)) from exc
-        if not subscription_catalog_matches_account(payload.provider_id, account_id):
+        if (current_account and account_id != current_account) or (
+            not subscription_catalog_matches_account(payload.provider_id, account_id)
+        ):
             # Another worker rebound the connection between the gate and here, so the
             # model was judged against an account these credentials do not belong to.
-            # Drop that catalog and re-judge before anything is sent under them.
+            # The catalog comparison alone has no opinion on a cold worker, where the row
+            # was authorized from the persisted proof rather than a catalog, so the
+            # account the gate judged by is compared too. Drop and re-judge before
+            # anything is sent under them.
             forget_subscription_models(payload.provider_id)
             mark_subscription_catalog_stale(payload.provider_id)
             if model not in _allowed_codex_models():
@@ -12601,8 +12606,10 @@ async def _proxy_to_external_provider(
                     force_refresh = True,
                     expected_access_token = current_access_token,
                 )
-                if not subscription_catalog_matches_account(
-                    payload.provider_id, refreshed_account_id
+                if (current_account and refreshed_account_id != current_account) or (
+                    not subscription_catalog_matches_account(
+                        payload.provider_id, refreshed_account_id
+                    )
                 ):
                     # A rebind landed mid-stream, so these credentials belong to an
                     # account this model was never authorized against. Retrying here
