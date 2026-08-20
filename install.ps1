@@ -404,6 +404,18 @@ function Install-UnslothStudio {
                 # already requires this shape; the two had drifted apart.
                 if ($stale.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if ($stale.LastWriteTime -ge $cutoff) { continue }
+                # Before any owner logic, because the allocator never makes a link:
+                # anything here that IS one is not ours, reading owner.pid out of it
+                # would read through it, and unlinking is safe whatever owns the
+                # target. Not Remove-Item: on 5.1 without -Recurse it throws a
+                # NullReferenceException on a junction that -ErrorAction
+                # SilentlyContinue does not suppress (measured on windows-latest), and
+                # -Recurse has walked THROUGH the link on some 5.1 builds.
+                # Directory.Delete with recursive:$false cannot follow it.
+                if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                    try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
+                    continue
+                }
                 # Age alone is not proof it is unused, and this sweep runs before the
                 # runtime mutex, so it could delete a live process's %TEMP%. owner.pid
                 # names the process that INHERITED this directory (the autostarted
@@ -421,8 +433,22 @@ function Install-UnslothStudio {
                 if (-not [string]::IsNullOrWhiteSpace($recorded)) {
                     $null = [int]::TryParse($recorded, [ref]$ownerPid)
                 }
+                # Whether the owner was RECORDED, or only guessed from the name.
+                # The name carries the installer's PID, and an installer that was
+                # killed between Start-Process and the owner.pid write leaves a dead
+                # PID in the name while the Studio it started is very much alive on
+                # that directory as its own %TEMP%. Guessing therefore proves much
+                # less than reading, and the two are not treated alike below.
+                $ownerRecorded = ($ownerPid -gt 0)
                 if ($ownerPid -le 0) {
                     $null = [int]::TryParse(($stale.Name -split '-')[1], [ref]$ownerPid)
+                }
+                # No recorded owner: unknown, not abandoned. Still collected, so the
+                # pile stays bounded, but only once it has gone a whole week without
+                # a single entry being created in it, which a Studio actually using
+                # it as %TEMP% would not manage.
+                if (-not $ownerRecorded -and $stale.LastWriteTime -ge (Get-Date).AddDays(-7)) {
+                    continue
                 }
                 if ($ownerPid -gt 0) {
                     $ownerLives = $true
@@ -436,17 +462,6 @@ function Install-UnslothStudio {
                         $ownerLives = $true
                     }
                     if ($ownerLives) { continue }
-                }
-                # Nothing here should be a reparse point, so remove the link and leave
-                # its target. Not Remove-Item: on 5.1 without -Recurse it throws a
-                # NullReferenceException on a junction that -ErrorAction
-                # SilentlyContinue does not suppress (measured on windows-latest), and
-                # -Recurse has walked THROUGH the link on some 5.1 builds. Directory
-                # .Delete with recursive:$false removes the reparse point and cannot
-                # follow it.
-                if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                    try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
-                    continue
                 }
                 Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
             }

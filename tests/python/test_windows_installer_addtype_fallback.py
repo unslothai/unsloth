@@ -800,6 +800,8 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
     (live / "in-use.txt").write_text("a live process owns this", encoding = "utf-8")
     abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (abandoned / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
 
     aged = time.time() - 3 * 24 * 3600
     os.utime(live, (aged, aged))
@@ -832,6 +834,8 @@ def test_a_healthy_temp_still_sweeps_what_an_earlier_degraded_run_left(tmp_path:
     root.mkdir(parents = True)
     abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (abandoned / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (abandoned / "leftover.bin").write_text("half a download", encoding = "utf-8")
     aged = time.time() - 3 * 24 * 3600
     os.utime(abandoned, (aged, aged))
@@ -998,12 +1002,15 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
 
     ours = root / f"ust-{_DEAD_PID}-abcdef01"
     ours.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (ours / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (ours / "scratch.bin").write_text("x", encoding = "utf-8")
     keep = []
     # Case-insensitively ours: Windows filenames are case-insensitive, so refusing
     # the uppercase spelling would leak a directory we created.
     upper = root / f"ust-{_DEAD_PID}-ABCDEF01"
     upper.mkdir()
+    (upper / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     for name in ("ust-legacy", "ust-user-cache", "ust-notapid-abcdef01", "ust-", "ust-12-abcdefg1"):
         victim = root / name
         victim.mkdir()
@@ -1064,6 +1071,50 @@ Write-Output "PATH:$($info.Path)"
 
 
 @requires_pwsh
+def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
+    """The name's PID is the installer's, and it can be dead while Studio is not.
+
+    An installer killed between Start-Process and the owner.pid write leaves a
+    directory whose only owner evidence is a dead installer PID, while the
+    Studio it started is using that directory as its own %TEMP%. Reading is
+    proof; guessing from the name is not, so the two get different patience.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    two_days = time.time() - 2 * 24 * 3600
+    eight_days = time.time() - 8 * 24 * 3600
+
+    # No owner.pid, dead name PID, two days old: unknown, so it stays.
+    unknown = root / f"ust-{_DEAD_PID}-aaaaaaaa"
+    unknown.mkdir()
+    (unknown / "in-use.txt").write_text("a live Studio may own this", encoding = "utf-8")
+    os.utime(unknown, (two_days, two_days))
+
+    # Same, but a week past: collected, so the pile still stays bounded.
+    ancient = root / f"ust-{_DEAD_PID}-bbbbbbbb"
+    ancient.mkdir()
+    os.utime(ancient, (eight_days, eight_days))
+
+    # Recorded dead owner, two days old: proof, so it goes at the usual cutoff.
+    recorded = root / f"ust-{_DEAD_PID}-cccccccc"
+    recorded.mkdir()
+    (recorded / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    os.utime(recorded, (two_days, two_days))
+
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert (unknown / "in-use.txt").exists(), "an unrecorded owner was read as abandoned"
+    assert not ancient.exists(), "an unrecorded owner is never collected at all"
+    assert not recorded.exists(), "a recorded dead owner should still go at one day"
+
+
+@requires_pwsh
 def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
@@ -1074,9 +1125,12 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     # name says owns it; that case is the test below.
     stale = root / f"ust-{_DEAD_PID}-01d01d01"
     stale.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (stale / "junk").write_text("x", encoding = "utf-8")
     fresh = root / f"ust-{_DEAD_PID}-0e0e0e0e"
     fresh.mkdir()
+    (fresh / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     link = root / f"ust-{_DEAD_PID}-11111111"
     try:
         link.symlink_to(precious, target_is_directory = True)
@@ -1182,6 +1236,55 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     assert 'Join-Path $root "Unsloth Studio\\temp"' in uninstall
     assert "_RemoveStudioPrivateTempTrees -Paths $privateTempDirs" in uninstall
     assert "foreach ($d in $defaultDataDirs)" not in uninstall
+
+
+@requires_pwsh
+def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_path: Path):
+    """An uninstall stops the Studios under the roots it knows about, not others.
+
+    A Studio from another install root, or another user, can be alive on one of
+    these directories as its %TEMP%; install.ps1's own sweep preserves it and so
+    must this one. And a temp directory that is itself a link must not be walked:
+    the target's children carry no ReparsePoint attribute, so a recursive delete
+    would take an unrelated tree.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+
+    # 1. A live owner is left alone; a dead one goes.
+    temp = tmp_path / "Unsloth Studio" / "temp"
+    temp.mkdir(parents = True)
+    live = temp / "ust-1234-abcdef01"
+    live.mkdir()
+    (live / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    dead = temp / "ust-1234-abcdef02"
+    dead.mkdir()
+    (dead / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+
+    result = _run_powershell(
+        "\n".join([preamble, block, f"_RemoveStudioPrivateTempTrees -Paths @('{temp}')", 'Write-Output "DONE:1"'])
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert (live / "owner.pid").exists(), "a live owner's temp was removed"
+    assert not dead.exists()
+
+    # 2. A linked temp directory is refused outright.
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "ust-1234-abcdef03").mkdir()
+    (victim / "ust-1234-abcdef03" / "precious.txt").write_text("not ours", encoding = "utf-8")
+    linked = tmp_path / "Linked Studio" / "temp"
+    linked.parent.mkdir()
+    linked.symlink_to(victim, target_is_directory = True)
+
+    result = _run_powershell(
+        "\n".join([preamble, block, f"_RemoveStudioPrivateTempTrees -Paths @('{linked}')", 'Write-Output "DONE:2"'])
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:2"]
+    assert (victim / "ust-1234-abcdef03" / "precious.txt").exists(), "the sweep walked through a link"
 
 
 @requires_pwsh

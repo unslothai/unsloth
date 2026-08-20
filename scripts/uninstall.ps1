@@ -153,12 +153,52 @@ Environment:
         foreach ($temp in @($Paths)) {
             if ([string]::IsNullOrWhiteSpace($temp)) { continue }
             if (-not (Test-Path -LiteralPath $temp -PathType Container)) { continue }
+            # Never descend through a link. Get-ChildItem on a reparse point
+            # enumerates the TARGET, and the target's ordinary children do not
+            # carry the ReparsePoint attribute, so the recursive delete below
+            # would take somebody else's tree by way of a redirected temp dir.
+            # Checked on the temp directory and on its parent, which is the
+            # "Unsloth Studio" directory the second LocalAppData spelling may
+            # not even own.
+            $linked = $false
+            foreach ($ancestor in @($temp, [System.IO.Path]::GetDirectoryName($temp))) {
+                try {
+                    if ([string]::IsNullOrWhiteSpace($ancestor)) { continue }
+                    $info = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+                    if ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { $linked = $true }
+                } catch {}
+            }
+            if ($linked) {
+                _Substep "skipped (reparse point): $temp" "Yellow"
+                continue
+            }
             $entries = @()
             try { $entries = @(Get-ChildItem -LiteralPath $temp -Force -ErrorAction Stop) } catch { continue }
             foreach ($entry in $entries) {
                 # Shape, not prefix: "ust-legacy" and "ust-notapid-x" are not ours.
                 if ($entry.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if (-not ($entry.PSIsContainer)) { continue }
+                # A LIVE owner keeps its directory, exactly as install.ps1's own
+                # sweep does. An uninstall stops the Studios under the roots it
+                # knows about; a Studio from another install root, or another
+                # user, is not among them and is still using this as its %TEMP%.
+                $ownerPid = 0
+                try {
+                    $ownerFile = Join-Path $entry.FullName "owner.pid"
+                    if ([System.IO.File]::Exists($ownerFile)) {
+                        $null = [int]::TryParse(([System.IO.File]::ReadAllText($ownerFile)).Trim(), [ref]$ownerPid)
+                    }
+                } catch { $ownerPid = 0 }
+                if ($ownerPid -gt 0) {
+                    $ownerLives = $true
+                    try { $null = Get-Process -Id $ownerPid -ErrorAction Stop }
+                    catch [Microsoft.PowerShell.Commands.ProcessCommandException] { $ownerLives = $false }
+                    catch { $ownerLives = $true }
+                    if ($ownerLives) {
+                        _Substep "in use by pid ${ownerPid}, left alone: $($entry.FullName)" "Yellow"
+                        continue
+                    }
+                }
                 try {
                     if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                         [System.IO.Directory]::Delete($entry.FullName, $false)
