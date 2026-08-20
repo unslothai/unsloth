@@ -23,12 +23,13 @@ import http.server
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 import threading
 
 import pytest
 import yaml
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 # Only PATHEXT maps a bare name onto the `.exe` the verify step insists on, so
@@ -89,7 +90,10 @@ def write_step_script(directory, name, filename):
 def run_step(script, env):
     """Invoke a step script the way the runner does and return (code, output)."""
     full = {**os.environ, **env}
-    result = subprocess.run(
+    # Every signing check in this file reads the exit code of this one call, so an
+    # interpreter that aborts at startup would look exactly like a step body that
+    # failed closed -- the opposite of what the test claims to have proven.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-Command", f". '{script}'"],
         capture_output = True,
         text = True,
