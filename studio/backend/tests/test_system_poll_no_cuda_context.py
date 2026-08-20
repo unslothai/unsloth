@@ -166,6 +166,81 @@ def test_the_probe_would_catch_a_regression():
     assert mib > 0, "mem_get_info created no context here, so the assertions above prove nothing"
 
 
+def _summary_torch(*, properties_total, driver_free, driver_total):
+    props = types.SimpleNamespace(total_memory = properties_total, name = "Test GPU")
+
+    def _mem_get_info(_ordinal):
+        if driver_free is None:
+            raise AssertionError("the native probe answered; mem_get_info would pin a context")
+        return driver_free, driver_total
+
+    cuda = types.SimpleNamespace(
+        current_device = lambda: 0,
+        get_device_properties = lambda _ordinal: props,
+        memory_allocated = lambda _ordinal: 1 << 30,
+        memory_reserved = lambda _ordinal: 2 << 30,
+        mem_get_info = _mem_get_info,
+    )
+    return types.SimpleNamespace(cuda = cuda), props
+
+
+def test_gpu_summary_prefers_context_free_driver_memory(monkeypatch):
+    gib = 1 << 30
+    torch_stub, _props = _summary_torch(
+        properties_total = 16 * gib,
+        driver_free = None,
+        driver_total = 16 * gib,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: {
+            "available": True,
+            "devices": [
+                {"visible_ordinal": 0, "vram_used_gb": 7.0, "vram_total_gb": 16.0}
+            ],
+        },
+    )
+
+    summary = hw.get_gpu_summary()
+
+    assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 16.0, "vram_free_gb": 9.0}
+
+
+def test_gpu_summary_pairs_rocm_apu_free_with_driver_total(monkeypatch):
+    gib = 1 << 30
+    torch_stub, _props = _summary_torch(
+        properties_total = 8 * gib,
+        driver_free = 98 * gib,
+        driver_total = 100 * gib,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("an APU needs hipMemGetInfo's matching GTT total"),
+    )
+
+    summary = hw.get_gpu_summary()
+
+    assert summary == {
+        "gpu_name": "Test GPU",
+        "vram_total_gb": 100.0,
+        "vram_free_gb": 98.0,
+    }
+
+
 # ========== Inventory parity ==========
 
 
