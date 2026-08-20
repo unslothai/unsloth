@@ -11631,7 +11631,6 @@ def _loaded_context_tokens() -> int | None:
     """
     try:
         from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
-
         llama = get_llama_cpp_backend()
         if getattr(llama, "is_loaded", False):
             ctx = getattr(llama, "context_length", None)
