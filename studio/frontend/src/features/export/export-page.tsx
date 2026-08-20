@@ -84,6 +84,7 @@ import {
   refreshCheckpoints,
   refreshLocalModels,
 } from "./export-navigation-cache";
+import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
   type GgufShardMode,
@@ -794,6 +795,15 @@ export function ExportPage() {
       if (!remoteCodeOk) return;
     }
 
+    let installMissingDependencies = false;
+    if (effectiveMethod === "merged") {
+      const llmCompressor = await confirmLlmCompressorInstallIfNeeded(
+        selectedFormats,
+      );
+      if (!llmCompressor.ok) return;
+      installMissingDependencies = llmCompressor.installMissingDependencies;
+    }
+
     void runExport({
       sourceMode,
       checkpointPath,
@@ -818,6 +828,7 @@ export function ExportPage() {
       repoId,
       token,
       privateRepo,
+      installMissingDependencies,
       baseModelId: selectedModelData?.base_model ?? undefined,
       summary: {
         baseModelName: sourceBaseModelName,
