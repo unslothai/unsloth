@@ -60,9 +60,25 @@
 	var SAMPLE_MS = 2000;
 	var MAX_ROOTS_SCANNED = 60;
 	var MAX_DESCENDANTS_PER_ROOT = 40;
-	/* The fallback lengths this arm ships. A skipped root whose height lands on one of these to
-	 * the pixel has NO last remembered size, which is the trap, not the design. */
-	var FALLBACK_PX = { assistant: 300, user: 60 };
+	/* Per role, the two heights a skipped root can land on, and they mean OPPOSITE things:
+	 *
+	 *   fallback  the declared `contain-intrinsic-size` length, used because no last remembered
+	 *             size exists yet. The arm is working as designed and the length is a guess.
+	 *   padding   the root's own padding and nothing else, which is a remembered size of ZERO,
+	 *             recorded while the root was mounted and still empty. That is the trap.
+	 *
+	 * They have to be told apart or the probe attributes one to the other, and on this app they
+	 * are close enough to collide: the user root's fallback is 60px and its padding is 40px. So
+	 * the fallback is matched FIRST and to the pixel, the padding second, and a root that is
+	 * neither is counted as neither. A single `height <= 64` bucket put a user root sitting
+	 * exactly on its fallback into both counters at once. */
+	var ROLE_PX = {
+		assistant: { fallback: 300, padding: 18 },
+		user: { fallback: 60, padding: 40 }
+	};
+	/* Half the gap between the two smallest interesting heights, so neither test can reach the
+	 * other's target. Sub-pixel layout means an exact equality test would miss. */
+	var PX_EPS = 2;
 
 	if (typeof window === "undefined" || !window.document) {
 		return;
@@ -226,6 +242,7 @@
 			onUnrendered: 0,
 			skippedNow: 0,
 			fallbackBite: 0,
+			paddingOnly: 0,
 			scanned: 0,
 			codeBlocks: 0,
 			codeBlocksAuto: 0
@@ -248,19 +265,21 @@
 			var r = rect(el);
 			if (r) {
 				heights.push(Math.round(r.height));
-				/* The padding-only signature. `content-visibility: auto` imposes size containment
-				 * while skipping, so a skipped root's height is its padding plus its intrinsic
-				 * size. A root that lands on its padding alone is reporting an intrinsic size of
-				 * ZERO, which means the `auto` keyword found a last remembered size of zero --
-				 * recorded while the message root existed but had not yet been filled -- rather
-				 * than falling back to the declared <length>. That is a different failure from
-				 * "the fallback is too small" and it has to be counted separately. */
-				if (cv === "auto" && r.height > 0 && r.height <= 64) {
-					out.paddingOnly = (out.paddingOnly || 0) + 1;
-				}
-				var fb = FALLBACK_PX[roleOf(el)];
-				if (cv === "auto" && fb && Math.abs(r.height - fb) < 1) {
-					out.fallbackBite += 1;
+				/* Two MUTUALLY EXCLUSIVE buckets, in priority order. `content-visibility: auto`
+				 * imposes size containment while skipping, so a skipped root's height is its
+				 * padding plus its intrinsic size. Landing on the declared <length> means no
+				 * remembered size exists yet; landing on the padding alone means one exists and
+				 * it is ZERO, recorded while the root was mounted and still empty. The fallback
+				 * is tested first and wins ties, because a root sitting on its fallback is
+				 * behaving exactly as the declaration asks and must never be charged to the
+				 * trap. Anything else is counted as neither. */
+				var px = ROLE_PX[roleOf(el)];
+				if (cv === "auto" && px) {
+					if (Math.abs(r.height - px.fallback) <= PX_EPS) {
+						out.fallbackBite += 1;
+					} else if (Math.abs(r.height - px.padding) <= PX_EPS) {
+						out.paddingOnly += 1;
+					}
 				}
 			}
 			/* The geometry question is asked only of armed roots, and only of as many as can be
@@ -339,6 +358,70 @@
 	}
 
 	window.__cvPotSample = sample;
+
+	/* THE LISTENER HAS TO EXIST BEFORE THE ELEMENT'S FIRST TRANSITION, and polling cannot
+	 * guarantee that.
+	 *
+	 * `contentvisibilityautostatechange` fires on a CHANGE of state. A root that is inserted
+	 * off screen becomes skipped once, at its first lifecycle update, and then never changes
+	 * again while the user stays where they are. If the listener is attached on a two-second
+	 * tick, every root mounted and skipped inside that first tick emits its only event into a
+	 * void, `ev_skip` stays at zero, and the probe reports precisely the false NOT RUN it was
+	 * written to prevent. A whole thread can mount inside two seconds; a seeded one does.
+	 *
+	 * So roots are adopted at INSERTION, from a MutationObserver installed before the app boots
+	 * (this file is an init script, so `document.documentElement` is the only thing that exists
+	 * yet). The observer callback runs in a microtask after the mutation and before the next
+	 * lifecycle update, which is early enough. The interval is kept, because a root can also
+	 * acquire the property later without being re-inserted, and `adoptAll` is idempotent. */
+	function adoptAll() {
+		var roots = all(MESSAGE_SELECTOR);
+		for (var i = 0; i < roots.length; i++) {
+			watch(roots[i]);
+		}
+	}
+
+	/* Only the ADDED NODES, never a document-wide re-scan. Streaming produces thousands of
+	 * mutations a second, and a `querySelectorAll` per mutation would make this probe the load
+	 * it is trying to observe. `watch` is idempotent, so a node reached twice costs a WeakSet
+	 * lookup. */
+	function adoptAdded(records) {
+		for (var i = 0; i < records.length; i++) {
+			var added = records[i].addedNodes;
+			for (var j = 0; j < (added ? added.length : 0); j++) {
+				var node = added[j];
+				if (!node || node.nodeType !== 1) {
+					continue;
+				}
+				try {
+					if (typeof node.matches === "function" && node.matches(MESSAGE_SELECTOR)) {
+						watch(node);
+					}
+				} catch (e) {
+					ev.listenerErrors += 1;
+				}
+				var inner = all(MESSAGE_SELECTOR, node);
+				for (var k = 0; k < inner.length; k++) {
+					watch(inner[k]);
+				}
+			}
+		}
+	}
+
+	try {
+		if (typeof window.MutationObserver === "function") {
+			new window.MutationObserver(adoptAdded).observe(doc.documentElement, {
+				childList: true,
+				subtree: true
+			});
+		} else {
+			ev.listenerErrors += 1;
+		}
+	} catch (e) {
+		ev.listenerErrors += 1;
+	}
+
+	adoptAll();
 	try {
 		window.setInterval(sample, SAMPLE_MS);
 	} catch (e) {

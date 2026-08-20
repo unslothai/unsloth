@@ -154,6 +154,21 @@ def corpus_of(records: list[dict]) -> str:
     return "?"
 
 
+def probe_of(records: list[dict]) -> str:
+    """The external init script that was in the page while this payload was measured, or "".
+
+    A probe samples the DOM on its own schedule and forces layout to do it, so a payload taken
+    with one installed is a measurement of the page PLUS the instrument. That is fine, and it is
+    what a potency probe is for; what is not fine is that such a run otherwise looks exactly like
+    a clean one. It records the same cells and renders the same A/B table, so nothing except the
+    caller's memory stops the numbers being quoted.
+    """
+    for r in records:
+        if r.get("row_type") == "run_meta":
+            return str(r.get("probe_init_script") or "")
+    return ""
+
+
 def read_rows(path: Path) -> list[dict]:
     return [
         json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
@@ -173,6 +188,19 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     corpora: set[str] = set()
     for path in paths:
         records = read_rows(path)
+        # REFUSED HERE, not warned about. This is the same class of refusal as the tier and
+        # corpus checks below, one step earlier: those two say "these are different films", and
+        # this one says "this film was shot with the camera in the shot". There is no flag to
+        # override it, because the only correct response is to re-run without the probe.
+        probe = probe_of(records)
+        if probe:
+            raise SystemExit(
+                f"refusing to score {path}: it was recorded with an external init "
+                f"script installed ({probe}). A probe samples the DOM and forces "
+                f"layout on its own schedule, so these timings are a measurement of "
+                f"the page and the instrument together. Re-run with "
+                f"SBENCH_EXTRA_INIT_SCRIPT unset."
+            )
         tiers.add(tier_of(records))
         corpora.add(corpus_of(records))
         for metric, rows in paired(records, shard = str(path.parent.name)).items():

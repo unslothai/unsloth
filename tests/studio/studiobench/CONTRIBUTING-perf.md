@@ -254,8 +254,18 @@ has nothing to do with rendering.
 
 `arms/content_visibility_probe.js` is the working probe. Install it with
 `SBENCH_EXTRA_INIT_SCRIPT`, read it back with `SBENCH_PAGE_CONSOLE="CVPOT "`. Both are unset by
-default, so a scored run is unaffected; a run carrying the probe is a probe run and its payload is
-never scored, because the probe forces layout on every sample.
+default, so a scored run is unaffected.
+
+A run carrying a probe is **not scorable**, because the probe samples the DOM and forces layout on
+its own schedule. That is a gate, not a convention: the init script's path is written into
+`run_meta.probe_init_script`, the run records a `probe_free` gate, and `floor_table` refuses the
+payload outright. There is no flag to override it. Re-run with the variable unset.
+
+Attach your listeners at **insertion**, from a `MutationObserver` installed before the app boots,
+not on your sampling tick. `contentvisibilityautostatechange` fires on a *change* of state, and a
+root inserted off screen becomes skipped once and then never changes again while the user stays
+put. A whole seeded thread mounts inside two seconds, so a probe that adopts roots on a two-second
+tick misses every one of their only events and reports zero.
 
 ### The geometry route is self-defeating
 

@@ -77,6 +77,45 @@ def test_the_probe_prefix_is_the_one_the_console_filter_expects(probe_src: str):
     )
 
 
+def test_a_probe_run_records_the_gate_that_makes_it_unscorable(main_src: str):
+    """The guarantee has to be a gate, not a sentence in a doc.
+
+    A probe run otherwise looks entirely ordinary: same cells, same A/B table. `floor_table`
+    refuses it on this field, and it can only do that if `__main__` writes it.
+    """
+
+    assert '"probe_init_script": extra_init or None' in main_src
+    assert 'rec.gate(\n        "probe_free",' in main_src
+
+
+def test_roots_are_adopted_at_insertion_not_on_the_sample_tick(probe_src: str):
+    """The listener must exist before the element's FIRST transition.
+
+    A root inserted off screen becomes skipped once and then never changes again. Attach on a
+    two-second tick and every root mounted inside that tick emits its only event into a void,
+    which is exactly the false NOT RUN this probe exists to prevent.
+    """
+
+    assert "MutationObserver" in probe_src
+    assert "adoptAdded" in probe_src
+    # Added nodes only. A document-wide re-scan per mutation would make the probe the load.
+    assert "addedNodes" in probe_src
+    assert "adoptAll();" in probe_src
+
+
+def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: str):
+    """They mean opposite things, and on this app they are close enough to collide.
+
+    The user root's declared fallback is 60px and its padding is 40px. A single `height <= 64`
+    bucket charged a root sitting exactly on its fallback to the zero-remembered-size trap as
+    well. Fallback is tested first and wins ties.
+    """
+
+    assert "ROLE_PX" in probe_src
+    assert "out.fallbackBite += 1;" in probe_src
+    assert "} else if (Math.abs(r.height - px.padding) <= PX_EPS) {" in probe_src
+
+
 def test_the_event_counter_is_the_one_potency_rests_on(probe_src: str):
     """`ev_skip` is the only potency signal here that no author CSS can fake."""
 

@@ -413,6 +413,10 @@ def run(args, ab_ref = None) -> int:
             # reader has no way to notice before quoting a ratio across it.
             "stream_tail_chars": args.stream_tail_chars,
             "corpus_dollars": bool(args.corpus_dollars),
+            # WHICH PROBE, IF ANY, WAS IN THE PAGE. Recorded next to the corpus hash and for the
+            # same reason: a payload nobody can audit against the page it measured has to be
+            # taken on trust. `null` is the normal case and the only scorable one.
+            "probe_init_script": extra_init or None,
         }
     )
     rec.gate("production_build", verdict.production, verdict.as_dict())
@@ -443,6 +447,29 @@ def run(args, ab_ref = None) -> int:
             else "standard measurement protocol",
         },
     )
+    # THE SAME SHAPE OF GATE, for the same reason. A probe forces layout on a schedule of its
+    # own, so its payload is perturbed, and "the docs say probe payloads are never scored" is a
+    # convention rather than a gate. A convention is what this subsystem keeps being wrong
+    # about: the run still records ordinary cells and still renders an A/B table, so a probe
+    # invocation on the standard tier produces something that reads exactly like a result. The
+    # gate is what lets `floor_table` refuse it instead of trusting the caller to remember.
+    rec.gate(
+        "probe_free",
+        not extra_init,
+        {
+            "probe_init_script": extra_init or None,
+            "reason": (
+                "an external init script was installed via SBENCH_EXTRA_INIT_SCRIPT, so this "
+                "page was instrumented while it was measured"
+            )
+            if extra_init
+            else "no external init script was installed",
+        },
+    )
+    if extra_init:
+        _log("")
+        _log("  PROBE RUN: this payload is NOT scorable. floor_table will refuse it.")
+        _log("")
 
     image_path = ensure_probe_image(paths)
     for side in sides:
