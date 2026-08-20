@@ -1397,6 +1397,33 @@ export async function awaitThreadScopedSettingsWrite(
   return landed !== false;
 }
 
+/**
+ * Every row write that has already been started, landed.
+ *
+ * Not a flush: a debounce that has not fired yet is left where it is, so a caller cannot
+ * use this to make a write happen earlier than the store would have made it. It is for a
+ * caller that has just let the debounce fire and now needs the row before it reads it
+ * back, and does not know which chats the store decided to write.
+ *
+ * The chain a write runs on ends in `await import("../utils/chat-history-storage")`. How
+ * many event-loop turns that costs is a property of the machine -- the specifier has no
+ * extension, so it is resolved through a hook, and that means filesystem work in a test
+ * and a chunk fetch in a browser. A caller that instead spins a fixed number of turns and
+ * then reads the row is asserting something about the machine rather than about the store.
+ */
+export async function awaitStartedThreadScopedSettingsWrites(): Promise<void> {
+  // A chain that settles can leave a newer one behind it for the same chat, so this
+  // repeats until the map is empty instead of awaiting one snapshot of it. Bounded, so a
+  // write that keeps rescheduling itself shows up as a failed assertion, not as a hang.
+  for (
+    let pass = 0;
+    pass < 20 && threadSettingsWriteChains.size > 0;
+    pass += 1
+  ) {
+    await Promise.allSettled([...threadSettingsWriteChains.values()]);
+  }
+}
+
 function flushThreadScopedSettingsWrite(keepalive = false): void {
   if (threadSettingsWriteTimer !== null) {
     clearTimeout(threadSettingsWriteTimer);

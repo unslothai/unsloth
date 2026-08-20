@@ -134,15 +134,28 @@ interface StoreModule {
     };
   };
   beginThreadScopedPairing: (threadId: string) => void;
+  awaitStartedThreadScopedSettingsWrites: () => Promise<void>;
 }
 
-/** Let the debounced writers and their promise chains finish. */
-async function drain(tick: (ms: number) => void): Promise<void> {
+/**
+ * Let the debounced writers and their promise chains finish.
+ *
+ * The turns let whatever the tick started get going; the store's own barrier is what says
+ * it finished. Counting turns alone does not: a row write ends in a dynamic import, so the
+ * number of turns between the timer firing and the row being written is a property of the
+ * machine the suite runs on, and an ordering whose write had not landed yet is checked
+ * against a row the next ordering then resets.
+ */
+async function drain(
+  mod: StoreModule,
+  tick: (ms: number) => void,
+): Promise<void> {
   for (let round = 0; round < 3; round += 1) {
     tick(1000);
     for (let i = 0; i < 6; i += 1) {
       await new Promise((resolve) => setImmediate(resolve));
     }
+    await mod.awaitStartedThreadScopedSettingsWrites();
   }
 }
 
@@ -416,7 +429,7 @@ export async function runScenario(
 
   for (const op of ops) {
     await perform(op);
-    await drain(tick);
+    await drain(mod, tick);
     check(op);
     if (violations.length > 0) break;
   }
