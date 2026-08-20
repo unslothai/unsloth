@@ -487,6 +487,36 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
 });
 
+// The update cards animate in from scale 0.96 and a bounding rect is read
+// through that transform, 4% short. A finished transform resizes nothing, so
+// no observer comes back with the settled figure: the short reading is the
+// floor the placement keeps, and a band a few pixels under the real one is
+// accepted. The rail's own two readings are scrollHeight, a layout figure, so
+// the per-card ones have to be layout figures to be summed against them.
+test("the card floors are read off the layout box, not the painted one", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("const observer = new ResizeObserver"),
+  );
+  assert.match(
+    source,
+    /function cardHeight\([\s\S]*?\)\.offsetHeight;/,
+    "a card's height is not the untransformed layout box",
+  );
+  assert.match(
+    measure,
+    /const grown = \[\.\.\.node\.children\]\.map\(cardHeight\)/,
+  );
+  assert.match(measure, /squeezed: cardHeight\(child\)/);
+});
+
 // The sweep above, re-run at the heights the stack actually takes.
 // The stack scrolls now, and an uncapped box does not, so the measurement has
 // to put scrollTop back with the cap or a resize below throws a reader of the

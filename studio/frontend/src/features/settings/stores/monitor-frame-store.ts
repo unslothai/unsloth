@@ -262,6 +262,20 @@ function cardFloorRoom(squeezed: number, natural: number): number {
 }
 
 /**
+ * A card's height as the layout has it, not as it is painted.
+ *
+ * `offsetHeight` and not a bounding rect, for the reason `use-panel-anchor` has
+ * it: the update cards animate in from `scale: 0.96`, and a rect read through
+ * that transform is 4% short. Finishing a transform resizes nothing, so no
+ * observer comes back with the settled figure and the short one is the floor
+ * the placement keeps. It is also the measurement the sum is checked against,
+ * since `scrollHeight` is a layout reading too.
+ */
+function cardHeight(child: Element): number {
+  return (child as HTMLElement).offsetHeight;
+}
+
+/**
  * How short the rail can be and still show every card in it.
  *
  * Per card, never over their sum. The update banner carries a min-height of its
@@ -515,9 +529,7 @@ export function useStackGeometry(): StackPlacement {
       const natural = node.scrollHeight;
       // Card by card as well as in total, since a card is floored against its
       // own height rather than the rail's. Same probe, so no extra layout.
-      const grown = [...node.children].map(
-        (child) => child.getBoundingClientRect().height,
-      );
+      const grown = [...node.children].map(cardHeight);
       // Taken here, uncapped, and not after the cap goes back on. The tail
       // panels are min-h-0 with their own scrollers, so under a tight cap they
       // measure as almost nothing, the placement reads that as a tail it can
@@ -542,7 +554,7 @@ export function useStackGeometry(): StackPlacement {
       const collapsed = node.scrollHeight;
       const floor = usableFloorRoom(
         [...node.children].map((child, index) => ({
-          squeezed: child.getBoundingClientRect().height,
+          squeezed: cardHeight(child),
           natural: grown[index],
         })),
         natural,
