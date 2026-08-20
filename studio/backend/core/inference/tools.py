@@ -29,6 +29,19 @@ import sys
 import tempfile
 import contextlib
 import threading
+from contextvars import ContextVar
+
+# The window of the model THIS request is served by, set by execute_tool for the call's
+# duration. Left unset, the budget falls back to the process-global probe, which is right
+# for the local loops and wrong for anything else: an external-provider request runs
+# Studio's tool loop without touching a resident GGUF, so inheriting that GGUF's window
+# let a small resident model truncate pages for a large cloud model, and a large resident
+# model hand the full 16,000 characters to a small OpenAI-compatible endpoint.
+_UNSET_CONTEXT_TOKENS = object()
+_REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
+    "unsloth_request_context_tokens", default = _UNSET_CONTEXT_TOKENS,
+)
+
 import uuid
 import time
 import urllib.parse
@@ -10007,6 +10020,7 @@ def execute_tool(
     conversation_branch: list[dict] | None = None,
     conversation_budget_tokens: int | None = None,
     conversation_token_counter = None,
+    context_tokens = _UNSET_CONTEXT_TOKENS,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10026,6 +10040,9 @@ def execute_tool(
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    # Set unconditionally, so a value from an earlier call on this thread can never be
+    # read by a later one. That is what makes a try/finally reset unnecessary here.
+    _REQUEST_CONTEXT_TOKENS.set(context_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base_with_budget(
@@ -10831,6 +10848,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+
 # Share of the loaded window one fetched page may claim. The same window also has to hold
 # the system prompt, the carried-forward block, the user's turn, the call itself and room
 # to answer, so a third is already generous.
@@ -11624,10 +11642,17 @@ def _looks_like_html_document(body: str) -> bool:
 def _loaded_context_tokens() -> int | None:
     """The active model's context window, or None when it cannot be read.
 
-    Mirrors `research_runs._loaded_context_length`: the ML backends live in a worker
-    subprocess, so the in-process singleton is unpopulated here and importing it pulls in
-    the ML stack. Read the orchestrator the routes use instead, and treat every failure as
-    "unknown" so a fetch is never blocked by not knowing.
+    Mirrors `research_runs._loaded_context_length` and `routes.inference.
+    _monitor_context_length`: llama.cpp first, then the orchestrator the API layer reads.
+    Both branches are needed. A native/Transformers chat leaves `is_loaded` false, and
+    stopping at that probe reported "unknown", which kept the full 16,000-character cap
+    and reproduced on small native models exactly the overflow this budget exists to
+    prevent.
+
+    The ML backends live in a worker subprocess, so the in-process singleton is
+    unpopulated here and importing it pulls in the ML stack; peek at the orchestrator
+    instead of constructing one. Every failure is "unknown" so a fetch is never blocked by
+    not knowing.
     """
     try:
         from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
@@ -11637,12 +11662,28 @@ def _loaded_context_tokens() -> int | None:
             if isinstance(ctx, int) and ctx > 0:
                 return ctx
     except Exception:  # noqa: BLE001 -- an unreadable window is "unknown", never an error
+        pass
+    try:
+        from core.research_runs import _peek_inference_backend  # noqa: PLC0415
+
+        backend = _peek_inference_backend()
+        name = getattr(backend, "active_model_name", None)
+        models = getattr(backend, "models", {}) or {}
+        info = models.get(name) if (name and isinstance(models, dict)) else None
+        for candidate in (
+            (info or {}).get("context_length"),
+            getattr(backend, "context_length", None),
+            getattr(backend, "max_seq_length", None),
+        ):
+            if isinstance(candidate, int) and candidate > 0:
+                return candidate
+    except Exception:  # noqa: BLE001 -- same rule: unknown, never an error
         return None
     return None
 
 
 def _page_char_budget() -> int:
-    """`_MAX_PAGE_CHARS`, lowered to what the loaded window can actually hold.
+    """`_MAX_PAGE_CHARS`, lowered to what the serving window can actually hold.
 
     16,000 characters is roughly 4,000 tokens: fine on a 128k model, nonsensical on a
     4,864-token one. Measured there, a single fetched page came back at 12,295 characters,
@@ -11655,7 +11696,10 @@ def _page_char_budget() -> int:
     Above roughly an 11k window this returns the old constant unchanged, so only the models
     that cannot afford a whole page are affected.
     """
-    ctx = _loaded_context_tokens()
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
     if not ctx:
         return _MAX_PAGE_CHARS
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))

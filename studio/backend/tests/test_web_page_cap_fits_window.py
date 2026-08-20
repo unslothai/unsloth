@@ -20,6 +20,8 @@ web_search calls):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from core.inference import tools
@@ -108,3 +110,71 @@ def test_the_caller_can_still_pin_a_size(monkeypatch):
     # The signature default is None, so an explicit value must survive to the truncation.
     assert tools._truncate_page_text("x" * 50_000, 200) == "x" * 200
     assert captured["max_chars"] == 200
+
+
+class TestTheWindowIsReadPerRequest:
+    """Two ways the budget read the wrong window, both found in review.
+
+    The reader stopped at the llama.cpp probe, so a native/Transformers chat left
+    `is_loaded` false and reported "unknown", which kept the full 16,000-character
+    cap on exactly the small models that cannot hold it. And the budget consulted
+    process-global state, so an external-provider request, which never touches a
+    resident GGUF, inherited that GGUF's window in both directions.
+    """
+
+    def test_a_native_model_window_is_read_when_no_gguf_is_loaded(self, monkeypatch):
+        # The autouse fixture stubs the reader out; these exercise the real one.
+        monkeypatch.undo()
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = False, context_length = None),
+        )
+        monkeypatch.setattr(
+            "core.research_runs._peek_inference_backend",
+            lambda: SimpleNamespace(
+                active_model_name = "native/model",
+                models = {"native/model": {"context_length": 4864}},
+            ),
+        )
+        assert tools._loaded_context_tokens() == 4864
+
+    def test_a_native_window_is_read_even_if_the_gguf_probe_raises(self, monkeypatch):
+        # The llama.cpp branch must fall through, not return None: swallowing the
+        # native answer is what made the reader report "unknown" here.
+        monkeypatch.undo()
+
+        def _boom():
+            raise RuntimeError("no backend")
+
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", _boom)
+        monkeypatch.setattr(
+            "core.research_runs._peek_inference_backend",
+            lambda: SimpleNamespace(active_model_name = None, models = {}, max_seq_length = 8192),
+        )
+        assert tools._loaded_context_tokens() == 8192
+
+    def test_an_external_request_does_not_inherit_the_resident_gguf_window(self, monkeypatch):
+        # A large resident GGUF must not hand its budget to a small external endpoint.
+        _window(monkeypatch, 262_144)
+        token = tools._REQUEST_CONTEXT_TOKENS.set(0)
+        try:
+            assert tools._page_char_budget() == tools._MAX_PAGE_CHARS
+        finally:
+            tools._REQUEST_CONTEXT_TOKENS.reset(token)
+
+    def test_a_local_request_still_uses_the_probe_when_nothing_is_scoped(self, monkeypatch):
+        _window(monkeypatch, 4864)
+        assert tools._REQUEST_CONTEXT_TOKENS.get() is tools._UNSET_CONTEXT_TOKENS
+        assert tools._page_char_budget() == 6809
+
+    def test_a_scoped_window_beats_the_probe(self, monkeypatch):
+        _window(monkeypatch, 262_144)
+        token = tools._REQUEST_CONTEXT_TOKENS.set(4864)
+        try:
+            assert tools._page_char_budget() == 6809
+        finally:
+            tools._REQUEST_CONTEXT_TOKENS.reset(token)
+
+    def test_execute_tool_scopes_the_window_for_the_call(self):
+        tools.execute_tool("render_html", {"html": "<p>x</p>"}, context_tokens = 4864)
+        assert tools._REQUEST_CONTEXT_TOKENS.get() == 4864
