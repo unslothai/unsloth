@@ -136,9 +136,34 @@ interface StoreModule {
   beginThreadScopedPairing: (threadId: string) => void;
 }
 
-/** Let the debounced writers and their promise chains finish. */
+/** Let the debounced writers and their promise chains finish.
+ *
+ * Three rounds was enough on the node 24 a dev box happens to have and was not
+ * enough on the node 22 CI pins, where the same chain drains far fewer
+ * continuations per round. The simulations below then reported the shortfall as
+ * an ORDERING violation ("chat A temperature: owed 0.6, shows 1.37") rather than
+ * as a missing write, because a scenario whose write has not landed yet looks
+ * exactly like one that wrote the wrong value.
+ *
+ * Measured on v22.23.2, the version `setup-node: 22` resolved to. In the sibling
+ * compat suite: 3 rounds -> 7 failures, 10 -> 5, 30 -> 1, 60 -> 0. A scenario
+ * runs many more steps than one compat test, so this suite needs far more:
+ *
+ *   200 rounds  1 failing of 18 here, and 2 of 120 orderings still short on the
+ *               Windows runner, which is slower again. Marginal, not safe: two
+ *               runs at 200 on the same machine gave 0 and 1.
+ *   600 rounds  0 failing, 107s against 52s. That is the trade being made.
+ *
+ * An adaptive version was tried and is WRONG here, which is worth recording so
+ * it is not tried again: the rows only change WHEN the write lands, so "rows
+ * have stopped changing" is precisely the pending state being waited through.
+ * Quiescence on that observable stops early by construction -- it scored 4
+ * failures where the fixed bound scored 0.
+ */
+const DRAIN_ROUNDS = 600;
+
 async function drain(tick: (ms: number) => void): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
+  for (let round = 0; round < DRAIN_ROUNDS; round += 1) {
     tick(1000);
     for (let i = 0; i < 6; i += 1) {
       await new Promise((resolve) => setImmediate(resolve));
