@@ -336,7 +336,6 @@ class TestTheOutputAllowanceIsCounted:
         )
 
 
-
 class TestTheWholeRenderedPromptIsCounted:
     """Two more ways the reservation undercounted, both from review.
 
@@ -349,16 +348,20 @@ class TestTheWholeRenderedPromptIsCounted:
     """
 
     @staticmethod
-    def _cost(payload, budget = 8192, capacity = 4):
+    def _cost(
+        payload,
+        budget = 8192,
+        capacity = 4,
+    ):
         import routes.inference as routes_inference
-
         return routes_inference._openai_llama_admission_tokens(
-            payload, budget = budget, capacity = capacity,
+            payload,
+            budget = budget,
+            capacity = capacity,
         )
 
     def test_an_uncapped_request_reserves_the_rest_of_the_window(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = None,
@@ -388,7 +391,6 @@ class TestTheWholeRenderedPromptIsCounted:
 
     def test_a_capped_request_is_unaffected(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 128,
@@ -401,18 +403,22 @@ class TestTheWholeRenderedPromptIsCounted:
 
         messages = [{"role": "user", "content": "hi"}]
         bare = self._cost(SimpleNamespace(messages = messages, max_tokens = 16))
-        with_tools = self._cost(SimpleNamespace(
-            messages = messages,
-            max_tokens = 16,
-            tools = [{
-                "type": "function",
-                "function": {
-                    "name": "lookup",
-                    "description": "d" * 2000,
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }],
-        ))
+        with_tools = self._cost(
+            SimpleNamespace(
+                messages = messages,
+                max_tokens = 16,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "description": "d" * 2000,
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+        )
         assert with_tools > bare
 
     def test_an_anthropic_system_block_is_counted(self):
@@ -420,14 +426,17 @@ class TestTheWholeRenderedPromptIsCounted:
 
         messages = [{"role": "user", "content": "hi"}]
         bare = self._cost(SimpleNamespace(messages = messages, max_tokens = 16))
-        with_system = self._cost(SimpleNamespace(
-            messages = messages, max_tokens = 16, system = "s" * 4000,
-        ))
+        with_system = self._cost(
+            SimpleNamespace(
+                messages = messages,
+                max_tokens = 16,
+                system = "s" * 4000,
+            )
+        )
         assert with_system > bare
 
     def test_an_unserialisable_extra_does_not_break_admission(self):
         from types import SimpleNamespace
-
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
