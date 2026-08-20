@@ -15,6 +15,7 @@ from hub.utils.gguf import (
     is_big_endian_gguf_path,
     drop_shadowed_appledouble_siblings,
     is_gguf_filename,
+    is_imatrix_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
@@ -82,6 +83,7 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
         and not is_mtp_drafter_path(path)
+        and not is_imatrix_filename(path)
         # The endian predicate reads a quant TOKEN, so it gets the label: handed the qualified key
         # it cannot see a parent-only quant and drops the file, leaving the plan with no main
         # files at all and an interrupted download with no hashes to resume against.
@@ -243,7 +245,9 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         # Companions are folded into every plan below; keep them out of the
         # quant grouping so a drafter never lands in a variant's main files
         # (the root mtp-*.gguf carries a quant label, e.g. Q8_0).
-        if is_mmproj_filename(name) or is_mtp_drafter_path(name):
+        # An imatrix leaves entirely rather than joining companions_expected: no
+        # variant needs llama-quantize's calibration data downloaded.
+        if is_mmproj_filename(name) or is_mtp_drafter_path(name) or is_imatrix_filename(name):
             continue
         quant = gguf_variant_key(name).lower()
         # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
