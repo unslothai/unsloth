@@ -885,7 +885,7 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
     if IS_ROCM:
         visible_ids = _amd_smi_ids_for_hip_ids(visible_ids)
     result = None
-    if visible_ids is not None:
+    if visible_ids is not None or not IS_ROCM:
         result = _smi_query(
             "get_visible_gpu_utilization",
             visible_ids,

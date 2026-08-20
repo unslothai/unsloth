@@ -291,6 +291,38 @@ def test_context_free_rocm_smi_declines_without_an_id_mapping(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, 16 << 30) is None
 
 
+def test_context_free_nvidia_smi_resolves_a_uuid_mask(monkeypatch):
+    from utils.hardware import nvidia
+
+    gib = 1 << 30
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {
+            "raw": "GPU-bbbbbbbb",
+            "numeric_ids": None,
+            "supports_explicit_gpu_ids": False,
+        },
+    )
+
+    def _run(command, **_kwargs):
+        assert "--query-gpu=index,uuid,utilization.gpu,temperature.gpu," in command[1]
+        return types.SimpleNamespace(
+            returncode = 0,
+            stdout = "\n".join(
+                [
+                    "0, GPU-aaaaaaaa-1111-2222-3333-444444444444, 5, 30, 15360, 16384, 100, 300",
+                    "1, GPU-bbbbbbbb-1111-2222-3333-444444444444, 7, 31, 2048, 98304, 120, 350",
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _run)
+
+    assert hw._context_free_cuda_memory_info(0, 96 * gib) == 94 * gib
+
+
 # ========== Inventory parity ==========
 
 
