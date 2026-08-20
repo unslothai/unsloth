@@ -24,6 +24,10 @@ import { register } from "node:module";
 import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
+import {
+  drainMockedTimers,
+  enableCountedTimers,
+} from "./helpers/mock-timer-drain.ts";
 
 const { store: localStorageFake, fireWindowEvent } = installLocalStorageFake();
 // Skip the legacy import path: it would look for settings this test never wrote.
@@ -101,7 +105,7 @@ async function sweep(
 // ---------------------------------------------------------------------------
 
 test("A1: every ordering of edit / load / Think / model switch / reopen", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const orderings = permutations<Op>([
     "editTemp",
     "loadQwen",
@@ -114,7 +118,7 @@ test("A1: every ordering of edit / load / Think / model switch / reopen", async 
 });
 
 test("A2: every ordering of prompt edit / post-load defaults / external / unload / second chat", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const orderings = permutations<Op>([
     "editPrompt",
     "qwenPostLoad",
@@ -129,7 +133,7 @@ test("A2: every ordering of prompt edit / post-load defaults / external / unload
 });
 
 test("A3: both chats, both edits, both Think positions, in every order", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const orderings = permutations<Op>([
     "editTemp",
     "editPrompt",
@@ -145,7 +149,7 @@ test("A3: both chats, both edits, both Think positions, in every order", async (
 });
 
 test("A4: every four-step interleaving over the wider alphabet", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const alphabet: Op[] = [
     "editTemp",
     "editPrompt",
@@ -163,7 +167,7 @@ test("A4: every four-step interleaving over the wider alphabet", async (t) => {
 });
 
 test("A5: hydration interleaved -- nothing leaks, whatever the order", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   // Without the shadow model: a chat opened before the server answered follows this
   // browser's cache, so what it is "owed" is not yet decided. The leak and usability
   // invariants still hold, and they are the ones that matter here.
@@ -179,7 +183,7 @@ test("A5: hydration interleaved -- nothing leaks, whatever the order", async (t)
 });
 
 test("A6: hand-picked long sequences", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const long: Op[][] = [
     // the reported gap: two chats, a model in between, back to the first
     [
@@ -286,7 +290,7 @@ test("A6: hand-picked long sequences", async (t) => {
 // ---------------------------------------------------------------------------
 
 test("the pinned values really are stored on the chat's own row", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   await runScenario(
     ["hydrate", "openA", "editTemp", "editPrompt", "openB", "reopenA"],
     (ms) => t.mock.timers.tick(ms),
@@ -301,7 +305,7 @@ test("the pinned values really are stored on the chat's own row", async (t) => {
 });
 
 test("I3: an edit with no chat open reaches the installation-wide settings", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   await runScenario(["hydrate", "editTemp", "editPrompt"], (ms) =>
     t.mock.timers.tick(ms),
   );
@@ -311,7 +315,7 @@ test("I3: an edit with no chat open reaches the installation-wide settings", asy
 });
 
 test("I4: a model's recommendation reaches the installation and the model's memory", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   await runScenario(
     ["hydrate", "openA", "editTemp", "editPrompt", "loadQwen", "switchLlama"],
     (ms) => t.mock.timers.tick(ms),
@@ -375,17 +379,20 @@ async function raceWorld() {
   };
 }
 
-async function settle(tick: (ms: number) => void): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
-    tick(1000);
-    for (let i = 0; i < 6; i += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-  }
+// Wait out the debounced write each race test asserts on. The wait is on the store's own
+// outstanding timers and on the module loader, not on a round count, so a slower runtime
+// takes more rounds instead of silently returning short and turning a stale read into a
+// wrong-value failure; see tests/helpers/mock-timer-drain.ts for why a count was never the
+// right bound.
+async function settle(
+  tick: (ms: number) => void,
+  until?: () => boolean,
+): Promise<void> {
+  await drainMockedTimers(tick, { until, label: "settle" });
 }
 
 test("B1: a slider moved while /api/chat/settings is still in flight survives it", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   settingsHttp.hold();
   const hydrating = w.store().hydratePersistedSettings();
@@ -403,7 +410,7 @@ test("B1: a slider moved while /api/chat/settings is still in flight survives it
 });
 
 test("B2: an edit made while the chat's own read is out is stored on that chat", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -433,7 +440,7 @@ test("B2: an edit made while the chat's own read is out is stored on that chat",
 });
 
 test("B3: leaving mid-read sends the held edit to its own chat, not the next one", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -470,7 +477,7 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
 });
 
 test("B4: a model load landing during the pairing window does not take the chat's edit", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -503,7 +510,7 @@ test("B4: a model load landing during the pairing window does not take the chat'
 });
 
 test("B4b: the held sampling edit that survives a load is the LAST one made", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -522,7 +529,7 @@ test("B4b: the held sampling edit that survives a load is the LAST one made", as
 });
 
 test("B4c: a falsy held edit is not treated as no edit at all", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -556,7 +563,7 @@ test("B4c: a falsy held edit is not treated as no edit at all", async (t) => {
 });
 
 test("B5: two rapid model switches with a pinned chat open", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -591,7 +598,7 @@ test("B5: two rapid model switches with a pinned chat open", async (t) => {
 });
 
 test("B6: a thread switch while a load is in flight keeps each chat's own values", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
@@ -619,7 +626,7 @@ test("B6: a thread switch while a load is in flight keeps each chat's own values
 });
 
 test("B7: a tab closing with a held edit beacons it to the chat it was made in", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await raceWorld();
   await w.store().hydratePersistedSettings();
   await settle((ms) => t.mock.timers.tick(ms));
