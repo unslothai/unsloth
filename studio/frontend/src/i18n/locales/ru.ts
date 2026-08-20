@@ -195,6 +195,7 @@ export const ru = {
       chat: "Чат",
       connections: "Подключения",
       apiKeys: "API",
+      remoteLan: "Удалённый доступ и LAN",
       about: "О программе",
       data: "Данные",
       agents: "Агенты",
@@ -1237,6 +1238,11 @@ export const ru = {
     connections: {
       title: "Подключения",
       description: "Управление провайдерами и внешними подключениями.",
+    },
+    remoteLan: {
+      title: "Удалённый доступ и LAN",
+      description:
+        "Откройте этот Unsloth с других устройств: через локальную сеть или временный публичный URL.",
     },
     apiKeys: {
       title: "API",

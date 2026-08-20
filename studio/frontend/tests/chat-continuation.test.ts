@@ -9,6 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  AUTO_CONTINUE_LIMIT,
+  autoContinueCount,
   budgetImpliesTruncation,
   incompleteLabel,
   isContinuableContent,
@@ -18,7 +20,13 @@ const {
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
+  claimAutoContinue,
+  recordAutoContinue,
   rejectsAssistantPrefill,
+  resetAutoContinue,
+  wasAutoContinued,
+  shouldAutoContinue,
+  shouldAutoContinueMessage,
   resumesExactly,
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
@@ -312,5 +320,176 @@ test("citations appended for display do not block Continue", () => {
       { type: "source", sourceType: "url", id: "s1", url: "https://x" },
     ]),
     true,
+  );
+});
+
+test("a Max Tokens cut resumes on its own", () => {
+  resetAutoContinue();
+  // Not a decision the user made: the reply ran out of room mid-sentence, and asking
+  // whether to finish it is asking a question with one sensible answer.
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+});
+
+test("pressing Stop is never undone by an automatic resume", () => {
+  resetAutoContinue();
+  // The one case where the user HAS decided. Resuming would restart what they stopped.
+  assert.equal(shouldAutoContinue("cancelled", "parent-1"), false);
+});
+
+test("a dropped connection still asks, rather than retrying silently", () => {
+  resetAutoContinue();
+  // A silent retry here hides a broken link behind what looks like a slow answer.
+  assert.equal(shouldAutoContinue("interrupted", "parent-1"), false);
+});
+
+test("automatic resumes are bounded, then the bar comes back", () => {
+  resetAutoContinue();
+  // A model that will not stop would otherwise loop forever, and every round grows the
+  // transcript and drives compaction harder.
+  for (let round = 0; round < AUTO_CONTINUE_LIMIT; round += 1) {
+    assert.equal(shouldAutoContinue("length", "parent-1"), true);
+    recordAutoContinue("parent-1");
+  }
+  assert.equal(autoContinueCount("parent-1"), AUTO_CONTINUE_LIMIT);
+  assert.equal(shouldAutoContinue("length", "parent-1"), false);
+});
+
+test("the budget is per turn, so a later turn is not punished for an earlier one", () => {
+  resetAutoContinue();
+  for (let round = 0; round < AUTO_CONTINUE_LIMIT; round += 1) {
+    recordAutoContinue("parent-1");
+  }
+  assert.equal(shouldAutoContinue("length", "parent-1"), false);
+  assert.equal(shouldAutoContinue("length", "parent-2"), true);
+});
+
+test("the count is keyed on the parent, which every round of one turn shares", () => {
+  resetAutoContinue();
+  // A continuation runs as a SIBLING, so each round has a new message id. Keying on that
+  // would reset the counter every round and the limit would never be reached.
+  recordAutoContinue("parent-1");
+  recordAutoContinue("parent-1");
+  assert.equal(autoContinueCount("parent-1"), 2);
+});
+
+test("a turn with no parent is never resumed automatically", () => {
+  resetAutoContinue();
+  // The very first message has nothing to hang a sibling off, so there is no stable key
+  // to count against and an unbounded loop is the failure mode.
+  assert.equal(shouldAutoContinue("length", null), false);
+});
+
+test("a turn whose own fit was refused is never resumed automatically", () => {
+  resetAutoContinue();
+  // Resuming replays the partial as the final assistant turn, which the fit protects, so
+  // the next round sends a partial that is only ever longer. Observed at a 4,864-token
+  // context: three automatic rounds, each refused identically.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", { fits: false }),
+    false,
+  );
+});
+
+test("a partial that already fills the budget is not resumed", () => {
+  resetAutoContinue();
+  // 3,217 tokens of partial against a 3,648-token target left no room for the system turn
+  // and the carried-forward block, so the request was irreducible before it was sent.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      partialTokens: 3648,
+      promptTarget: 3648,
+    }),
+    false,
+  );
+  // Comfortably inside the budget still resumes.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      partialTokens: 400,
+      promptTarget: 3648,
+    }),
+    true,
+  );
+});
+
+test("an unknown fit does not block resuming", () => {
+  resetAutoContinue();
+  // A turn that never truncated carries no metadata, and that is the ordinary case.
+  assert.equal(shouldAutoContinue("length", "parent-1", {}), true);
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", { fits: true }),
+    true,
+  );
+});
+
+test("a message is claimed for automatic continuation exactly once", () => {
+  resetAutoContinue();
+  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(claimAutoContinue("m1"), false);
+  assert.equal(claimAutoContinue("m1"), false);
+});
+
+test("the claim survives a remount, which a component ref did not", () => {
+  // Leave the chat with a truncated branch selected and come back: a ref was fresh
+  // while the parent still had budget, so the effect fired again and created another
+  // sibling and another paid provider request.
+  resetAutoContinue();
+  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+  assert.equal(claimAutoContinue("m1"), false);
+});
+
+test("claims are tracked per message", () => {
+  resetAutoContinue();
+  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(claimAutoContinue("m2"), true);
+  assert.equal(claimAutoContinue("m1"), false);
+});
+
+test("a missing message id is refused rather than claimed", () => {
+  resetAutoContinue();
+  assert.equal(claimAutoContinue(null), false);
+  assert.equal(claimAutoContinue(undefined), false);
+  assert.equal(claimAutoContinue(""), false);
+});
+
+test("a claim is reported and cleared by a full reset", () => {
+  resetAutoContinue();
+  assert.equal(wasAutoContinued("m1"), false);
+  claimAutoContinue("m1");
+  assert.equal(wasAutoContinued("m1"), true);
+  resetAutoContinue();
+  assert.equal(wasAutoContinued("m1"), false);
+  assert.equal(claimAutoContinue("m1"), true);
+});
+
+test("a message already claimed stops reporting itself as continuing", () => {
+  resetAutoContinue();
+  // The turn that fires it: nothing has claimed the message yet.
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
+  claimAutoContinue("m1");
+  recordAutoContinue("parent-1");
+
+  // Back on the truncated branch, whether through the branch picker or by returning to
+  // the chat: `claimAutoContinue` refuses the run, so the turn's own budget still saying
+  // yes would leave a spinner nothing is answering, over a hidden manual Continue button.
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), false);
+});
+
+test("a claim on one message does not silence another", () => {
+  resetAutoContinue();
+  claimAutoContinue("m1");
+  // The next round of the same turn is a new message with budget left, and continues.
+  recordAutoContinue("parent-1");
+  assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
+});
+
+test("a claimed message still honours the gates the turn itself fails", () => {
+  resetAutoContinue();
+  // Nothing about the claim resurrects a cut that was never automatic in the first place.
+  assert.equal(shouldAutoContinueMessage("m1", "cancelled", "parent-1"), false);
+  assert.equal(
+    shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
+    false,
   );
 });
