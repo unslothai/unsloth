@@ -220,3 +220,26 @@ test("a reauthorization answer retires nothing and describes nothing", async () 
     null,
   );
 });
+
+test("a catalog that arrives before the registry does not rewrite what is learned", async () => {
+  // registryByType is empty until the mount fetch resolves, and stays empty when it
+  // fails, while the Edit button is gated only on a pending mutation. The plan catalog
+  // can therefore land with no registry row behind it. Writing then would drop the
+  // wildcard that carries studio_tools for the whole provider type and overwrite the
+  // registry's own vision flags with the plan's, and both are persisted.
+  const loaded = await vite.ssrLoadModule("/src/features/chat/chat-providers-dialog.tsx");
+  const codexCapabilitiesWithPlanModels = loaded.codexCapabilitiesWithPlanModels as Capabilities;
+  const stored = {
+    "gpt-5.4": { vision: true, studio_tools: true },
+    "*": { studio_tools: true },
+  };
+  const capabilities = codexCapabilitiesWithPlanModels(
+    undefined,
+    {
+      source: "subscription",
+      models: [{ id: "gpt-5.4", vision: false }],
+    },
+    stored,
+  );
+  assert.equal(capabilities, null);
+});

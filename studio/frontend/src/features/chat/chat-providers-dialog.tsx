@@ -165,7 +165,16 @@ export function codexCapabilitiesWithPlanModels(
   stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
 ): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
   if (!listed || listed.source !== "subscription") return null;
-  const registryCapabilities = entry?.model_capabilities ?? {};
+  // The registry row is what says which slugs the plan is allowed to describe and what
+  // the provider-wide studio_tools answer is. Without it every seed model reads as one
+  // the registry never listed, so the plan's modalities are written over the registry's
+  // for slugs the registry does describe, and the wildcard entry that carries
+  // studio_tools for the whole provider type is dropped rather than rewritten. Both are
+  // persisted, so an editor opened before the registry finished loading, or after that
+  // fetch failed, leaves the composer wrong until the next successful sync. Learning
+  // nothing here is the honest answer; the next fetch with a registry in hand records it.
+  if (!entry) return null;
+  const registryCapabilities = entry.model_capabilities ?? {};
   // The map is keyed by provider type, not by connection, so it must start from what
   // is already learned: a second ChatGPT connection lists its own slugs, and rebuilding
   // from the registry alone would drop the first one's.
@@ -1623,7 +1632,13 @@ export function ChatProvidersSettings({
                 // captured when the flow started. Every transition retires the catalog
                 // generation, so a change here means this continuation is for a form the
                 // user has already left.
-                const request = codexCatalogRequestRef.current;
+                // Taking a generation rather than reading one, the way every other
+                // transition does. Reading it shares a ticket with a catalog request that
+                // is already out, and an authorization change retires that request
+                // anyway: leaving it owning the form let it land, clear the shared
+                // loading flag and re-enable Save while this continuation was still
+                // syncing, which is the state the flag exists to prevent.
+                const request = ++codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
                 // Save is gated on this flag. Leaving it clear here lets the connection
                 // be saved with the pre-authorization seed selection before the plan's
