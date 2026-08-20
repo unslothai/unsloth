@@ -81,6 +81,10 @@ setup_fail() {
     case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
     case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
     if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
+    # Guarded: tests slice this function out without the abort helper.
+    if [ "$(type -t _setup_abort_frontend_job 2>/dev/null)" = function ]; then
+        _setup_abort_frontend_job
+    fi
     exit "$exit_code"
 }
 
@@ -269,21 +273,6 @@ _setup_parallel_wait() {
     if [ "$fail" -ne 0 ]; then
         setup_fail 1 "One or more parallel setup tasks failed"
     fi
-}
-
-_setup_parallel_wait_fail_open() {
-    local i pid label wait_status=0
-    [ "${#_SETUP_PARALLEL_PIDS[@]}" -gt 0 ] || return 0
-    for i in "${!_SETUP_PARALLEL_PIDS[@]}"; do
-        pid="${_SETUP_PARALLEL_PIDS[$i]}"
-        label="${_SETUP_PARALLEL_LABELS[$i]}"
-        wait "$pid"
-        wait_status=$?
-        if [ "$wait_status" -ne 0 ]; then
-            verbose_substep "$label failed (exit code $wait_status); continuing"
-        fi
-    done
-    _setup_parallel_reset
 }
 
 _nvcc_meets_llama_minimum() {
@@ -1328,6 +1317,43 @@ _try_bun_install() {
 }
 
 
+# Tailwind v4's oxide scanner respects ancestor .gitignore files. Python venvs
+# create a .gitignore with "*" which hides .tsx sources. Hide those only for
+# `npm run build`, not for the whole frontend job — a backgrounded build must
+# not leave them renamed if setup aborts before the footer wait.
+_HIDDEN_GITIGNORES=()
+_setup_hide_star_gitignores_from() {
+    local _dir="$1"
+    _HIDDEN_GITIGNORES=()
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+            mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+            _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+        fi
+    done
+}
+
+_setup_restore_star_gitignores() {
+    local _gi
+    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+    done
+    _HIDDEN_GITIGNORES=()
+}
+
+_setup_restore_twbuild_gitignores_from() {
+    local _dir="${1:-}"
+    [ -n "$_dir" ] && [ -d "$_dir" ] || return 0
+    _dir="$(cd "$_dir" && pwd)"
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore._twbuild" ]; then
+            mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || true
+        fi
+    done
+}
+
 _setup_frontend_build_and_oxc() {
     local _need_build="${_NEED_FRONTEND_BUILD:-false}"
 
@@ -1353,22 +1379,6 @@ _setup_frontend_build_and_oxc() {
         # ── Build frontend ──
         substep "building frontend..."
         cd "$SCRIPT_DIR/frontend"
-        _HIDDEN_GITIGNORES=()
-        _dir="$(pwd)"
-        while [ "$_dir" != "/" ]; do
-            _dir="$(dirname "$_dir")"
-            if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
-                mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
-                _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
-            fi
-        done
-
-        _restore_gitignores() {
-            for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
-                mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
-            done
-        }
-        trap _restore_gitignores EXIT
 
         # Capture install output (bun + npm fallback) so we can detect a registry block.
         _FRONTEND_INSTALL_LOG=$(mktemp)
@@ -1402,9 +1412,11 @@ _setup_frontend_build_and_oxc() {
         fi
         _CAPTURE_LOG=""
         rm -f "$_FRONTEND_INSTALL_LOG"
+        # Hide "*" ancestor gitignores only around the Tailwind/Vite build.
+        _setup_hide_star_gitignores_from "$(pwd)"
+        trap '_setup_restore_star_gitignores; trap - EXIT' EXIT
         run_quiet "npm run build" npm run build
-
-        _restore_gitignores
+        _setup_restore_star_gitignores
         trap - EXIT
 
         _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
@@ -1450,6 +1462,31 @@ _setup_frontend_build_and_oxc() {
 }
 
 _SETUP_FRONTEND_BG_PID=""
+_setup_abort_frontend_job() {
+    local pid="${_SETUP_FRONTEND_BG_PID:-}"
+    _SETUP_FRONTEND_BG_PID=""
+    [ -n "$pid" ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    # SIGTERM so the job's EXIT trap can restore gitignores; then reap children.
+    kill -TERM "$pid" 2>/dev/null || true
+    if command -v pkill >/dev/null 2>&1; then
+        pkill -TERM -P "$pid" 2>/dev/null || true
+    fi
+    local n=0
+    while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 20 ]; do
+        sleep 0.1
+        n=$((n + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null || true
+        if command -v pkill >/dev/null 2>&1; then
+            pkill -KILL -P "$pid" 2>/dev/null || true
+        fi
+    fi
+    wait "$pid" 2>/dev/null || true
+    _setup_restore_twbuild_gitignores_from "${SCRIPT_DIR:-}/frontend"
+}
+
 _setup_launch_frontend_build_and_oxc() {
     _setup_frontend_build_and_oxc &
     _SETUP_FRONTEND_BG_PID=$!
