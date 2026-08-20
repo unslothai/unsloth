@@ -1250,7 +1250,9 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
-    preamble = '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
 
     # 1. A live owner is left alone; a dead one goes.
     temp = tmp_path / "Unsloth Studio" / "temp"
@@ -1263,7 +1265,14 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     (dead / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
 
     result = _run_powershell(
-        "\n".join([preamble, block, f"_RemoveStudioPrivateTempTrees -Paths @('{temp}')", 'Write-Output "DONE:1"'])
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}')",
+                'Write-Output "DONE:1"',
+            ]
+        )
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "DONE:") == ["DONE:1"]
@@ -1280,11 +1289,20 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     linked.symlink_to(victim, target_is_directory = True)
 
     result = _run_powershell(
-        "\n".join([preamble, block, f"_RemoveStudioPrivateTempTrees -Paths @('{linked}')", 'Write-Output "DONE:2"'])
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{linked}')",
+                'Write-Output "DONE:2"',
+            ]
+        )
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "DONE:") == ["DONE:2"]
-    assert (victim / "ust-1234-abcdef03" / "precious.txt").exists(), "the sweep walked through a link"
+    assert (
+        victim / "ust-1234-abcdef03" / "precious.txt"
+    ).exists(), "the sweep walked through a link"
 
 
 @requires_pwsh
