@@ -197,6 +197,7 @@ export const de = {
       chat: "Chat",
       connections: "Verbindungen",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       about: "Info",
       data: "Daten",
       agents: "Agenten",
@@ -1266,6 +1267,13 @@ export const de = {
     connections: {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
+      remoteAccess: "Fernzugriff",
+      lanAccess: "LAN-Zugriff",
     },
     apiKeys: {
       title: "API",
