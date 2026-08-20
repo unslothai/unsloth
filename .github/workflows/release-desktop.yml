@@ -633,7 +633,11 @@ jobs:
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
           const lines = workflow.split(/\r?\n/);
-          const linuxInstallLines = lines.filter((line) => line.includes('sudo apt-get install'));
+          // The needle is assembled rather than written as a literal: this file is
+          // what gets scanned, so a literal would match this very line and let a
+          // genuinely missing install slip through.
+          const aptInstallNeedle = ['apt-get', 'install'].join(' ');
+          const linuxInstallLines = lines.filter((line) => line.includes(aptInstallNeedle));
           const ayatanaPackage = ['libayatana', 'appindicator3-dev'].join('-');
           if (linuxInstallLines.some((line) => line.includes(ayatanaPackage))) {
             throw new Error('Desktop Linux release must not install the Ayatana appindicator dev package');

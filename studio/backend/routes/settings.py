@@ -722,6 +722,7 @@ class ModelOverridePayload(BaseModel):
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     tensor_parallel: bool = False
+    disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -1457,9 +1458,18 @@ def update_openai_auto_switch_override(
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Both booleans are carried, not just counted: they are stored only when
+            # true, so an override whose one setting is either of them has no other
+            # saved field and would otherwise read as a removal and be deleted.
+            is_removal = (
+                not payload.tensor_parallel
+                and not payload.disable_vision
+                and not {
+                    key: value
+                    for key, value in saved_fields.items()
+                    if key not in ("tensor_parallel", "disable_vision")
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
             # A fill keeps the stored flags without echoing them back through validation: one
@@ -1575,6 +1585,7 @@ def update_openai_auto_switch_override(
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
                 tensor_parallel = payload.tensor_parallel,
+                disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
