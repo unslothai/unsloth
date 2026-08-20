@@ -1243,8 +1243,6 @@ export const ru = {
       title: "Удалённый доступ и LAN",
       description:
         "Откройте этот Unsloth с других устройств: через локальную сеть или временный публичный URL.",
-      remoteAccess: "Удалённый доступ",
-      lanAccess: "Доступ по LAN",
     },
     apiKeys: {
       title: "API",

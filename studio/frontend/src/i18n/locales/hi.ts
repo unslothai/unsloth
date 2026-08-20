@@ -1238,8 +1238,6 @@ export const hi = {
       title: "रिमोट और LAN",
       description:
         "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
-      remoteAccess: "रिमोट पहुँच",
-      lanAccess: "LAN पहुँच",
     },
     apiKeys: {
       title: "API",

@@ -1199,8 +1199,6 @@ export const zhCN = {
       title: "远程与局域网",
       description:
         "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
-      remoteAccess: "远程访问",
-      lanAccess: "局域网访问",
     },
     apiKeys: {
       title: "API",

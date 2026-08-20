@@ -11,11 +11,18 @@ export function RemoteLanTab() {
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
+      {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">
+        <h1
+          data-settings-label={t("settings.remoteLan.title")}
+          className="text-xl font-semibold font-heading"
+        >
           {t("settings.remoteLan.title")}
         </h1>
-        <p className="text-xs text-muted-foreground">
+        <p
+          data-settings-label={t("settings.remoteLan.description")}
+          className="text-xs text-muted-foreground"
+        >
           {t("settings.remoteLan.description")}
         </p>
       </header>

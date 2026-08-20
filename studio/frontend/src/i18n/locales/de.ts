@@ -1272,8 +1272,6 @@ export const de = {
       title: "Remote & LAN",
       description:
         "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
-      remoteAccess: "Fernzugriff",
-      lanAccess: "LAN-Zugriff",
     },
     apiKeys: {
       title: "API",

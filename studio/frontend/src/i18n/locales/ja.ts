@@ -1211,8 +1211,6 @@ export const ja = {
       title: "リモートとLAN",
       description:
         "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
-      remoteAccess: "リモートアクセス",
-      lanAccess: "LANアクセス",
     },
     apiKeys: {
       title: "API",

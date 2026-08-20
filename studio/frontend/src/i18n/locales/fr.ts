@@ -1271,8 +1271,6 @@ export const fr = {
       title: "Accès distant et LAN",
       description:
         "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL publique temporaire.",
-      remoteAccess: "Accès distant",
-      lanAccess: "Accès LAN",
     },
     apiKeys: {
       title: "API",

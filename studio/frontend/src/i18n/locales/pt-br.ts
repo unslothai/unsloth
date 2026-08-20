@@ -1245,8 +1245,6 @@ export const ptBR = {
       title: "Remoto e LAN",
       description:
         "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
-      remoteAccess: "Acesso remoto",
-      lanAccess: "Acesso LAN",
     },
     apiKeys: {
       title: "API",

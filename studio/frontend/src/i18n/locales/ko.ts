@@ -1230,8 +1230,6 @@ export const ko = {
       title: "원격 및 LAN",
       description:
         "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
-      remoteAccess: "원격 접근",
-      lanAccess: "LAN 접근",
     },
     apiKeys: {
       title: "API",

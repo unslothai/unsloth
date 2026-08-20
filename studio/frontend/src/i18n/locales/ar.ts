@@ -1232,8 +1232,6 @@ export const ar = {
       title: "الوصول عن بُعد والشبكة المحلية",
       description:
         "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
-      remoteAccess: "الوصول عن بُعد",
-      lanAccess: "وصول الشبكة المحلية",
     },
     apiKeys: {
       title: "API",
