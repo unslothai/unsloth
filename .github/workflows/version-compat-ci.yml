@@ -56,10 +56,38 @@ permissions:
   contents: read
 
 jobs:
-  vllm-pinned-symbols:
-    name: vLLM pinned-symbol matrix (≥ 0.9.0 + main)
+  # Six jobs, one runner. Each of these suites fetches raw source from
+  # raw.githubusercontent.com and greps for symbols -- see tests/version_compat/_fetch.py,
+  # `has_def` / `first_match`. No pip install of vllm / torch / transformers is involved,
+  # which is the whole point of the canary and is also what makes co-locating them safe:
+  # there is no venv to conflict over, so "transformers 4.57.6" and "transformers main"
+  # can share one interpreter because neither is installed.
+  #
+  # They were six separate jobs costing six runner slots for 287s of combined work.
+  # Measured over a sampled main commit, each waited 23 to 31 minutes for admission to
+  # execute for 15 to 128 seconds. The queue is the cost, so the slots are the target.
+  #
+  # -n 4, deliberately, and not higher. The work is network-bound rather than CPU-bound,
+  # so more workers looks free and is not: measured locally on the full set,
+  #
+  #     serial   1606 passed, 182 skipped   182.8s
+  #     -n 4     1606 passed, 182 skipped    27.8s
+  #     -n 8     1606 passed, 182 skipped    75.2s
+  #
+  # -n 8 is 2.7x SLOWER than -n 4, which for a fetch-bound suite is upstream throttling
+  # rather than core contention. 4 also matches the hosted runner's core count and the
+  # -n 4 every other pytest job here already uses.
+  #
+  # --dist loadfile keeps each file on one worker, so a suite's tests cannot be split
+  # across workers and interleaved with another's.
+  #
+  # tests/studio/test_version_compat_bundle.py asserts every suite the six jobs named is
+  # still named here. Dropping one would not fail anything: the job would go green having
+  # tested less, which is the only way this change can go wrong.
+  pinned-symbol-matrix:
+    name: pinned-symbol matrix (vLLM, TRL, PEFT, ST, bitsandbytes, transformers)
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -68,141 +96,30 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install pytest only
-        # The test fetches from raw.githubusercontent.com and greps
-        # source. No pip install of vllm / torch / transformers is
-        # needed — that's the whole point of this canary.
+        # packaging: the PEFT backfill suite loads unsloth/import_fixes.py by file path and
+        # that module imports packaging.version at the top. It pulls in nothing heavier,
+        # which is why it can run in this dependency-free job at all.
         run: |
           python -m pip install --upgrade pip
-          pip install 'pytest>=8'
-      - name: Run vllm-compat suite
+          pip install 'pytest>=8' 'pytest-xdist>=3' packaging
+      - name: Run every pinned-symbol suite
         env:
-          # Authenticated requests get a 5000-req/h quota on raw
-          # fetches; unauthenticated is 60/h and trips on the matrix.
+          # Authenticated raw fetches get 5000/h; unauthenticated is 60/h and trips on the
+          # matrix. That ceiling is why the worker count stays at 4.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python -m pytest tests/vllm_compat/test_vllm_pinned_symbols.py -v --tb=short
-
-  trl-grpo-pinned-symbols:
-    name: TRL / GRPO pinned-symbol matrix
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Install pytest only
-        run: |
-          python -m pip install --upgrade pip
-          pip install 'pytest>=8'
-      - name: Run trl-compat suite
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # PYTHONPATH=. so `from tests.version_compat._fetch import …`
-          # works without an editable install of unsloth itself.
+          # PYTHONPATH=. so `from tests.version_compat._fetch import ...` works without an
+          # editable install of unsloth itself.
           PYTHONPATH=. python -m pytest \
+            tests/vllm_compat/test_vllm_pinned_symbols.py \
             tests/version_compat/test_trl_grpo_pinned_symbols.py \
-            -v --tb=short
-
-  peft-pinned-symbols:
-    name: PEFT pinned-symbol matrix (pyproject window + main)
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-      # packaging as well as pytest: the backfill suite loads unsloth/import_fixes.py by
-      # file path, and that module imports packaging.version at the top. It pulls in
-      # nothing heavier, which is why it can run in this dependency-free job at all.
-      - name: Install pytest only
-        run: |
-          python -m pip install --upgrade pip
-          pip install 'pytest>=8' packaging
-      - name: Run peft-compat suite
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PYTHONPATH=. python -m pytest \
             tests/version_compat/test_peft_pinned_symbols.py \
             tests/version_compat/test_unsloth_zoo_save_merged_pinned_symbols.py \
             tests/version_compat/test_peft_conversion_symbol_backfill.py \
-            -v --tb=short
-
-  st-pinned-symbols:
-    name: sentence-transformers pinned-symbol matrix
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Install pytest only
-        run: |
-          python -m pip install --upgrade pip
-          pip install 'pytest>=8'
-      - name: Run sentence-transformers compat suite
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PYTHONPATH=. python -m pytest \
             tests/version_compat/test_sentence_transformers_pinned_symbols.py \
-            -v --tb=short
-
-  bitsandbytes-pinned-symbols:
-    name: bitsandbytes pinned-symbol matrix
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Install pytest only
-        run: |
-          python -m pip install --upgrade pip
-          pip install 'pytest>=8'
-      - name: Run bitsandbytes compat suite
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PYTHONPATH=. python -m pytest \
             tests/version_compat/test_bitsandbytes_pinned_symbols.py \
-            -v --tb=short
-
-  transformers-pinned-symbols:
-    name: transformers pinned-symbol matrix (4.57.6 + 5.x + main)
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Install pytest only
-        run: |
-          python -m pip install --upgrade pip
-          pip install 'pytest>=8'
-      - name: Run transformers compat suite
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PYTHONPATH=. python -m pytest \
             tests/version_compat/test_transformers_pinned_symbols.py \
-            -v --tb=short
+            -n 4 --dist loadfile -v --tb=short
 
   # Optional second layer: actually `pip install` ONE representative
   # version of each package and verify unsloth + unsloth-zoo modules

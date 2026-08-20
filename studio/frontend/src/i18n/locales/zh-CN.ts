@@ -191,6 +191,7 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
+      remoteLan: "远程与局域网",
       about: "关于",
       voice: "语音",
       data: "数据",
@@ -1193,6 +1194,11 @@ export const zhCN = {
     connections: {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
+    },
+    remoteLan: {
+      title: "远程与局域网",
+      description:
+        "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
       title: "API",

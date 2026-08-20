@@ -123,10 +123,13 @@ def carried_forward_items(
     reversed for rendering, because reading order decides which of two conflicting
     instructions the model treats as current. Instructions older than the budget are
     silently dropped, which is why `max_items` is small and the header says "lossy".
+
+    Repeats collapse to their newest copy, on the same key `_recap` uses.
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
     chosen: list[str] = []
+    seen: set[str] = set()
     spent = 0
     for group in reversed(group_turns(evicted)):
         if len(chosen) >= max_items:
@@ -137,12 +140,19 @@ def carried_forward_items(
         text = _text_of(head).strip()
         if not text:
             continue
+        item = _neutralise(text)
+        if item in seen:
+            # Users restate a standing rule, and each copy used to take a slot out of
+            # eight: one rule repeated eight times crowded out the user's other rule.
+            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
+            continue
         cost = estimate_message_tokens(head)
         if spent + cost > max_tokens:
             # Skipped, not truncated, and the loop continues: an older instruction that
             # still fits beats nothing.
             continue
-        chosen.append(_neutralise(text))
+        chosen.append(item)
+        seen.add(item)
         spent += cost
     return list(reversed(chosen))
 

@@ -28,6 +28,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
@@ -568,6 +569,28 @@ export function applyActiveModelStatusToStore(
       }
     }
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
+  }
+
+  // Every status merge carries the base family recommendation, including the
+  // refresh immediately after performLoad. Layer the active Qwen mode over it
+  // so that refresh cannot undo performLoad's thinking table. This also covers
+  // startup/CLI/external adoption, while model memory still wins because this
+  // remains a defaults update.
+  if (status.inference && supportsReasoning) {
+    const current = useChatRuntimeStore.getState();
+    const qwenParams = resolveQwenThinkingParams(
+      checkpointId,
+      reasoningAlwaysOn || current.reasoningEnabled,
+    );
+    if (qwenParams !== null && current.activePresetSource === "builtin-default") {
+      current.setParams(
+        { ...current.params, ...qwenParams },
+        {
+          fromModelDefaults: true,
+          maxTokensCap: status.context_length ?? undefined,
+        },
+      );
+    }
   }
 }
 
