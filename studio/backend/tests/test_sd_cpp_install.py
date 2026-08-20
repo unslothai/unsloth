@@ -388,7 +388,7 @@ def test_safe_extractall_extracts_normal_members(tmp_path):
     assert (target / "build" / "bin" / "sd-cli").read_bytes() == b"ok"
 
 
-def test_safe_extractall_restores_symlink_members(tmp_path):
+def test_safe_extractall_restores_symlink_members_on_reinstall(tmp_path):
     target = tmp_path / "install"
     target.mkdir()
     archive = tmp_path / "symlink.zip"
@@ -397,6 +397,8 @@ def test_safe_extractall_restores_symlink_members(tmp_path):
         info = zipfile.ZipInfo("build/bin/libfoo.so")
         info.external_attr = (stat.S_IFLNK | 0o777) << 16
         zf.writestr(info, "libfoo.so.1")
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
     link = target / "build" / "bin" / "libfoo.so"
