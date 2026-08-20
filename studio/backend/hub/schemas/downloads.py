@@ -132,6 +132,9 @@ class TransportCapabilities(BaseModel):
     xet: TransportCapability
     auto_resolves_to: Literal["xet", "http"] = "xet"
     auto_reason: Optional[str] = None
+    # False when the installed huggingface_hub refetches an interrupted file from zero, so no
+    # transport can offer a byte-resume and the UI must not label one.
+    partials_resumable: bool = True
 
 
 class TransportStatusResponse(BaseModel):

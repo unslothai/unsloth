@@ -182,6 +182,8 @@ export const ko = {
       closeAriaLabel: "설정 닫기",
       searchPlaceholder: "설정 검색…",
       searchNoResults: "설정을 찾을 수 없습니다.",
+      panelFailed: "이 섹션을 불러오지 못했습니다.",
+      panelReload: "새로고침",
     },
     tabs: {
       general: "일반",
@@ -191,11 +193,56 @@ export const ko = {
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
+      remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
       agents: "에이전트",
       debugging: "로그",
       voice: "음성",
+      keyboardShortcuts: "단축키",
+    },
+    keyboardShortcuts: {
+      title: "키보드 단축키",
+      description:
+        "단축키를 바꾸거나, 지워서 해당 조합을 브라우저나 운영체제에 넘길 수 있습니다.",
+      searchPlaceholder: "단축키 검색…",
+      noResults: "검색과 일치하는 단축키가 없습니다.",
+      unassigned: "지정 안 됨",
+      recording: "키를 누르세요…",
+      recordingHint: "새 조합을 누르거나 Esc로 취소하세요.",
+      needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
+      conflict: "다른 단축키도 이 조합을 사용합니다",
+      conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",
+      edit: "단축키 변경",
+      clear: "단축키 제거",
+      reset: "기본값 복원",
+      resetAll: "모두 기본값으로 초기화",
+      groups: {
+        general: "일반",
+        chat: "채팅",
+      },
+      actions: {
+        newChat: {
+          label: "새 채팅",
+          description: "새 채팅을 시작합니다",
+        },
+        searchChats: {
+          label: "채팅 검색",
+          description: "채팅 검색 창을 엽니다",
+        },
+        toggleSidebar: {
+          label: "사이드바 토글",
+          description: "사이드바를 표시하거나 숨깁니다",
+        },
+        openSettings: {
+          label: "설정 열기",
+          description: "설정 창을 엽니다",
+        },
+        openKeyboardShortcuts: {
+          label: "키보드 단축키",
+          description: "이 단축키 목록을 엽니다",
+        },
+      },
     },
     debugging: {
       logSection: "로그 파일",
@@ -282,6 +329,8 @@ export const ko = {
         allowMicrophone: "마이크 허용",
         micAccessBlocked:
           "마이크 접근이 차단되었습니다. 이 Unsloth 페이지에 마이크 접근을 허용한 뒤 다시 시도하세요.",
+        micAccessBlockedDesktop:
+          "마이크 접근이 차단되었습니다. 다시 시도하여 허용을 선택하거나 시스템 개인 정보 보호 설정에서 마이크를 켜세요.",
         micAccessUnsupported:
           "이 브라우저나 환경에서는 마이크 접근을 지원하지 않습니다.",
         systemDefault: "시스템 기본값",
@@ -354,6 +403,7 @@ export const ko = {
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
+        openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "이 기기에서 가장 좋은 음성",
         speedLabel: "속도",
@@ -362,6 +412,7 @@ export const ko = {
         previewLabel: "음성 미리 듣기",
         previewDescription: "짧은 샘플을 재생합니다",
         previewAction: "미리 듣기",
+        preparingAction: "생성 중…",
         previewFailed: "TTS 미리 듣기에 실패했습니다",
         stopAction: "정지",
         ttsLabel: "텍스트 음성 변환",
@@ -807,6 +858,24 @@ export const ko = {
         switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
         switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",
         envLocked: "환경 변수 UNSLOTH_LLAMA_CPP_BACKEND가 {backend}(으)로 고정했으며, 이 설정보다 우선합니다.",
+        customPath: {
+          label: "사용자 지정 llama.cpp 폴더",
+          description: "직접 빌드한 llama-server를 사용합니다.",
+          hint: "llama-server가 들어 있는 llama.cpp 폴더 또는 build/bin 아래에 있는 빌드를 선택하세요. 사용자 지정 런타임은 GGUF 채팅, 임베딩, 지원되는 음성 모델에 사용됩니다. 환경 변수가 계속 우선합니다.",
+          automatic: "자동(번들)",
+          bundled: "Unsloth가 설치한 llama.cpp 런타임을 사용합니다.",
+          active: "다음 모델 로드부터 사용자 지정 llama-server를 사용합니다.",
+          environmentManaged: "{variable} 환경 변수로 관리됩니다.",
+          missingBinary: "이 폴더에서 llama-server를 더 이상 사용할 수 없습니다. 다른 폴더를 선택하거나 번들 런타임을 사용하세요.",
+          reloadRequired: "선택한 llama-server를 사용하려면 모델을 다시 로드하세요.",
+          change: "변경",
+          saving: "저장 중...",
+          useBundled: "번들 사용",
+          chooseTitle: "llama.cpp 폴더 선택",
+          chooseAction: "이 폴더 사용",
+          saved: "llama.cpp 폴더가 업데이트되었습니다",
+          saveError: "llama.cpp 폴더를 업데이트하지 못했습니다",
+        },
         backends: {
           auto: "자동",
           cpu: "CPU",
@@ -819,6 +888,7 @@ export const ko = {
           notInstalled: "관리되는 llama.cpp 설치를 찾을 수 없어 전환할 백엔드가 없습니다.",
           localLink: "llama.cpp는 직접 연결한 로컬 디렉터리이므로 Unsloth가 교체하지 않습니다.",
           sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
+          customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
           unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
         },
         // 표시되지 않음: 설정 검색용 추가 키워드.
@@ -1010,6 +1080,12 @@ export const ko = {
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      projectAttachments: "프로젝트 전체에서 파일 공유",
+      projectAttachmentsDescription:
+        "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 색인하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
+      rememberParamsPerModel: "모델별로 설정 기억",
+      rememberParamsPerModelDescription:
+        "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
@@ -1100,6 +1176,9 @@ export const ko = {
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
       manageAction: "관리",
+      manageChats: "채팅 관리",
+      manageChatsDescription:
+        "여러 채팅을 선택해 이동, 고정, 보관, 내보내기 또는 삭제할 수 있습니다.",
       exportArchivedChats: "내보내기",
       exportingArchivedChats: "내보내는 중...",
       exportedOneArchivedChat: "보관된 채팅 1개를 내보냈습니다",
@@ -1146,6 +1225,11 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+    },
+    remoteLan: {
+      title: "원격 및 LAN",
+      description:
+        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",

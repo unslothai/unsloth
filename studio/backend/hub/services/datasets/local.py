@@ -20,6 +20,11 @@ from hub.schemas.datasets import (
 )
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
+from utils.paths.path_utils import (
+    any_not_appledouble_metadata,
+    drop_appledouble_metadata,
+    is_appledouble_metadata,
+)
 
 # Tabular formats are preferred over archives for Tier 1 preview: archives (e.g. images.zip)
 # load as ImageFolder with synthetic columns that don't match the real schema.
@@ -133,7 +138,9 @@ def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
         if not entry.is_dir() or not entry.name.startswith("recipe_"):
             continue
         parquet_dir = entry / "parquet-files"
-        if not parquet_dir.exists() or not any(parquet_dir.glob("*.parquet")):
+        if not parquet_dir.exists() or not any_not_appledouble_metadata(
+            parquet_dir.glob("*.parquet")
+        ):
             continue
 
         rows = None
@@ -166,6 +173,8 @@ def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
     items: list[LocalDatasetItem] = []
     for path in DATASET_UPLOAD_DIR.iterdir():
         if not path.is_file() or path.suffix.lower() not in LOCAL_UPLOAD_EXTS:
+            continue
+        if is_appledouble_metadata(path):
             continue
         try:
             if path.stat().st_size == 0:
@@ -233,7 +242,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
             if (dataset_path / "parquet-files").exists()
             else dataset_path
         )
-        parquet_files = sorted(parquet_dir.glob("*.parquet"))
+        parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
         if parquet_files:
             dataset = load_dataset(
                 "parquet",
@@ -246,7 +255,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
 
         candidate_files: list[Path] = []
         for ext in LOCAL_FILE_EXTS:
-            candidate_files.extend(sorted(dataset_path.glob(f"*{ext}")))
+            candidate_files.extend(drop_appledouble_metadata(sorted(dataset_path.glob(f"*{ext}"))))
         if not candidate_files:
             raise HTTPException(
                 status_code = 400,

@@ -185,6 +185,8 @@ export const es = {
       closeAriaLabel: "Cerrar configuración",
       searchPlaceholder: "Buscar en la configuración…",
       searchNoResults: "No se encontró ninguna opción.",
+      panelFailed: "No se pudo cargar esta sección.",
+      panelReload: "Recargar",
     },
     tabs: {
       general: "General",
@@ -194,11 +196,56 @@ export const es = {
       chat: "Chat",
       connections: "Conexiones",
       apiKeys: "API",
+      remoteLan: "Remoto y LAN",
       about: "Acerca de",
       data: "Datos",
       agents: "Agentes",
       debugging: "Registros",
       voice: "Voz",
+      keyboardShortcuts: "Atajos",
+    },
+    keyboardShortcuts: {
+      title: "Atajos de teclado",
+      description:
+        "Cambia cualquier atajo, o bórralo para liberar la combinación para el navegador o el sistema.",
+      searchPlaceholder: "Buscar atajos…",
+      noResults: "Ningún atajo coincide con esa búsqueda.",
+      unassigned: "Sin asignar",
+      recording: "Pulsa las teclas…",
+      recordingHint: "Pulsa la nueva combinación, o Esc para cancelar.",
+      needsModifier: "Añade ⌘, Ctrl o Alt. Una tecla suelta se tragaría lo que escribes.",
+      conflict: "También lo usa otro atajo",
+      conflictShadowed: "Otro atajo tiene esta combinación y se ejecuta en lugar de este",
+      edit: "Cambiar atajo",
+      clear: "Quitar atajo",
+      reset: "Restaurar el valor predeterminado",
+      resetAll: "Restablecer todo",
+      groups: {
+        general: "General",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Nuevo chat",
+          description: "Iniciar un chat nuevo",
+        },
+        searchChats: {
+          label: "Buscar chats",
+          description: "Abrir el diálogo de búsqueda de chats",
+        },
+        toggleSidebar: {
+          label: "Alternar barra lateral",
+          description: "Mostrar u ocultar la barra lateral",
+        },
+        openSettings: {
+          label: "Abrir ajustes",
+          description: "Abrir el diálogo de ajustes",
+        },
+        openKeyboardShortcuts: {
+          label: "Atajos de teclado",
+          description: "Abrir esta lista de atajos",
+        },
+      },
     },
     debugging: {
       logSection: "Archivo de registro",
@@ -288,6 +335,8 @@ export const es = {
         allowMicrophone: "Permitir el acceso al micrófono",
         micAccessBlocked:
           "Se bloqueó el acceso al micrófono. Permite el acceso al micrófono para esta página de Unsloth e inténtalo de nuevo.",
+        micAccessBlockedDesktop:
+          "Se bloqueó el acceso al micrófono. Inténtalo de nuevo y elige Permitir, o activa el micrófono en la configuración de privacidad del sistema.",
         micAccessUnsupported:
           "El acceso al micrófono no es compatible con este navegador o contexto.",
         systemDefault: "Predeterminado del sistema",
@@ -362,6 +411,7 @@ export const es = {
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carga un modelo de audio desde el selector de modelos (por ejemplo, Orpheus TTS)",
+        openAudioAction: "Abrir Audio",
         voiceLabel: "Voz",
         voiceDescription: "Las mejores voces de este dispositivo",
         speedLabel: "Velocidad",
@@ -370,6 +420,7 @@ export const es = {
         previewLabel: "Escuchar la voz",
         previewDescription: "Reproducir una muestra corta",
         previewAction: "Escuchar",
+        preparingAction: "Generando…",
         previewFailed: "No se pudo reproducir la muestra de TTS",
         stopAction: "Detener",
         ttsLabel: "Texto a voz",
@@ -831,6 +882,24 @@ export const es = {
         switchFailed: "No se pudo cambiar el backend de llama.cpp.",
         switchInterrupted: "El cambio se interrumpió antes de completarse.",
         envLocked: "Fijado en {backend} por la variable de entorno UNSLOTH_LLAMA_CPP_BACKEND, que tiene prioridad sobre este ajuste.",
+        customPath: {
+          label: "Carpeta personalizada de llama.cpp",
+          description: "Usa tu propia compilación de llama-server.",
+          hint: "Elige la carpeta de llama.cpp que contiene llama-server o una compilación donde esté en build/bin. El runtime personalizado se usa para chat GGUF, embeddings y modelos de voz compatibles. Las variables de entorno siguen teniendo prioridad.",
+          automatic: "Automático (incluido)",
+          bundled: "Usa el runtime de llama.cpp instalado por Unsloth.",
+          active: "Tu llama-server personalizado se usará la próxima vez que cargues un modelo.",
+          environmentManaged: "Gestionado por la variable de entorno {variable}.",
+          missingBinary: "llama-server ya no está disponible en esta carpeta. Elige otra carpeta o usa el runtime incluido.",
+          reloadRequired: "Vuelve a cargar el modelo para usar el llama-server seleccionado.",
+          change: "Cambiar",
+          saving: "Guardando...",
+          useBundled: "Usar incluido",
+          chooseTitle: "Elegir carpeta de llama.cpp",
+          chooseAction: "Usar esta carpeta",
+          saved: "Carpeta de llama.cpp actualizada",
+          saveError: "No se pudo actualizar la carpeta de llama.cpp",
+        },
         backends: {
           auto: "Automático",
           cpu: "CPU",
@@ -843,6 +912,7 @@ export const es = {
           notInstalled: "No se encontró una instalación de llama.cpp gestionada, así que no hay backend que cambiar.",
           localLink: "llama.cpp es un directorio local que enlazaste tú, así que Unsloth no lo reemplazará.",
           sourceBuild: "Este llama.cpp se compiló desde el código fuente, así que su backend no se puede cambiar desde aquí.",
+          customPath: "Hay una carpeta personalizada de llama.cpp seleccionada. Su compilación determina el backend de cómputo.",
           unresolved: "No se pudieron consultar los backends disponibles. Revisa tu conexión e inténtalo de nuevo.",
         },
         // No se muestra: términos adicionales para la búsqueda de ajustes.
@@ -1038,6 +1108,12 @@ export const es = {
       modelDisclaimer: "Mostrar aviso del modelo",
       modelDisclaimerDescription:
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
+      projectAttachments: "Compartir archivos en todo el proyecto",
+      projectAttachmentsDescription:
+        "Valor predeterminado para los archivos adjuntos en un chat que pertenece a un proyecto: indexarlos para todo el proyecto para que cualquier chat pueda usarlos. Cada chat puede cambiarlo desde el menú de adjuntos.",
+      rememberParamsPerModel: "Recordar los ajustes por modelo",
+      rememberParamsPerModelDescription:
+        "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
       thinking: {
         collapseByDefault: "Contraer el razonamiento de forma predeterminada",
         collapseByDefaultDescription:
@@ -1130,6 +1206,9 @@ export const es = {
       archivedVideos: "Vídeos archivados",
       archivedVideosDescription: "Consulta y gestiona los vídeos que has archivado.",
       manageAction: "Gestionar",
+      manageChats: "Gestionar chats",
+      manageChatsDescription:
+        "Selecciona varios chats para moverlos, fijarlos, archivarlos, exportarlos o eliminarlos.",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
       exportedOneArchivedChat: "Se exportó 1 chat archivado",
@@ -1179,6 +1258,11 @@ export const es = {
     connections: {
       title: "Conexiones",
       description: "Gestiona proveedores y conexiones externas.",
+    },
+    remoteLan: {
+      title: "Remoto y LAN",
+      description:
+        "Accede a este Unsloth desde tus otros dispositivos, por tu red local o mediante una URL pública temporal.",
     },
     apiKeys: {
       title: "API",

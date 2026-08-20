@@ -3,6 +3,9 @@
 
 use std::ffi::{OsStr, OsString};
 
+const APPIMAGE: &str = "APPIMAGE";
+const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
+
 const WAYLAND_DISPLAY: &str = "WAYLAND_DISPLAY";
 const GDK_BACKEND: &str = "GDK_BACKEND";
 const FORCE_SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
@@ -13,6 +16,7 @@ const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded";
 const WAYLAND_REASON: &str = "Wayland session";
+const APPIMAGE_GLES_REASON: &str = "AppImage without a usable GLES library";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderingWorkaround {
@@ -50,6 +54,7 @@ fn supports_force_shared_memory((major, minor, _micro): (u32, u32, u32)) -> bool
 fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
+    gles_usable: bool,
     nvidia_driver_loaded: bool,
 ) -> RenderingPlan {
     // DISABLE_DMABUF is the explicit operator override, including `=0` and an
@@ -78,6 +83,12 @@ fn rendering_plan(
         return RenderingPlan::PreserveEnvironment;
     }
 
+    let is_appimage = env(APPIMAGE).is_some();
+    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy (#8343).
+    if is_appimage && !gles_usable {
+        return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
+    }
+
     let configured_backends = env(GDK_BACKEND);
     let explicit_wayland = configured_backends
         .as_deref()
@@ -98,7 +109,10 @@ fn rendering_plan(
         return RenderingPlan::PreserveEnvironment;
     }
 
-    let workaround = if supports_force_shared_memory(webkit_version) {
+    let workaround = if is_appimage {
+        // FORCE_SHM still reaches the failing libepoxy path in AppImages.
+        RenderingWorkaround::DisableDmabuf
+    } else if supports_force_shared_memory(webkit_version) {
         RenderingWorkaround::ForceSharedMemory
     } else {
         // FORCE_SHM was added with WebKitGTK 2.44. Older host libraries ignore
@@ -110,6 +124,19 @@ fn rendering_plan(
 
 fn nvidia_driver_loaded() -> bool {
     std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH).exists()
+}
+
+fn gles_is_usable() -> bool {
+    // Match libepoxy's runtime load, including unresolved dependencies.
+    unsafe {
+        let handle = libc::dlopen(GLES_V2.as_ptr().cast(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+        if handle.is_null() {
+            false
+        } else {
+            libc::dlclose(handle);
+            true
+        }
+    }
 }
 
 fn runtime_webkit_version() -> (u32, u32, u32) {
@@ -127,10 +154,12 @@ fn runtime_webkit_version() -> (u32, u32, u32) {
 /// Select a compatible WebKitGTK rendering transport before GTK initialization.
 ///
 /// Returns the variable applied by this launch and the reason for it, if any.
-pub fn configure_linux_renderer() -> Option<(&'static str, &'static str)> {
+pub fn configure_renderer() -> Option<(&'static str, &'static str)> {
+    let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
     match rendering_plan(
         |name| std::env::var_os(name),
         runtime_webkit_version(),
+        gles_usable,
         nvidia_driver_loaded(),
     ) {
         RenderingPlan::Apply(workaround, reason) => {
@@ -155,6 +184,7 @@ mod tests {
     fn plan_on_host(
         vars: &[(&str, &str)],
         webkit_version: (u32, u32, u32),
+        gles_usable: bool,
         nvidia_driver_loaded: bool,
     ) -> RenderingPlan {
         rendering_plan(
@@ -164,12 +194,21 @@ mod tests {
                     .map(|(_, value)| OsString::from(value))
             },
             webkit_version,
+            gles_usable,
             nvidia_driver_loaded,
         )
     }
 
+    fn plan_with_version_and_gles(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        gles_usable: bool,
+    ) -> RenderingPlan {
+        plan_on_host(vars, webkit_version, gles_usable, false)
+    }
+
     fn plan_with_version(vars: &[(&str, &str)], webkit_version: (u32, u32, u32)) -> RenderingPlan {
-        plan_on_host(vars, webkit_version, false)
+        plan_with_version_and_gles(vars, webkit_version, true)
     }
 
     fn plan(vars: &[(&str, &str)]) -> RenderingPlan {
@@ -177,7 +216,7 @@ mod tests {
     }
 
     fn plan_on_nvidia(vars: &[(&str, &str)]) -> RenderingPlan {
-        plan_on_host(vars, MODERN_WEBKIT, true)
+        plan_on_host(vars, MODERN_WEBKIT, true, true)
     }
 
     #[test]
@@ -247,6 +286,37 @@ mod tests {
         assert_eq!(
             plan_on_nvidia(&[(FORCE_SHARED_MEMORY, "0")]),
             RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn appimage_without_usable_gles_disables_dmabuf_on_x11() {
+        assert_eq!(
+            plan_with_version_and_gles(
+                &[(APPIMAGE, "/tmp/Unsloth.AppImage")],
+                MODERN_WEBKIT,
+                false
+            ),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON)
+        );
+    }
+
+    #[test]
+    fn native_package_without_gles_keeps_existing_x11_behavior() {
+        assert_eq!(
+            plan_with_version_and_gles(&[], MODERN_WEBKIT, false),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn appimage_wayland_disables_dmabuf_completely() {
+        assert_eq!(
+            plan(&[
+                (APPIMAGE, "/tmp/Unsloth.AppImage"),
+                (WAYLAND_DISPLAY, "wayland-0")
+            ]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, WAYLAND_REASON)
         );
     }
 

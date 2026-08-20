@@ -33,6 +33,7 @@ from core.inference.tool_call_parser import (
     NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
+    RAG_SEARCH_TOOLS,
     StreamingMarkupStripper,
     TOOL_XML_SIGNALS,
     is_reprompt_repeat,
@@ -432,20 +433,24 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
 
 
-def _accepts_output_callback(func: Callable[..., str]) -> bool:
-    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+def _accepts_kwarg(func: Callable[..., str], name: str) -> bool:
+    """Whether an injectable ``execute_tool`` supports the keyword ``name``.
 
     The loop's ``execute_tool`` is a parameter (tests inject fakes), so forward
-    the live-output kwarg only when the callable declares it or takes ``**kwargs``.
+    an optional kwarg only when the callable declares it or takes ``**kwargs``.
     """
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
         return False
     params = sig.parameters
-    if "output_callback" in params:
+    if name in params:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _accepts_output_callback(func: Callable[..., str]) -> bool:
+    return _accepts_kwarg(func, "output_callback")
 
 
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
@@ -479,6 +484,8 @@ def run_safetensors_tool_loop(
     continue_final_message: bool = False,
     markup = None,
     renderable_tools = None,
+    context_length: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -503,6 +510,11 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    # The branch this request is on, before the loop appends anything. A GGUF-compacted
+    # thread keeps its archive across a switch to safetensors, so search_conversation is
+    # advertised here too and needs the same filtering: the stored rows are the whole
+    # DAG, and Retry leaves the replaced response in them.
+    request_branch = list(messages)
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
     # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
@@ -1277,7 +1289,7 @@ def run_safetensors_tool_loop(
             eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
             # RAG: cap paraphrased KB re-searches that slip past the dup guard.
             if (
-                decision.tool_name == "search_knowledge_base"
+                decision.tool_name in RAG_SEARCH_TOOLS
                 and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
             ):
                 result = RAG_SEARCH_CAP_NUDGE
@@ -1295,6 +1307,31 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    if _accepts_kwarg(execute_tool, "conversation_branch"):
+                        kwargs["conversation_branch"] = request_branch
+                    # And the room the model has left, as the GGUF loop does: without a
+                    # budget the tool's clamp is skipped and a model-chosen top_k of 8
+                    # appends roughly 4K tokens to an already full prompt.
+                    if context_length and _accepts_kwarg(
+                        execute_tool, "conversation_budget_tokens"
+                    ):
+                        from core.inference.context_window import (
+                            estimate_messages_tokens_dense,
+                            prompt_budget,
+                        )
+
+                        # Dense, unlike the eviction estimator: four characters per token
+                        # undercounts CJK and emoji by about half, and this path has no
+                        # rolling fit to recover if the tool exchange it sizes then puts
+                        # the next prompt over the window. Measured on an 81-message CJK
+                        # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
+                        # room where 335 remained.
+                        kwargs["conversation_budget_tokens"] = max(
+                            0,
+                            prompt_budget(int(context_length), max_tokens)
+                            - estimate_messages_tokens_dense(conversation)
+                            - estimate_messages_tokens_dense(tools or []),
+                        )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
@@ -1309,7 +1346,7 @@ def run_safetensors_tool_loop(
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)
                     result = f"Error: tool raised an exception: {exc}"
-                if decision.tool_name == "search_knowledge_base":
+                if decision.tool_name in RAG_SEARCH_TOOLS:
                     kb_search_count += 1
 
             completion = tool_controller.record_result(decision, result)

@@ -99,9 +99,16 @@ class _FakeResponse:
         return self._body
 
 
-def _make_backend(effective_ctx = 98304, port = 51234):
+def _make_backend(
+    effective_ctx = 98304,
+    port = 51234,
+    api_key = None,
+):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
+    # __init__ always sets this; __new__ skips it, and the readback reads it via
+    # _auth_headers to authenticate against a --api-key child server.
+    inst._api_key = api_key
     inst._effective_context_length = effective_ctx
     inst._context_length = 262144
     inst._effective_parallel_slots = 1
@@ -118,12 +125,17 @@ def _stub_props(
 ):
     def fake_get(
         url,
+        headers = None,
         timeout = None,
         trust_env = None,
     ):
         assert url.endswith("/props")
 
         assert trust_env is False
+        # /props sits behind llama-server's api-key middleware, so a direct-stream
+        # child must be addressed with the bearer token; without one the header
+        # stays absent rather than becoming a bogus "Bearer None".
+        assert headers is None or headers == {"Authorization": "Bearer test-key"}
         if exc is not None:
             raise exc
         return _FakeResponse(status_code, body)

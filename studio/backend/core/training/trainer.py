@@ -76,6 +76,7 @@ from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
     resolve_output_dir,
@@ -89,7 +90,7 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows
+from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
 
 logger = get_logger(__name__)
 
@@ -1082,6 +1083,7 @@ class UnslothTrainer:
                     model_name = llm_path,
                     max_seq_length = max_seq_length,
                     dtype = torch.float32,  # Spark-TTS requires float32
+                    attn_implementation = "sdpa",  # Flash Attention cannot run float32
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -2522,22 +2524,7 @@ class UnslothTrainer:
             file_path_obj = Path(file_path)
 
             if file_path_obj.is_dir():
-                parquet_dir = (
-                    file_path_obj / "parquet-files"
-                    if (file_path_obj / "parquet-files").exists()
-                    else file_path_obj
-                )
-                parquet_files = sorted(parquet_dir.glob("*.parquet"))
-                if parquet_files:
-                    all_files.extend(str(p) for p in parquet_files)
-                    continue
-                candidates: list[Path] = []
-                for ext in (".json", ".jsonl", ".csv", ".parquet"):
-                    candidates.extend(sorted(file_path_obj.glob(f"*{ext}")))
-                if candidates:
-                    all_files.extend(str(c) for c in candidates)
-                    continue
-                raise ValueError(f"No supported data files in directory: {file_path_obj}")
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -3479,7 +3466,32 @@ class UnslothTrainer:
         if max_steps > 0:
             try:
                 rows = len(train_dataset)
-                world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+                # Every launcher variable, not WORLD_SIZE alone: no MPI sets it (Open
+                # MPI uses OMPI_COMM_WORLD_SIZE, Hydra/Intel MPI PMI_SIZE, mlx.launch's
+                # CUDA-only NCCL backend MLX_WORLD_SIZE), LOCAL_WORLD_SIZE is defensive
+                # since torchrun sets both and the max prefers the global count. Reading
+                # one variable calls an mpirun launch single-process and engages a view
+                # that re-tokenizes every extra pass; it also raises on junk like
+                # int("auto"), leaving resolved_epochs None so the gate reads inf and
+                # kills the feature. Env-only, deliberately NOT worker.py's
+                # _data_parallel_world_size, which also counts visible CUDA devices:
+                # that bounds a row subset where over-counting is free, this feeds a
+                # veto where both directions are wrong. Studio's multi-GPU load is
+                # device_map="balanced", model-parallel to transformers with _n_gpu = 1,
+                # so a balanced 4-GPU run draws one GPU's rows per step and counting
+                # devices would report 4x the passes, vetoing a qualifying run.
+                world_size = world_size_from_env()
+                if world_size > 1:
+                    # Say which variable said so: a stale size from an earlier mpirun
+                    # or an HPC container image reads as a multi-rank launch on a
+                    # one-process machine, and the only symptom is this run being told
+                    # it makes several passes. The row bound already trusts the same
+                    # variables; what was missing was a way to see them.
+                    logger.info(
+                        f"Launcher environment reports {world_size} data-parallel "
+                        f"processes ({world_size_env_report()}); a step-capped run "
+                        f"consumes that many times the rows per step\n"
+                    )
                 per_step = (
                     int(config_args.get("per_device_train_batch_size", 1))
                     * int(config_args.get("gradient_accumulation_steps", 1))

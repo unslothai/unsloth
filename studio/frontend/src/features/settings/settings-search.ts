@@ -91,6 +91,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   chat: [
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
+    "settings.chat.projectAttachments",
+    "settings.chat.rememberParamsPerModel",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
     "settings.chat.artifacts.title",
@@ -117,6 +119,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
   ],
+  // The two cards label themselves in English in every locale, so keys naming them
+  // would never match their own anchor. The header carries both entries instead.
+  "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
   agents: [
     // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
     "settings.agents.title",
@@ -147,6 +152,18 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.pitchLabel",
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
+  ],
+  "keyboard-shortcuts": [
+    // Both the section titles and each action label, so searching "sidebar" or
+    // "new chat" from the settings search lands on the row itself.
+    "settings.keyboardShortcuts.title",
+    "settings.keyboardShortcuts.groups.general",
+    "settings.keyboardShortcuts.groups.chat",
+    "settings.keyboardShortcuts.actions.newChat.label",
+    "settings.keyboardShortcuts.actions.searchChats.label",
+    "settings.keyboardShortcuts.actions.toggleSidebar.label",
+    "settings.keyboardShortcuts.actions.openSettings.label",
+    "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
   ],
   debugging: [
     "settings.debugging.logSection",
