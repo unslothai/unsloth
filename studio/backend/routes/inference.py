@@ -7141,9 +7141,9 @@ def _estimate_gguf_required_gb(
             _env_mmproj_bytes = LlamaCppBackend._get_gguf_size_bytes(_env_mmproj)
 
         if total_bytes > 0:
-            return (
-                total_bytes + _extras_bytes + _env_mmproj_bytes
-            ) / (1024**3) + _estimate_gguf_kv_gb(
+            return (total_bytes + _extras_bytes + _env_mmproj_bytes) / (
+                1024**3
+            ) + _estimate_gguf_kv_gb(
                 main,
                 max_seq_length,
                 llama_extra_args,

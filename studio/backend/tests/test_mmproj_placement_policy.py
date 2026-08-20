@@ -1285,6 +1285,8 @@ def test_a_pinned_projector_costs_the_shared_pool_beside_a_discrete_card(tmp_pat
     ref_cmd = _launch(reference, ref_gguf)["cmd"]
 
     assert pinned_ctx == int(ref_cmd[ref_cmd.index("-c") + 1])
+
+
 def _estimator_config(model_path, mmproj_path = None):
     return SimpleNamespace(
         gguf_file = str(model_path),
@@ -1327,9 +1329,7 @@ def test_the_guard_charges_a_projector_only_the_environment_names(tmp_path, monk
     assert dropped == bare
 
 
-def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(
-    tmp_path, monkeypatch
-):
+def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(tmp_path, monkeypatch):
     """argv beats the environment (arg.cpp applies set_env first), so exactly one
     projector loads. Charging both billed a single file twice and refused loads
     that fit."""
@@ -1350,9 +1350,7 @@ def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(
     assert charged == expected
 
 
-def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(
-    tmp_path, monkeypatch
-):
+def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_path, monkeypatch):
     """The combination that slipped through: the CONFIGURED projector is
     image-capable, so the switch drops it and Studio emits no --mmproj at all, while
     the inherited one is audio-only and is kept. argv only beats the environment when
@@ -1372,8 +1370,9 @@ def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(
         return (False, True) if str(path) == str(configured) else (True, False)
 
     monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
-    with patch.object(_meta, "mmproj_capabilities", _caps), patch.object(
-        _meta, "mmproj_accepts_image", lambda p: _caps(p)[1]
+    with (
+        patch.object(_meta, "mmproj_capabilities", _caps),
+        patch.object(_meta, "mmproj_accepts_image", lambda p: _caps(p)[1]),
     ):
         # Weights alone: the switch drops the image projector and no env one exists.
         weights_only = _estimate_gguf_required_gb(
@@ -1408,9 +1407,7 @@ def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, mon
     assert round((charged - bare) * 1024) == 1
 
 
-def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(
-    tmp_path, monkeypatch
-):
+def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path, monkeypatch):
     """--no-mmproj makes llama_cpp.py skip the resolve, so Studio emits no --mmproj
     and the configured projector never loads. It does not unset an inherited path,
     which then loads unopposed. The estimate has to move with the launch: drop the
