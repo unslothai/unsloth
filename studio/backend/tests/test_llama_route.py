@@ -146,6 +146,26 @@ def test_status_handler_runs_off_event_loop(monkeypatch):
     assert seen["thread"] is not threading.main_thread()
 
 
+def test_job_status_handler_uses_lightweight_snapshot(monkeypatch):
+    seen = {}
+
+    def fake_job():
+        seen["thread"] = threading.current_thread()
+        return {
+            "job_id": "c" * 32,
+            "state": "running",
+            "operation": "update",
+            "progress": 0.5,
+        }
+
+    monkeypatch.setattr(rl, "get_update_job", fake_job)
+    out = asyncio.run(rl.llama_update_job_status(current_subject = "t"))
+    assert out.job_id == "c" * 32
+    assert out.progress == 0.5
+    # This snapshot only takes the updater lock; it performs no blocking probe.
+    assert seen["thread"] is threading.main_thread()
+
+
 def test_update_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 

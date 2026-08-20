@@ -24,10 +24,11 @@ const end = source.indexOf(endMarker, start + startMarker.length);
 assert.ok(start >= 0 && end > start, "the llama job interval moved");
 const body = source.slice(start + startMarker.length, end);
 
-test("only active-job polling uses the client-side status deadline", () => {
-  assert.match(body, /requestStatus\(false, true\)/);
+test("active polling uses the lightweight job endpoint before full reconciliation", () => {
+  assert.match(body, /requestJob\(\)/);
+  assert.match(source, /\/api\/llama\/update-job-status/);
+  assert.match(body, /const reconciled = await requestStatus\(\)/);
   assert.match(source, /requestStatus\(true\)\.then/);
-  assert.doesNotMatch(source, /requestStatus\(true, true\)/);
 });
 
 const AsyncFunction = Object.getPrototypeOf(async () => undefined)
@@ -37,6 +38,7 @@ const AsyncFunction = Object.getPrototypeOf(async () => undefined)
 const runTick = new AsyncFunction(
   "pollInFlightGeneration",
   "generation",
+  "requestJob",
   "requestStatus",
   "pollGeneration",
   "terminalRecheckJob",
@@ -118,6 +120,14 @@ function harness(responses: Snapshot[], latestApplied = 0) {
     1,
     () => {
       assert.ok(responseIndex < responses.length, "status queue exhausted");
+      const next = responses[responseIndex++];
+      return Promise.resolve({
+        requestId: next.requestId,
+        job: next.status?.job,
+      });
+    },
+    () => {
+      assert.ok(responseIndex < responses.length, "status queue exhausted");
       return Promise.resolve(responses[responseIndex++]);
     },
     pollGeneration,
@@ -125,12 +135,7 @@ function harness(responses: Snapshot[], latestApplied = 0) {
     (job: ReturnType<typeof status>["job"]) => job.job_id,
     llamaStatusRequestIsStale,
     latestAppliedStatusRequest,
-    (next: ReturnType<typeof status>) => {
-      state.adopted.push({
-        requestId: latestAppliedStatusRequest.current,
-        status: next,
-      });
-    },
+    () => undefined,
     llamaUpdatePresentation,
     (next: boolean) => {
       state.applying = next;
@@ -197,7 +202,8 @@ test("a failed terminal reconciliation keeps polling until a valid status arrive
   const poll = harness([
     { requestId: 1, status: status("success", true) },
     { requestId: 2, status: null },
-    { requestId: 3, status: status("success", false) },
+    { requestId: 3, status: status("success", true) },
+    { requestId: 4, status: status("success", false) },
   ]);
   await poll.tick();
   assert.deepEqual(poll.snapshot(), {
@@ -220,8 +226,8 @@ test("a failed terminal reconciliation keeps polling until a valid status arrive
     applying: false,
     visible: false,
     timerActive: false,
-    requests: 3,
-    latestApplied: 3,
+    requests: 4,
+    latestApplied: 4,
     done: [
       {
         ok: true,

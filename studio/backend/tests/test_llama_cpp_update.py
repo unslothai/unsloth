@@ -136,6 +136,23 @@ def _clean_state(monkeypatch, tmp_path):
     upd._resolve_memo.clear()
 
 
+def test_job_snapshot_is_lightweight_and_detached(monkeypatch):
+    monkeypatch.setattr(
+        upd,
+        "get_update_status",
+        lambda **kwargs: pytest.fail("job polling must not run availability probes"),
+    )
+    with upd._job_lock:
+        upd._job.update(job_id = "job-1", state = upd._JOB_RUNNING, progress = 0.25)
+
+    snapshot = upd.get_update_job()
+
+    assert snapshot["job_id"] == "job-1"
+    assert snapshot["state"] == upd._JOB_RUNNING
+    snapshot["state"] = "mutated"
+    assert upd.get_update_job()["state"] == upd._JOB_RUNNING
+
+
 def _no_prebuilt(monkeypatch):
     """Stub the host prebuilt probe to 'none available' (no source-build offer)."""
     monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda *, force_refresh = False: None)
