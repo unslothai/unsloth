@@ -263,3 +263,53 @@ class TestTheLoggedReserveFollowsTheLaunch:
         assert len({row[:3] for row in seen}) == 1, "the three launches differ"
         assert len({frozenset(row[3]) for row in seen}) == 1, seen
         assert seen[0][3] == {"0.31"}
+
+
+# KV-estimable metadata without a native context length.
+NO_NATIVE_CTX = {**DENSE, "_context_length": None}
+
+
+class TestAGgufWithNoNativeContext:
+    """Cover slot reduction when native-context metadata is absent."""
+
+    @pytest.mark.parametrize(
+        "vram_mib,weights_mib,asked,slots",
+        [
+            (12 * 1024, 9_000, 8, 3),
+            (16 * 1024, 12_000, 8, 5),
+        ],
+    )
+    def test_the_reduction_still_pins_without_a_native_context(
+        self, tmp_path, vram_mib, weights_mib, asked, slots
+    ):
+        got = _plan(
+            tmp_path,
+            weights_mib=weights_mib,
+            n_parallel=asked,
+            spec="off",
+            vram_mib=vram_mib,
+            metadata=NO_NATIVE_CTX,
+        )
+        assert (got["slots"], got["fit"], got["ctx"]) == (slots, "off", 4096)
+
+    def test_no_planner_exception_is_swallowed(self, tmp_path, monkeypatch):
+        """The broad placement handler must not hide a planner failure."""
+        warnings: list[str] = []
+
+        class _Recorder:
+            def __getattr__(self, _level):
+                def emit(msg, *args, **_kwargs):
+                    warnings.append(str(msg) % args if args else str(msg))
+
+                return emit
+
+        monkeypatch.setattr("core.inference.llama_cpp.logger", _Recorder())
+        _plan(
+            tmp_path,
+            weights_mib=9_000,
+            n_parallel=8,
+            spec="off",
+            vram_mib=12 * 1024,
+            metadata=NO_NATIVE_CTX,
+        )
+        assert not [w for w in warnings if "GPU selection failed" in w], warnings

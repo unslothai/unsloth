@@ -15719,6 +15719,9 @@ class LlamaCppBackend:
                             # --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
 
+                    # Slot reduction also runs when native-context metadata is absent.
+                    native_ctx_for_cap = self._context_length or effective_ctx
+
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation; see _plan_tensor_parallel.
                         target_ctx = (
