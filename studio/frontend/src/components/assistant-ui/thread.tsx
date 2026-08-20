@@ -6560,15 +6560,23 @@ const ContinueMessageBarForLastMessage: FC = () => {
       partialTokens: Math.ceil(partial.length / 4),
       promptTarget: truncation?.prompt_target,
     });
+  // Which message this component has already continued. A ref, not the module-level
+  // budget: `<StrictMode>` in src/main.tsx replays effects on the same fiber, and both
+  // passes close over the same `autoContinuing`, so nothing inside would have differed.
+  // Rechecking the budget would not have helped either, since one recorded round still
+  // leaves the limit unspent. Two concurrent continuations meant two budget slots and
+  // two provider requests. Refs survive StrictMode's simulated remount, so this does not.
+  const autoContinuedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!autoContinuing || !parentId) {
+    if (!autoContinuing || !parentId || autoContinuedRef.current === messageId) {
       return;
     }
+    autoContinuedRef.current = messageId;
     // Recorded BEFORE the run, so a round that produces nothing still spends its budget
     // instead of re-firing this effect forever.
     recordAutoContinue(parentId);
     startContinuation();
-  }, [autoContinuing, parentId, startContinuation]);
+  }, [autoContinuing, parentId, messageId, startContinuation]);
 
   // Newest turn only: appending to an older one would strand the replies after it.
   // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
