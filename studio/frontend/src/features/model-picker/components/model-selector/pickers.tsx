@@ -3534,6 +3534,16 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get. A CSM file discovered in LM
+            // Studio, ./models or a scan folder is just as undecodable, and letting it
+            // through routes the pick to Audio, which evicts the chat model and only then
+            // reports the row unsupported. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+            }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
             passesTaskGate(
               m.task,
@@ -3568,6 +3578,16 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get. A CSM file discovered in LM
+            // Studio, ./models or a scan folder is just as undecodable, and letting it
+            // through routes the pick to Audio, which evicts the chat model and only then
+            // reports the row unsupported. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+            }) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -3605,6 +3625,16 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get. A CSM file discovered in LM
+            // Studio, ./models or a scan folder is just as undecodable, and letting it
+            // through routes the pick to Audio, which evicts the chat model and only then
+            // reports the row unsupported. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+            }) &&
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,

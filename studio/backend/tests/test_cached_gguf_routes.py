@@ -5203,6 +5203,25 @@ def test_the_classify_order_is_the_same_wherever_the_folder_lives(tmp_path):
     )
 
 
+def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
+    """llama.cpp cannot load a ``llama-csm`` GGUF at all, so speech ranks with the unsupported
+    diffusion archs rather than the loadable media ones. Returning it the moment it sorts first
+    would hide the runnable denoiser beside it -- the same mistake the test below guards."""
+    folder = tmp_path / "mixed-speech"
+    # "csm" sorts before "flux" and cannot load here; the FLUX denoiser beside it can.
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-to-image"
+
+    # Nothing runnable beside it: the folder still reports speech, so the chat picker keeps
+    # leaving it out instead of falling through to a text tag.
+    speech = tmp_path / "speech-only"
+    _arch_gguf(speech / "csm-1b-Q4_0.gguf", "llama-csm")
+    assert (
+        models_route._gguf_folder_task(speech, ("someone/csm-GGUF",)) == models_route._SPEECH_TASK
+    )
+
+
 def test_a_buildable_denoiser_outranks_an_arch_the_backend_cannot_assemble(tmp_path):
     """``_UNSUPPORTED_DIFFUSION_TASK`` hides a row from the chat picker AND from the Images and
     Video ones, so a folder holding both a checkpoint this backend can build and one it cannot has

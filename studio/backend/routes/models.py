@@ -4224,7 +4224,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
 # picker AND from the Images and Video ones, so a folder holding both a buildable denoiser and an
 # arch this backend cannot assemble has exactly one loadable answer, and returning the other on the
 # strength of where it sorts hides a model that works.
-_LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK, _SPEECH_TASK})
+_LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 # Enough to reach the denoiser past a bundle's encoders, VAE and LoRAs. The guarantee is "the first
 # 64 in order decide", the same 64 on every host. A folder deep enough to hit this is a dump.
 _MAX_TASK_CLASSIFY_GGUFS = 64
@@ -4324,7 +4324,12 @@ def _gguf_folder_task(
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        if task == _UNSUPPORTED_DIFFUSION_TASK:
+        # Speech ranks with the unsupported diffusion archs, not the loadable ones: nothing
+        # here can run a llama-csm GGUF, so returning it the moment it sorts first would hide
+        # a runnable image/video checkpoint sharing the folder -- the very case the ranking
+        # above exists to avoid. Kept as the fallback answer so a speech-only folder still
+        # tags as speech and stays out of the chat picker.
+        if task in (_UNSUPPORTED_DIFFUSION_TASK, _SPEECH_TASK):
             if unsupported is None:
                 unsupported = task
         elif task is not None and fallback is None:

@@ -65,6 +65,26 @@ export function communityAudioRowIsRunnable({
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
 }
 
+/** A GGUF whose family llama.cpp cannot decode as speech. CSM is Transformers-only, so
+ * the arch never loads in llama-server regardless of how the file was discovered. Kept
+ * beside communityAudioRowIsRunnable's family list so the two stay in step. */
+export function speechGgufIsUndecodable({
+  isGguf,
+  id,
+  baseModel,
+  tags,
+}: {
+  isGguf: boolean;
+  id: string;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+}): boolean {
+  if (!isGguf) return false;
+  return [id, baseModel ?? "", ...(tags ?? [])]
+    .map((value) => value.toLowerCase())
+    .some((value) => /(?:^|[-_./])csm(?:$|[-_./])/.test(value));
+}
+
 /** Whether an audio pick from the chat picker may be routed to the Audio page.
  *
  * The page's own lists apply `communityAudioRowIsRunnable`, so routing a repo that fails
@@ -97,6 +117,11 @@ export function audioPickIsRoutable({
   // name. Its task came from the backend reading the checkpoint, which is the stronger
   // signal, and the Audio page lists it off that same tag.
   if (isLocalCheckpoint) {
+    // Provenance is not evidence against the decoder: llama.cpp has no CSM decoder, so a
+    // CSM GGUF discovered on disk is as unrunnable as a cached one. Routing it anyway
+    // hands the Audio page a row it cannot show, after its ?model= handoff already
+    // evicted the chat model.
+    if (speechGgufIsUndecodable({ isGguf, id, baseModel, tags })) return false;
     return (
       task === "text-to-speech" || task === "automatic-speech-recognition"
     );

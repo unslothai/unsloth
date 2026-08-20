@@ -529,6 +529,48 @@ test("a cached speech GGUF no backend can decode is not listed at all", () => {
   );
 });
 
+test("a speech GGUF found on the filesystem is gated like a cached one", () => {
+  // The backend tags llama-csm as text-to-speech wherever it is discovered, so every
+  // filesystem list has to ask the same policy the cached GGUF list does.
+  for (const rows of [
+    "lmStudioModels",
+    "localDirModels",
+    "customFolderModels",
+  ]) {
+    assert.match(
+      pickerSource,
+      new RegExp(
+        `${rows}\\.filter\\([\\s\\S]*?audioPickIsRoutable\\(\\{`,
+      ),
+      `${rows} must apply the speech gate`,
+    );
+  }
+});
+
+test("a local CSM GGUF is unroutable even though it was found on disk", () => {
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/models/sesame-csm-1b-GGUF/csm-1b-Q4_K_M.gguf",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      isLocalCheckpoint: true,
+    }),
+    false,
+  );
+  // A Transformers CSM checkpoint still runs, so local provenance keeps routing it.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/outputs/csm-1b-finetune",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: false,
+      isLocalCheckpoint: true,
+    }),
+    true,
+  );
+});
+
 test("an unroutable speech pick is refused instead of loaded into chat", () => {
   assert.match(
     pickerSource,
