@@ -889,6 +889,141 @@ export function releaseAutoContinueLease(
 }
 
 /**
+ * How long a hold waits for its run to appear before it stops expecting one.
+ *
+ * Only ever drops the bookkeeping, never the lease: a hold that never armed has renewed
+ * nothing, so what is left behind is a lease running out its own TTL, which is exactly the
+ * state a tab that closed mid-claim leaves behind.
+ */
+export const AUTO_CONTINUE_ARM_TIMEOUT_MS = 60_000;
+
+/**
+ * Whether the thread a lease was taken for is generating right now.
+ *
+ * Deliberately NOT "is the thread on screen running". A run keeps streaming when the user
+ * opens another chat -- the chat view is keyed by project so the provider is not remounted,
+ * and the runtime just points its selection somewhere else -- so a lease whose lifetime is
+ * read off the selected thread is released the moment the user looks away, and one settle
+ * window later another tab can claim a message that is still being written. The signal has
+ * to be per thread and indifferent to selection.
+ */
+export type AutoContinueRunSignal = {
+  isRunning(threadId: string): boolean;
+  subscribe(onChange: () => void): () => void;
+};
+
+/**
+ * Holds the lease of each continuation this tab is running, for as long as its own run runs.
+ *
+ * A hold is (message, thread) and its lifetime is the run's: it arms when THAT thread starts
+ * generating and is given back when THAT thread stops, whatever is on screen meanwhile and
+ * whichever component has mounted or unmounted. Nothing here reads React state.
+ *
+ * Arming waits for a run that starts after the hold is taken. A round that hits Max Tokens
+ * again is claimed while the finished round is still winding down, so a hold that armed on
+ * "the thread is running" would arm on its predecessor's run and be released when THAT one
+ * ended, mid-stream. So a hold taken while the thread is busy waits to see it idle first.
+ */
+export function createAutoContinueLeaseKeeper({
+  signal,
+  renew = (messageId, holder, now) => tab.renew(messageId, holder, { now }),
+  release = (messageId, holder, now) => tab.release(messageId, holder, { now }),
+  now = Date.now,
+}: {
+  signal: AutoContinueRunSignal;
+  renew?: (messageId: string, holder: string, now: number) => void;
+  release?: (messageId: string, holder: string, now: number) => void;
+  now?: () => number;
+}): {
+  hold: (messageId: string, threadId: string) => void;
+  observe: () => void;
+  tick: () => void;
+  held: () => number;
+  stop: () => void;
+} {
+  type Hold = {
+    messageId: string;
+    threadId: string;
+    /** Seen idle since the hold was taken, so the next run to start is this hold's own. */
+    idle: boolean;
+    /** That run has started. Only an armed hold is ever released. */
+    armed: boolean;
+    takenAt: number;
+  };
+  const holds = new Map<string, Hold>();
+  let unsubscribe: (() => void) | null = null;
+
+  const key = (messageId: string, threadId: string) =>
+    `${threadId}\u0000${messageId}`;
+
+  /** Arm, release, or forget. No writes to storage beyond the release itself. */
+  function observe(): void {
+    const at = now();
+    for (const [id, hold] of [...holds]) {
+      if (signal.isRunning(hold.threadId)) {
+        // Only a run that started after this hold was taken can be its own.
+        hold.armed ||= hold.idle;
+        continue;
+      }
+      hold.idle = true;
+      if (hold.armed) {
+        // This hold's own run has ended: finished, cancelled or failed.
+        holds.delete(id);
+        release(hold.messageId, hold.threadId, at);
+        continue;
+      }
+      if (at - hold.takenAt > AUTO_CONTINUE_ARM_TIMEOUT_MS) {
+        // No run ever appeared for it. Drop the bookkeeping; the lease lapses on its own.
+        holds.delete(id);
+      }
+    }
+    if (holds.size === 0 && unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+  }
+
+  return {
+    hold(messageId, threadId) {
+      if (!messageId) {
+        return;
+      }
+      if (!threadId) {
+        return;
+      }
+      holds.set(key(messageId, threadId), {
+        messageId,
+        threadId,
+        // Claimed while the thread is between runs, which is the ordinary case: the bar
+        // only fires on a reply that has finished.
+        idle: !signal.isRunning(threadId),
+        armed: false,
+        takenAt: now(),
+      });
+      unsubscribe ??= signal.subscribe(observe);
+    },
+    observe,
+    tick() {
+      observe();
+      const at = now();
+      for (const hold of holds.values()) {
+        if (hold.armed) {
+          renew(hold.messageId, hold.threadId, at);
+        }
+      }
+    },
+    held() {
+      return holds.size;
+    },
+    stop() {
+      holds.clear();
+      unsubscribe?.();
+      unsubscribe = null;
+    },
+  };
+}
+
+/**
  * Whether THIS message is the one to continue automatically.
  *
  * `shouldAutoContinue` answers about the turn: is the reason right, does the partial
