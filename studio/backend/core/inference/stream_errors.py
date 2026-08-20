@@ -57,6 +57,55 @@ _OVERSIZE_HINT = "Raise the Context Length in Model settings, or shorten the req
 _GENERIC_MESSAGE = "The model stopped generating early."
 
 
+class LlamaStreamError(RuntimeError):
+    """A mid-stream llama-server failure, carrying a message already fit to show.
+
+    Typed rather than a bare ``RuntimeError`` for two reasons, both in
+    ``routes/inference.py``:
+
+    - ``_friendly_error`` ends with ``return "An internal error occurred"`` for any
+      exception it does not recognise. A bare RuntimeError would have that message
+      swapped out on the chat path, so the cause would still never reach the user
+      even though it now survives the stream loop.
+    - ``_classify_llama_generation_error`` flags an overflow by substring, matching
+      "context" beside "window". The starvation text below says "context window"
+      while explaining that the window is shared, so it would be classified as
+      ``context_length_exceeded`` and set the client compacting a conversation that
+      was never too long. ``kv_starvation`` lets that path opt out explicitly.
+    """
+
+    def __init__(
+        self,
+        friendly: str,
+        *,
+        server_message: Optional[str] = None,
+        kv_starvation: bool = False,
+        context_oversize: bool = False,
+    ):
+        # str(exc) stays the server's own text where there is one, so the existing
+        # token-count regex in _friendly_error still matches an oversize refusal and
+        # rewrites it into the established "Message too long" wording.
+        super().__init__(server_message or friendly)
+        self.friendly = friendly
+        self.server_message = server_message
+        self.kv_starvation = kv_starvation
+        self.context_oversize = context_oversize
+
+
+def stream_error_from_chunk(chunk: Any) -> Optional[LlamaStreamError]:
+    """A raisable error for a streamed chunk, or None when the chunk is not one."""
+    message = error_message_from_chunk(chunk)
+    if message is None:
+        return None
+    starvation = is_kv_starvation(message)
+    return LlamaStreamError(
+        describe_stream_error(message),
+        server_message = message or None,
+        kv_starvation = starvation,
+        context_oversize = is_context_oversize(message),
+    )
+
+
 def error_message_from_chunk(chunk: Any) -> Optional[str]:
     """The server's own error text from a streamed chunk, or None if it is not an error.
 

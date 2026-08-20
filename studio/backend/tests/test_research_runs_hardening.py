@@ -1278,9 +1278,12 @@ def test_stream_completion_reports_an_oversize_context_refusal_with_its_counts(m
     with pytest.raises(RuntimeError) as excinfo:
         _run_stream(supervisor)
 
-    message = str(excinfo.value)
+    # .friendly, not str(): str stays the server's own text so the token-count regex in
+    # routes/inference.py still matches and rewrites it into the "Message too long" wording.
+    message = excinfo.value.friendly
     assert "2358" in message and "2048" in message
     assert "Context Length in Model settings" in message
+    assert excinfo.value.context_oversize
 
 
 def test_stream_completion_explains_a_shared_kv_starvation(monkeypatch):
@@ -1295,7 +1298,8 @@ def test_stream_completion_explains_a_shared_kv_starvation(monkeypatch):
     with pytest.raises(RuntimeError) as excinfo:
         _run_stream(supervisor)
 
-    assert "at the same time" in str(excinfo.value)
+    assert "at the same time" in excinfo.value.friendly
+    assert excinfo.value.kv_starvation
 
 
 def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):

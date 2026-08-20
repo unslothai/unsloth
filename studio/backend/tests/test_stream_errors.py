@@ -17,10 +17,12 @@ token context:
 
 from core.inference.stream_errors import (
     KV_STARVATION_MESSAGE,
+    LlamaStreamError,
     describe_stream_error,
     error_message_from_chunk,
     is_context_oversize,
     is_kv_starvation,
+    stream_error_from_chunk,
 )
 
 
@@ -101,3 +103,66 @@ class TestDescribeStreamError:
         # message that discards the cause.
         for text in ("Context size has been exceeded.", "tokenizer failed", ""):
             assert "Local model stream failed" not in describe_stream_error(text)
+
+
+class TestSurvivesTheRouteLayer:
+    """Raising the right message is not enough: `routes/inference.py` rewrites it.
+
+    Both defects here were live. `_friendly_error` ends with a catch-all that
+    replaced any unrecognised exception with "An internal error occurred", so the
+    cause survived the stream loop and then died one layer up. And
+    `_classify_llama_generation_error` flags an overflow by finding "context" beside
+    "window", which the starvation text says while explaining that the window is
+    SHARED, so it was labelled `context_length_exceeded` and set the client
+    compacting a conversation that was never too long.
+    """
+
+    @staticmethod
+    def _routes():
+        import routes.inference as routes_inference
+        return routes_inference
+
+    def _error(self, message):
+        return stream_error_from_chunk({"error": {"message": message}})
+
+    def test_starvation_reaches_the_user_instead_of_an_internal_error(self):
+        routes = self._routes()
+        described = routes._friendly_error(self._error("Context size has been exceeded."))
+        assert described == KV_STARVATION_MESSAGE
+        assert "An internal error occurred" not in described
+
+    def test_starvation_is_not_classified_as_a_context_overflow(self):
+        # True here would set the client compacting. The message says "context
+        # window", so only the typed flag can tell these apart.
+        routes = self._routes()
+        assert routes._classify_llama_generation_error(
+            self._error("Context size has been exceeded.")
+        ) is False
+
+    def test_an_oversize_refusal_keeps_the_established_wording_and_triggers_compaction(self):
+        routes = self._routes()
+        error = self._error(
+            "request (2358 tokens) exceeds the available context size (2048 tokens), try increasing it"
+        )
+        described = routes._friendly_error(error)
+        assert described.startswith("Message too long: 2358 tokens")
+        assert "2048-token context window" in described
+        # An overflow genuinely is one, so the client should compact here.
+        assert routes._classify_llama_generation_error(error) is True
+
+    def test_an_unrelated_error_survives_verbatim(self):
+        routes = self._routes()
+        assert routes._friendly_error(self._error("tokenizer failed")) == "tokenizer failed"
+
+    def test_str_of_the_error_stays_the_server_text(self):
+        # What lets the existing token-count regex in _friendly_error still match.
+        error = self._error("request (10 tokens) exceeds the available context size (5 tokens)")
+        assert str(error).startswith("request (10 tokens)")
+
+    def test_the_typed_error_is_a_runtimeerror(self):
+        # Callers that already catch RuntimeError around the stream keep working.
+        assert isinstance(self._error("boom"), RuntimeError)
+        assert isinstance(self._error("boom"), LlamaStreamError)
+
+    def test_a_non_error_chunk_yields_no_exception(self):
+        assert stream_error_from_chunk({"choices": [{"delta": {"content": "hi"}}]}) is None

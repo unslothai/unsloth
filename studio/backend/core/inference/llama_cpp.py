@@ -57,7 +57,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_have_media,
 )
-from core.inference.stream_errors import describe_stream_error, error_message_from_chunk
+from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
@@ -22395,9 +22395,9 @@ class LlamaCppBackend:
                             # ignored it and the reply ended with no finish_reason and no
                             # incomplete stamp: to the user, a mid-sentence stop for no
                             # stated reason. Raise so the failure is surfaced.
-                            _stream_error = error_message_from_chunk(data)
+                            _stream_error = stream_error_from_chunk(data)
                             if _stream_error is not None:
-                                raise RuntimeError(describe_stream_error(_stream_error))
+                                raise _stream_error
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
@@ -23201,9 +23201,9 @@ class LlamaCppBackend:
 
                                 # See the note on the first stream loop: an error chunk has
                                 # no choices, so `continue` below would drop it silently.
-                                _stream_error = error_message_from_chunk(chunk_data)
+                                _stream_error = stream_error_from_chunk(chunk_data)
                                 if _stream_error is not None:
-                                    raise RuntimeError(describe_stream_error(_stream_error))
+                                    raise _stream_error
                                 choices = chunk_data.get("choices", [])
                                 if not choices:
                                     continue
@@ -24648,9 +24648,9 @@ class LlamaCppBackend:
                             if _chunk_usage:
                                 _metadata_usage = _chunk_usage
                             # See the note on the first stream loop.
-                            _stream_error = error_message_from_chunk(chunk_data)
+                            _stream_error = stream_error_from_chunk(chunk_data)
                             if _stream_error is not None:
-                                raise RuntimeError(describe_stream_error(_stream_error))
+                                raise _stream_error
                             choices = chunk_data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
