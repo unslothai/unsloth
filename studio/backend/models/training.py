@@ -635,6 +635,15 @@ class TrainingStartRequest(BaseModel):
     def _check_finetune_targets(self) -> "TrainingStartRequest":
         if getattr(self, "training_type", None) == "Full Finetuning":
             return self
+        # Only the vision (VLM) LoRA path feeds these four selectors to
+        # FastVisionModel.get_peft_model. Text runs, the audio paths and Continued
+        # Pretraining build adapters from target_modules alone (trainer.py's else /
+        # snac branches, worker.py's is_cpt branch), so all-false is a valid request
+        # there and rejecting it broke working configs. trainer.is_vlm is
+        # `not is_audio_vlm and vision and is_dataset_image`, so a run that did not
+        # declare an image dataset can never reach the branch that reads these.
+        if not self.is_dataset_image:
+            return self
         if not (
             self.finetune_vision_layers
             or self.finetune_language_layers
