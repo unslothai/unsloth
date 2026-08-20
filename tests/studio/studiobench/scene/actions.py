@@ -1273,30 +1273,103 @@ _HIT_POINTS = (
     (0.5, 0.25),
 )
 
+#: EVERY match, not the first. `document.querySelector` returns the first element in DOCUMENT
+#: ORDER, and this app renders "New chat" twice -- once in the sidebar header and once on the chat
+#: page -- exactly as it renders the composer twice. When the sidebar is collapsed its button is
+#: still in the tree at zero size, comes first, and is the one a plain query hands back: the probe
+#: then reports "no point on the control hit-tests to it" about a button that is 34x34 and fully
+#: clickable a few hundred pixels away. This is the same trap `image_upload` documents at length,
+#: and it cost this action a second time.
 _HIT_TEST_JS = """
-([selector, fx, fy]) => {
-  const el = document.querySelector(selector);
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return null;
-  const x = r.left + r.width * fx;
-  const y = r.top + r.height * fy;
-  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
-  const top = document.elementFromPoint(x, y);
-  // `contains`, not identity: the control's own icon or label is a child and hit-tests to itself,
-  // which is still a click that reaches the control.
-  if (!top || !(top === el || el.contains(top))) return null;
-  return { x, y };
+([selector, points]) => {
+  for (const el of document.querySelectorAll(selector)) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    for (const [fx, fy] of points) {
+      const x = r.left + r.width * fx;
+      const y = r.top + r.height * fy;
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+      const top = document.elementFromPoint(x, y);
+      // `contains`, not identity: the control's own icon or label is a child and hit-tests to
+      // itself, which is still a click that reaches the control.
+      if (top && (top === el || el.contains(top))) return { x, y };
+    }
+  }
+  return null;
 }
 """
 
 
 def _reachable_point(ctx: ActionContext, selector: str) -> tuple[float, float] | None:
-    """A viewport point that hit-tests to `selector`, or None if the control is truly covered."""
-    for fx, fy in _HIT_POINTS:
-        got = _ev(ctx, _HIT_TEST_JS, [selector, fx, fy])
-        if isinstance(got, dict) and "x" in got:
-            return got["x"], got["y"]
+    """A viewport point that hit-tests to `selector`, or None if no instance of it is reachable."""
+    got = _ev(ctx, _HIT_TEST_JS, [selector, [list(p) for p in _HIT_POINTS]])
+    if isinstance(got, dict) and "x" in got:
+        return got["x"], got["y"]
+    return None
+
+
+#: How long the reveal transition needs, and how many times to look. `.sidebar-header-action`
+#: transitions opacity over 150ms. One sample after a fixed sleep is a race that this test suite
+#: lost roughly one run in three on a loaded machine, so the hit test is retried instead.
+_REVEAL_SETTLE_MS = 120
+_REVEAL_ATTEMPTS = 5
+
+#: The control's own box, whatever its computed style says. An earlier version only offered a
+#: hover point for a control that LOOKED hidden, which made the reveal conditional on a style read
+#: taken at exactly the wrong moment: mid-transition `getComputedStyle` reports the old opacity,
+#: and after a failed Playwright click the element can read as already revealed while not yet
+#: being hit-testable. Since this only runs when the control is already known to be unreachable,
+#: there is nothing to gain by being clever about whether it deserves a hover.
+_HOVER_TARGET_JS = """
+(selector) => {
+  for (const el of document.querySelectorAll(selector)) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+    return { x, y };
+  }
+  return null;
+}
+"""
+
+
+def _reveal_by_hover(ctx: ActionContext, selector: str) -> tuple[float, float] | None:
+    """Hover a hover-revealed control into existence, then return a point on it.
+
+    THE CONTROL WAS NEVER COVERED. The sidebar's New chat button is
+    `.sidebar-header-action`, which ships `opacity-0 pointer-events-none` and is revealed only by
+    `.group/sidebar-header:hover` (or `:focus-visible`). With no mouse over the header it is a
+    20x20 box that is laid out, reported `visible` by every check Playwright makes, and transparent
+    to every hit test -- so `click()` waits out its whole timeout and the hit-test spread reports
+    "no point on the control hit-tests to it". Both are accurate and both are the wrong conclusion:
+    nothing is covering it and the sidebar is not collapsed. The harness simply never did the half
+    of the gesture that makes the control exist, and then substituted a page reload for the click.
+
+    Moving the mouse to where the button IS suffices, and is what a person does. `pointer-events:
+    none` means the pointer falls through to the group underneath, the group's `:hover` matches,
+    and the button becomes solid under a mouse that is already on it. So this deliberately does not
+    walk ancestors looking for the reveal group: hovering the control's own centre finds it by
+    construction, and cannot pick the wrong one.
+
+    Called ONLY after the ordinary hit test has already failed, so a control that is reachable at
+    rest is never hovered and no stray mouse movement enters a measured window. Returns None when
+    hovering does not make the control hit-testable, which is a real finding and is reported as
+    one rather than papered over with a page load.
+    """
+    target = _ev(ctx, _HOVER_TARGET_JS, selector)
+    if not isinstance(target, dict) or "x" not in target:
+        return None
+    try:
+        ctx.page.mouse.move(target["x"], target["y"])
+    except Exception:  # noqa: BLE001
+        return None
+    for _ in range(_REVEAL_ATTEMPTS):
+        ctx.page.wait_for_timeout(_REVEAL_SETTLE_MS)
+        point = _reachable_point(ctx, selector)
+        if point is not None:
+            ctx.log("    the control is hover-revealed; hovered it first, as a user would")
+            return point
     return None
 
 
@@ -1305,9 +1378,8 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transitio
 
     A click is preferred because it exercises the app's own handler. Playwright's actionability
     retries do not give up on an element that is visible, enabled and stable and merely covered by
-    something else, which is the sidebar's sticky group label over the New chat button -- so the
-    click burns its whole timeout. The navigation reaches the same app state, and for getting the
-    scene somewhere it is a perfectly good tool.
+    something else, so the click burns its whole timeout. The navigation reaches the same app
+    state, and for getting the scene somewhere it is a perfectly good tool.
 
     WHAT IT IS NOT is the same operation, and the caller is now told which one it got. Every
     caller must decide for itself whether a navigation still answers its question. `thread_reopen`
@@ -1335,7 +1407,7 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transitio
         # resolves to the control is clicked with a real mouse event. If NO point on the control
         # is reachable then it genuinely cannot be clicked, which is a finding worth reporting
         # rather than a reason to substitute a page load.
-        point = _reachable_point(ctx, selector)
+        point = _reachable_point(ctx, selector) or _reveal_by_hover(ctx, selector)
         if point is not None:
             try:
                 ctx.page.mouse.click(point[0], point[1])
@@ -1343,7 +1415,7 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transitio
             except Exception as exc:  # noqa: BLE001
                 click_error += f"; the off-centre click also failed: {type(exc).__name__}"
         else:
-            click_error += "; no point on the control hit-tests to it"
+            click_error += "; no point on the control hit-tests to it, even after hovering it"
         ctx.log(f"    {click_error}; navigating instead")
     try:
         ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
