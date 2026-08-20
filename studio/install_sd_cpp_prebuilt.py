@@ -520,13 +520,19 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     base = target.resolve()
     links: list[tuple[Path, str, str]] = []
     for member in zf.infolist():
-        dest = (base / member.filename).resolve()
-        if dest != base and base not in dest.parents:
+        dest = base / member.filename
+        resolved = dest.resolve()
+        if resolved != base and base not in resolved.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
         if stat.S_ISLNK(member.external_attr >> 16):
             links.append(
                 (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
             )
+    # ``extractall`` follows links restored by an earlier install, so remove archive
+    # symlink paths before writing their flattened replacements.
+    for dest, _, _ in links:
+        if dest.is_symlink():
+            dest.unlink()
     zf.extractall(target)
     for dest, link_target, filename in links:
         # A symlink member must stay inside the tree too: absolute or ``..`` targets
