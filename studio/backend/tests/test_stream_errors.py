@@ -167,9 +167,9 @@ class TestSurvivesTheRouteLayer:
         from core.research_runs import _safe_error
 
         assert _safe_error(self._error("Context size has been exceeded.")) == KV_STARVATION_MESSAGE
-        oversize = _safe_error(self._error(
-            "request (2358 tokens) exceeds the available context size (2048 tokens)"
-        ))
+        oversize = _safe_error(
+            self._error("request (2358 tokens) exceeds the available context size (2048 tokens)")
+        )
         assert "2358" in oversize and "Context Length in Model settings" in oversize
         # A plain exception still reads from str().
         assert _safe_error(RuntimeError("plain")) == "plain"
