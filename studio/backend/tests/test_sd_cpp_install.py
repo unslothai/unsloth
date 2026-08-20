@@ -407,6 +407,30 @@ def test_safe_extractall_restores_symlink_members_on_reinstall(tmp_path):
     assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"ELF"
 
 
+def test_safe_extractall_replaces_stale_symlink_with_regular_member(tmp_path):
+    target = tmp_path / "install"
+    target.mkdir()
+    old_archive = tmp_path / "old.zip"
+    with zipfile.ZipFile(old_archive, "w") as zf:
+        zf.writestr("build/bin/libfoo.so.1", b"OLD")
+        info = zipfile.ZipInfo("build/bin/libfoo.so")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "libfoo.so.1")
+    with zipfile.ZipFile(old_archive) as zf:
+        _safe_extractall(zf, target)
+
+    new_archive = tmp_path / "new.zip"
+    with zipfile.ZipFile(new_archive, "w") as zf:
+        zf.writestr("build/bin/libfoo.so.1", b"TARGET")
+        zf.writestr("build/bin/libfoo.so", b"NEW")
+    with zipfile.ZipFile(new_archive) as zf:
+        _safe_extractall(zf, target)
+
+    assert not (target / "build" / "bin" / "libfoo.so").is_symlink()
+    assert (target / "build" / "bin" / "libfoo.so").read_bytes() == b"NEW"
+    assert (target / "build" / "bin" / "libfoo.so.1").read_bytes() == b"TARGET"
+
+
 def test_safe_extractall_rejects_symlink_escaping_target(tmp_path):
     target = tmp_path / "install"
     target.mkdir()
