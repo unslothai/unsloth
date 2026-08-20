@@ -143,6 +143,70 @@ def test_validate_payload_still_rejects_a_bare_zero_beside_a_parity_ordinal():
     assert "chars" in str(caught.value)
 
 
+def test_validate_payload_accepts_an_equivalence_field_absent_from_both_arms():
+    """`reasoning_spans` reads 0 streamed and 0 seeded on a real quick-tier run.
+
+    `drift` was already exempt; the two counts it is computed from were not, so every payload
+    carrying an equivalence block failed validation.
+    """
+
+    payload = {
+        "excluded_cells": [],
+        "cells": [
+            {
+                "equivalence": {
+                    "fields": {
+                        "reasoning_spans": {
+                            "streamed": 0,
+                            "seeded": 0,
+                            "gating": False,
+                            "note": "reported, not gated",
+                        },
+                        "assistant_messages": {"streamed": 6, "seeded": 4, "drift": 0.0},
+                    }
+                }
+            }
+        ],
+    }
+    validate_payload(payload)
+
+
+def test_validate_payload_accepts_a_zero_sample_in_an_attested_instrument_array():
+    """A 0 ms inter-frame gap is two frames in one millisecond, not a missing reading.
+
+    The block attests with `frames_attempted`, which already covers the scalar counters beside
+    it; walking into the sample array dropped that attestation.
+    """
+
+    payload = {
+        "excluded_cells": [],
+        "windows": [
+            {
+                "instruments": {
+                    "frames": {
+                        "frames_attempted": True,
+                        "frame_gaps_ms": [0, 3, 4, 16, 16],
+                        "frames_over_33": 0,
+                    }
+                }
+            }
+        ],
+    }
+    validate_payload(payload)
+
+
+def test_an_unattested_instrument_array_still_fails():
+    """The exemption is the attestation, not the brackets. Without it the zero stays loud."""
+
+    payload = {
+        "excluded_cells": [],
+        "windows": [{"instruments": {"frames": {"frame_gaps_ms": [0, 3, 4]}}}],
+    }
+    with pytest.raises(PayloadSchemaError) as caught:
+        validate_payload(payload)
+    assert "frame_gaps_ms" in str(caught.value)
+
+
 def test_validate_payload_requires_excluded_cells():
     with pytest.raises(PayloadSchemaError):
         validate_payload({"windows": []})

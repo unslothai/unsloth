@@ -28,7 +28,23 @@ python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/m
 
 # and, before you read any timing at all, that the run actually ran
 python -m tests.studio.studiobench --assert-liveness outputs/mine/payload.jsonl
+
+# 5. Read the payload back as a scored report. No Studio, no browser, no network.
+python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
 ```
+
+Every command above except the last drives a real Studio and therefore needs credentials.
+See **"You need a Studio, and you need its password"** in [README.md](README.md) before you
+run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
+already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
+against Studios you started yourself rather than letting studiobench install them, `--ab` needs
+`--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything.
+
+`--assert-liveness` is strict on purpose and an action that could not run is a real finding, not
+noise. But two of the eighteen are unreachable on a fixture that loads no model (`image_upload`
+has no attachments button, `message_menu` no More button), and a small tier can leave others with
+nothing to act on. Read the reasons it prints before you reach for `--allow-not-run`, and name
+only the actions you have understood.
 
 Steps 3 and 4 are not optional extras. A number that has not cleared them is not evidence, and
 `floor_table` will tell you so: run without `--floor` and it prints the deltas followed by a
