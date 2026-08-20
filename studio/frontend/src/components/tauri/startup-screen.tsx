@@ -11,6 +11,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { PRODUCT_NAME, PRODUCT_WORDMARK } from "@/config/branding";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+
+import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useState } from "react";
 
@@ -213,9 +216,15 @@ function InstallingContent({
         <p className="text-sm text-muted-foreground">{message.subtitle}</p>
         {detailLines.length > 0 && (
           <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
               <span className="group-open:hidden">Show installation details</span>
               <span className="hidden group-open:inline">Hide installation details</span>
+              <HugeiconsIcon
+                icon={ChevronDownIcon}
+                aria-hidden="true"
+                strokeWidth={1.5}
+                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
+              />
             </summary>
             <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
               {detailLines.join("\n")}
@@ -249,9 +258,15 @@ function RepairingContent({
         <p className="text-sm text-muted-foreground">This won’t take long.</p>
         {detailLines.length > 0 && (
           <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
               <span className="group-open:hidden">Show setup details</span>
               <span className="hidden group-open:inline">Hide setup details</span>
+              <HugeiconsIcon
+                icon={ChevronDownIcon}
+                aria-hidden="true"
+                strokeWidth={1.5}
+                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
+              />
             </summary>
             <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
               {detailLines.join("\n")}
@@ -529,7 +544,8 @@ function StartupSurface({ children }: { children: ReactNode }) {
  *
  * A layer over the app rather than a replacement for it: a declined quit has to hand the
  * user back the tree they had, in-flight generations and unsaved drafts included. The
- * z-index clears the titlebar and the download stack, the last of which is 9998.
+ * z-index clears the titlebar, the download stack and the floating panels above it:
+ * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
  */
 export function ClosingScreen() {
   return (

@@ -3,6 +3,11 @@
 
 import { isTauri } from "@/lib/api-base";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
+import {
+  browserClipboardFiles,
+  clipboardAdvertisesFiles,
+  clipboardHasPlainText,
+} from "./clipboard-payload.ts";
 
 const MAX_NATIVE_IMAGE_DIMENSION = 8192;
 const MAX_NATIVE_IMAGE_RGBA_BYTES = 64 * 1024 * 1024;
@@ -21,52 +26,6 @@ type NativeClipboardFile = {
   readonly mimeType: string;
   readonly base64: string;
 };
-
-function browserClipboardFiles(clipboardData: DataTransfer): File[] {
-  const files = Array.from(clipboardData.files).filter((file) => file.size > 0);
-  if (files.length > 0) return files;
-
-  return Array.from(clipboardData.items)
-    .filter((item) => item.kind === "file")
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => file !== null && file.size > 0);
-}
-
-function clipboardTypes(clipboardData: DataTransfer): string[] {
-  return Array.from(clipboardData.types, (type) => type.toLowerCase());
-}
-
-function clipboardHasLocalFileUri(
-  clipboardData: DataTransfer,
-  types: readonly string[],
-): boolean {
-  const uriTypes = types.filter(
-    (type) => type.includes("uri-list") || type.includes("urilist"),
-  );
-  for (const type of uriTypes) {
-    try {
-      if (
-        clipboardData
-          .getData(type)
-          .split(/\r?\n/)
-          .some((line) => line.trim().toLowerCase().startsWith("file:"))
-      ) {
-        return true;
-      }
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-function clipboardHasPlainText(clipboardData: DataTransfer): boolean {
-  try {
-    return clipboardData.getData("text/plain").length > 0;
-  } catch {
-    return true;
-  }
-}
 
 function validDimension(value: number): boolean {
   return (
@@ -244,16 +203,9 @@ export function pasteClipboardFiles(
     return;
   }
 
-  const types = clipboardTypes(clipboardData);
-  const advertisesImage = types.some((type) => type.startsWith("image/"));
-  const advertisesFile =
-    types.includes("files") ||
-    types.some((type) => type.includes("copied-files")) ||
-    clipboardHasLocalFileUri(clipboardData, types);
-  if (!advertisesImage && !advertisesFile && clipboardHasPlainText(clipboardData)) {
-    return;
-  }
+  const advertisesFiles = clipboardAdvertisesFiles(clipboardData);
+  if (!advertisesFiles && clipboardHasPlainText(clipboardData)) return;
 
-  if (advertisesImage || advertisesFile) event.preventDefault();
+  if (advertisesFiles) event.preventDefault();
   addNativeClipboardFiles(addFiles, onError);
 }

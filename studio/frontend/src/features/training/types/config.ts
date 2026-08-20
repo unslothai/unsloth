@@ -116,6 +116,7 @@ export interface TrainingConfigState {
   isVisionModel: boolean;
   isEmbeddingModel: boolean;
   isAudioModel: boolean;
+  audioCapabilityUnknown: boolean;
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;
@@ -197,7 +198,6 @@ export interface TrainingConfigActions {
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
-  setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (
     dataset: string | null,
     options?: DatasetCacheReferenceOptions,
@@ -221,7 +221,6 @@ export interface TrainingConfigActions {
   }) => void;
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetSliceEnd: (value: string | null) => void;
-  setUploadedFile: (file: string | null) => void;
   setUploadedEvalFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;

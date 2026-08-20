@@ -3,20 +3,18 @@
 
 export function resolveInventorySettlement({
   downloadedReady,
-  emptyRevalidationSignature,
+  emptyRevalidationFresh,
   hasActiveEmptyRefresh,
   hasInventoryRows,
   hasUnreadyInventoryFailure,
   inventoryFailed,
-  lastEmptyRevalidationSignature,
 }: {
   downloadedReady: boolean;
-  emptyRevalidationSignature: string;
+  emptyRevalidationFresh: boolean;
   hasActiveEmptyRefresh: boolean;
   hasInventoryRows: boolean;
   hasUnreadyInventoryFailure: boolean;
   inventoryFailed: boolean;
-  lastEmptyRevalidationSignature: string | null;
 }): {
   emptyRevalidationRequired: boolean;
   inventorySettled: boolean;
@@ -26,7 +24,7 @@ export function resolveInventorySettlement({
     !inventoryFailed &&
     !hasInventoryRows &&
     !hasActiveEmptyRefresh &&
-    lastEmptyRevalidationSignature !== emptyRevalidationSignature;
+    !emptyRevalidationFresh;
   return {
     emptyRevalidationRequired,
     inventorySettled:

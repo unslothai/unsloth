@@ -4,6 +4,7 @@ import {
   getPlatformAuthConfig,
   getPlatformBackendConfig,
   getPlatformManagementConfig,
+  isPlatformChatPersistenceEnabled,
   isPlatformModelToolsEnabled,
   resolvePlatformUrl,
 } from "../config";
@@ -70,6 +71,16 @@ describe("Rag Platform config", () => {
       publicKeyPem: "PUBLIC-KEY",
       registrationEnabled: false,
     });
+  });
+
+  it("keeps chat persistence on platform and hybrid backends only", () => {
+    expect(isPlatformChatPersistenceEnabled({})).toBe(true);
+    expect(
+      isPlatformChatPersistenceEnabled({ VITE_BACKEND_MODE: "hybrid" }),
+    ).toBe(true);
+    expect(
+      isPlatformChatPersistenceEnabled({ VITE_BACKEND_MODE: "legacy" }),
+    ).toBe(false);
   });
 
   it("enables Phase 3 by default and honors only an explicit rollout disable", () => {

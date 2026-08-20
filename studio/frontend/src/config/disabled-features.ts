@@ -7,6 +7,8 @@ import { getProductCapability } from "./platform-capabilities";
  */
 export const FEATURE_IMAGES =
   getProductCapability("image-generation").available;
+export const FEATURE_AUDIO =
+  getProductCapability("audio-generation").available;
 export const FEATURE_TRAIN = getProductCapability("training").available;
 export const FEATURE_PROJECTS = getProductCapability("projects").available;
 export const FEATURE_VIDEO = getProductCapability("video-generation").available;

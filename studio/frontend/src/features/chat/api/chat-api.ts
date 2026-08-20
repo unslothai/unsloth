@@ -1,15 +1,17 @@
-
-
-
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
+import {
+  abortError,
+  combineAbortSignals,
+  disposableTimeoutSignal,
+} from "@/features/hub/lib/abort-signals";
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
- 
+
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
- 
+
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
- 
+
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type {
@@ -43,10 +45,42 @@ import { assertCompletedPaddedBody } from "./padded-response";
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
+const THREAD_WRITE_TIMEOUT_MS = 30_000;
+
+async function threadWriteFetch<T>(
+  input: string,
+  init: RequestInit,
+  parse: (response: Response) => Promise<T>,
+  caller?: AbortSignal,
+): Promise<T> {
+  const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  const combined = caller
+    ? combineAbortSignals([timeout.signal, caller])
+    : null;
+  try {
+    const signal = combined?.signal ?? timeout.signal;
+    try {
+      const response = await authFetch(input, {
+        ...init,
+        signal,
+      });
+      const parsed = await parse(response);
+      if (signal.aborted) throw abortError(signal);
+      return parsed;
+    } catch (error) {
+      if (signal.aborted) throw abortError(signal);
+      throw error;
+    }
+  } finally {
+    combined?.dispose();
+    timeout.dispose();
+  }
+}
+
 /**
-* Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
-* chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
-*/
+ * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
+ * chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
+ */
 export class StreamInterruptedError extends Error {
   constructor() {
     super(
@@ -58,9 +92,9 @@ export class StreamInterruptedError extends Error {
 }
 
 /**
-* Thrown when a reasoning model consumes its output budget before emitting any standard
-* content, so the chat UI can explain a completed stream holding only a thinking panel.
-*/
+ * Thrown when a reasoning model consumes its output budget before emitting any standard
+ * content, so the chat UI can explain a completed stream holding only a thinking panel.
+ */
 export class GenerationLengthError extends Error {
   constructor() {
     super(
@@ -68,6 +102,13 @@ export class GenerationLengthError extends Error {
         "Increase Max Tokens or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
+  }
+}
+
+export class ChatThreadDeletedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatThreadDeletedError";
   }
 }
 
@@ -89,24 +130,32 @@ function parseErrorText(status: number, body: unknown): string {
 }
 
 /**
-* `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
-* which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
-*/
-function deferredError(body: unknown): { status: number; message: string } | null {
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
+ * which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
+ */
+function deferredError(
+  body: unknown,
+): { status: number; message: string } | null {
   const deferred =
     body && typeof body === "object"
-      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
-          ._deferred_error
+      ? (
+          body as {
+            _deferred_error?: { status_code?: unknown; detail?: unknown };
+          }
+        )._deferred_error
       : undefined;
   if (!deferred || typeof deferred !== "object") return null;
   const status =
     typeof deferred.status_code === "number" ? deferred.status_code : 500;
-  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+  return {
+    status,
+    message: parseErrorText(status, { detail: deferred.detail }),
+  };
 }
 
 /**
-* `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
-* since a truncated body means unfinished there but is legitimate elsewhere. */
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
+ * since a truncated body means unfinished there but is legitimate elsewhere. */
 async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
@@ -178,9 +227,9 @@ export interface ActiveGenerationsResponse {
 }
 
 /**
-* Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
-* that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
-*/
+ * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
+ * that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
+ */
 export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
   const response = await authFetch("/api/inference/active-generations");
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
@@ -188,6 +237,10 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: {
+    signal?: AbortSignal;
+    onRequestStart?: () => void;
+  },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   // Tagged so auto-load can tell a user cancellation from a backend rejection.
@@ -195,21 +248,35 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
+  if (options?.signal?.aborted) throw abortError(options.signal);
   // Announced after the token prompt, so a cancelled load never shows a row.
   // The indicator otherwise had nothing to show until its next 5s poll, while
   // the toast reported the load immediately.
   return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
-    const response = await authFetch("/api/inference/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...payload,
-        hf_token: preparedToken.token,
-        native_path_lease: payload.nativePathLease ?? null,
-        nativePathLease: undefined,
-      }),
-    });
-    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+    options?.onRequestStart?.();
+    if (options?.signal?.aborted) throw abortError(options.signal);
+    try {
+      const response = await authFetch("/api/inference/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          hf_token: preparedToken.token,
+          native_path_lease: payload.nativePathLease ?? null,
+          nativePathLease: undefined,
+        }),
+        signal: options?.signal,
+      });
+      const loaded = await parseJsonOrThrow<LoadModelResponse>(
+        response,
+        "Model load",
+      );
+      if (options?.signal?.aborted) throw abortError(options.signal);
+      return loaded;
+    } catch (error) {
+      if (options?.signal?.aborted) throw abortError(options.signal);
+      throw error;
+    }
   });
 }
 
@@ -277,11 +344,11 @@ export async function validateModel(
 }
 
 /**
-* Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
-* its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
-* GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
-* deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
-*/
+ * Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
+ * its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
+ * GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
+ * deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
+ */
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
@@ -345,10 +412,10 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
 }
 
 /**
-* Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
-* ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
-* ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
-*/
+ * Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
+ * ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
+ * ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
+ */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -423,8 +490,8 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   /**
-  * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
-  * nothing has been written to the cache for this repo. */
+   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
+   * nothing has been written to the cache for this repo. */
   cache_path: string | null;
 }
 
@@ -450,8 +517,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-  * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
-  * healthy, or null when no load is in flight. */
+   * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
+   * healthy, or null when no load is in flight. */
   phase: ModelLoadPhase;
   bytes_loaded: number;
   bytes_total: number;
@@ -459,9 +526,9 @@ export interface LoadProgressResponse {
 }
 
 /**
-* Fetch the active GGUF load's mmap/upload progress. Complements the download progress
-* endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
-*/
+ * Fetch the active GGUF load's mmap/upload progress. Complements the download progress
+ * endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
+ */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
   const response = await authFetch(`/api/inference/load-progress`);
   return parseJsonOrThrow(response);
@@ -516,6 +583,8 @@ export interface CachedModelRepo {
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  tags?: string[];
+  library_name?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
@@ -596,6 +665,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of last scan. Absent on older backends, which means "ok". */
+  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
@@ -711,23 +782,61 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}`,
-  );
-  if (response.status === 404) return null;
-  return parseJsonOrThrow<ThreadRecord>(response);
+  const timeout =
+    options.bounded || options.timeoutMs !== undefined
+      ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
+      : null;
+  const combined =
+    timeout && options.signal
+      ? combineAbortSignals([timeout.signal, options.signal])
+      : null;
+  const signal = combined?.signal ?? timeout?.signal ?? options.signal;
+  try {
+    try {
+      const response = await authFetch(
+        `/api/chat/threads/${encodeURIComponent(threadId)}`,
+        signal ? { signal } : undefined,
+      );
+      if (signal?.aborted) throw abortError(signal);
+      if (response.status === 404) return null;
+      const thread = await parseJsonOrThrow<ThreadRecord>(response);
+      if (signal?.aborted) throw abortError(signal);
+      return thread;
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      throw error;
+    }
+  } finally {
+    combined?.dispose();
+    timeout?.dispose();
+  }
 }
 
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await authFetch("/api/chat/threads", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(thread),
-  });
-  const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
+  const savedThread = await threadWriteFetch(
+    "/api/chat/threads",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(thread),
+    },
+    async (response) => {
+      if (response.status === 410) {
+        let body: unknown = null;
+        try {
+          body = await response.json();
+        } catch {
+          // Malformed error bodies fall back to status text. Aborts are re-thrown by threadWriteFetch.
+        }
+        throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+      }
+      return parseJsonOrThrow<ThreadRecord>(response);
+    },
+  );
   notifyChatHistoryUpdated();
   return savedThread;
 }
@@ -737,11 +846,18 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
+  signal?: AbortSignal;
 }
+
+export type ChatThreadWritePatch = Partial<ThreadRecord> & {
+  settingsPatch?: ThreadRecord["settings"];
+  settingsSeq?: number;
+  settingsWriter?: string;
+};
 
 export async function updateChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
   options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
   const body: Record<string, unknown> = { ...patch };
@@ -751,15 +867,16 @@ export async function updateChatThread(
   if (options.expectedOpeningMessageId !== undefined) {
     body.expectedOpeningMessageId = options.expectedOpeningMessageId;
   }
-  const response = await authFetch(
+  const thread = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
+    (response) => parseJsonOrThrow<ThreadRecord>(response),
+    options.signal,
   );
-  const thread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
   return thread;
 }
@@ -803,18 +920,37 @@ export async function getForkCount(
   return data.count;
 }
 
+export async function getThreadForkCounts(
+  threadId: string,
+): Promise<ReadonlyMap<string, number>> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/forks`,
+  );
+  if (response.status === 404) return new Map();
+  const data = await parseJsonOrThrow<{ counts?: Record<string, number> }>(
+    response,
+  );
+  return new Map(Object.entries(data.counts ?? {}));
+}
+
 /** Thread ids whose sandbox still holds files, for a caller that never asked. */
 export async function deleteChatThreads(
   threadIds: string[],
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
   if (threadIds.length === 0) return [];
-  const response = await authFetch("/api/chat/threads", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
-  });
-  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
+  const data = await threadWriteFetch(
+    "/api/chat/threads",
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: threadIds,
+        delete_files: !!args.deleteFiles,
+      }),
+    },
+    (response) => parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response),
+  );
   notifyChatHistoryUpdated();
   return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
@@ -904,8 +1040,8 @@ export async function listChatMessages(
 }
 
 /**
-* Fetch messages for many threads in one HTTP call. Falls back to per-thread
-* listChatMessages on 404/405 (older servers without the batch route). */
+ * Fetch messages for many threads in one HTTP call. Falls back to per-thread
+ * listChatMessages on 404/405 (older servers without the batch route). */
 export async function batchListChatMessages(
   threadIds: string[],
 ): Promise<Map<string, MessageRecord[]>> {
@@ -965,7 +1101,7 @@ export async function syncChatMessages(
   messages: MessageRecord[],
   options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
-  const response = await authFetch(
+  const data = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
     {
       method: "PUT",
@@ -975,8 +1111,8 @@ export async function syncChatMessages(
         pruneMissing: options.pruneMissing ?? false,
       }),
     },
+    (response) => parseJsonOrThrow<{ messages: MessageRecord[] }>(response),
   );
-  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   notifyChatHistoryUpdated();
   return data.messages;
 }
@@ -987,19 +1123,48 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
-/** Thread ids whose sandbox still holds files, passed through from the route. */
+/** Thread ids deleted by the backend and ids whose sandbox still holds files. */
 export async function clearBackendChats(
-  options: { notify?: boolean; deleteFiles?: boolean } = {},
-): Promise<string[]> {
-  const response = await authFetch(
+  options: {
+    notify?: boolean;
+    operationId?: string;
+    tombstoneThreadIds?: string[];
+    deleteFiles?: boolean;
+  } = {},
+): Promise<{ deletedThreadIds: string[]; sandboxesKept: string[] }> {
+  const data = await threadWriteFetch(
     `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
-    { method: "DELETE" },
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: options.tombstoneThreadIds ?? [],
+        operationId: options.operationId,
+      }),
+    },
+    (response) =>
+      parseJsonOrThrow<{
+        deletedThreadIds?: string[];
+        deleted_thread_ids?: string[];
+        sandboxesKept?: string[];
+        sandboxes_kept?: string[];
+      }>(response),
   );
-  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
-  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
+  return {
+    deletedThreadIds: Array.isArray(data?.deletedThreadIds)
+      ? data.deletedThreadIds
+      : Array.isArray(data?.deleted_thread_ids)
+        ? data.deleted_thread_ids
+        : [],
+    sandboxesKept: Array.isArray(data?.sandboxesKept)
+      ? data.sandboxesKept
+      : Array.isArray(data?.sandboxes_kept)
+        ? data.sandboxes_kept
+        : [],
+  };
 }
 
 export async function buildBackendChatExport(signal?: AbortSignal): Promise<{

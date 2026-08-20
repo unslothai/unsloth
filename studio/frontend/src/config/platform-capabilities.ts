@@ -15,6 +15,7 @@ export type ProductCapabilityId =
   | "recipes"
   | "export"
   | "image-generation"
+  | "audio-generation"
   | "video-generation"
   | "api-monitor"
   | "model-cache";
@@ -107,6 +108,7 @@ export function createCapabilityRegistry(
     recipes: legacyOnly("recipes"),
     export: legacyOnly("export"),
     "image-generation": legacyOnly("image-generation"),
+    "audio-generation": legacyOnly("audio-generation"),
     "video-generation": legacyOnly("video-generation"),
     "api-monitor": legacyOnly("api-monitor"),
     "model-cache": legacyOnly("model-cache"),

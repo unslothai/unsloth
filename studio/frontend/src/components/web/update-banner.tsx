@@ -86,11 +86,36 @@ export function WebUpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              : // Floor = the header and the action row, the parts of this card
+                // that cannot give up height. Under it a capped rail takes the
+                // height out of the notes, which clip; min-height:auto would
+                // instead be the whole card, so this one would yield nothing
+                // and clip the banner below it.
+                //
+                // A fixed part plus a font-scaled part, the shape index.css
+                // already uses for --picker-control-h, because only some of the
+                // card moves with Settings > Appearance. Measured at every step
+                // from 15px to 20px rather than guessed, and exact across that
+                // range: 184, 189, 194, 199, 204, 209. Scaling the whole 12rem
+                // box instead asked 256px where 209 was needed, and a floor
+                // nothing can meet covers the composer for no gain.
+                //
+                // Below 384px the action pair wraps onto a row of its own on
+                // top of the notes toggle's, and the card needs a whole extra
+                // row: 259px at 20px where the wide card needs 209. A floor
+                // that misses it lets a dodging placement clip a row of
+                // buttons inside the card's own overflow-hidden surface. The
+                // narrow constants bound that regime (229, 235, 241, 247, 253,
+                // 259) and are exact from 17px up, where the extra wrap starts.
+                "pointer-events-auto flex min-h-[calc(109px+80px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]",
           )}
+          // Dismissible, so the stack may cover the composer to show it
+          // whole. See useStackGeometry: a card that cannot be got rid of
+          // does not get that licence.
+          data-overlay-dismissible="true"
           data-testid="web-update-banner"
         >
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={dismiss}
@@ -114,7 +139,7 @@ export function WebUpdateBanner({
               </svg>
             </button>
 
-            <div className="flex min-w-0 items-start gap-4 pr-6">
+            <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
               <Download
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
@@ -140,8 +165,9 @@ export function WebUpdateBanner({
               className="min-h-0 flex-1"
             />
 
-            {/* one row at one type size; wraps only on narrow viewports */}
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
+            {/* one row at one type size; wraps only on narrow viewports, and
+                never compresses on a short one */}
+            <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
                 variant="ghost"

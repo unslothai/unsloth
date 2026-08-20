@@ -30,7 +30,6 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
-  resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
 } from "../session";
@@ -293,7 +292,6 @@ function LegacyAuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
 
       if (!isLoginMode) {
-        resetOnboardingDone();
         setRequiresPasswordChange(false);
         setMustChangePassword(false);
       } else {

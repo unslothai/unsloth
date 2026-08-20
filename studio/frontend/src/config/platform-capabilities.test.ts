@@ -18,6 +18,7 @@ describe("Rag Platform capability registry", () => {
       visibleInNavigation: false,
     });
     expect(registry["image-generation"].available).toBe(false);
+    expect(registry["audio-generation"].available).toBe(false);
     expect(registry["video-generation"].available).toBe(false);
     expect(registry.export.available).toBe(false);
     expect(registry["api-monitor"].available).toBe(false);
@@ -32,6 +33,7 @@ describe("Rag Platform capability registry", () => {
     expect(registry.training.available).toBe(true);
     expect(registry.export.available).toBe(true);
     expect(registry["image-generation"].available).toBe(true);
+    expect(registry["audio-generation"].available).toBe(true);
     expect(registry["video-generation"].available).toBe(true);
     expect(registry["api-monitor"].available).toBe(true);
     expect(registry.agents.available).toBe(false);

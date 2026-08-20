@@ -11,8 +11,11 @@ export {
 } from "./api";
 export {
   AUTH_SESSION_CLEARED_EVENT,
+
+  AUTH_SESSION_STORED_EVENT,
   clearAuthTokens,
   getAuthToken,
+  getAuthSessionEpoch,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,

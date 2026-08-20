@@ -188,7 +188,9 @@ export function getPlatformManagementConfig(
 export function isPlatformChatPersistenceEnabled(
   env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
 ): boolean {
+  const backendMode = env.VITE_BACKEND_MODE?.trim().toLowerCase();
   return (
+    backendMode !== "legacy" &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED)
   );

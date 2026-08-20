@@ -137,6 +137,8 @@ export interface VideoLoadRequest {
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
   // Pipeline denoiser partition. GGUF filenames already identify theirs.
   h3_task?: "fl2va" | "ref2va";
+  // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a checkpoint, so several cards resolve to the one with the most free VRAM.
+  gpu_ids?: number[];
   // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
   text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
 }
@@ -207,6 +209,9 @@ export interface GalleryVideo {
   offload_policy?: string | null;
   // Creation time (ISO 8601 timestamp).
   created_at: string;
+  // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 // Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
@@ -301,9 +306,30 @@ export interface VideoGalleryPage {
   has_more: boolean;
 }
 
-export async function getVideoGallery(offset = 0, limit = 50): Promise<VideoGalleryPage> {
+/** `archived` picks WHICH shelf to page over: false is the strip, true is the archive. */
+export async function getVideoGallery(
+  offset = 0,
+  limit = 50,
+  archived = false,
+): Promise<VideoGalleryPage> {
   return parseJson(
-    await authFetch(`/api/inference/video/gallery?offset=${offset}&limit=${limit}`),
+    await authFetch(
+      `/api/inference/video/gallery?offset=${offset}&limit=${limit}&archived=${archived}`,
+    ),
+  );
+}
+
+/** Pin/unpin or archive/restore one clip; omitted flags are left alone. Returns the new record. */
+export async function setGalleryVideoFlags(
+  id: string,
+  flags: { pinned?: boolean; archived?: boolean },
+): Promise<GalleryVideo> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    }),
   );
 }
 

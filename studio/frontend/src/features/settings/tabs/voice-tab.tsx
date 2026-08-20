@@ -45,10 +45,16 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import { Search01Icon, VolumeHighIcon } from "@hugeicons/core-free-icons";
+import {
+  AudioWave01Icon,
+  Search01Icon,
+  VolumeHighIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { resetMicrophonePermission } from "../api/microphone-permission";
 import { DictationDictionaryView } from "../components/dictation-dictionary-view";
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
@@ -57,6 +63,7 @@ import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "../lib/stt-download-mirror";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
@@ -347,6 +354,9 @@ function useAudioInputDevices() {
       toast.error(t("settings.voice.dictation.micAccessUnsupported"));
       return;
     }
+    // Clear a saved deny first: this button is the only way back from one, and WebView2
+    // would otherwise reject the request without ever prompting (#9001).
+    await resetMicrophonePermission();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -356,7 +366,15 @@ function useAudioInputDevices() {
       }
       await refresh();
     } catch {
-      toast.error(t("settings.voice.dictation.micAccessBlocked"));
+      // A browser keeps its own saved deny and resetMicrophonePermission cannot
+      // touch it, so only the desktop build can promise another prompt.
+      toast.error(
+        t(
+          isTauri
+            ? "settings.voice.dictation.micAccessBlockedDesktop"
+            : "settings.voice.dictation.micAccessBlocked",
+        ),
+      );
     }
   }, [refresh, t]);
 
@@ -403,6 +421,7 @@ export function VoiceTab() {
   const ttsVolume = useVoiceSettingsStore((s) => s.ttsVolume);
   const setTtsVolume = useVoiceSettingsStore((s) => s.setTtsVolume);
 
+  const navigate = useNavigate();
   const { devices, hasLabels, requestAccess } = useAudioInputDevices();
   const rawVoices = useSystemVoices();
   const voices = useMemo(
@@ -410,6 +429,9 @@ export function VoiceTab() {
     [rawVoices, ttsVoiceURI, dictationLanguage],
   );
   const [previewing, setPreviewing] = useState(false);
+  // A studio preview generates the whole clip before it plays; separate from `previewing`
+  // so the wait shows as work.
+  const [preparingPreview, setPreparingPreview] = useState(false);
   const [subpage, setSubpage] = useState<"main" | "recents" | "dictionary">(
     "main",
   );
@@ -732,6 +754,8 @@ export function VoiceTab() {
   const markPreviewing = useCallback((value: boolean) => {
     previewingRef.current = value;
     setPreviewing(value);
+    // Every exit from the generate await clears previewing, so clear both here.
+    if (!value) setPreparingPreview(false);
   }, []);
 
   const releasePreviewAudio = useCallback(() => {
@@ -767,12 +791,14 @@ export function VoiceTab() {
       previewAbortRef.current = controller;
       ownsSystemPreviewRef.current = false;
       markPreviewing(true);
+      setPreparingPreview(true);
       try {
         const url = await generateStudioTtsAudio(
           TTS_PREVIEW_TEXT,
           controller.signal,
         );
         if (controller.signal.aborted) return;
+        setPreparingPreview(false);
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
         audio.volume = ttsVolume;
@@ -1211,7 +1237,27 @@ export function VoiceTab() {
               <SettingsRow
                 label={t("settings.voice.readAloud.modelLabel")}
                 description={t("settings.voice.readAloud.modelDescription")}
-              />
+              >
+                {/* The row named the model selector but offered no way to reach it. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    useSettingsDialogStore.getState().closeDialog();
+                    // Audio keeps the mode it was left in, so name the TTS task.
+                    void navigate({
+                      to: "/audio",
+                      search: { task: "text-to-speech" },
+                    });
+                  }}
+                >
+                  <HugeiconsIcon
+                    icon={AudioWave01Icon}
+                    className="mr-1.5 size-3.5"
+                  />
+                  {t("settings.voice.readAloud.openAudioAction")}
+                </Button>
+              </SettingsRow>
             ) : (
               <SettingsRow
                 label={t("settings.voice.readAloud.voiceLabel")}
@@ -1295,7 +1341,15 @@ export function VoiceTab() {
                 size="sm"
                 onClick={() => void previewTts()}
               >
-                {previewing ? (
+                {preparingPreview ? (
+                  <>
+                    <Spinner
+                      className="mr-1.5 size-3.5"
+                      label={t("settings.voice.readAloud.preparingAction")}
+                    />
+                    {t("settings.voice.readAloud.preparingAction")}
+                  </>
+                ) : previewing ? (
                   <>
                     <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
                     {t("settings.voice.readAloud.stopAction")}

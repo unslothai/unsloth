@@ -101,19 +101,36 @@ import {
   buildDiffusionResumePayload,
   resumeActionLabel,
 } from "./resume-diffusion-run";
+import {
+  resolveDiffusionDeployBase,
+  resolveDiffusionTrainingBase,
+} from "./diffusion-train-deploy";
+import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
+import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
   name: string;
   label: string;
   base_repos: string[];
-  defaults: { rank: number; lr: number; resolution: number };
+  defaults: {
+    rank: number;
+    lr: number;
+    resolution: number;
+    // The family's LR ramp, when it recommends one. Both or neither: a warmup count is inert
+    // under "constant", so seeding one without the other reinstates the bug this carries.
+    // Only the backend reports them, so the static presets below leave the pair unset rather
+    // than keeping a second copy of a pairing that can drift.
+    lrScheduler?: LrScheduler;
+    lrWarmupSteps?: number;
+  };
   vram_note: string;
   gated?: boolean;
   // The note's facts, one per chip. Absent on an older backend, which falls back to vram_note prose.
   params?: string;
   qlora_vram_gb?: number | null;
   note?: string;
+  base_specs?: DiffusionTrainableFamily["base_specs"];
 };
 
 const FAMILY_PRESETS: FamilyPreset[] = [
@@ -245,11 +262,10 @@ function FieldLabel({
 
 /** The family's training facts as chips: size, QLoRA VRAM floor, access. What a chip cannot
  *  carry stays as a line below, as does the prose from a backend too old to send the fields. */
-function FamilyFacts({ family }: { family?: FamilyPreset }) {
+function FamilyFacts({ family, baseModel }: { family?: FamilyPreset; baseModel?: string }) {
   if (!family) return null;
-  const hasChips = Boolean(
-    family.params || family.qlora_vram_gb || family.gated,
-  );
+  const facts = resolveDiffusionTrainingFacts(family, baseModel);
+  const hasChips = Boolean(facts.params || facts.qlora_vram_gb || facts.gated);
   if (!hasChips) {
     return family.vram_note ? (
       <p className="text-ui-11 leading-snug text-muted-foreground">
@@ -260,18 +276,18 @@ function FamilyFacts({ family }: { family?: FamilyPreset }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
-        {family.params ? (
+        {facts.params ? (
           <Badge variant="secondary" className="font-normal">
-            {family.params}
+            {facts.params}
           </Badge>
         ) : null}
-        {family.qlora_vram_gb != null ? (
+        {facts.qlora_vram_gb != null ? (
           <Badge variant="secondary" className="font-normal">
-            QLoRA {family.qlora_vram_gb}GB+ VRAM
+            QLoRA {facts.qlora_vram_gb}GB+ VRAM
           </Badge>
         ) : null}
         {/* Access, not a spec: a neutral fill sets it apart from the capability chips. */}
-        {family.gated ? (
+        {facts.gated ? (
           <Badge
             variant="secondary"
             className="bg-muted font-normal text-muted-foreground"
@@ -280,11 +296,11 @@ function FamilyFacts({ family }: { family?: FamilyPreset }) {
           </Badge>
         ) : null}
       </div>
-      {(family.gated || family.note) && (
+      {(facts.gated || facts.note) && (
         <p className="text-ui-11 leading-snug text-muted-foreground">
-          {family.gated ? "Needs its license and your HF token." : null}
-          {family.gated && family.note ? " " : null}
-          {family.note}
+          {facts.gated ? "Needs its license and your HF token." : null}
+          {facts.gated && facts.note ? " " : null}
+          {facts.note}
         </p>
       )}
     </div>
@@ -307,9 +323,13 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? p.defaults.rank,
         lr: r.defaults?.learning_rate ?? p.defaults.lr,
         resolution: r.defaults?.resolution ?? p.defaults.resolution,
+        // No preset fallback for the ramp: a reported family owns it outright, so a backend that
+        // drops its warmup preset drops the ramp here too instead of a stale copy resurrecting it.
+        ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note || p.vram_note,
       gated: r.gated ?? p.gated,
+      base_specs: r.base_specs,
       // The chips travel together: a backend reporting any of them owns the whole set, so a
       // preset value cannot sit beside a live one describing a different build.
       ...(r.params != null || r.qlora_vram_gb != null || r.note != null
@@ -331,12 +351,14 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? 16,
         lr: r.defaults?.learning_rate ?? 0.0001,
         resolution: r.defaults?.resolution ?? 768,
+        ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note ?? "",
       gated: r.gated ?? false,
       params: r.params ?? "",
       qlora_vram_gb: r.qlora_vram_gb ?? null,
       note: r.note ?? "",
+      base_specs: r.base_specs,
     });
   }
   return merged;
@@ -415,6 +437,17 @@ export function DiffusionTrainPanel({
   }, [reportedFamily?.precision_modes, familyUntrainable]);
   // Whether to show the torch.compile control. The backend advertises it per family; default on for DiT families on an older backend.
   const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
+  // Same idea for checkpoints. MiniMax-H3's loop writes no resume bundle and its validation
+  // REFUSES a nonzero save_steps rather than ignoring it, so leaving the field on offer meant a
+  // user could set it and get a rejected Start with nothing on the control saying why.
+  const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
+  // And the batch axis, third of the same kind. MiniMax-H3's forward covers ONE packed
+  // sequence, so its validation REFUSES a batch above 1 rather than clamping. The field was
+  // rendered unrestricted and always sent, so a 2 typed here -- or simply carried over from the
+  // family the user was on a moment ago -- rejected Start with nothing on the control to say
+  // why. Hidden when the family caps it at 1, and the cap is what gets sent.
+  const maxBatchSize = reportedFamily?.max_train_batch_size ?? null;
+  const batchIsFixed = maxBatchSize != null && maxBatchSize <= 1;
 
   const setBaseChoice = onBaseChoiceChange;
   const [customBase, setCustomBase] = useState("");
@@ -447,15 +480,15 @@ export function DiffusionTrainPanel({
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
   const [resolution, setResolution] = useState(family?.defaults.resolution ?? 768);
   const [batchSize, setBatchSize] = useState(1);
+  const effectiveBatchSize = maxBatchSize == null ? batchSize : Math.min(batchSize, maxBatchSize);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
   // Periodic resume points. 0 (off) keeps the default behaviour: only a stop-and-save writes one,
   // so nothing is spent on disk unless the user asks to survive a crash.
   const [saveSteps, setSaveSteps] = useState(0);
   // LR schedule. Warmup only applies to the non-constant schedules; plain "constant" ignores it.
-  const [lrScheduler, setLrScheduler] = useState<
-    "constant" | "constant_with_warmup" | "cosine" | "linear"
-  >("constant");
+  // Seeded from the family below, which is where the flow-matching DiTs' short ramp comes from.
+  const [lrScheduler, setLrScheduler] = useState<LrScheduler>("constant");
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
@@ -471,6 +504,12 @@ export function DiffusionTrainPanel({
   );
   // Track whether the user hand-edited the numeric settings; if not, a family change re-seeds them from that family defaults.
   const settingsDirty = useRef(false);
+  // The LR schedule pair tracks its own edits rather than riding on settingsDirty. It is the one
+  // setting whose control DISAPPEARS -- "Warmup steps" is hidden under plain "constant" -- so a
+  // value carried past a family change is invisible rather than merely stale, and an edit to
+  // something unrelated like Steps or Seed would otherwise leave a flow-matching DiT on
+  // "constant" with the family's ramp silently never applied.
+  const lrScheduleDirty = useRef(false);
   // Track whether the user hand-picked a base precision; if not, a family change re-seeds it from recommended_precision.
   const precisionDirty = useRef(false);
   // Same for the base repo: once the user picks one, only a real family change may re-seed it. `family` is a fresh object after every
@@ -584,16 +623,32 @@ export function DiffusionTrainPanel({
       baseDirty.current = false;
     }
     // An already-valid base wins: the top bar sets family and base together, so this must not snap back to the family's first repo.
+    // A loaded checkpoint may be the DISTILLED half of a pair, which is not trainable and so is
+    // never in base_repos. Fall back to the training base the family pairs it with before
+    // dropping to base_repos[0], or opening Train with the 9B model loaded seeds the 4B base.
+    // reportedFamily, not family: the pairing lives in deploy_bases, which only the backend
+    // reports. The static presets have no pairings, so an older backend simply keeps today's
+    // behaviour here.
+    const pairedTrainingBase = loadedBaseRepo
+      ? resolveDiffusionTrainingBase(reportedFamily, loadedBaseRepo)
+      : null;
     const preferLoaded = family.base_repos.includes(baseChoice)
       ? baseChoice
       : loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
         ? loadedBaseRepo
-        : family.base_repos[0] ?? CUSTOM_BASE;
+        : (pairedTrainingBase ?? family.base_repos[0] ?? CUSTOM_BASE);
     if (!baseDirty.current) setBaseChoice(preferLoaded);
     if (!settingsDirty.current) {
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
+    }
+    // The ramp is seeded from the family or reset with it: a family with no warmup preset goes
+    // back to the plain default, or the 20 steps recommended for a flow-matching DiT ride along
+    // into SDXL, which never asked for one.
+    if (!lrScheduleDirty.current) {
+      setLrScheduler(family.defaults.lrScheduler ?? "constant");
+      setLrWarmupSteps(family.defaults.lrWarmupSteps ?? 0);
     }
     // Re-seed the DiT base precision from the family recommendation (unless the user picked one); "auto" is always safe.
     if (!precisionDirty.current) {
@@ -604,7 +659,7 @@ export function DiffusionTrainPanel({
           : "auto",
       );
     }
-  }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
+  }, [family, loadedBaseRepo, reportedFamily]);
 
   // mixed_precision is an SDXL-only lever. A dense DiT base precision requires bf16 compute and every DiT family trains in bf16,
   // so reset to bf16 on a change to a DiT family, or an fp16 value left from SDXL rides along and the backend rejects it.
@@ -1048,14 +1103,19 @@ export function DiffusionTrainPanel({
         train_steps: durationUnit === "epochs" ? undefined : steps,
         num_epochs: durationUnit === "epochs" ? epochs : undefined,
         learning_rate: learningRate,
-        train_batch_size: batchSize,
+        // The family cap, not the field: it is only hidden, not reset, so a value typed for
+        // another family would otherwise still be sent and refused.
+        train_batch_size: effectiveBatchSize,
         gradient_accumulation_steps: gradAccum,
         seed,
         gradient_checkpointing: gradCheckpoint,
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
-        save_steps: Math.max(0, Math.floor(saveSteps)),
+        // Zero rather than the field's value when the family has none, because the field is
+        // only hidden, not reset: a value typed for one family would otherwise still be sent
+        // after switching to a checkpointless one, and refused.
+        save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only send compile where supported.
         base_precision: isDiT ? basePrecision : undefined,
@@ -1095,6 +1155,8 @@ export function DiffusionTrainPanel({
     isDiT,
     basePrecision,
     supportsCompile,
+    supportsCheckpoints,
+    effectiveBatchSize,
     compileTransformer,
     poll,
   ]);
@@ -1155,13 +1217,12 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
-  // Resolve the repo an adapter should be PREVIEWED on: a family that trains on one checkpoint but runs adapters on another
-  // declares a deploy_base. Only a recognised training base is overridden; a custom typed repo is respected as-is.
+  // Resolve the repo an adapter should be previewed on. Variant-specific pairs cover FLUX.2
+  // Klein's 4B and 9B bases; the scalar fallback keeps older backends and Krea 2 working.
   const deployBaseFor = useCallback(
     (trainedBase: string, famName: string): string => {
       const rec = info?.families?.find((f) => f.name === famName);
-      if (rec?.deploy_base && rec.base_repos.includes(trainedBase)) return rec.deploy_base;
-      return trainedBase;
+      return resolveDiffusionDeployBase(rec, trainedBase);
     },
     [info?.families],
   );
@@ -1190,7 +1251,11 @@ export function DiffusionTrainPanel({
     value: number,
     set: (n: number) => void,
     fallback: number,
-    extra?: { min?: number; step?: number; hint?: ReactNode },
+    // markDirty overrides which dirty flag an edit claims. Only "Warmup steps" passes one: it is
+    // seeded from the family like rank/LR/resolution but tracked by lrScheduleDirty, so charging
+    // it to the shared flag would mean tuning the ramp froze the OTHER three at the previous
+    // family's values. That field is newly visible by default, so this is reachable now.
+    extra?: { min?: number; step?: number; hint?: ReactNode; markDirty?: () => void },
   ) => (
     <div className={fieldClass}>
       <FieldLabel hint={extra?.hint}>{label}</FieldLabel>
@@ -1200,7 +1265,8 @@ export function DiffusionTrainPanel({
         step={extra?.step}
         value={value}
         onChange={(e) => {
-          settingsDirty.current = true;
+          if (extra?.markDirty) extra.markDirty();
+          else settingsDirty.current = true;
           // Only fall back when the input parses to NaN; a real 0 is legal for zero-legal fields (Seed, LR warmup steps).
           const parsed = Number(e.target.value);
           set(Number.isNaN(parsed) ? fallback : parsed);
@@ -1288,20 +1354,24 @@ export function DiffusionTrainPanel({
           step: 64,
           hint: "The pixel size images train at, in multiples of 64. Higher is sharper and costs noticeably more VRAM.",
         })}
-        {numberField("Batch", batchSize, setBatchSize, 1, {
-          hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
-        })}
+        {!batchIsFixed &&
+          numberField("Batch", batchSize, setBatchSize, 1, {
+            hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
+          })}
         {numberField("Grad accumulation", gradAccum, setGradAccum, 1, {
-          hint: "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
+          hint: batchIsFixed
+            ? "Collects this many clips before each update. This model trains one clip at a time, so this is the only way to raise the effective batch."
+            : "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
         })}
         {numberField("Seed", seed, setSeed, 42, {
           min: 0,
           hint: "Fixes the run's randomness, so the same settings and images reproduce the same LoRA.",
         })}
-        {numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
-          min: 0,
-          hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
-        })}
+        {supportsCheckpoints &&
+          numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
+            min: 0,
+            hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
+          })}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
@@ -1316,7 +1386,12 @@ export function DiffusionTrainPanel({
           </FieldLabel>
           <Select
             value={lrScheduler}
-            onValueChange={(v) => setLrScheduler(v as typeof lrScheduler)}
+            onValueChange={(v) => {
+              // The family re-seed now writes this field, so without a dirty mark a hand-picked
+              // schedule is replaced on the next family switch.
+              lrScheduleDirty.current = true;
+              setLrScheduler(v as LrScheduler);
+            }}
           >
             <SelectTrigger className={selectClass} aria-label="LR schedule">
               <SelectValue />
@@ -1333,6 +1408,12 @@ export function DiffusionTrainPanel({
           numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, {
             min: 0,
             hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
+            // The other half of the pair, so an edit claims the pair's flag and only that: a
+            // hand-typed ramp length survives the next family change the way the schedule does,
+            // without freezing rank/LR/resolution on their way to the new family.
+            markDirty: () => {
+              lrScheduleDirty.current = true;
+            },
           })}
       </div>
 
@@ -1445,16 +1526,13 @@ export function DiffusionTrainPanel({
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
       {/* Left: configure. The 408px rail and container breakpoint match Create and the shared header. */}
-      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            // pb-20 at every width: the floating Start training button below is absolutely
-            // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
-            // phone padding puts it on top of the Adapter name field.
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
@@ -1490,7 +1568,7 @@ export function DiffusionTrainPanel({
                 ))}
               </SelectContent>
             </Select>
-            <FamilyFacts family={family} />
+            <FamilyFacts family={family} baseModel={resolvedBase} />
           </div>
 
           <div className={fieldClass}>
@@ -1788,12 +1866,13 @@ export function DiffusionTrainPanel({
           </div>
 
         </div>
-        {/* Floats over the settings, as Create's Generate does.
+        {/* In its own footer, as Create's Generate is. The scroll mask provides the fade,
+            so the footer stays unpainted to avoid dark-mode banding.
             Stop lives in the run card next to the live stats. */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
+        <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
           <Button
             type="button"
-            className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+            className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             onClick={onStart}
             disabled={starting || uploading || running || familyUntrainable}
           >

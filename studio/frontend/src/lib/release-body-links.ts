@@ -2,9 +2,10 @@
 
 
 /**
- * A relative link in CHANGELOG.md means "somewhere in the Unsloth repository",
- * but inside Studio it would resolve against Studio's own origin. Rewriting to
- * absolute repository URLs makes them behave the way GitHub renders the file.
+ * A relative link in a release body means "somewhere in the Unsloth
+ * repository", but inside Studio it would resolve against Studio's own origin.
+ * Rewriting to absolute repository URLs makes them behave the way GitHub
+ * renders the release page.
  */
 
 import {
@@ -608,8 +609,8 @@ function classify(lines: string[]): Classified {
 }
 
 /** Absolute repository URLs for every relative link and image in `markdown`. */
-export function resolveChangelogLinks(markdown: string): string {
-  // The desktop updater body arrives with CRLF, which would hide fences.
+export function resolveReleaseBodyLinks(markdown: string): string {
+  // A release body edited on GitHub arrives with CRLF, which would hide fences.
   const lines = markdown.replace(LINE_ENDINGS, "\n").split("\n");
   const { text, masked, definition, comments } = classify(lines);
   // Scanned over the whole document, so a span may cross a line break. Commented

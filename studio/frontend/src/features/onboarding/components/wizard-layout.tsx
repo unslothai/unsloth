@@ -2,7 +2,10 @@
 
 
 import { Card } from "@/components/ui/card";
-import { Route as OnboardingRoute } from "@/app/routes/onboarding";
+import {
+  type OnboardingSearch,
+  Route as OnboardingRoute,
+} from "@/app/routes/onboarding";
 import { motion } from "motion/react";
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
@@ -29,7 +32,7 @@ function sanitizeRedirectTarget(value: string | undefined): string {
 }
 
 export function WizardLayout() {
-  const search = OnboardingRoute.useSearch();
+  const search = OnboardingRoute.useSearch() as OnboardingSearch;
   const [showSplash, setShowSplash] = useState(true);
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const confettiRef = useRef<ConfettiRef>(null);

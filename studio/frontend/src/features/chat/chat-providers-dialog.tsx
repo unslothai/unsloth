@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -34,6 +37,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ApiProviderLogo } from "./api-provider-logo";
+
 import {
   type ProviderRegistryEntry,
   createProviderConfig,
@@ -43,11 +47,14 @@ import {
   testProviderConnection,
   updateProviderConfig,
 } from "./api/providers-api";
+import { OpenAICodexConnect } from "./openai-codex-connect";
+
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   allowsManualModelIdsWithCatalog,
   customPresetSkipsApiKeyField,
   customProviderBaseUrlPlaceholder,
@@ -55,12 +62,15 @@ import {
   customProviderModelIdsPlaceholder,
   getExternalProviderApiKey,
   isCustomProviderType,
+  providerModelSupportsStudioTools,
   removeExternalProviderApiKey,
-  setExternalProviderApiKey,
+  supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { getExternalMinOutputTokens } from "./provider-capabilities";
+import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   pruneProviderModelIds,
@@ -163,11 +173,20 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
-  const [page, setPage] = useState<"list" | "form">("list");
+  // Latches the one-shot auto-open below. Every navigation the user drives sets
+  // it too, so a slow first sync cannot pull them back into the form.
+  const autoOpenedAddFormRef = useRef(false);
+  const [page, setPage] = useState<"list" | "form" | "platform">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+
+  const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [editingBackendProviderType, setEditingBackendProviderType] = useState<
+    string | null
+  >(null);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(
     null,
   );
@@ -192,21 +211,44 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  // a connection being created has no stored type yet, so only the UI type can decide
+  const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
+    providerType,
+    editingProviderId ? editingBackendProviderType : null,
+  );
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
-  const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
+  // Studio runs Search, Code, MCP and RAG on this machine for any provider that
+  // advertises the capability, with no extra opt-in. Say so where the
+  // connection is created: the tool results also travel back to the provider as
+  // the next turn's input, which is not obvious from "connect a model".
+  const runsStudioToolsLocally =
+    providerModelSupportsStudioTools(
+      toExternalBackendProviderType(providerType),
+      null,
+    ) === true;
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+  const selectedProviderContract = registryByType.get(
+    toExternalBackendProviderType(providerType),
+  );
+  const usesOAuth = selectedProviderContract?.auth_kind === "chatgpt_oauth";
+
+  const isCodexSubscription = usesOAuth;
+  const modelIdsEditable =
+    selectedProviderContract?.model_ids_editable !== false;
+  const showApiKeyField =
+    !usesOAuth && !customPresetSkipsApiKeyField(providerType);
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
   const isManualModelList =
     (isCustomProvider && !supportsRemoteModelCatalog(providerType)) ||
-    isCuratedModelList;
+    (isCuratedModelList && modelIdsEditable);
 
   const modelsPanelKey = isCustomProvider
     ? providerType || "custom"
@@ -228,8 +270,17 @@ export function ChatProvidersSettings({
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) &&
     baseUrlDraft.trim().length === 0;
+  const editingProviderHasSavedKey = Boolean(
+    editingProviderId &&
+      (providers.find((provider) => provider.id === editingProviderId)
+        ?.hasApiKey ||
+        getExternalProviderApiKey(editingProviderId).trim()),
+  );
   const missingModelCatalogApiKey =
-    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+    !isCustomProvider &&
+    !isCuratedModelList &&
+    apiKey.trim().length === 0 &&
+    !(editingProviderHasSavedKey && !clearApiKeyRequested);
   const loadModelsDisabled =
     modelsLoading ||
     mutatingProvider ||
@@ -269,6 +320,8 @@ export function ChatProvidersSettings({
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
+    setMaxOutputTokensDraft("");
+    setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -282,7 +335,11 @@ export function ChatProvidersSettings({
     // empty until the user clicks "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds([]);
+    setSelectedModelIds(
+      seedDefaults && entry.model_ids_editable === false
+        ? [...entry.default_models]
+        : [],
+    );
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -290,16 +347,14 @@ export function ChatProvidersSettings({
 
   const totalModels = useMemo(
     () =>
-      providers.reduce((count, provider) => count + provider.models.length, 0),
-    [providers],
+      providers.reduce((count, provider) => count + provider.models.length, 0) +
+      platformModelCount,
+    [platformModelCount, providers],
   );
+  const totalConnections = providers.length + platformConnectionCount;
 
   useEffect(() => {
-    if (!legacyBackendSyncEnabled) {
-      setRegistryLoading(false);
-      setSyncingProviders(false);
-      return;
-    }
+    if (!legacyBackendSyncEnabled) return;
     let isMounted = true;
     const syncFromBackend = async ({
       showSpinner = true,
@@ -316,7 +371,12 @@ export function ChatProvidersSettings({
         ]);
         if (!isMounted) return;
         syncSucceeded = true;
-        setRegistry(registryRows);
+        // Hidden entries are fetched for their capabilities only; the dropdown
+        // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
+        const selectableRegistry = registryRows.filter(
+          (entry) => !entry.hidden,
+        );
+        setRegistry(selectableRegistry);
         setProviderType((current) => {
           if (
             current &&
@@ -331,6 +391,16 @@ export function ChatProvidersSettings({
         // removed (often from another tab); mirror that locally, else stale
         // entries become un-removable here until localStorage is cleared.
         onProvidersChange(syncedProviders);
+        // An empty list never says what this page is for, so open the form
+        // instead. Reads the synced response, not the local snapshot, so a
+        // stale empty list cannot flash the form at an existing user. Once
+        // only, else the focus re-sync would pull the user back here.
+        if (!autoOpenedAddFormRef.current) {
+          autoOpenedAddFormRef.current = true;
+          if (syncedProviders.length === 0 && selectableRegistry.length > 0) {
+            setPage("form");
+          }
+        }
       } catch (error) {
         // Only surface a toast for real failures, not for the silent
         // background re-sync on tab focus.
@@ -374,8 +444,12 @@ export function ChatProvidersSettings({
   function resetForm() {
     setEditingProviderId(null);
     setApiKey("");
+
+    setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft("");
+    setMaxOutputTokensDraft("");
+    setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -385,16 +459,23 @@ export function ChatProvidersSettings({
   }
 
   function openAddProvider() {
+    if (platformConnection) {
+      autoOpenedAddFormRef.current = true;
+      setPage("platform");
+      return;
+    }
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
     }
+    autoOpenedAddFormRef.current = true;
     setPage("form");
   }
 
   function closeForm() {
     resetForm();
+    autoOpenedAddFormRef.current = true;
     setPage("list");
   }
 
@@ -456,6 +537,29 @@ export function ChatProvidersSettings({
     });
   }
 
+  function parseMaxOutputTokens(input: string): number | null {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error("Max Tokens limit must be an integer.");
+    }
+    const value = Number(trimmed);
+    if (!Number.isSafeInteger(value)) {
+      throw new Error("Max Tokens limit must be a safe integer.");
+    }
+    // getExternalMaxOutputTokens raises a sub-floor cap anyway, so say so instead of storing it
+    const floor = Math.max(
+      PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+      getExternalMinOutputTokens(providerType),
+    );
+    if (value < floor) {
+      throw new Error(
+        `Max Tokens limit must be at least ${floor.toLocaleString()}.`,
+      );
+    }
+    return value;
+  }
+
   async function loadModels() {
     if (!providerType) {
       toast.error("Choose a connection first.");
@@ -471,7 +575,7 @@ export function ChatProvidersSettings({
       );
       return;
     }
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (!isCustomProvider && !apiKey.trim() && !editingProviderHasSavedKey) {
       toast.error("Add an API key first.");
       return;
     }
@@ -486,6 +590,8 @@ export function ChatProvidersSettings({
         toExternalBackendProviderType(providerType) ?? providerType;
       const models = await listProviderModels({
         providerType: backendProviderType,
+
+        providerId: editingProviderId,
         apiKey: apiKey.trim(),
         baseUrl,
       });
@@ -531,6 +637,64 @@ export function ChatProvidersSettings({
     }
   }
 
+  async function ensureCodexProvider(): Promise<string> {
+    if (editingProviderId) return editingProviderId;
+    const backendProviderType = toExternalBackendProviderType(providerType);
+    const entry = registryByType.get(backendProviderType);
+    if (entry?.auth_kind !== "chatgpt_oauth") {
+      throw new Error(
+        "This connection does not support ChatGPT authorization.",
+      );
+    }
+
+    setMutatingProvider(true);
+    try {
+      const models = pruneProviderModelIds(
+        providerType,
+        selectedModelIds.length > 0 ? selectedModelIds : entry.default_models,
+      );
+      const available = pruneProviderModelIds(providerType, [
+        ...new Set([...availableModels, ...entry.default_models]),
+      ]);
+      const created = await createProviderConfig({
+        providerType: backendProviderType,
+        displayName: entry.display_name,
+        baseUrl: null,
+        models,
+        availableModels: available,
+      });
+      const provider: ExternalProviderConfig = {
+        id: created.id,
+        providerType: created.provider_type,
+        name: created.display_name,
+        baseUrl: created.base_url ?? "",
+        models,
+        availableModels: available,
+        hasApiKey: created.has_api_key,
+        authKind: created.auth_kind,
+        authStatus: created.auth_status,
+        createdAt: Number.isFinite(Date.parse(created.created_at))
+          ? Date.parse(created.created_at)
+          : Date.now(),
+        updatedAt: Number.isFinite(Date.parse(created.updated_at))
+          ? Date.parse(created.updated_at)
+          : Date.now(),
+      };
+      const nextProviders = [
+        ...providersRef.current.filter((current) => current.id !== created.id),
+        provider,
+      ];
+      providersRef.current = nextProviders;
+      onProvidersChange(nextProviders);
+      setSelectedModelIds(models);
+      setAvailableModels(available);
+      setEditingProviderId(created.id);
+      return created.id;
+    } finally {
+      setMutatingProvider(false);
+    }
+  }
+
   async function addProvider() {
     if (!providerType) {
       toast.error("Choose a connection first.");
@@ -541,14 +705,18 @@ export function ChatProvidersSettings({
     const displayName = isCustomProvider
       ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (
+      !isCustomProvider &&
+      selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
+      !apiKey.trim()
+    ) {
       toast.error("API key is required.");
       return;
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
     const manualOnly =
       (isCustomProvider && !supportsRemoteModelCatalog(providerType)) ||
-      curated;
+      (curated && selectedRegistryEntry?.model_ids_editable !== false);
     const remoteAllowsManual = allowsManualModelIdsWithCatalog(providerType);
     const manualIds = parseManualModelIds(manualModelIds);
     const allowManual = manualOnly || remoteAllowsManual;
@@ -587,6 +755,9 @@ export function ChatProvidersSettings({
         isCustomProvider,
         providerType,
       );
+      const maxOutputTokens = supportsMaxOutputTokens
+        ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -595,6 +766,8 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        maxOutputTokens,
+        apiKey: apiKey.trim(),
       });
       const createdAt = Number.isFinite(Date.parse(created.created_at))
         ? Date.parse(created.created_at)
@@ -608,26 +781,32 @@ export function ChatProvidersSettings({
       const provider: ExternalProviderConfig = {
         id: created.id,
         providerType: uiProviderType,
+        // Now, not at the next sync, so reopening it this session knows the stored type.
+        backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        maxOutputTokens: created.max_output_tokens ?? undefined,
+
+        hasApiKey: created.has_api_key,
+
+        authKind: created.auth_kind,
+        authStatus: created.auth_status,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
         createdAt,
         updatedAt,
       };
-      if (apiKey.trim()) {
-        setExternalProviderApiKey(created.id, apiKey.trim());
-      }
       onProvidersChange([
         ...providers.filter((p) => p.id !== created.id),
         provider,
       ]);
       resetForm();
+      autoOpenedAddFormRef.current = true;
       setPage("list");
       toast.success("Connection added.");
     } catch (error) {
@@ -648,7 +827,24 @@ export function ChatProvidersSettings({
       return;
     }
     const isEditingCustomProvider = isCustomProviderType(existing.providerType);
-    if (!isEditingCustomProvider && !apiKey.trim()) {
+    const credentialEdit = resolveProviderCredentialEdit(
+      Boolean(
+        existing.hasApiKey ||
+          (!existing.hasApiKey &&
+            getExternalProviderApiKey(existing.id).trim()),
+      ),
+      apiKey,
+      clearApiKeyRequested,
+    );
+    const editingContract = registryByType.get(
+      toExternalBackendProviderType(existing.providerType),
+    );
+    const isEditingOAuthProvider = existing.authKind === "chatgpt_oauth";
+    if (
+      !isEditingCustomProvider &&
+      !isEditingOAuthProvider &&
+      credentialEdit.action === "missing"
+    ) {
       toast.error("API key is required.");
       return;
     }
@@ -657,19 +853,25 @@ export function ChatProvidersSettings({
     const manualOnly =
       (isEditingCustomProvider &&
         !supportsRemoteModelCatalog(existing.providerType)) ||
-      curated;
+      (curated && editingContract?.model_ids_editable !== false);
     const remoteAllowsManual = allowsManualModelIdsWithCatalog(
       existing.providerType,
     );
     const manualIds = parseManualModelIds(manualModelIds);
     const allowManual = manualOnly || remoteAllowsManual;
-    const modelsToSave = pruneProviderModelIds(
-      existing.providerType,
-      allowManual
-        ? [...new Set([...selectedModelIds, ...manualIds])]
-        : [...selectedModelIds],
-    );
-    if (manualOnly) {
+    const modelsReadOnly =
+      curated && editingContract?.model_ids_editable === false;
+    const modelsToSave = modelsReadOnly
+      ? existing.models
+      : pruneProviderModelIds(
+          existing.providerType,
+          allowManual
+            ? [...new Set([...selectedModelIds, ...manualIds])]
+            : [...selectedModelIds],
+        );
+    if (modelsReadOnly) {
+      // Registry owns this list; unrelated edits must preserve it without a catalog reload.
+    } else if (manualOnly) {
       if (modelsToSave.length === 0) {
         toast.error("Add at least one model ID.");
         return;
@@ -698,6 +900,9 @@ export function ChatProvidersSettings({
         isEditingCustomProvider,
         existing.providerType,
       );
+      const maxOutputTokens = supportsMaxOutputTokens
+        ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
           ? customProviderName.trim() ||
@@ -708,10 +913,18 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
+        maxOutputTokens,
+        ...(credentialEdit.action === "replace"
+          ? { apiKey: credentialEdit.apiKey }
+          : credentialEdit.action === "clear"
+            ? { clearApiKey: true }
+            : {}),
       });
-      if (apiKey.trim()) {
-        setExternalProviderApiKey(editingProviderId, apiKey.trim());
-      } else if (isEditingCustomProvider) {
+
+      if (
+        credentialEdit.action === "replace" ||
+        credentialEdit.action === "clear"
+      ) {
         removeExternalProviderApiKey(editingProviderId);
       }
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
@@ -722,6 +935,7 @@ export function ChatProvidersSettings({
           provider.id === editingProviderId
             ? {
                 ...provider,
+                backendProviderType: updated.provider_type,
                 name: updated.display_name,
                 baseUrl: updated.base_url ?? "",
                 models: modelsToSave,
@@ -731,6 +945,9 @@ export function ChatProvidersSettings({
                       existing.providerType,
                       availableModels,
                     ),
+                maxOutputTokens: updated.max_output_tokens ?? undefined,
+
+                hasApiKey: updated.has_api_key,
                 isReasoningModel: supportsProviderReasoningToggle(
                   existing.providerType,
                 )
@@ -743,6 +960,7 @@ export function ChatProvidersSettings({
       );
       toast.success("Connection updated.");
       resetForm();
+      autoOpenedAddFormRef.current = true;
       setPage("list");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -754,14 +972,28 @@ export function ChatProvidersSettings({
 
   async function editProvider(provider: ExternalProviderConfig) {
     setEditingProviderId(provider.id);
+    autoOpenedAddFormRef.current = true;
     setPage("form");
     setProviderType(provider.providerType);
     setCustomProviderName(
       provider.name || customProviderDisplayName(provider.providerType),
     );
-    setApiKey(getExternalProviderApiKey(provider.id));
+    setApiKey(provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id));
+
+    setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
+    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under
+    // one would fail every unrelated edit. The resolver already reads it as the floor.
+    setMaxOutputTokensDraft(
+      provider.maxOutputTokens == null
+        ? ""
+        : Math.max(
+            provider.maxOutputTokens,
+            getExternalMinOutputTokens(provider.providerType),
+          ).toString(),
+    );
+    setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
@@ -839,10 +1071,25 @@ export function ChatProvidersSettings({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
-    const savedKey = getExternalProviderApiKey(provider.id).trim();
+    if (provider.authKind === "chatgpt_oauth") {
+      if (provider.authStatus === "connected") {
+        toast.success("ChatGPT subscription is connected.");
+      } else {
+        await editProvider(provider);
+        toast.info("Authorize this ChatGPT subscription connection.");
+      }
+      return;
+    }
+    const savedKey = provider.hasApiKey
+      ? ""
+      : getExternalProviderApiKey(provider.id).trim();
     // Hosted registry providers require keys. Local OpenAI-compatible presets
     // may be keyless.
-    if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
+    if (
+      !savedKey &&
+      !provider.hasApiKey &&
+      !supportsRemoteModelCatalog(provider.providerType)
+    ) {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -859,6 +1106,8 @@ export function ChatProvidersSettings({
         providerType:
           toExternalBackendProviderType(provider.providerType) ??
           provider.providerType,
+
+        providerId: provider.id,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
         modelId:
@@ -891,41 +1140,35 @@ export function ChatProvidersSettings({
     }
   }
 
-  if (page === "form") {
-    if (platformConnection) {
-      return (
-        <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
-          <header className="flex items-center gap-2 pr-8">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="size-8 rounded-[8px]"
-              onClick={closeForm}
-              aria-label="Back to connections"
-              title="Back to connections"
-            >
-              <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
-            </Button>
-            <div className="flex min-w-0 items-center gap-2 leading-none">
-              <span className="text-xs font-medium text-muted-foreground">
-                Connections
-              </span>
-              <span className="size-1 rounded-full bg-muted-foreground/35" />
-              <span className="truncate text-xs font-medium text-muted-foreground">
-                New
-              </span>
-            </div>
-          </header>
-          <div className="flex max-w-[760px] flex-col gap-3 pt-1">
-            {typeof platformConnection === "function"
-              ? platformConnection({ close: closeForm })
-              : platformConnection}
+  if (page === "platform" && platformConnection) {
+    const close = () => setPage("list");
+    return (
+      <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
+        <header className="flex items-center gap-2 pr-8">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="size-8 rounded-[8px]"
+            onClick={close}
+            aria-label="Back to connections"
+          >
+            <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
+          </Button>
+          <div className="flex min-w-0 flex-col gap-1">
+            <h1 className="font-heading text-lg font-semibold">
+              Add connection
+            </h1>
           </div>
-        </div>
-      );
-    }
+        </header>
+        {typeof platformConnection === "function"
+          ? platformConnection({ close })
+          : platformConnection}
+      </div>
+    );
+  }
 
+  if (page === "form") {
     return (
       <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
@@ -1052,31 +1295,68 @@ export function ChatProvidersSettings({
                       API key {isCustomProvider ? "(optional)" : ""}
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
-                      Stored locally.
+                      {editingProviderHasSavedKey
+                        ? "Saved securely. Leave blank to keep it."
+                        : "Saved securely after you connect."}
                     </p>
                   </div>
-                  <div className="relative min-w-0">
-                    <Input
-                      id="provider-api-key"
-                      type={showApiKey ? "text" : "password"}
-                      value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
-                      placeholder="Enter API key"
-                      className="h-9 pr-9 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowApiKey((visible) => !visible)}
-                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={showApiKey ? "Hide API key" : "Show API key"}
-                      aria-pressed={showApiKey}
-                    >
-                      {showApiKey ? (
-                        <Eye className="size-3.5" />
-                      ) : (
-                        <EyeOff className="size-3.5" />
-                      )}
-                    </button>
+                  <div className="min-w-0">
+                    <div className="relative">
+                      <Input
+                        id="provider-api-key"
+                        type={showApiKey ? "text" : "password"}
+                        value={apiKey}
+                        onChange={(event) => {
+                          setApiKey(event.target.value);
+                          if (event.target.value.trim()) {
+                            setClearApiKeyRequested(false);
+                          }
+                        }}
+                        placeholder={
+                          editingProviderHasSavedKey
+                            ? "Leave blank to keep saved key"
+                            : "Enter API key"
+                        }
+                        className="h-9 pr-9 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey((visible) => !visible)}
+                        className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={
+                          showApiKey ? "Hide API key" : "Show API key"
+                        }
+                        aria-pressed={showApiKey}
+                      >
+                        {showApiKey ? (
+                          <Eye className="size-3.5" />
+                        ) : (
+                          <EyeOff className="size-3.5" />
+                        )}
+                      </button>
+                    </div>
+                    {editingProviderHasSavedKey ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-7 px-2 text-xs"
+                        onClick={() => {
+                          setApiKey("");
+                          setClearApiKeyRequested((requested) => !requested);
+                        }}
+                      >
+                        {clearApiKeyRequested
+                          ? "Keep saved key"
+                          : "Remove saved key"}
+                      </Button>
+                    ) : null}
+                    {clearApiKeyRequested ? (
+                      <p className="mt-1 text-xs text-destructive">
+                        The saved key will be removed when you save this
+                        connection.
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -1102,7 +1382,8 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
-              {isCustomProvider ? (
+              {isCustomProvider &&
+              selectedProviderContract?.base_url_editable !== false ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
@@ -1123,6 +1404,61 @@ export function ChatProvidersSettings({
                     placeholder={customProviderBaseUrlPlaceholder(providerType)}
                     className="h-9 text-sm"
                   />
+                </div>
+              ) : null}
+
+              {supportsMaxOutputTokens ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-max-output-tokens"
+                      className="text-sm font-medium"
+                    >
+                      Max Tokens limit
+                    </Label>
+                    <p
+                      id="provider-max-output-tokens-help"
+                      className="text-xs leading-snug text-muted-foreground"
+                    >
+                      Caps Max Tokens for this connection. Never raises it past
+                      a model's documented limit. Leave blank to use that limit,
+                      or 32,768 for a model without one.
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    {/*
+                      A TEXT input, deliberately, matching NumericValueInput in the
+                      run-settings panel. `type="number"` runs the HTML value
+                      sanitization algorithm, which replaces anything the engine does
+                      not read as a valid floating-point number with the EMPTY STRING
+                      (WHATWG HTML 4.10.5). Blank means "no override" here, so a
+                      grouped or localised entry such as "131,072" would leave the box
+                      looking filled, report "" to React, and silently CLEAR the
+                      user's override on save with no error. Keeping the raw string
+                      lets `parseMaxOutputTokens` reject it and say why.
+                    */}
+                    <Input
+                      id="provider-max-output-tokens"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={maxOutputTokensDraft}
+                      onChange={(event) =>
+                        setMaxOutputTokensDraft(event.target.value)
+                      }
+                      placeholder="32768"
+                      aria-describedby="provider-max-output-tokens-help provider-max-output-tokens-warning"
+                      className="h-9 text-sm"
+                    />
+                    <p
+                      id="provider-max-output-tokens-warning"
+                      className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+                    >
+                      If the upstream provider does not support this value,
+                      requests may fail.
+                    </p>
+                  </div>
                 </div>
               ) : null}
 
@@ -1149,160 +1485,196 @@ export function ChatProvidersSettings({
                   </label>
                 </div>
               ) : null}
+              {runsStudioToolsLocally ? (
+                <div className="px-4 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    Models on this connection can use Studio&apos;s Search,
+                    Code, MCP and Docs tools. Those run on this machine, and
+                    their results are sent back to the provider as part of the
+                    next message. Code and terminal calls still ask before
+                    anything risky runs.
+                  </p>
+                </div>
+              ) : null}
             </div>
           </section>
 
-          <>
-            <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
-              <AnimatePresence initial={false} mode="wait">
-                <motion.div
-                  key={modelsPanelKey}
-                  className="origin-top overflow-hidden"
-                  initial={reduceMotion ? false : { opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}
-                  transition={{
-                    height: {
-                      duration: PROVIDER_FORM_DURATION,
-                      ease: PROVIDER_FORM_EASE,
-                    },
-                    opacity: {
-                      duration: reduceMotion ? 0 : 0.14,
-                      ease: PROVIDER_FORM_EASE,
-                    },
-                  }}
+          {isCodexSubscription ? (
+            <OpenAICodexConnect
+              providerId={editingProviderId}
+              authStatus={
+                providers.find((provider) => provider.id === editingProviderId)
+                  ?.authStatus
+              }
+              ensureProvider={ensureCodexProvider}
+              onChanged={async () => {
+                const synced = await syncExternalProvidersFromBackend(
+                  providersRef.current,
+                );
+                providersRef.current = synced;
+                onProvidersChange(synced);
+              }}
+            />
+          ) : null}
+
+          <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
+            <AnimatePresence initial={false} mode="wait">
+              <motion.div
+                key={modelsPanelKey}
+                className="origin-top overflow-hidden"
+                initial={reduceMotion ? false : { opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}
+                transition={{
+                  height: {
+                    duration: PROVIDER_FORM_DURATION,
+                    ease: PROVIDER_FORM_EASE,
+                  },
+                  opacity: {
+                    duration: reduceMotion ? 0 : 0.14,
+                    ease: PROVIDER_FORM_EASE,
+                  },
+                }}
+              >
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 ${showModelsBody ? "border-border/60 border-b" : ""}`}
                 >
-                  <div
-                    className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 ${showModelsBody ? "border-border/60 border-b" : ""}`}
-                  >
-                    <div className="flex min-w-0 flex-col gap-0.5">
-                      <Label className="text-sm font-medium">Models</Label>
-                      <p className="text-xs leading-snug text-muted-foreground">
-                        {modelStatusLabel}
-                      </p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className={
-                        availableModels.length > 0
-                          ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
-                          : "h-8 shrink-0 px-3"
-                      }
-                      disabled={loadModelsDisabled}
-                      title={loadModelsTitle}
-                      onClick={() => void loadModels()}
-                    >
-                      {modelsLoading ? (
-                        <>
-                          <Spinner className="mr-2 size-3.5" />
-                          Loading…
-                        </>
-                      ) : availableModels.length > 0 ? (
-                        "Reload models"
-                      ) : (
-                        "Load available models"
-                      )}
-                    </Button>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label className="text-sm font-medium">Models</Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      {modelStatusLabel}
+                    </p>
                   </div>
-                  {isCustomProvider &&
-                  !supportsRemoteModelCatalog(providerType) ? (
-                    <div className="space-y-3 px-4 py-4">
-                      <div className="space-y-2">
-                        <Label
-                          htmlFor="provider-manual-models"
-                          className="text-sm font-medium"
-                        >
-                          Model IDs (one per line or comma-separated)
-                        </Label>
-                        <Textarea
-                          id="provider-manual-models"
-                          value={manualModelIds}
-                          onChange={(event) =>
-                            setManualModelIds(event.target.value)
-                          }
-                          placeholder={customProviderModelIdsPlaceholder(
-                            providerType,
-                          )}
-                          rows={5}
-                          className="min-h-[100px] resize-y font-mono text-sm"
-                        />
-                      </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={
+                      availableModels.length > 0
+                        ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
+                        : "h-8 shrink-0 px-3"
+                    }
+                    disabled={loadModelsDisabled}
+                    title={loadModelsTitle}
+                    onClick={() => void loadModels()}
+                  >
+                    {modelsLoading ? (
+                      <>
+                        <Spinner className="mr-2 size-3.5" />
+                        Loading…
+                      </>
+                    ) : availableModels.length > 0 ? (
+                      "Reload models"
+                    ) : (
+                      "Load available models"
+                    )}
+                  </Button>
+                </div>
+                {isCustomProvider &&
+                !supportsRemoteModelCatalog(providerType) ? (
+                  <div className="space-y-3 px-4 py-4">
+                    <div className="space-y-2">
+                      <Label
+                        htmlFor="provider-manual-models"
+                        className="text-sm font-medium"
+                      >
+                        Model IDs (one per line or comma-separated)
+                      </Label>
+                      <Textarea
+                        id="provider-manual-models"
+                        value={manualModelIds}
+                        onChange={(event) =>
+                          setManualModelIds(event.target.value)
+                        }
+                        placeholder={customProviderModelIdsPlaceholder(
+                          providerType,
+                        )}
+                        rows={5}
+                        className="min-h-[100px] resize-y font-mono text-sm"
+                      />
                     </div>
-                  ) : isCuratedModelList ? (
-                    <div className="space-y-3 px-4 py-4">
-                      <p className="text-xs leading-relaxed text-muted-foreground">
-                        Select from suggestions below or enter exact model IDs.
-                      </p>
-                      {availableModels.length > 0 ? (
-                        <div className="space-y-3 rounded-[8px] border border-border/70 bg-background/50 p-3">
-                          <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
-                            <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-                              {availableModelsLabel}
-                            </span>
-                            <Input
-                              id={`provider-model-search-${modelsPanelKey}`}
-                              type="search"
-                              value={modelSearchQuery}
-                              onChange={(event) =>
-                                setModelSearchQuery(event.target.value)
-                              }
-                              placeholder="Search"
-                              aria-label="Search models"
-                              className={modelSearchInputClassName}
-                            />
-                            <div className="flex items-center justify-end gap-2">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                                onClick={selectAllModels}
-                              >
-                                Select all
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                  </div>
+                ) : isCuratedModelList ? (
+                  <div className="space-y-3 px-4 py-4">
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      Select from suggestions below or enter exact model IDs.
+                    </p>
+                    {availableModels.length > 0 ? (
+                      <div className="space-y-3 rounded-[8px] border border-border/70 bg-background/50 p-3">
+                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
+                          <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
+                            {availableModelsLabel}
+                          </span>
+                          <Input
+                            id={`provider-model-search-${modelsPanelKey}`}
+                            type="search"
+                            value={modelSearchQuery}
+                            onChange={(event) =>
+                              setModelSearchQuery(event.target.value)
+                            }
+                            placeholder="Search"
+                            aria-label="Search models"
+                            className={modelSearchInputClassName}
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                              disabled={!modelIdsEditable}
+                              onClick={selectAllModels}
+                            >
+                              Select all
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                              disabled={!modelIdsEditable}
+                              onClick={() => {
+                                clearModelSelection();
+                                setManualModelIds("");
+                              }}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+                        <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
+                          {filteredAvailableModels.length === 0 ? (
+                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                              No matching models
+                            </li>
+                          ) : (
+                            filteredAvailableModels.map((model, index) => (
+                              <li
+                                key={model}
+                                className={`flex items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 ${modelIdsEditable ? "cursor-pointer hover:bg-muted/35" : "cursor-default"}`}
                                 onClick={() => {
-                                  clearModelSelection();
-                                  setManualModelIds("");
+                                  if (modelIdsEditable) toggleModel(model);
                                 }}
                               >
-                                Clear
-                              </Button>
-                            </div>
-                          </div>
-                          <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
-                            {filteredAvailableModels.length === 0 ? (
-                              <li className="px-3 py-3 text-xs text-muted-foreground">
-                                No matching models
+                                <Checkbox
+                                  id={`provider-model-curated-${modelsPanelKey}-${index}`}
+                                  checked={selectedModelIds.includes(model)}
+                                  disabled={!modelIdsEditable}
+                                  onCheckedChange={() => {
+                                    if (modelIdsEditable) toggleModel(model);
+                                  }}
+                                  onClick={(event) => event.stopPropagation()}
+                                />
+                                <span className="min-w-0 break-all text-sm leading-tight">
+                                  {model}
+                                </span>
                               </li>
-                            ) : (
-                              filteredAvailableModels.map((model, index) => (
-                                <li
-                                  key={model}
-                                  className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
-                                  onClick={() => toggleModel(model)}
-                                >
-                                  <Checkbox
-                                    id={`provider-model-curated-${modelsPanelKey}-${index}`}
-                                    checked={selectedModelIds.includes(model)}
-                                    onCheckedChange={() => toggleModel(model)}
-                                    onClick={(event) => event.stopPropagation()}
-                                  />
-                                  <span className="min-w-0 break-all text-sm leading-tight">
-                                    {model}
-                                  </span>
-                                </li>
-                              ))
-                            )}
-                          </ul>
-                        </div>
-                      ) : null}
+                            ))
+                          )}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {modelIdsEditable ? (
                       <div className="space-y-2">
                         <Label
                           htmlFor="provider-manual-models"
@@ -1321,138 +1693,138 @@ export function ChatProvidersSettings({
                           className="min-h-[100px] resize-y font-mono text-sm"
                         />
                       </div>
-                    </div>
-                  ) : availableModels.length === 0 &&
-                    !allowsManualModelIdsWithCatalog(providerType) ? null : (
-                    <div className="space-y-3 px-4 py-4">
-                      {availableModels.length === 0 ? null : (
-                        <>
-                          <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
-                            <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-                              {availableModelsLabel}
-                            </span>
-                            <Input
-                              id={`provider-model-search-${modelsPanelKey}`}
-                              type="search"
-                              value={modelSearchQuery}
-                              onChange={(event) =>
-                                setModelSearchQuery(event.target.value)
-                              }
-                              placeholder="Search"
-                              aria-label="Search models"
-                              className={modelSearchInputClassName}
-                            />
-                            <div className="flex items-center justify-end gap-2">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                                onClick={selectAllModels}
-                              >
-                                Select all
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                                onClick={clearModelSelection}
-                              >
-                                Clear
-                              </Button>
-                            </div>
-                          </div>
-                          <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
-                            {filteredAvailableModels.length === 0 ? (
-                              <li className="px-3 py-3 text-xs text-muted-foreground">
-                                No matching models
-                              </li>
-                            ) : (
-                              filteredAvailableModels.map((model, index) => (
-                                <li
-                                  key={model}
-                                  className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
-                                  onClick={() => toggleModel(model)}
-                                >
-                                  <Checkbox
-                                    id={`provider-model-remote-${modelsPanelKey}-${index}`}
-                                    checked={selectedModelIds.includes(model)}
-                                    onCheckedChange={() => toggleModel(model)}
-                                    onClick={(event) => event.stopPropagation()}
-                                  />
-                                  <span className="min-w-0 break-all text-sm leading-tight">
-                                    {model}
-                                  </span>
-                                </li>
-                              ))
-                            )}
-                          </ul>
-                        </>
-                      )}
-                      {/* Manual IDs allowed alongside catalog load. */}
-                      {allowsManualModelIdsWithCatalog(providerType) ? (
-                        <div className="space-y-2">
-                          <Label
-                            htmlFor="provider-manual-models"
-                            className="text-sm font-medium"
-                          >
-                            {availableModels.length === 0
-                              ? "Or enter model IDs manually (one per line or comma-separated)"
-                              : "Additional model IDs (one per line or comma-separated)"}
-                          </Label>
-                          <Textarea
-                            id="provider-manual-models"
-                            value={manualModelIds}
+                    ) : null}
+                  </div>
+                ) : availableModels.length === 0 &&
+                  !allowsManualModelIdsWithCatalog(providerType) ? null : (
+                  <div className="space-y-3 px-4 py-4">
+                    {availableModels.length === 0 ? null : (
+                      <>
+                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
+                          <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
+                            {availableModelsLabel}
+                          </span>
+                          <Input
+                            id={`provider-model-search-${modelsPanelKey}`}
+                            type="search"
+                            value={modelSearchQuery}
                             onChange={(event) =>
-                              setManualModelIds(event.target.value)
+                              setModelSearchQuery(event.target.value)
                             }
-                            placeholder={customProviderModelIdsPlaceholder(
-                              providerType,
-                            )}
-                            rows={4}
-                            className="min-h-[80px] resize-y font-mono text-sm"
+                            placeholder="Search"
+                            aria-label="Search models"
+                            className={modelSearchInputClassName}
                           />
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                              onClick={selectAllModels}
+                            >
+                              Select all
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
+                              onClick={clearModelSelection}
+                            >
+                              Clear
+                            </Button>
+                          </div>
                         </div>
-                      ) : null}
-                    </div>
-                  )}
-                </motion.div>
-              </AnimatePresence>
-            </section>
+                        <ul className="max-h-56 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
+                          {filteredAvailableModels.length === 0 ? (
+                            <li className="px-3 py-3 text-xs text-muted-foreground">
+                              No matching models
+                            </li>
+                          ) : (
+                            filteredAvailableModels.map((model, index) => (
+                              <li
+                                key={model}
+                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
+                                onClick={() => toggleModel(model)}
+                              >
+                                <Checkbox
+                                  id={`provider-model-remote-${modelsPanelKey}-${index}`}
+                                  checked={selectedModelIds.includes(model)}
+                                  onCheckedChange={() => toggleModel(model)}
+                                  onClick={(event) => event.stopPropagation()}
+                                />
+                                <span className="min-w-0 break-all text-sm leading-tight">
+                                  {model}
+                                </span>
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      </>
+                    )}
+                    {/* Manual IDs allowed alongside catalog load. */}
+                    {allowsManualModelIdsWithCatalog(providerType) ? (
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor="provider-manual-models"
+                          className="text-sm font-medium"
+                        >
+                          {availableModels.length === 0
+                            ? "Or enter model IDs manually (one per line or comma-separated)"
+                            : "Additional model IDs (one per line or comma-separated)"}
+                        </Label>
+                        <Textarea
+                          id="provider-manual-models"
+                          value={manualModelIds}
+                          onChange={(event) =>
+                            setManualModelIds(event.target.value)
+                          }
+                          placeholder={customProviderModelIdsPlaceholder(
+                            providerType,
+                          )}
+                          rows={4}
+                          className="min-h-[80px] resize-y font-mono text-sm"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </section>
 
-            <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-8"
-                  disabled={
-                    registryLoading ||
-                    syncingProviders ||
-                    modelsLoading ||
-                    mutatingProvider
-                  }
-                  onClick={() =>
-                    editingProviderId
-                      ? void saveProviderEdits()
-                      : void addProvider()
-                  }
-                >
-                  {editingProviderId ? "Save connection" : "Add connection"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  onClick={editingProviderId ? closeForm : resetForm}
-                >
-                  {editingProviderId ? "Cancel" : "Clear"}
-                </Button>
-              </div>
+          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="h-8"
+                disabled={
+                  registryLoading ||
+                  syncingProviders ||
+                  modelsLoading ||
+                  mutatingProvider
+                }
+                onClick={() =>
+                  editingProviderId
+                    ? void saveProviderEdits()
+                    : void addProvider()
+                }
+              >
+                {editingProviderId ? "Save connection" : "Add connection"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={editingProviderId ? closeForm : resetForm}
+              >
+                {editingProviderId ? "Cancel" : "Clear"}
+              </Button>
             </div>
-          </>
+          </div>
         </div>
       </div>
     );
@@ -1506,11 +1878,10 @@ export function ChatProvidersSettings({
               <span>Add connection</span>
             </span>
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
-              {providers.length + platformConnectionCount} connections ·{" "}
-              {totalModels + platformModelCount} models
+              {totalConnections} connections · {totalModels} models
             </span>
           </button>
-          {providers.length + platformConnectionCount === 0 ? (
+          {totalConnections === 0 ? (
             <div className="px-3 py-4">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm font-medium text-foreground">
@@ -1534,7 +1905,7 @@ export function ChatProvidersSettings({
                 return (
                   <div
                     key={provider.id}
-                    className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-border/60 border-b px-3 py-3 transition-colors hover:bg-muted/35 max-sm:grid-cols-1"
+                    className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-border/60 border-b px-3 py-3 transition-colors last:border-b-0 hover:bg-muted/35 max-sm:grid-cols-1"
                   >
                     <div className="flex min-w-0 items-start gap-3">
                       <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-border/70 bg-background/80">
@@ -1629,8 +2000,7 @@ interface ChatProvidersDialogProps extends ChatProvidersSettingsProps {
 export function ChatProvidersDialog({
   open,
   onOpenChange,
-  providers,
-  onProvidersChange,
+  ...settingsProps
 }: ChatProvidersDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1644,10 +2014,7 @@ export function ChatProvidersDialog({
             Manage model connections for chat.
           </DialogDescription>
         </DialogHeader>
-        <ChatProvidersSettings
-          providers={providers}
-          onProvidersChange={onProvidersChange}
-        />
+        <ChatProvidersSettings {...settingsProps} />
       </DialogContent>
     </Dialog>
   );

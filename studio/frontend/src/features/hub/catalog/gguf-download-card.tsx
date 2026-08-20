@@ -51,11 +51,11 @@ import {
 import {
   downloadManager,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
   useRepoDownload,
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
-import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
   ggufFilenamesMatch,
@@ -63,7 +63,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
-  ggufVariantDownloadSizeBytes,
+  ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
 import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
@@ -258,7 +258,7 @@ function createGgufVariantMenuItems(
     fit: classifyGgufFit(variant.size_bytes, resources),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
-    downloadSizeLabel: formatBytes(ggufVariantDownloadSizeBytes(variant)),
+    downloadSizeLabel: ggufVariantTransferLabel(variant),
   }));
 }
 
@@ -507,9 +507,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
               </span>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>
+              {/* Selecting a row only selects it; the card's button starts the
+                  transfer, so do not promise otherwise. */}
               {liveActive
                 ? "Download is running. Select it to view progress."
-                : "Partial download. Select it to continue."}
+                : "Partial download. Select it, then use the button on the card to finish it."}
             </TooltipContent>
           </Tooltip>
         )}
@@ -574,6 +576,7 @@ export function GgufDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
+  const partialsResumable = useHttpPartialsResumable();
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
@@ -739,7 +742,7 @@ export function GgufDownloadCard({
     [gpuGb, selected?.size_bytes, systemRamGb],
   );
   const selectedDownloadSizeLabel = selected
-    ? formatBytes(ggufVariantDownloadSizeBytes(selected))
+    ? ggufVariantTransferLabel(selected)
     : null;
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;
@@ -779,6 +782,8 @@ export function GgufDownloadCard({
         : ctaDisabled && !selectedIsActive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
+    partialResumable: selected?.partial_resumable === true,
+    partialsResumable,
   });
   const selectedLabel = selected ? ggufVariantDisplayLabel(selected) : null;
   const deleteTargetVariant =
@@ -980,9 +985,11 @@ export function GgufDownloadCard({
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="top" sideOffset={4}>
+                      {/* The badge rides inside the quant trigger, so clicking
+                          it opens the menu. Name the button that acts. */}
                       {selectedLiveActive
-                        ? "Download is running. Click to cancel."
-                        : "Partial download. Click to continue."}
+                        ? "Download is running. Use the button on the right to stop it."
+                        : downloadAction.partialHint}
                     </TooltipContent>
                   </Tooltip>
                 )}

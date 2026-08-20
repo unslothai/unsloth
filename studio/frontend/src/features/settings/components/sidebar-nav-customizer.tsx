@@ -1,24 +1,11 @@
-import { Switch } from "@/components/ui/switch";
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import {
-  FEATURE_AGENTS_NAV,
-  FEATURE_API_MONITOR,
-  FEATURE_EXPORT,
-  FEATURE_IMAGES,
-  FEATURE_PROJECTS,
-  FEATURE_MEMORY_NAV,
-  FEATURE_MANAGEMENT_NAV,
-  FEATURE_SEARCH_NAV,
-  FEATURE_RECIPES,
-  FEATURE_TRAIN,
-  FEATURE_VIDEO,
-} from "@/config/disabled-features";
-import { useT } from "@/i18n";
-import type { TranslationKey } from "@/i18n";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
-import {
+  AudioWave01Icon,
   BotIcon,
-  CloudIcon,
   ChefHatIcon,
+  CloudIcon,
   DashboardCircleIcon,
   DownloadSquare01Icon,
   DragDropVerticalIcon,
@@ -32,8 +19,27 @@ import {
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { IconSvgElement } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
+import { Switch } from "@/components/ui/switch";
+import {
+  FEATURE_AGENTS_NAV,
+  FEATURE_API_MONITOR,
+  FEATURE_AUDIO,
+  FEATURE_EXPORT,
+  FEATURE_FILES_NAV,
+  FEATURE_IMAGES,
+  FEATURE_MANAGEMENT_NAV,
+  FEATURE_MEMORY_NAV,
+  FEATURE_PROJECTS,
+  FEATURE_RECIPES,
+  FEATURE_SEARCH_NAV,
+  FEATURE_TRAIN,
+  FEATURE_VIDEO,
+} from "@/config/disabled-features";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { useT } from "@/i18n";
+import type { TranslationKey } from "@/i18n";
+import type { IconSvgElement } from "@hugeicons/react";
 import type { SidebarNavItemPref } from "../stores/appearance-custom-store";
 import { useAppearanceCustomStore } from "../stores/appearance-custom-store";
 
@@ -47,10 +53,14 @@ const ITEM_META: Record<
   files: { icon: Folder01Icon, labelKey: "shell.navigation.files" },
   memory: { icon: CloudIcon, labelKey: "shell.navigation.memory" },
   search: { icon: Search01Icon, labelKey: "shell.navigation.searchApps" },
-  management: { icon: Settings02Icon, labelKey: "shell.navigation.management" },
+  management: {
+    icon: Settings02Icon,
+    labelKey: "shell.navigation.management",
+  },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
+  audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: DownloadSquare01Icon, labelKey: "shell.navigation.export" },
   api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
@@ -71,9 +81,7 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
   const t = useT();
   const controls = useDragControls();
   const patch = useAppearanceCustomStore((s) => s.patch);
-  const sidebarNav = useAppearanceCustomStore(
-    (s) => s.customization.sidebarNav,
-  );
+  const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);
   const meta = ITEM_META[item.id];
   return (
     <Reorder.Item
@@ -131,48 +139,45 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
 /** Pin and reorder the sidebar nav rows. Unpinned rows collect in the "More" flyout; a single unpinned row is hidden instead of getting a menu of one. New chat is static: an action, not a destination. */
 export function SidebarNavCustomizer() {
   const t = useT();
-  const sidebarNav = useAppearanceCustomStore(
-    (s) => s.customization.sidebarNav,
-  );
+  const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);
   const patch = useAppearanceCustomStore((s) => s.patch);
-  // Switched-off destinations (see config/disabled-features) are not in the sidebar,
-  // so there is nothing to pin or reorder for them. Their stored prefs are kept
-  // untouched and reappended on reorder, so flipping a flag back restores them.
-  const visibleNav = sidebarNav.filter(
+  const enabledNav = sidebarNav.filter(
     (item) =>
       (item.id !== "projects" || FEATURE_PROJECTS) &&
       (item.id !== "agents" || FEATURE_AGENTS_NAV) &&
+      (item.id !== "files" || FEATURE_FILES_NAV) &&
       (item.id !== "memory" || FEATURE_MEMORY_NAV) &&
       (item.id !== "search" || FEATURE_SEARCH_NAV) &&
       (item.id !== "management" || FEATURE_MANAGEMENT_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&
+      (item.id !== "audio" || FEATURE_AUDIO) &&
       (item.id !== "recipes" || FEATURE_RECIPES) &&
       (item.id !== "export" || FEATURE_EXPORT) &&
       (item.id !== "api" || FEATURE_API_MONITOR),
   );
-  const hiddenNav = sidebarNav.filter((item) => !visibleNav.includes(item));
-  const unpinnedCount = visibleNav.filter((item) => !item.pinned).length;
+  const enabledIds = new Set(enabledNav.map((item) => item.id));
+  const unpinnedCount = enabledNav.filter((item) => !item.pinned).length;
   return (
     <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
       <FixedRow icon={PencilEdit02Icon} label={t("shell.navigation.newChat")} />
       <Reorder.Group
         axis="y"
-        values={visibleNav.map((item) => item.id)}
+        values={enabledNav.map((item) => item.id)}
         onReorder={(ids: SidebarNavItemPref["id"][]) =>
           patch({
             sidebarNav: [
               ...ids.flatMap(
                 (id) => sidebarNav.find((entry) => entry.id === id) ?? [],
               ),
-              ...hiddenNav,
+              ...sidebarNav.filter((entry) => !enabledIds.has(entry.id)),
             ],
           })
         }
         className="flex flex-col"
       >
-        {visibleNav.map((item) => (
+        {enabledNav.map((item) => (
           <MovableRow key={item.id} item={item} />
         ))}
       </Reorder.Group>

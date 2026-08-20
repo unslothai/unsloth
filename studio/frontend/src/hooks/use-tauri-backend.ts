@@ -1,5 +1,5 @@
-
-
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
   useEffect,
@@ -8,14 +8,13 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import { PRODUCT_NAME } from "@/config/branding";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { preflightStaleMessage } from "@/hooks/backend-preflight-message";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
 import {
-  TAURI_AUTH_FAILURE_FALLBACK,
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
@@ -33,6 +32,11 @@ import {
   startupMessageFromLog,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
+import {
+  clearServerStopIntent,
+  hasServerStopIntent,
+  markServerStopIntent,
+} from "./server-stop-intent";
 
 export type BackendStatus =
   | "checking"
@@ -66,6 +70,7 @@ interface DesktopPreflightResult {
 
 const MANAGED_STARTUP_POLL_MS = 500;
 
+type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
   | { status: "ready"; port: number }
   | { status: "aborted" };
@@ -77,32 +82,27 @@ function wait(ms: number) {
 function externalConflictMessage(preflight: DesktopPreflightResult) {
   if (preflight.reason === "desktop_owned_backend_active") {
     return preflight.port
-      ? `A desktop-owned ${PRODUCT_NAME} server for this install is already running on port ${preflight.port}. Quit the other desktop app instance, then try again.`
-      : `A desktop-owned ${PRODUCT_NAME} server for this install is already running. Quit the other desktop app instance, then try again.`;
+      ? `A desktop-owned Unsloth server for this install is already running on port ${preflight.port}. Quit the other desktop app instance, then try again.`
+      : "A desktop-owned Unsloth server for this install is already running. Quit the other desktop app instance, then try again.";
   }
 
   if (preflight.reason === "desktop_owned_backend_starting") {
-    return `The desktop-owned ${PRODUCT_NAME} backend is still starting. Wait a moment, then try again.`;
+    return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
   }
 
-  // Do not describe a backend from an unknown install as terminal-started.
-  if (preflight.reason === "ambiguous_root_external_backend_active") {
-    return preflight.port
-      ? `A ${PRODUCT_NAME} server is already running on port ${preflight.port}, and this app cannot confirm which install it belongs to. Stop that server, then reopen ${PRODUCT_NAME}.`
-      : `A ${PRODUCT_NAME} server is already running, and this app cannot confirm which install it belongs to. Stop that server, then reopen ${PRODUCT_NAME}.`;
-  }
+  // A backend we cannot attribute to this install no longer reaches here: the
+  // launch steps over its port. Only a mutation still refuses, and that message
+  // comes from external_conflict_message in commands.rs.
 
   if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
     return preflight.port
-      ? `A desktop-owned ${PRODUCT_NAME} backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen ${PRODUCT_NAME}.`
-      : `A desktop-owned ${PRODUCT_NAME} backend cannot be safely controlled by this desktop app. Stop that backend, then reopen ${PRODUCT_NAME}.`;
+      ? `A desktop-owned Unsloth backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen Unsloth.`
+      : "A desktop-owned Unsloth backend cannot be safely controlled by this desktop app. Stop that backend, then reopen Unsloth.";
   }
 
-  // `unsloth studio update` stays verbatim: it is the CLI command the installed
-  // binary answers to, not the product name the user reads.
   return preflight.port
-    ? `A ${PRODUCT_NAME} server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
-    : `A ${PRODUCT_NAME} server for this install is already running from a terminal. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`;
+    ? `An Unsloth server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
+    : "An Unsloth server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.";
 }
 
 async function waitForManagedServerPort(
@@ -131,6 +131,8 @@ export function useTauriBackend() {
   const [error, setError] = useState<string | null>(null);
   // Guard against double startServer calls
   const startingRef = useRef(false);
+  // Guard against double stopServer calls
+  const stoppingRef = useRef(false);
   // Guard against React Strict Mode double-mount
   const mountedRef = useRef(false);
   // Track the discovered port from server-port event
@@ -238,6 +240,13 @@ export function useTauriBackend() {
   }, [status]);
 
   async function checkInstallAndStart() {
+    // Honor a persisted stop before preflight: the native command side-effects
+    // (it can adopt a still-reaping backend, reset the intentional-stop flag,
+    // and arm a watchdog that later fires server-crashed over this screen).
+    if (hasServerStopIntent()) {
+      setBackendStatus("stopped");
+      return;
+    }
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
@@ -282,9 +291,7 @@ export function useTauriBackend() {
             await startRepair();
           } else {
             setBackendError(
-              preflight.disposition === "owned_stale"
-                ? `Desktop-owned ${PRODUCT_NAME} backend is too old for this desktop app. Run \`unsloth studio update\`, then restart ${PRODUCT_NAME}.`
-                : `Managed ${PRODUCT_NAME} install is too old. Run \`unsloth studio update\`.`,
+              preflightStaleMessage(preflight.disposition, preflight.reason),
             );
           }
           return;
@@ -303,6 +310,9 @@ export function useTauriBackend() {
   }
 
   async function startManagedServer() {
+    // Ahead of the re-entry guard: a start the user asked for retires the stop they
+    // asked for earlier, whether or not this particular call goes on to do the work.
+    clearServerStopIntent();
     // Prevent double-start race condition
     if (startingRef.current) {
       return;
@@ -340,7 +350,7 @@ export function useTauriBackend() {
       if (msg.includes("already running")) {
         startingRef.current = false;
         setBackendError(
-          `Managed server is already running but did not report a port. Restart ${PRODUCT_NAME} and try again.`,
+          "Managed server is already running but did not report a port. Restart Unsloth and try again.",
         );
         return;
       }
@@ -381,17 +391,39 @@ export function useTauriBackend() {
     await startManagedServer();
   }
 
+  // One stop at a time. The tray toggle branches on statusRef, which stays "running" until
+  // the invoke resolves, so a second tray Stop otherwise runs a second shutdown against the
+  // backend the first is still taking down. Mirrors the startingRef guard on the start path.
   async function stopServer() {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    try {
+      await runStopServer();
+    } finally {
+      stoppingRef.current = false;
+    }
+  }
+
+  async function runStopServer() {
     if (isExternalServer) {
       // We attached to a server we didn't spawn: can't kill it, just disconnect the UI.
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
+      markServerStopIntent();
       setBackendStatus("stopped");
       return;
     }
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_server");
+    // Record intent before the await: reaping can block ~15s and a reload
+    // mid-await would lose the marker. Roll back if the stop fails.
+    markServerStopIntent();
+    try {
+      await invoke("stop_server");
+    } catch (e) {
+      clearServerStopIntent();
+      throw e;
+    }
     startingRef.current = false;
     setBackendStatus("stopped");
   }
@@ -426,6 +458,7 @@ export function useTauriBackend() {
 
   const retry = useCallback(() => {
     clearAuthFailure();
+    clearServerStopIntent();
     setError(null);
     setLogs([]);
     startingRef.current = false;
@@ -615,9 +648,7 @@ export function useTauriBackend() {
       register<string>("server-start-timeout", (e) => {
         startingRef.current = false;
         startTimedOutRef.current = true;
-        setBackendError(
-          e.payload || `The ${PRODUCT_NAME} backend did not start in time`,
-        );
+        setBackendError(e.payload || "The Unsloth backend did not start in time");
       });
 
       register<string>("server-log", (e) => {
@@ -661,7 +692,7 @@ export function useTauriBackend() {
       const detail =
         event instanceof CustomEvent && typeof event.detail === "string"
           ? event.detail
-          : TAURI_AUTH_FAILURE_FALLBACK;
+          : "Desktop authentication failed. Update or repair the managed Unsloth install, then restart Unsloth.";
       setAuthFailure(detail);
     };
     window.addEventListener("tauri-auth-failed", onAuthFailed);

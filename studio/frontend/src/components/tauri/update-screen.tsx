@@ -5,6 +5,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { PRODUCT_WORDMARK } from "@/config/branding";
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+
+import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 
@@ -71,9 +74,15 @@ function UpdateDetails({ logs }: { logs: string[] }) {
 
   return (
     <details className="group mt-2 w-full max-w-sm text-left">
-      <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <span className="group-open:hidden">Show update details</span>
         <span className="hidden group-open:inline">Hide update details</span>
+        <HugeiconsIcon
+          icon={ChevronDownIcon}
+          aria-hidden="true"
+          strokeWidth={1.5}
+          className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
+        />
       </summary>
       <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
         {logs.join("\n")}
