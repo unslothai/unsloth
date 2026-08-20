@@ -929,8 +929,6 @@ export function AppSidebar() {
   }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
-  const isNotebooksRoute =
-    pathname === "/notebooks" || pathname.startsWith("/notebooks/");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
@@ -1743,6 +1741,15 @@ export function AppSidebar() {
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
+    },
+    notebooks: {
+      icon: Notebook01Icon,
+      label: t("shell.navigation.notebooks"),
+      active: pathname === "/notebooks" || pathname.startsWith("/notebooks/"),
+      onClick: () => {
+        navigate({ to: "/notebooks/" });
+        closeMobileIfOpen();
+      }
     },
     // A host with no video device at all is disabled with a hint instead of bouncing off the root guard.
     video: {
