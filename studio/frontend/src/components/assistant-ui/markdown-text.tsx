@@ -40,6 +40,11 @@ import {
   Streamdown,
   type StreamdownProps,
 } from "streamdown";
+import {
+  DeferredFenceShell,
+  deferFenceHighlightEnabled,
+  useFenceReached,
+} from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -394,20 +399,58 @@ function StreamdownBlockContent(props: BlockProps) {
 
     return (
       <>
-        <div className="relative isolate">
-          <Block {...blockProps} />
-          <CodeBlockActions
-            disabled={props.isIncomplete}
-            language={codeFence.language}
-            source={codeFence.source}
-          />
-        </div>
+        <FenceBlock
+          blockProps={blockProps}
+          isIncomplete={props.isIncomplete}
+          language={codeFence.language}
+          source={codeFence.source}
+        />
         {svgSource && <SvgPreview source={svgSource} />}
       </>
     );
   }
 
   return <Block {...blockProps} />;
+}
+
+/*
+ * The fence branch, extracted so the reach latch can be a hook.
+ *
+ * With the flag off this renders exactly what the branch rendered before: the
+ * same `relative isolate` wrapper, the same `<Block>`, the same action bar. The
+ * wrapper is reused as the intersection target rather than a new one being
+ * introduced, so the DOM the off arm produces is byte-for-byte what main
+ * produces and the on arm differs only in what is INSIDE the wrapper.
+ */
+function FenceBlock({
+  blockProps,
+  isIncomplete,
+  language,
+  source,
+}: {
+  blockProps: BlockProps;
+  isIncomplete: boolean | undefined;
+  language: string | null;
+  source: string;
+}) {
+  const host = useRef<HTMLDivElement | null>(null);
+  // A streaming fence is the one the reader is watching, so it never defers.
+  const immediate = !deferFenceHighlightEnabled() || Boolean(isIncomplete);
+  const reached = useFenceReached(host, immediate);
+  return (
+    <div className="relative isolate" ref={host}>
+      {reached ? (
+        <Block {...blockProps} />
+      ) : (
+        <DeferredFenceShell language={language} source={source} />
+      )}
+      <CodeBlockActions
+        disabled={Boolean(isIncomplete)}
+        language={language}
+        source={source}
+      />
+    </div>
+  );
 }
 const StreamdownBlock = memo(StreamdownBlockContent);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
