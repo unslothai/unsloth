@@ -2089,6 +2089,81 @@ def test_a_token_budget_too_small_for_the_pair_keeps_the_correction():
     assert items == [correction, "add music"]
 
 
+def test_abandoning_the_reservation_does_not_reselect_the_opening_on_its_own():
+    """The fallback walk must exclude the opening turn, or it recreates the bug.
+
+    Abandoning the reservation is not enough on its own: the plain newest-first fallback
+    simply picked the opening up again whenever it was the cheaper of the two. A 10-token
+    "Build Tetris", a 27-token correction and a 17-token newest turn under a 40-token
+    budget carried ["Build Tetris", "Add music ..."] -- the abandoned game with the
+    correction to it dropped, which is the bug this pass exists to fix, reached by another
+    route.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+    newest = "Add music and a score counter to it now."
+    messages = _user_turns(opening, correction, newest)
+
+    items = carried_forward_items(messages, max_tokens = 40)
+
+    assert opening not in items, "the abandoned opening must not come back through the fallback"
+    assert items == [newest]
+
+
+def test_a_successor_nobody_could_afford_does_not_empty_the_block():
+    """The boundary of that exclusion, and the reason it is not unconditional.
+
+    When the successor costs more than the whole budget, no ordering carries it and there
+    was never a pair to take. Dropping the opening then buys nothing, because on these
+    threads the opening is the only affordable turn: the campaign's headline case is a
+    43-token standing instruction followed by eight 160-token sections under a 100-token
+    budget, and excluding the opening sends the block out EMPTY, which is the failure the
+    whole pass exists to stop.
+
+    The same shape with a correction (a 10-token opening, a 56-token correction and a
+    60-token newest turn under a 50-token cap) is indistinguishable from it by anything
+    but the English, so the two get the same answer and it is this one.
+    """
+    instruction = {"role": "user", "content": INSTRUCTION}
+    sections = []
+    for index in range(8):
+        sections += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+
+    assert carried_forward_items([instruction, *sections], max_tokens = 100) == [INSTRUCTION]
+
+    opening = "Build Tetris"
+    unaffordable = "Actually build Flappy Bird instead " + "x " * 80
+    newest = "Add music " + "y " * 100
+    items = carried_forward_items(_user_turns(opening, unaffordable, newest), max_tokens = 50)
+
+    assert items == [opening]
+
+
+def test_a_newer_restatement_still_wins_when_the_reserved_pair_fills_the_cap():
+    """Position is meaning, so it is read off the transcript, not off the walk.
+
+    The reserved pair can fill the slot cap before the walk reaches a newer copy of an
+    instruction at all, and the surviving copy then rendered at the position of the older
+    one: "metric", "imperial", "metric", "add a table" at max_items 3 came back as metric,
+    imperial, table, and the header's later-wins rule told the model imperial was current
+    at the moment the user had just restored metric.
+    """
+    messages = _user_turns(
+        "Use metric units",
+        "Use imperial units",
+        "Use metric units",
+        "Add a table",
+    )
+
+    items = carried_forward_items(messages, max_items = 3)
+
+    assert items == ["Use imperial units", "Use metric units", "Add a table"]
+    assert items.index("Use imperial units") < items.index("Use metric units")
+
+
 def test_an_opening_turn_with_nothing_after_it_is_still_reserved():
     """Nothing can be hidden behind a turn that nothing followed, so the pair rule costs
     the single-turn thread nothing: the reservation still applies at a cap of one."""
