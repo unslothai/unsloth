@@ -537,12 +537,51 @@ class CellRunner:
             page.evaluate("() => document.body.offsetHeight")
             return (time.monotonic() - started) * 1000.0
 
+        # FIRST, before anything else touches the page: the same trivial operation N times.
+        #
+        # This exists because the biggest number in the whole ladder is one I could not attribute.
+        # The first thing touched after a large thread mounts costs 11 to 24 seconds, and in every
+        # probe the cost vanished, because whatever ran first absorbed it and by the time the
+        # interesting path ran the page was warm. Measuring the decay directly is the way out: if
+        # the first reading is seconds and the rest are milliseconds, the cost is ONE TIME and its
+        # size is the first reading minus the steady state. If they are all expensive, it is a
+        # per-interaction cost and the ladder's number was never a one-off.
+        #
+        # A no-op body on purpose. Every reading is the same work, so any difference between them
+        # is the page's state and not the operation.
+        decay = [settled(lambda: None) for _ in range(5)]
+        out: dict[str, Any] = {
+            "first_touch_ms": decay[0],
+            "settled_touch_ms": min(decay[1:]),
+            "touch_decay_ms": [round(v, 1) for v in decay],
+        }
+        # The blur, timed, and timed again from INSIDE the page.
+        #
+        # The decay series above says the first touch after mount costs 10.6 ms at 500K, so there
+        # is no expensive first interaction. Yet the reading taken right after the first blur came
+        # back at 10,052 ms and 10,017 ms in two of three runs. Two things about that: it sits
+        # between the cheap decay series and the cheap readings that follow, so the blur is what it
+        # attaches to; and 10.0 seconds to three digits is the shape of a TIMEOUT, not of work that
+        # happens to take ten seconds.
+        #
+        # `blur_inpage_ms` decides which. It runs the same blur and the same forced layout inside a
+        # single evaluate and times them with `performance.now()`, so the protocol is excluded. If
+        # the page reports ten seconds, it is real work. If the page reports a millisecond while
+        # the outer reading is ten seconds, the ten seconds is the driver or the transport and not
+        # the app, and must never be quoted as a user cost.
+        out["blur_outer_ms"] = settled(
+            lambda: page.evaluate("() => document.activeElement && document.activeElement.blur()")
+        )
+        out["blur_inpage_ms"] = page.evaluate(
+            "() => { const t = performance.now();"
+            " document.activeElement && document.activeElement.blur();"
+            " void document.body.offsetHeight;"
+            " return performance.now() - t; }"
+        )
+        blur()
+        out["roundtrip_ms"] = settled(lambda: None)
         box = page.query_selector(selector).bounding_box()
         x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-        # The cost of the round trip itself, on an idle page, so every reading below can be read
-        # net of it. Without this a 3 ms figure cannot be told from a 0 ms one.
-        blur()
-        out: dict[str, float] = {"roundtrip_ms": settled(lambda: None)}
         blur()
         out["click_ms"] = settled(
             lambda: page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
@@ -579,9 +618,11 @@ class CellRunner:
         self.log(
             "  click attribution: "
             + ", ".join(
-                f"{k.replace('_ms', '')}={v:,.0f}ms" for k, v in out.items() if k.endswith("_ms")
+                f"{k.replace('_ms', '')}={v:,.0f}ms" for k, v in out.items()
+                if k.endswith("_ms") and isinstance(v, (int, float))
             )
             + f", code token spans={out['code_token_spans']:,}"
+            + f"\n  touch decay: {out['touch_decay_ms']}"
         )
         return out
 
