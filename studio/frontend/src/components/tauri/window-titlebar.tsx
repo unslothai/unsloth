@@ -350,6 +350,13 @@ export function WindowTitlebar({
       {showSidebarSurface && (
         <div
           data-slot="window-titlebar-decoration"
+          // Marks a consumer of --studio-sidebar-live-width. Only this
+          // fragment and the titlebar element below read it, so
+          // PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here rather
+          // than on the document element, where an unregistered custom
+          // property invalidates inherited style for the whole document once
+          // per animation frame of a sidebar drag.
+          data-titlebar-live-width-scope=""
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
         >
@@ -376,6 +383,7 @@ export function WindowTitlebar({
           "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
+        data-titlebar-live-width-scope=""
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
