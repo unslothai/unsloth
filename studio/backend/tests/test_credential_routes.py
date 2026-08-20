@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import asyncio
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -1034,3 +1035,74 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
         assert recorded == [(created.id, "acct-a")]
     finally:
         codex_client.forget_subscription_models(created.id)
+
+
+def test_deleting_a_codex_connection_releases_its_plan_catalog():
+    """The catalog is per connection and per process, so the delete has to release it.
+
+    Disconnecting the OAuth bundle goes through forget_subscription_models; deleting the
+    whole connection took a different path and left the catalog, the account marker and
+    the request ticket behind for the life of the process. Provider ids come from uuid4,
+    so nothing stale was ever consulted again, but nothing reclaimed it either and a user
+    who adds and removes connections grew the maps without bound.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    provider_id = created.id
+    models = [{"id": "gpt-5.4", "display_name": "GPT-5.4", "listed": True}]
+    codex_client._models_cache[provider_id] = (time.time() + 600, models)
+    codex_client._offered_models[provider_id] = {model["id"]: model for model in models}
+    codex_client._catalog_accounts[provider_id] = "acct-1"
+    codex_client.mark_subscription_catalog_stale(provider_id)
+    codex_client._begin_catalog_request(provider_id)
+    assert codex_client.subscription_catalog_known(provider_id) is True
+
+    try:
+        asyncio.run(
+            providers_route.delete_provider_config(
+                provider_id, credential = ("alice", None), via_api_key = False
+            )
+        )
+        assert providers_db.get_provider(provider_id) is None
+        assert provider_id not in codex_client._models_cache
+        assert provider_id not in codex_client._offered_models
+        assert provider_id not in codex_client._catalog_accounts
+        assert provider_id not in codex_client._stale_catalogs
+        assert provider_id not in codex_client._catalog_requests
+        assert codex_client.subscription_catalog_known(provider_id) is False
+        assert codex_client.offered_subscription_model_ids(provider_id) == set()
+    finally:
+        codex_client.forget_subscription_models(provider_id)
+
+
+def test_a_released_connection_leaves_no_ticket_but_still_retires_its_read():
+    """forget_subscription_models drops the ticket rather than bumping it.
+
+    The counter is shared by every connection, so a number is never reissued and an
+    outstanding read cannot be matched by whatever starts next. Keeping a per-connection
+    entry alive purely to hold the high-water mark was the last thing the release path
+    could not reclaim.
+    """
+    from core.inference import openai_codex_client as codex_client
+
+    ticket = codex_client._begin_catalog_request("released-connection")
+    codex_client.forget_subscription_models("released-connection")
+    assert "released-connection" not in codex_client._catalog_requests
+    # The read that was in flight when the connection went away must still decline.
+    assert codex_client._catalog_requests.get("released-connection") != ticket
+    # A later read anywhere draws a number the retired one cannot be holding.
+    assert codex_client._begin_catalog_request("another-connection") > ticket
+    assert codex_client._begin_catalog_request("released-connection") != ticket
+    codex_client.forget_subscription_models("released-connection")
+    codex_client.forget_subscription_models("another-connection")

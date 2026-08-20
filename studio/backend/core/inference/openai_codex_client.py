@@ -246,15 +246,25 @@ def _normalize_subscription_model(item: Any) -> dict[str, Any] | None:
     display_name = item.get("display_name")
     context_window = item.get("context_window")
     modalities = item.get("input_modalities")
+    # Every other field here tolerates whatever upstream sends, and this one has to as
+    # well: `or []` only covers a falsy value, so a scalar raised TypeError out of the
+    # whole call and cost the catalog every other entry too, not just this one.
+    levels = item.get("supported_reasoning_levels")
     efforts = [
         level["effort"]
-        for level in (item.get("supported_reasoning_levels") or [])
+        for level in (levels if isinstance(levels, list) else [])
         if isinstance(level, dict) and isinstance(level.get("effort"), str)
     ]
     return {
         "id": slug,
         "display_name": display_name if isinstance(display_name, str) and display_name else slug,
-        "context_length": context_window if isinstance(context_window, int) else None,
+        # bool is a subclass of int, so a JSON `true` would otherwise be reported to the
+        # picker as a context length of its own.
+        "context_length": (
+            context_window
+            if isinstance(context_window, int) and not isinstance(context_window, bool)
+            else None
+        ),
         "vision": "image" in modalities if isinstance(modalities, list) else None,
         "reasoning_efforts": efforts,
         # "hide" marks a slug no picker should offer (codex-auto-review, and models that
@@ -292,15 +302,23 @@ def offered_subscription_model_ids(provider_id: str) -> set[str]:
 _stale_catalogs: set[str] = set()
 
 
-# One counter per connection, so a catalog read that was overtaken (by a rebind, a
-# disconnect, or a newer read) cannot commit its result over the one that replaced it.
+# The ticket the newest catalog read for each connection is holding, so a read that was
+# overtaken (by a rebind, a disconnect, or a newer read) cannot commit its result over
+# the one that replaced it.
 _catalog_requests: dict[str, int] = {}
+# Tickets are drawn from one counter shared by every connection rather than counting up
+# per connection. Nothing reads the number itself, only whether it still matches, and a
+# value that is never reissued is what lets forget_subscription_models drop the entry
+# instead of leaving a larger one behind: a read still in flight then finds no ticket at
+# all, and the next read draws a number no earlier read can be holding.
+_catalog_request_serial = 0
 
 
 def _begin_catalog_request(provider_id: str) -> int:
-    ticket = _catalog_requests.get(provider_id, 0) + 1
-    _catalog_requests[provider_id] = ticket
-    return ticket
+    global _catalog_request_serial
+    _catalog_request_serial += 1
+    _catalog_requests[provider_id] = _catalog_request_serial
+    return _catalog_request_serial
 
 
 def subscription_catalog_matches_account(provider_id: str, account_id: str | None) -> bool:
@@ -350,8 +368,10 @@ def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any
 
 
 def forget_subscription_models(provider_id: str) -> None:
-    # Retire any read still in flight: its result describes what was just dropped.
-    _begin_catalog_request(provider_id)
+    # Retire any read still in flight: its result describes what was just dropped. The
+    # ticket is dropped rather than bumped, so this releases the entry instead of
+    # replacing it; see the counter above for why that is still safe.
+    _catalog_requests.pop(provider_id, None)
     _models_cache.pop(provider_id, None)
     _offered_models.pop(provider_id, None)
     _catalog_accounts.pop(provider_id, None)
@@ -457,11 +477,21 @@ async def list_subscription_models(
         await client.aclose()
 
     raw = payload.get("models") if isinstance(payload, dict) else None
-    models = [
-        model
-        for model in (_normalize_subscription_model(item) for item in raw or [])
-        if model is not None
-    ]
+    models: list[dict[str, Any]] = []
+    seen_slugs: set[str] = set()
+    for item in raw or []:
+        model = _normalize_subscription_model(item)
+        if model is None:
+            continue
+        if model["id"] in seen_slugs:
+            # A slug repeated in one payload describes itself twice, and the list and the
+            # by-id map built from it below disagree about which description won: the
+            # route offers what the first entry said while the chat gate judges by the
+            # last, so a duplicate whose second entry is hidden had the picker offering a
+            # model every send then refused. First wins, so both read the same entry.
+            continue
+        seen_slugs.add(model["id"])
+        models.append(model)
     if not any(model.get("listed") for model in models):
         # Nothing offerable came back. The route answers with the curated seed for this,
         # so committing it as a known catalog would leave the picker offering models that

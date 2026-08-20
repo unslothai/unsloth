@@ -2658,3 +2658,184 @@ def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
         ]
     finally:
         forget_subscription_models("provider-24")
+
+
+def test_one_malformed_entry_does_not_cost_the_whole_catalog(monkeypatch):
+    """A scalar where a list belongs must drop that entry, not the account's plan.
+
+    ``supported_reasoning_levels`` was the one field guarded with ``or []``, which only
+    covers a falsy value. A scalar raised TypeError out of list_subscription_models, and
+    every caller turns that into "no catalog": the picker falls back to the curated seed
+    and the chat gate stops recognising slugs it had just been offering.
+    """
+    fake = _models_response(
+        {
+            "models": [
+                {"slug": "gpt-5.4", "visibility": "list", "supported_reasoning_levels": 5},
+                {"slug": "gpt-5.5", "visibility": "list", "supported_reasoning_levels": "low"},
+                {
+                    "slug": "gpt-5.6-sol",
+                    "visibility": "list",
+                    "supported_reasoning_levels": [{"effort": "high"}],
+                },
+            ]
+        }
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("provider-malformed")
+    try:
+        models = asyncio.run(
+            list_subscription_models("provider-malformed", "token", "acct-1")
+        )
+        assert [model["id"] for model in models] == ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
+        assert [model["reasoning_efforts"] for model in models] == [[], [], ["high"]]
+        assert offered_subscription_model_ids("provider-malformed") == {
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-5.6-sol",
+        }
+    finally:
+        forget_subscription_models("provider-malformed")
+
+
+def test_a_repeated_slug_cannot_be_offered_and_refused_at_once(monkeypatch):
+    """The offered list and the by-id map must describe a duplicate the same way.
+
+    The list keeps every entry while the map keeps the last, so a slug listed once and
+    hidden once was reported to the picker as offered and recorded for the chat gate as
+    hidden. The picker offered it and every send refused it.
+    """
+    fake = _models_response(
+        {
+            "models": [
+                {"slug": "gpt-5.4", "visibility": "list", "display_name": "First"},
+                {"slug": "gpt-5.4", "visibility": "hide", "display_name": "Second"},
+            ]
+        }
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("provider-duplicate")
+    try:
+        models = asyncio.run(list_subscription_models("provider-duplicate", "token", "acct-1"))
+        assert [model["id"] for model in models] == ["gpt-5.4"]
+        assert models[0]["display_name"] == "First"
+        assert models[0]["listed"] is True
+        offered = [model["id"] for model in models if model["listed"]]
+        assert set(offered) == offered_subscription_model_ids("provider-duplicate")
+    finally:
+        forget_subscription_models("provider-duplicate")
+
+
+def test_a_boolean_context_window_is_not_reported_as_a_length(monkeypatch):
+    """bool is a subclass of int, so `true` would reach the picker as a context length."""
+    fake = _models_response(
+        {"models": [{"slug": "gpt-5.4", "visibility": "list", "context_window": True}]}
+    )
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
+    forget_subscription_models("provider-boolctx")
+    try:
+        models = asyncio.run(list_subscription_models("provider-boolctx", "token", "acct-1"))
+        assert models[0]["context_length"] is None
+    finally:
+        forget_subscription_models("provider-boolctx")
+
+
+def _gated_models_client(gate, slug):
+    """A models endpoint whose response the test releases, not the network."""
+    import httpx
+
+    class Gated:
+        async def get(self, _url, headers = None, params = None):
+            await gate.wait()
+            return httpx.Response(
+                200, json = {"models": [{"slug": slug, "visibility": "list"}]}
+            )
+
+        async def aclose(self):
+            return None
+
+    return Gated()
+
+
+def test_a_disconnect_mid_read_retires_that_read_and_releases_its_ticket(monkeypatch):
+    """Dropping the ticket must still retire the read that was holding it.
+
+    forget_subscription_models releases the entry rather than writing a larger number
+    over it, so an outstanding read finds nothing there instead of finding a mismatch.
+    Either way it must answer its own caller without reinstating the catalog that was
+    just dropped.
+    """
+    gate = asyncio.Event()
+    monkeypatch.setattr(
+        codex_client, "_create_http_client", lambda: _gated_models_client(gate, "gpt-5.4")
+    )
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "token", "acct-1"
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-1"})
+    forget_subscription_models("provider-disconnect-race")
+
+    async def run():
+        task = asyncio.create_task(
+            list_subscription_models("provider-disconnect-race", "token", "acct-1")
+        )
+        await asyncio.sleep(0)
+        forget_subscription_models("provider-disconnect-race")
+        assert "provider-disconnect-race" not in codex_client._catalog_requests
+        gate.set()
+        return await task
+
+    try:
+        models = asyncio.run(run())
+        assert [model["id"] for model in models] == ["gpt-5.4"]
+        assert codex_client.subscription_catalog_known("provider-disconnect-race") is False
+        assert offered_subscription_model_ids("provider-disconnect-race") == set()
+    finally:
+        forget_subscription_models("provider-disconnect-race")
+
+
+def test_a_read_started_after_a_release_cannot_be_matched_by_the_older_one(monkeypatch):
+    """Why the ticket counter is shared by every connection rather than per connection.
+
+    Releasing the entry and then counting up from it again would hand the next read the
+    same number the outstanding one is holding, and that stale read would then commit
+    its catalog over the newer one. Drawing from a counter that never reissues a value
+    is what makes releasing the entry safe.
+    """
+    first_gate = asyncio.Event()
+    second_gate = asyncio.Event()
+    clients = [
+        _gated_models_client(first_gate, "old-slug"),
+        _gated_models_client(second_gate, "new-slug"),
+    ]
+    monkeypatch.setattr(codex_client, "_create_http_client", lambda: clients.pop(0))
+
+    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+        return "token", "acct-1"
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-1"})
+    forget_subscription_models("provider-release-race")
+
+    async def run():
+        first = asyncio.create_task(
+            list_subscription_models("provider-release-race", "token", "acct-1")
+        )
+        await asyncio.sleep(0)
+        forget_subscription_models("provider-release-race")
+        second = asyncio.create_task(
+            list_subscription_models("provider-release-race", "token", "acct-1")
+        )
+        await asyncio.sleep(0)
+        second_gate.set()
+        await second
+        first_gate.set()
+        await first
+
+    try:
+        asyncio.run(run())
+        assert offered_subscription_model_ids("provider-release-race") == {"new-slug"}
+    finally:
+        forget_subscription_models("provider-release-race")

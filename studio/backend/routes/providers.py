@@ -509,6 +509,15 @@ async def delete_provider_config(
                         "provider.delete_credential_rollback_failed", provider_id = provider_id
                     )
                 raise
+            # The plan catalog is held per connection in this process and is only
+            # released by forget_subscription_models. Disconnecting the OAuth bundle
+            # calls it, deleting the whole connection did not, so every ChatGPT
+            # connection a user removed left its catalog, its account marker and its
+            # request ticket behind for the life of the process. Ids come from uuid4 and
+            # are never reused, so nothing stale could be consulted again; it simply
+            # accumulated. Released here, after the row is gone for good, so a rolled
+            # back delete keeps the catalog it is about to need again.
+            openai_codex_client.forget_subscription_models(provider_id)
 
 
 def _bind_saved_provider_target(payload):
