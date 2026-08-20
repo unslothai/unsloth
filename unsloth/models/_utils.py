@@ -93,6 +93,7 @@ __all__ = [
     "get_moe_target_modules",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
+    "_redirect_embedding_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
@@ -4443,6 +4444,32 @@ def warn_if_zoo_cannot_merge_moe_experts():
         "the expert LoRA. Upgrade unsloth_zoo to merge them; saving the LoRA adapter is "
         "unaffected."
     )
+
+
+def _redirect_embedding_targets(
+    target_modules,
+    modules_to_save,
+    *,
+    allow_redirect = True,
+    preserve_lm_head_target = False,
+):
+    """Move embedding targets to modules_to_save without emptying legacy LoRA targets."""
+    if type(target_modules) not in (list, tuple) or not allow_redirect:
+        return target_modules, modules_to_save, ()
+
+    embedding_modules = frozenset(("embed_tokens", "lm_head"))
+    moved = [module for module in target_modules if module in embedding_modules]
+    remaining = [module for module in target_modules if module not in embedding_modules]
+    if preserve_lm_head_target and not remaining and "lm_head" in moved:
+        moved.remove("lm_head")
+        remaining = [module for module in target_modules if module not in moved]
+
+    if not moved:
+        return target_modules, modules_to_save, ()
+
+    saved = [] if modules_to_save is None else list(modules_to_save)
+    saved.extend(module for module in moved if module not in saved)
+    return remaining, saved, tuple(moved)
 
 
 def _select_moe_detection_targets(

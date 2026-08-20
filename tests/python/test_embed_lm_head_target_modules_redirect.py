@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Regression test for unslothai/unsloth#9326.
 
 When `embed_tokens` and/or `lm_head` are listed in `target_modules`, Unsloth's
