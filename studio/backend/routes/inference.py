@@ -1561,7 +1561,11 @@ def _openai_llama_admission_media_tokens(payload) -> int:
 
 
 def _openai_llama_admission_tokens(
-    payload, *, budget: Optional[int], capacity: int, tool_loop: bool = False
+    payload,
+    *,
+    budget: Optional[int],
+    capacity: int,
+    tool_loop: bool = False,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
