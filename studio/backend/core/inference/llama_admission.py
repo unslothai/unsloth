@@ -796,6 +796,11 @@ class LlamaAdmissionQueue:
                     # raising here would both mask their exception and skip the
                     # release below, stranding the slot for the process lifetime.
                     pass
+            # This waiter may have been the head the line was blocked behind: it
+            # owned no slot and no tokens, so nothing else re-runs admission for
+            # the smaller waiters it was holding back. Without this they wait for
+            # the next reserve or release, which never comes on an idle queue.
+            self._grant_waiters_locked()
         if lease_to_release is not None:
             lease_to_release.release()
 
