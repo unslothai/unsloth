@@ -153,6 +153,17 @@ def test_imports_nfkc_normalized_unicode_skill_names(tmp_path: Path):
     assert skills.list_skills() == []
 
 
+def test_rejects_skill_names_over_filesystem_component_limit(tmp_path: Path):
+    name = "\U00010428" * 64
+    archive = _bundle(
+        tmp_path / "long-name.zip",
+        {"SKILL.md": SKILL_MD.replace("name: unsloth", f"name: {name}")},
+    )
+
+    with pytest.raises(skills.SkillError, match = "255 UTF-8 bytes"):
+        skills.import_skill_archive(archive)
+
+
 def test_repository_files_do_not_count_toward_bundle_limits(tmp_path: Path):
     entries = {"repo/skills/unsloth/SKILL.md": SKILL_MD}
     entries.update({f"repo/source/file-{index}.txt": "source" for index in range(1_100)})

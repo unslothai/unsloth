@@ -59,6 +59,8 @@ def _normalize_skill_name(name: str) -> str:
         or not all(character.isalnum() or character == "-" for character in normalized)
     ):
         raise SkillError("Skill name must be 1-64 lowercase letters, numbers, or single hyphens.")
+    if len(normalized.encode("utf-8")) > 255:
+        raise SkillError("Skill name must fit in 255 UTF-8 bytes.")
     return normalized
 
 
