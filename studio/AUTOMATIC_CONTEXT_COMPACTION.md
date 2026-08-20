@@ -20,6 +20,13 @@ the async server loop or the chat UI.
 Tool loops repeat the preflight before every model turn because tool results can grow
 the prompt after the first generation.
 
+The context meter shows the live window occupancy. A single llama.cpp pass can report
+more processed prompt-plus-completion tokens than the configured window because its KV
+window shifts during a very long generation; the meter caps active occupancy at the
+window and keeps the larger processed-work total in its tooltip. That reporting value is
+never used as a compaction latch. Every later model pass and every new user turn performs
+the fit again.
+
 ## Compaction behavior
 
 Studio reuses one policy for GGUF and MLX:

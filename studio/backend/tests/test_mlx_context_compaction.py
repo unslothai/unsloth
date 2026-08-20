@@ -231,3 +231,41 @@ def test_safetensors_loop_applies_the_fitter_before_generation():
     assert events[0]["type"] == "context_truncated"
     assert seen[0][0][0] == {"role": "system", "content": "compacted"}
     assert any(event.get("type") == "content" for event in events)
+
+
+def test_safetensors_loop_refits_after_each_tool_result_in_the_same_response():
+    """A long-running agent must not treat compaction as a one-shot turn event."""
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    fits = []
+    turns = iter(
+        [
+            '<tool_call>{"name":"search","arguments":{"query":"next"}}</tool_call>',
+            "finished after the tool",
+        ]
+    )
+
+    def fitter(conversation, active_tools):
+        fits.append([dict(message) for message in conversation])
+        return {"messages": conversation, "events": []}
+
+    def single_turn(_conversation, *, active_tools = None):
+        yield next(turns)
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "keep working"}],
+            tools = [{"type": "function", "function": {"name": "search"}}],
+            execute_tool = lambda *_args, **_kwargs: "a large tool result",
+            max_tool_iterations = 2,
+            nudge_tool_calls = False,
+            context_fitter = fitter,
+        )
+    )
+
+    assert len(fits) == 2, "the fitter must run again within the same response"
+    assert fits[0][-1] == {"role": "user", "content": "keep working"}
+    assert fits[1][-1]["role"] == "tool"
+    assert fits[1][-1]["content"] == "a large tool result"
+    assert any(event.get("type") == "content" for event in events)
