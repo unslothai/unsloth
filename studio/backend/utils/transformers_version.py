@@ -8,7 +8,7 @@ tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
 newer 5.x sidecar.  Dense NemotronH models (e.g. NVIDIA-Nemotron-3-Nano-4B) use
 MLP layers that only transformers>=5.10 can parse natively, so they go on the
 5.10 sidecar too.  Everything else runs on the ambient default that ships with
-Unsloth (TRANSFORMERS_DEFAULT_VERSION below).
+Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)

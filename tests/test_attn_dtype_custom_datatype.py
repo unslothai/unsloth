@@ -3,26 +3,20 @@
 
 """The dtype handed to `resolve_attention_implementation` is the *attention* dtype.
 
-`resolve_attention_implementation` turns Flash Attention off when it is told the model
-is float32, because the kernels only accept fp16/bf16. The dtype it must be told is
-therefore the one the attention projections end up in, which is not always the dtype
-the checkpoint is loaded in.
+The resolver turns Flash Attention off for float32 because the kernels only accept fp16/bf16,
+so it must be told the dtype the attention projections end up in, not the checkpoint load
+dtype. Two loader paths load wide and narrow again afterwards:
 
-Two loader paths deliberately load wide and narrow again afterwards:
-
-  UNSLOTH_FORCE_FLOAT32   loads bfloat16 (loader.py sets dtype = torch.bfloat16 for the
-                          FORCE_FLOAT32 families) with a float16 bnb compute dtype.
+  UNSLOTH_FORCE_FLOAT32   loads bfloat16 (loader.py sets dtype = torch.bfloat16) with a
+                          float16 bnb compute dtype.
 
   UNSLOTH_FORCE_CUSTOM_DTYPE  csm, falcon_h1 and nemotron_h load float32 so the Mamba /
-                          Triton kernels keep ieee precision, then cast every projection
-                          to `correct_dtype` (float16) at the `exec(custom_datatype)` loop
-                          after the load. Attention never sees float32, so Flash Attention
-                          is perfectly usable and must not be turned off.
+                          Triton kernels keep ieee precision, then cast every projection to
+                          `correct_dtype` (float16) after the load. Attention never sees
+                          float32, so flash is usable and must not be turned off.
 
-Loading Falcon-H1 with dtype = torch.float16 goes down that second path, and reporting the
-transient float32 to the resolver downgraded a working flash_attention_2 to sdpa and printed
-"the model loads in float32", which is not what the user asked for and not what the weights
-end up as.
+Falcon-H1 at dtype = torch.float16 takes that second path, and reporting the transient
+float32 downgraded a working flash_attention_2 to sdpa.
 
 This checks the selection expression itself rather than a whole model load: the statements
 between `model_class = resolve_model_class(...)` and the resolver call are lifted out of
@@ -44,10 +38,9 @@ SRC = VISION.read_text(encoding = "utf-8")
 
 
 def _attention_dtype_expression():
-    """The statements that build the resolver's `dtype`, plus that keyword's expression.
+    """The statements building the resolver's `dtype`, plus that keyword's expression.
 
-    Found structurally, so inserting code above it does not silently retarget this at some
-    other resolver call.
+    Found structurally, so inserting code above it cannot retarget this at another call.
     """
     for node in ast.walk(ast.parse(SRC)):
         if not isinstance(node, ast.FunctionDef) or node.name != "from_pretrained":

@@ -109,12 +109,11 @@ def test_half_dtypes_keep_flash(monkeypatch):
 
 
 def test_float32_does_not_reroute_an_explicit_non_flash_request(monkeypatch):
-    """A float32 load must only veto Flash Attention, not re-answer other requests.
+    """A float32 load must only veto flash, not re-answer other requests.
 
-    gemma3's SDPA is known-broken, so an explicit `attn_implementation="sdpa"` resolves to
-    eager. Making float32 a flash disable reason also sent that request down the flash
-    fallback ladder, which prefers gemma3's flex_attention instead - the same request
-    answered differently for float32 than for bfloat16.
+    gemma3's SDPA is known-broken, so an explicit "sdpa" resolves to eager, but the flash
+    fallback ladder prefers gemma3's flex_attention. Routing fp32 through the ladder would
+    answer the same request differently for float32 than for bfloat16.
     """
     _set_flex_available(monkeypatch, True)
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
@@ -170,9 +169,8 @@ def test_config_disable_reason_still_reroutes_a_non_flash_request(monkeypatch):
 def test_float32_does_not_let_a_config_seeded_eager_win(monkeypatch):
     """A checkpoint shipping `"attn_implementation": "eager"` must not drag fp32 to eager.
 
-    Without a flash-specific disable reason the config value never steered the choice, so
-    float32 - which says nothing about eager - must leave that checkpoint on sdpa exactly
-    as bfloat16 does.
+    With no flash-specific reason the config value never steered the choice, so float32 must
+    leave the checkpoint on sdpa exactly as bfloat16 does.
     """
     _set_flex_available(monkeypatch, True)
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", False)

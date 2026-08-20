@@ -649,11 +649,8 @@ def _disable_flash_attention_if_needed(
     # defaults, so they must not be treated as a deliberate user choice.
     explicit_request = attn_implementation
 
-    # honor_config_attn_implementation is off when the disable reason is about the load
-    # rather than the model - a float32 load. Without a flash-specific reason the config
-    # value never steered the choice at all, so letting a checkpoint that ships
-    # "attn_implementation": "eager" reach the early return below would drop an fp32 load
-    # from sdpa to eager for a reason that has nothing to do with eager.
+    # Off for a float32 load: with no flash-specific reason the config never steered the
+    # choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
     requested_attn_implementation = attn_implementation
     if honor_config_attn_implementation:
         if requested_attn_implementation is None:
@@ -859,8 +856,7 @@ def resolve_attention_implementation(
     disable_reason = _get_flash_attention_disable_reason(config)
     float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
     if float32_is_only_disable_reason:
-        # Flash Attention kernels only accept float16/bfloat16, and generate on a
-        # float32 model runs without autocast, so FA2 would raise at the first forward.
+        # FA2 kernels only accept fp16/bf16, and fp32 generate runs without autocast, so it raises.
         disable_reason = "the model loads in float32 which Flash Attention does not support"
     flash_attention_disabled = disable_reason is not None
 
@@ -885,8 +881,7 @@ def resolve_attention_implementation(
                 would_use_flash_attention = (
                     HAS_FLASH_ATTENTION
                     and supports_flash_attention
-                    # An explicit request settles the answer further down and reports its
-                    # own downgrade, so announcing this provisional one only misleads.
+                    # An explicit request is settled below and reports its own downgrade.
                     and not (
                         float32_is_only_disable_reason and requested_attn_implementation is not None
                     )
@@ -904,12 +899,9 @@ def resolve_attention_implementation(
         else:
             attn_impl = _set_attn_impl(config, "eager")
 
-    # A float32 load only rules out Flash Attention, unlike the config-driven reasons which
-    # say something about the model itself. So when float32 is the *only* reason, an explicit
-    # non-flash request must keep taking the branch below rather than the flash fallback
-    # ladder, which resolves differently: gemma3 + attn_implementation="sdpa" answers eager
-    # (its SDPA is known-broken) but the ladder answers flex_attention, so the same request
-    # would have changed meaning purely because the user asked for float32.
+    # float32 only rules out flash, unlike config-driven reasons which say something about the
+    # model itself. So an explicit non-flash request must skip the flash fallback ladder, which
+    # answers differently: gemma3 + "sdpa" resolves to eager, but the ladder says flex_attention.
     reroute_request_through_flash_fallback = flash_attention_disabled and not (
         float32_is_only_disable_reason
         and not _is_flash_attention_requested(requested_attn_implementation)

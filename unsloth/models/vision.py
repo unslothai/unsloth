@@ -1126,12 +1126,9 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32:
             torch_dtype = torch.bfloat16
-        # What the attention kernels will actually see, which is what decides whether Flash
-        # Attention is usable - not necessarily the dtype the checkpoint is loaded in.
-        # UNSLOTH_FORCE_CUSTOM_DTYPE (csm, falcon_h1, nemotron_h) loads in float32 so the
-        # Mamba kernels keep ieee precision, then casts every projection back to
-        # `correct_dtype` (float16) right after the load, so attention never sees float32
-        # and Flash Attention must stay enabled for them.
+        # What attention actually runs in, not the checkpoint load dtype: the
+        # UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 to keep
+        # Mamba precision, then cast projections back to correct_dtype (float16), so flash stays.
         attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
         attn_impl = resolve_attention_implementation(
             model_class,
