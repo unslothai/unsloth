@@ -2550,8 +2550,17 @@ def zero_vram_chat_load(
         return False
     # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection as GPU-bearing except
     # "off". Canonicalize first: the UI sends the literal "off", which a bare truthiness test read as "speculation requested".
-    spec_mode = _canonicalize_spec_mode(speculative_type)
-    if needs_mmproj or spec_mode not in (None, "off"):
+    # ...and an ABSENT mode is not a quiet "off": _canonicalize_spec_mode returns None
+    # for None, "" and whitespace alike, and every consumer resolves that to "auto"
+    # (`_canonicalize_spec_mode(...) or "auto"` in load_model), where a remote or local
+    # sidecar can be discovered and launched with its default GPU offload. Grouping None
+    # with "off" here let an API or defaulted load skip acquire_for(CHAT) while the
+    # launch-time mask, which reads the FINISHED argv and so sees the drafter that was
+    # added, kept the GPUs visible. The two then disagreed about the same load: no
+    # arbiter, real VRAM, free to land on a resident image or video pipeline and OOM
+    # both. Only the canonical "off" is speculation-free.
+    spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
+    if needs_mmproj or spec_mode != "off":
         return False
     if LlamaCppBackend._is_vulkan_backend():
         return False
@@ -2583,6 +2592,14 @@ def _with_gguf_load_marker(load: Callable):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
+                # Mirrors the download gate below EXACTLY, which is the whole point:
+                # this load fetches the projector whenever the repo ships one and the
+                # extras have not opted out, switch or no switch, because only the
+                # file's metadata says whether it is an image tower or an audio
+                # encoder. So the switch must not relax the interlock here. It did
+                # briefly, and the two together let a vision-off load skip the 409 and
+                # then write into the shared Hub cache next to a running download job,
+                # which is the race this check exists to stop.
                 require_mmproj = bool(
                     intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
                 ),
@@ -3495,6 +3512,101 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
         server_caps.get("supports_no_mmproj_offload")
         or not _paravirtual_probe_answered(server_caps)
     )
+
+
+# Both spellings of the projector-placement boolean. llama.cpp pairs them as one
+# option and takes the last occurrence, so naming either one in the pass-through
+# extras is the user taking ownership of the placement.
+_MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-offload"})
+
+
+def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
+    """True when the pass-through extras name either projector-placement spelling.
+
+    Matched through _flag_name rather than by string equality: arg.cpp folds
+    underscores to dashes before matching, so --mmproj_offload is the same flag.
+    """
+    return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+
+
+def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
+    """The offload the extras actually resolve to, or None when they name neither.
+
+    Detecting ownership is not enough to budget for: --no-mmproj-offload means the
+    child keeps the projector in host RAM, so charging its bytes against VRAM
+    shrinks the context for memory nothing on the GPU takes. Last occurrence wins,
+    as llama.cpp pairs the two spellings into one option.
+    """
+    if not extra_args:
+        return None
+    value: Optional[bool] = None
+    for raw in extra_args:
+        flag = _flag_name(str(raw))
+        if flag == "--mmproj-offload":
+            value = True
+        elif flag == "--no-mmproj-offload":
+            value = False
+    return value
+
+
+# arg.cpp applies every set_env option BEFORE argv and warns when a command line
+# argument overwrites one, so an inherited placement is a choice Studio can reverse
+# without the user ever seeing why. The child inherits this process's environment
+# (_llama_server_env_for_binary builds on it), so these are reachable from Studio's
+# own env. Both spellings: get_value_from_env checks the LLAMA_ARG_NO_ compatibility
+# form first and forces falsey on mere PRESENCE, empty value included.
+_MMPROJ_OFFLOAD_ENV_VAR = "LLAMA_ARG_MMPROJ_OFFLOAD"
+_MMPROJ_OFFLOAD_NEG_ENV_VAR = "LLAMA_ARG_NO_MMPROJ_OFFLOAD"
+
+
+def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when the child's environment names the projector placement at all.
+
+    Ownership, not value: a value arg.cpp parses as neither truthy nor falsey throws
+    out of common_params_parse, and a caller whose load is about to fail on their own
+    variable is still the one who set it. Presence is the test for the same reason
+    llama.cpp uses getenv, so ``LLAMA_ARG_NO_MMPROJ_OFFLOAD=`` counts.
+    """
+    source = os.environ if env is None else env
+    return any(
+        source.get(name) is not None
+        for name in (_MMPROJ_OFFLOAD_ENV_VAR, _MMPROJ_OFFLOAD_NEG_ENV_VAR)
+    )
+
+
+def _env_mmproj_offload_value(env: Optional[Mapping[str, str]] = None) -> Optional[bool]:
+    """The offload the child's environment resolves to, or None for silence.
+
+    get_value_from_env's own order: the negative spelling short-circuits to falsey on
+    presence, then the positive one goes through is_truthy / is_falsey. Anything else
+    is left as None, since arg.cpp raises rather than picking a side and there is no
+    placement to budget for.
+    """
+    source = os.environ if env is None else env
+    if source.get(_MMPROJ_OFFLOAD_NEG_ENV_VAR) is not None:
+        return False
+    raw = source.get(_MMPROJ_OFFLOAD_ENV_VAR)
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _resolved_mmproj_offload(
+    extra_args: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[bool]:
+    """Where the projector actually ends up, over extras and environment together.
+
+    Same precedence the child applies: environment first, then argv on top, so a
+    pass-through flag wins over an inherited variable and only silence in both falls
+    through to None.
+    """
+    from_args = _extra_args_mmproj_offload_value(extra_args)
+    return from_args if from_args is not None else _env_mmproj_offload_value(env)
 
 
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
@@ -4469,6 +4581,7 @@ class LlamaCppBackend:
         self._pending_cpu_fallback_cleanups: list = []
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        # Vision deliberately left unloaded by the caller. Tracked so a reload that
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
@@ -5289,6 +5402,8 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(intent.cache_type_kv):
             return False
 
+        # Toggling vision changes which files the child opens, so it cannot be
+        # satisfied by a live server that was launched the other way. Not on the
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
         # A request omitting the extras field inherits the LAUNCHED list; anything else is
         # the caller's own. A launch-time rewrite (drafter drop, MTP crash replay) makes
@@ -9303,6 +9418,10 @@ class LlamaCppBackend:
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
     _MMPROJ_VRAM_SAFETY = 1.4  # mmproj worst-case buffer vs file size (runtime ~1.3x)
+    # Context the projector's residency is priced at. The placement loop shrinks the
+    # context to this floor long before it would spill a layer, so this is the length
+    # at which "does it fit" means "does every layer stay on the GPU".
+    _MMPROJ_FIT_FLOOR_CTX = 4096
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
@@ -13375,13 +13494,30 @@ class LlamaCppBackend:
 
         if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
             return None
+        # Argv and environment together at arg.cpp's own precedence. Two placements the
+        # spelling-list read below cannot see: LLAMA_ARG_NO_MMPROJ_OFFLOAD, which
+        # get_value_from_env checks FIRST and treats as falsey on presence alone
+        # (empty value included), and the `disabled` token, which is_falsey accepts.
+        # Either one already has the projector in host RAM, so reading it as
+        # GPU-resident respawns a command identical in effect: it cannot clear the
+        # allocation failure, and it costs the caller the real error, since the branch
+        # that surfaces that OOM only runs when this returns None.
+        #
+        # Only a resolved False means "already on CPU". An explicit --mmproj-offload is
+        # still overridden here, deliberately: this is crash recovery, and the
+        # alternative is losing vision altogether.
+        if _resolved_mmproj_offload(args, env or {}) is False:
+            return None
         placements = [
             _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
         ]
-        if placements and placements[-1] == "--no-mmproj-offload":
-            return None
         if not placements:
-            env_value = str((env or {}).get("LLAMA_ARG_MMPROJ_OFFLOAD") or "").strip().lower()
+            # Colloquial spellings arg.cpp itself rejects: `no` parses as neither truthy
+            # nor falsey, so common_params_parse throws and the child never starts, which
+            # no retry can fix. Kept as a deliberate superset of the resolution above
+            # rather than tightened, so a value that used to skip the futile retry still
+            # does.
+            env_value = str((env or {}).get(_MMPROJ_OFFLOAD_ENV_VAR) or "").strip().lower()
             if env_value in ("0", "false", "off", "no"):
                 return None
         return args + ["--no-mmproj-offload"]
@@ -14934,6 +15070,16 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                         )
                     # Auto-download mmproj for vision models unless opted out.
+                    # Vision switched off does NOT opt out here. Remote discovery
+                    # calls any mmproj filename vision, and only the file's own
+                    # metadata says whether it carries an image tower or just an
+                    # audio encoder (ultravox, Voxtral, Qwen3-ASR). Skipping the
+                    # fetch to save bandwidth would therefore take audio input away
+                    # from an audio-only model, which the switch never promised and
+                    # which the local path deliberately avoids. Downloading a
+                    # projector the resolve step may then suppress costs one small
+                    # companion file next to the weights; losing audio costs the
+                    # feature. The suppression itself happens at the resolve.
                     if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
@@ -15420,6 +15566,21 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
+                # The projector runs on the CPU for this load, so it allocates no VRAM:
+                # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
+                # GPU backend on that, leaving no partial offload behind. Only the
+                # paravirtual reason is known this early; the fit below may add the
+                # automatic one. Bound before the try for the same reason as
+                # _spec_dropped_no_vram: the except path still reaches the launch.
+                _mmproj_cpu_pinned = bool(
+                    launch_mmproj_path
+                    and _paravirtual_cpu_forced
+                    and _paravirtual_mmproj_pinnable(server_caps)
+                )
+                # What the pin took out of model_size, for the one consumer that must
+                # have it back: _apu_ram_shortfall_message prices SYSTEM RAM, and a
+                # CPU-pinned projector is still in system RAM.
+                _mmproj_pinned_bytes = 0
                 # Metal unified-memory refusal for a hand-set context, raised AFTER this
                 # block: the `except Exception` below would swallow the raise into the
                 # placement fallback and restore the original request, which is the very
@@ -15431,9 +15592,25 @@ class LlamaCppBackend:
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
+                    # GPU-loaded is the operative word: a user who passed
+                    # --no-mmproj-offload has already put the projector in host RAM,
+                    # and llama.cpp takes the last spelling, so its bytes are not on
+                    # the card to budget for. Charging them anyway shrinks the context
+                    # (measured 9984 -> 4096) or spills layers to make room for VRAM
+                    # nothing occupies, which is worse placement than Studio deciding
+                    # on its own. Detecting ownership is not enough here; the resolved
+                    # value is what the child will run, and arg.cpp reads
+                    # LLAMA_ARG_MMPROJ_OFFLOAD before argv, so the environment places
+                    # the projector just as surely as the flag does.
+                    _user_mmproj_offload = _resolved_mmproj_offload(extra_args)
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path)
+                        if (effective_is_vision and _user_mmproj_offload is not False)
+                        else 0
                     )
+                    if _user_mmproj_offload is False and launch_mmproj_path:
+                        # Still in system RAM, which the APU shortfall guard prices.
+                        _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
@@ -16073,6 +16250,253 @@ class LlamaCppBackend:
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
 
+                    # Normalize the speculative reserve BEFORE anything prices it.
+                    # _mtp_bytes reads mtp_overhead_fn at call time, so leaving this
+                    # until after the probes below charged the projector probe the full
+                    # GPU-drafter footprint for a drafter pinned to the CPU (-ngld 0),
+                    # which allocates none of it: the probe then answers "does not fit",
+                    # pins the projector, and costs ~8.8x on every image encode for
+                    # memory nothing was holding. _draft_cpu_no_embedded is settled well
+                    # above, and every input this needs with it, so there is nothing to
+                    # wait for.
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
+                        # One term survives: a Hybrid Mamba target keeps its own
+                        # recurrent rollback snapshots for verification, and those sit
+                        # in the TARGET context, so pinning the drafter to the CPU does
+                        # not move them. Charge those alone rather than nothing. Flat in
+                        # ctx, the state being per-slot rather than per-token -- hence
+                        # the same _np/_n_ubatch keywords the replaced callback takes,
+                        # so _mtp_bytes can still re-price each slot candidate.
+                        def _cpu_draft_target_state(
+                            _ctx: int,
+                            _np: int = n_parallel,
+                            _n_ubatch: Optional[int] = _effective_ubatch,
+                            _n: int = _mtp_eff_n_max,
+                            _rollback: bool = _target_rollback,
+                        ) -> int:
+                            if not _rollback or _n <= 0:
+                                return 0
+                            return self._mamba_recurrent_state_bytes(_np) * _n
+
+                        mtp_overhead_fn = (
+                            _cpu_draft_target_state
+                            if _cpu_draft_target_state(effective_ctx) > 0
+                            else None
+                        )
+                        _mtp_kv_unsized = False
+
+                    # Vision projector placement, the FIRST thing given up when the
+                    # load does not fit. The projector holds VRAM that would otherwise
+                    # hold model layers: it runs once per image, layers run once per
+                    # token, so when the projector is what stops the model being
+                    # resident, host RAM is the better home for it. Ahead of the
+                    # drafter deliberately: a bounded per-image cost is the cheaper
+                    # thing to give up than speculative decoding's per-token speedup,
+                    # so the order is projector to CPU first and only then drop the
+                    # drafter, in the probe directly below. Never a reason to disable
+                    # vision outright, which would turn a pasted screenshot into a
+                    # confident text-only answer with no in-band signal; the pin is
+                    # only ever slower, and says so.
+                    #
+                    # Is there memory here that the projector leaving would free? Only
+                    # when every device in play has a budget of its own. Apple Silicon
+                    # unified memory and AMD APUs / iGPUs enumerate a device that
+                    # reports free SYSTEM RAM as its free "VRAM", so pinning the encoder
+                    # moves it inside one pool and frees nothing. Their marker is a
+                    # total of 0, which _get_gpu_memory and _vulkan_auto_gpu_memory set
+                    # deliberately for a shared pool; the same 0 also stands for a total
+                    # the probe could not read (MIG/vGPU), where "do not hand bytes
+                    # back" is likewise the right answer. Required of EVERY device,
+                    # since a mixed pool splits weights onto the shared one too.
+                    _discrete_vram = bool(gpus) and all(
+                        total_by_idx.get(_idx, 0) > 0 for _idx, _free in gpus
+                    )
+                    if (
+                        effective_is_vision
+                        and mmproj_size > 0
+                        and _discrete_vram
+                        and not _mmproj_cpu_pinned
+                        and gpu_memory_mode != "manual"
+                        # Tensor parallelism replicates a per-device buffer whose
+                        # geometry the numbers below do not model, so they cannot answer
+                        # for it. Same exclusion, and the same reason, as the MTP-drop
+                        # probe below.
+                        and not tensor_parallel
+                        and _paravirtual_mmproj_pinnable(server_caps)
+                        # llama.cpp is last-wins on the placement pair, so a user who
+                        # named either spelling owns it; do not race them for it. The
+                        # environment counts as naming it: arg.cpp applies set_env
+                        # before argv, so appending --no-mmproj-offload below would
+                        # overwrite LLAMA_ARG_MMPROJ_OFFLOAD=1 rather than lose to it,
+                        # reversing a global placement choice with nothing but a
+                        # llama.cpp warning on stderr to show for it. Same ownership
+                        # the CPU-recovery gate already reads it as.
+                        and not _extra_args_set_mmproj_offload(extra_args)
+                        and not _env_sets_mmproj_offload()
+                    ):
+                        # One question, asked once: at the context this load will
+                        # actually run at, with speculative decoding STILL LIVE, does
+                        # model + drafter + projector stay resident in VRAM?
+                        #
+                        # Which context that is, is the whole question, and the two
+                        # sizing modes answer it differently.
+                        #
+                        # AUTO gets the FLOOR, which is what makes this a residency
+                        # question rather than a context one. Auto never spills layers
+                        # to hold a long context: the placement loop below shrinks the
+                        # CONTEXT first and only reaches `--fit on` once even its own
+                        # 4096 fallback will not place. Pricing the cache and the
+                        # compute buffer at the model's native length therefore answers
+                        # "does not fit" for a load that is merely going to get a
+                        # smaller context, and pins a projector that was fully resident
+                        # all along -- measured at 8.8x on image encode for zero
+                        # residency gained. Under Auto the pin must never be able to buy
+                        # context, only residency.
+                        #
+                        # An EXPLICIT context gets its requested length, because there
+                        # the same reasoning points the other way. The placement loop
+                        # honors a pinned context verbatim -- every branch above reads
+                        # `effective_ctx if explicit_ctx` and refuses to cap -- so the
+                        # only give left is `--fit on`, which spills MODEL LAYERS to
+                        # host RAM and collapses decode ~3x. Asking at 4096 would answer
+                        # "fits" for a load that then does not, keep the projector on
+                        # the card, and pay for it by offloading the model: the trade
+                        # this probe exists to refuse, at its worst exchange rate. At
+                        # the requested length the pin is priced against what it really
+                        # buys, which is still residency -- of the model.
+                        #
+                        # The drafter IS charged, and has to be: this runs before the
+                        # drop probe, so speculative decoding is still part of the
+                        # footprint the projector has to fit alongside. Leaving it out
+                        # would under-charge, answer "fits" for a machine that does not,
+                        # and leave the projector on a GPU that cannot hold it. Priced
+                        # exactly where the fit prices it below: the draft decode graph
+                        # into the soft overhead, the flat fraction when the byte
+                        # reserve cannot size the draft KV, and _mtp_bytes at the
+                        # context the fit itself charges the reserve at.
+                        _mm_mtp_on_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                        _mm_frac = _vram_frac - (
+                            _MTP_VRAM_RESERVE_FRAC
+                            if (_mm_mtp_on_gpu and (mtp_overhead_fn is None or _mtp_kv_unsized))
+                            else 0.0
+                        )
+                        _mm_floor_ctx = (
+                            effective_ctx
+                            if explicit_ctx
+                            else min(self._MMPROJ_FIT_FLOOR_CTX, effective_ctx)
+                        )
+                        _mm_need = (
+                            gguf_size
+                            + mmproj_size
+                            + _compute_buffer_pipeline
+                            + self._CUDA_CONTEXT_RESERVE_BYTES
+                            + int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            + (self._MTP_DRAFT_COMPUTE_BYTES if _mm_mtp_on_gpu else 0)
+                        )
+                        if _mm_floor_ctx > 0 and self._can_estimate_kv():
+                            _mm_need += (
+                                _kv_bytes(_mm_floor_ctx)
+                                + _cc_bytes(_mm_floor_ctx)
+                                + _mtp_bytes(_mm_floor_ctx)
+                            )
+                        else:
+                            # No KV estimate: the fit builds one flat footprint against
+                            # _mtp_bytes at the native length and no context it hands
+                            # out lowers it, so charging the reserve at a floor the fit
+                            # never applies would promise room the fit never sees.
+                            # Rebound rather than used inline so the log below names the
+                            # length this actually priced against.
+                            _mm_floor_ctx = self._context_length or effective_ctx or 4096
+                            _mm_need += _mtp_bytes(_mm_floor_ctx)
+                        # The comparison, run through whichever selector the branch
+                        # that follows will use, at the same fraction and the same
+                        # per-device overhead, so "does not fit" here is a placement
+                        # that branch could not have chosen either. A probe more
+                        # optimistic than the placement it gates is the one failure
+                        # mode that matters: it keeps the projector on the card and
+                        # the placement then spills model layers around it.
+                        #
+                        # The explicit branch is split-aware, and has to be. A layer
+                        # split does not merely replicate the context-compute buffer
+                        # per device, it replicates a BIGGER one
+                        # (_CTX_COMPUTE_SPLIT_MULT), so a single charge understates
+                        # the real cost several-fold: at 65536 on two cards, 96 MiB
+                        # charged against 768 MiB spent. That gap is wider than the
+                        # projector surcharge the probe is deciding on, so plain
+                        # accounting can answer "fits" on exactly the loads where the
+                        # placement then goes to --fit on. Mirrored term for term:
+                        # the buffer in the per-device overhead as well as the total,
+                        # and the single-to-split step handed to the retry.
+                        #
+                        # Auto needs it too, for the same reason and not a weaker one.
+                        # Its loop charges _cc_bytes(ctx, n_gpus) and then makes every
+                        # card hold its own copy, so it is already stricter than plain
+                        # _select_gpus. What keeps the pin honest under Auto is the
+                        # FLOOR this prices at, not loose accounting on top of it: a
+                        # subset that cannot hold the projector at 4096 is one Auto
+                        # cannot rescue by shrinking further, so --fit on was coming
+                        # either way and the pin is the cheaper half of it.
+                        #
+                        # Plain only where the placement itself is plain: with no KV
+                        # estimate it falls to the file-size-only path, which is
+                        # _select_gpus at the flat overhead. That is the same condition
+                        # that decided whether _mm_need carries a context-compute term
+                        # at all, so the two cannot drift apart.
+                        _mm_split_aware = self._can_estimate_kv()
+                        _, _mm_needs_fit = (
+                            self._select_gpus_split_aware(
+                                _mm_need,
+                                gpus,
+                                usable_fraction = _mm_frac,
+                                total_by_idx = total_by_idx,
+                                per_device_overhead_bytes = _pipeline_overhead_bytes
+                                + _cc_bytes(_mm_floor_ctx),
+                                min_gpus = _layer_min_gpus,
+                                split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
+                            )
+                            if _mm_split_aware
+                            else self._select_gpus(
+                                _mm_need,
+                                gpus,
+                                usable_fraction = _mm_frac,
+                                total_by_idx = total_by_idx,
+                                per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                min_gpus = _layer_min_gpus,
+                            )
+                        )
+                        if _mm_needs_fit:
+                            _mmproj_cpu_pinned = True
+                            _mmproj_pinned_bytes = mmproj_size
+                            # Everything downstream prices the projector off these two,
+                            # including the drop probe below: it sees the lighter
+                            # footprint and gives the drafter up only if the pin was not
+                            # enough on its own.
+                            mmproj_size = 0
+                            model_size = gguf_size
+                            # Same thing the startup-recovery pin reports, so the user
+                            # hears about a CPU-resident projector whether it was
+                            # predicted here or salvaged after a crash; without this the
+                            # predicted pin is silent outside the server log and image
+                            # encoding just gets mysteriously slower. Set after the
+                            # per-load reset and before the recovery paths, which
+                            # overwrite it with their own more specific reason when a
+                            # launch actually fails.
+                            self._mmproj_fallback_reason = "cpu_offload"
+                            logger.info(
+                                "Auto: running the vision projector on the CPU "
+                                "(--no-mmproj-offload); it does not fit in VRAM "
+                                "alongside the model at %d context. Image encoding "
+                                "gets slower, text generation is unaffected. Pass "
+                                "--mmproj-offload in the advanced arguments to keep it "
+                                "on the GPU.",
+                                _mm_floor_ctx,
+                            )
+
                     # Target pins but the drafter's reserve tips it over: Auto drops the
                     # drafter rather than pay for speed with context (or a --fit offload,
                     # where decode collapses ~3x). Priced over the SAME ranked subsets the
@@ -16318,37 +16742,6 @@ class LlamaCppBackend:
                                 _probe_need / 1024,
                                 _probe_have / 1024,
                             )
-
-                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
-                        # Nothing speculative is GPU-resident: the drafter that launches
-                        # is the separate CPU-offloaded one, and any embedded head it
-                        # displaced does not run. The flat fraction below is gated on
-                        # this; the byte-accurate callback was not, so the fit went on
-                        # charging VRAM no drafter allocates.
-                        # One term survives: a Hybrid Mamba target keeps its own
-                        # recurrent rollback snapshots for verification, and those sit
-                        # in the TARGET context, so pinning the drafter to the CPU does
-                        # not move them. Charge those alone rather than nothing. Flat in
-                        # ctx, the state being per-slot rather than per-token -- hence
-                        # the same _np/_n_ubatch keywords the replaced callback takes,
-                        # so _mtp_bytes can still re-price each slot candidate.
-                        def _cpu_draft_target_state(
-                            _ctx: int,
-                            _np: int = n_parallel,
-                            _n_ubatch: Optional[int] = _effective_ubatch,
-                            _n: int = _mtp_eff_n_max,
-                            _rollback: bool = _target_rollback,
-                        ) -> int:
-                            if not _rollback or _n <= 0:
-                                return 0
-                            return self._mamba_recurrent_state_bytes(_np) * _n
-
-                        mtp_overhead_fn = (
-                            _cpu_draft_target_state
-                            if _cpu_draft_target_state(effective_ctx) > 0
-                            else None
-                        )
-                        _mtp_kv_unsized = False
 
                     # Flat MTP reserve fraction: used only as the fallback when the
                     # byte-accurate mtp_overhead_fn can't size the draft KV (dims
@@ -17030,7 +17423,11 @@ class LlamaCppBackend:
                     and self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
                     _ram_msg = self._apu_ram_shortfall_message(
-                        model_size, self._available_system_memory_mib()
+                        # A pinned projector left model_size but not system RAM, and
+                        # this guard exists to stop an oversize load being OOM-killed
+                        # mid-read, so it has to weigh the projector either way.
+                        model_size + _mmproj_pinned_bytes,
+                        self._available_system_memory_mib(),
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
@@ -17056,8 +17453,15 @@ class LlamaCppBackend:
                 # but never one the unpinnable guard just dropped.
                 self._mmproj_has_audio = False
                 self._mmproj_accepts_image = True
+                # ...and never one the vision switch is about to scrub out of the
+                # child environment either. Reading it would record an audio encoder
+                # the launched server does not have, and _apply_detected_audio turns
+                # that into has_audio_input, so the composer would offer attachments
+                # the server cannot process.
                 _mmproj_probe = launch_mmproj_path or (
-                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
+                    ""
+                    if _pv_mmproj_unpinnable
+                    else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
@@ -17695,11 +18099,16 @@ class LlamaCppBackend:
                     # past the pass-through extras like the drafter pin, since
                     # --mmproj-offload is a real flag a user can pass and llama.cpp is
                     # last-wins.
-                    if _paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps):
+                    # One flag whichever reason pinned it: the corrupt paravirtual Metal
+                    # device, or the fit deciding the projector does not fit in VRAM.
+                    # Both already checked the capability.
+                    if _mmproj_cpu_pinned:
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
-                        logger.warning(
-                            "Disabling mmproj GPU offload: this Mac's Metal device is virtualised."
-                        )
+                        if _paravirtual_cpu_forced:
+                            logger.warning(
+                                "Disabling mmproj GPU offload: this Mac's Metal "
+                                "device is virtualised."
+                            )
 
                 # Option C: --api-key for direct client access when enabled
                 import secrets as _secrets
@@ -17875,6 +18284,10 @@ class LlamaCppBackend:
                     cmd.extend(_pv_draft_cpu_pin)
                 if _pv_mmproj_cpu_pin:
                     cmd.extend(_pv_mmproj_cpu_pin)
+                # Also last, and for the same last-wins reason: suppressing Studio's own
+                # --mmproj and scrubbing the env vars still leaves a remembered
+                # --mmproj-auto in the extras above, and that flag asks llama-server to
+                # rediscover the adjacent projector by itself. Vision would come back on
                 # Also last: _zero_offload_keeps_gpu_visible reads the finished cmd, so
                 # the override must be in it before the env block below judges this a
                 # zero-VRAM server.
@@ -18065,6 +18478,13 @@ class LlamaCppBackend:
                 # it outranks even the --mmproj Unsloth emits. Unsloth always passes its
                 # own projector on the command line (with --no-mmproj-offload), so an
                 # inherited one is only ever the corrupt path.
+                # Turning vision off has the same blind spot, and it is the whole point
+                # of the switch: suppressing Studio's own --mmproj leaves an inherited
+                # LLAMA_ARG_MMPROJ / LLAMA_ARG_MMPROJ_URL untouched, so llama-server
+                # loads a projector anyway (arg.cpp sets params.mmproj.path / .url
+                # straight from those vars). The load would then report text-only over a
+                # server that is still multimodal, and the fit budget that gave the
+                # projector's bytes to context is short by exactly those bytes.
                 if _paravirtual_cpu_forced:
                     for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
                         env.pop(_pv_mmproj_var, None)
@@ -18759,7 +19179,8 @@ class LlamaCppBackend:
                         # when the APU is picked first.
                         if model_size is not None and _retry_wants_unified:
                             _retry_ram_msg = self._apu_ram_shortfall_message(
-                                model_size, self._available_system_memory_mib()
+                                model_size + _mmproj_pinned_bytes,
+                                self._available_system_memory_mib(),
                             )
                             if _retry_ram_msg:
                                 self._kill_process()
