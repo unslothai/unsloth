@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  type ServerTuningValues,
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
@@ -1082,6 +1088,12 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nUbatch ?? null)
               : useChatRuntimeStore.getState().nUbatch;
+          // The outgoing tuning intent, read the same way and for the same
+          // reason: a rollback restores the control, not the echo.
+          const previousServerTuning: ServerTuningValues =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig
+              : useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
           const previousMlxKvBits =
             typeof selection !== "string" && selection.previousConfig
@@ -1252,6 +1264,16 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
             pendingLoadConfig?.nUbatch ?? stateBeforeUnload.nUbatch;
+          let loadServerTuning: ServerTuningValues = {
+            loadMode: pendingLoadConfig?.loadMode ?? stateBeforeUnload.loadMode,
+            specDraftCacheDtype:
+              pendingLoadConfig?.specDraftCacheDtype ??
+              stateBeforeUnload.specDraftCacheDtype,
+            ctxCheckpoints:
+              pendingLoadConfig?.ctxCheckpoints ??
+              stateBeforeUnload.ctxCheckpoints,
+            cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+          };
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -1293,6 +1315,16 @@ export function useChatModelRuntime() {
             const validateNUbatch = resetsPerModelSettings
               ? (pendingLoadConfig?.nUbatch ?? null)
               : loadNUbatch;
+            const validateServerTuning: ServerTuningValues =
+              resetsPerModelSettings
+                ? {
+                    loadMode: pendingLoadConfig?.loadMode ?? null,
+                    specDraftCacheDtype:
+                      pendingLoadConfig?.specDraftCacheDtype ?? null,
+                    ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                    cacheRam: pendingLoadConfig?.cacheRam ?? null,
+                  }
+                : loadServerTuning;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -1336,6 +1368,9 @@ export function useChatModelRuntime() {
                     ...(validateNUbatch != null
                       ? { n_ubatch: validateNUbatch }
                       : {}),
+                    // Same omit-when-blank rule, and the same values: the preflight
+                    // has to approve the command the follow-up /load sends.
+                    ...serverTuningLoadPayload(validateServerTuning),
                     // The same list the load below sends. A --ctx-size or cache
                     // override in here changes the memory this preflight estimates,
                     // so omitting it approves a different command: during training
@@ -1438,6 +1473,9 @@ export function useChatModelRuntime() {
                 loadedNBatch: null,
                 nUbatch: null,
                 loadedNUbatch: null,
+                // Per-model too, and cleared in both halves: a baseline left from
+                // the model that just went would be re-sent by a later rollback.
+                ...clearedServerTuningState(),
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
@@ -1457,6 +1495,13 @@ export function useChatModelRuntime() {
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
               loadNBatch = pendingLoadConfig?.nBatch ?? null;
               loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
+              loadServerTuning = {
+                loadMode: pendingLoadConfig?.loadMode ?? null,
+                specDraftCacheDtype:
+                  pendingLoadConfig?.specDraftCacheDtype ?? null,
+                ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
+                cacheRam: pendingLoadConfig?.cacheRam ?? null,
+              };
               // Both payload-only. The store keeps its values: a width is dormant
               // preset state off MLX, and a completed load rewrites both anyway.
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
@@ -1553,6 +1598,11 @@ export function useChatModelRuntime() {
               ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
               ...(isGguf && loadNUbatch != null
                 ? { n_ubatch: loadNUbatch }
+                : {}),
+              // llama-server's own, so gated like the extras above: GGUF, and not
+              // the diffusion runner, which builds its command without them.
+              ...(isGguf && !targetIsDiffusion
+                ? serverTuningLoadPayload(loadServerTuning)
                 : {}),
               tensor_parallel: loadTensorParallel,
               disable_vision: loadDisableVision,
@@ -1654,6 +1704,11 @@ export function useChatModelRuntime() {
               !(loadResponse.is_diffusion ?? false)
                 ? (loadNUbatch ?? null)
                 : null;
+            const committedServerTuning =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? committedServerTuningState(loadServerTuning)
+                : clearedServerTuningState();
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -1754,6 +1809,7 @@ export function useChatModelRuntime() {
               loadedNParallel: committedSlots,
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
+              ...committedServerTuning,
               // What this model is running, for the rollback below. An omitted field
               // inherited the resident process's list, so the last thing we knew
               // still holds unless this was a different model.
@@ -1890,6 +1946,13 @@ export function useChatModelRuntime() {
                   ...(stateBeforeUnload.loadedNUbatch != null
                     ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
                     : {}),
+                  ...serverTuningLoadPayload({
+                    loadMode: stateBeforeUnload.loadedLoadMode,
+                    specDraftCacheDtype:
+                      stateBeforeUnload.loadedSpecDraftCacheDtype,
+                    ctxCheckpoints: stateBeforeUnload.loadedCtxCheckpoints,
+                    cacheRam: stateBeforeUnload.loadedCacheRam,
+                  }),
                   // Explicit, unlike the batch pair above: the failed switch left the
                   // TARGET resident, so an omitted field here inherits across models,
                   // which the route refuses, and the previous model would come back
@@ -1943,6 +2006,19 @@ export function useChatModelRuntime() {
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,
                   loadedNUbatch: stateBeforeUnload.loadedNUbatch ?? null,
+                  // Same split: the controls keep the outgoing model's intent and
+                  // the baselines come from what that model was launched with.
+                  loadMode: previousServerTuning.loadMode ?? null,
+                  loadedLoadMode: stateBeforeUnload.loadedLoadMode ?? null,
+                  specDraftCacheDtype:
+                    previousServerTuning.specDraftCacheDtype ?? null,
+                  loadedSpecDraftCacheDtype:
+                    stateBeforeUnload.loadedSpecDraftCacheDtype ?? null,
+                  ctxCheckpoints: previousServerTuning.ctxCheckpoints ?? null,
+                  loadedCtxCheckpoints:
+                    stateBeforeUnload.loadedCtxCheckpoints ?? null,
+                  cacheRam: previousServerTuning.cacheRam ?? null,
+                  loadedCacheRam: stateBeforeUnload.loadedCacheRam ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,

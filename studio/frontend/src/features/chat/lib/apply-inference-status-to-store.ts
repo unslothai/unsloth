@@ -263,6 +263,44 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
+  // The llama-server tuning group follows the same rule, and resolveBatchSizeSeed
+  // is generic in the value type for exactly this: each one is an echo of what the
+  // load REQUESTED, which is what makes the steady-poll and dirty-control cases
+  // identical to the batch pair's.
+  const loadModeSeed = resolveBatchSizeSeed<string>({
+    incoming: status.requested_load_mode,
+    isGguf: status.is_gguf ?? true,
+    previous: { value: prevState.loadMode, loaded: prevState.loadedLoadMode },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
+  const specDraftCacheSeed = resolveBatchSizeSeed<string>({
+    incoming: status.requested_spec_draft_cache_type,
+    isGguf: status.is_gguf ?? true,
+    previous: {
+      value: prevState.specDraftCacheDtype,
+      loaded: prevState.loadedSpecDraftCacheDtype,
+    },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
+  const ctxCheckpointsSeed = resolveBatchSizeSeed({
+    incoming: status.requested_ctx_checkpoints,
+    isGguf: status.is_gguf ?? true,
+    previous: {
+      value: prevState.ctxCheckpoints,
+      loaded: prevState.loadedCtxCheckpoints,
+    },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
+  const cacheRamSeed = resolveBatchSizeSeed({
+    incoming: status.requested_cache_ram,
+    isGguf: status.is_gguf ?? true,
+    previous: { value: prevState.cacheRam, loaded: prevState.loadedCacheRam },
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+  });
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -528,6 +566,26 @@ export function applyActiveModelStatusToStore(
       loadedNUbatch: nUbatchSeed.loaded ?? null,
     }),
     ...("value" in nUbatchSeed && { nUbatch: nUbatchSeed.value ?? null }),
+    ...("loaded" in loadModeSeed && {
+      loadedLoadMode: loadModeSeed.loaded ?? null,
+    }),
+    ...("value" in loadModeSeed && { loadMode: loadModeSeed.value ?? null }),
+    ...("loaded" in specDraftCacheSeed && {
+      loadedSpecDraftCacheDtype: specDraftCacheSeed.loaded ?? null,
+    }),
+    ...("value" in specDraftCacheSeed && {
+      specDraftCacheDtype: specDraftCacheSeed.value ?? null,
+    }),
+    ...("loaded" in ctxCheckpointsSeed && {
+      loadedCtxCheckpoints: ctxCheckpointsSeed.loaded ?? null,
+    }),
+    ...("value" in ctxCheckpointsSeed && {
+      ctxCheckpoints: ctxCheckpointsSeed.value ?? null,
+    }),
+    ...("loaded" in cacheRamSeed && {
+      loadedCacheRam: cacheRamSeed.loaded ?? null,
+    }),
+    ...("value" in cacheRamSeed && { cacheRam: cacheRamSeed.value ?? null }),
     // A swap under this tab resets the controls too, but that clear belongs INSIDE
     // resolveBatchSizeSeed (modelChanged), not after it: unlike the slot count above,
     // the batch echo is the REQUESTED size, so a blanket null here would also discard

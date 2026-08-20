@@ -62,8 +62,10 @@ from core.inference.audio_errors import (
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
+    estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.stream_errors import LlamaStreamError
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -271,6 +273,13 @@ def _friendly_error(exc: Exception) -> str:
     template_msg = _template_raise_message(msg, _loaded_chat_template())
     if template_msg:
         return f"An internal error occurred: {template_msg}"
+    # Placed after the token-count regex so an oversize refusal still gets the
+    # established "Message too long" wording, and before the catch-all so a
+    # mid-stream server failure is not flattened into "An internal error
+    # occurred". That flattening is what left these undiagnosable: the cause
+    # survived the stream loop and then died here.
+    if isinstance(exc, LlamaStreamError):
+        return exc.friendly
     return "An internal error occurred"
 
 
@@ -1288,6 +1297,18 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     real client error from a genuine crash by the explicit "llama-server
     returned 4xx" marker, not a bare "tokens"/"exceed" substring.
     """
+    # Decided before the substring test, which cannot tell these apart. KV
+    # starvation is a shared-cache capacity failure, not an overflow: the
+    # explanation says "context window" while making the point that the window is
+    # SHARED, so the heuristic below would read it as an overflow and set the
+    # client compacting a conversation that was never too long.
+    if isinstance(exc, LlamaStreamError):
+        # Only an oversize refusal is an overflow. Everything else stays None, which
+        # keeps it a 500: KV starvation is server capacity exhaustion and an in-band
+        # "tokenizer failed" carries no 4xx evidence at all, so returning False would
+        # emit a 400 and tell the client its own request was at fault, discouraging the
+        # retry that is actually the right response.
+        return True if exc.context_oversize else None
     msg = str(exc)
     msg_l = msg.lower()
     if "n_ctx" in msg_l or (
@@ -1470,15 +1491,169 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     return _positive_int_or_none(slots) or 1
 
 
+def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
+    """KV tokens the running llama-server actually allocated, or None if unknown.
+
+    ``_kv_cache_context_total`` is the aggregate, and is preferred where the backend
+    has it. ``context_length`` is NOT that once the server has been read back:
+    ``_reconcile_effective_ctx_with_server`` adopts the PER-SLOT ``n_ctx`` from
+    ``default_generation_settings`` into it, and computes the total alongside as
+    ``n_ctx * slots`` (slots being 1 only under ``--kv-unified``). Studio appends
+    that flag only when ``n_parallel > 1`` and the binary supports it, so a build
+    without it, or a user ``--no-kv-unified``, gives N private caches while
+    ``context_length`` names one of them: an N-fold under-budget that collapses
+    concurrency to a single generation.
+
+    Falls back to ``context_length`` when the total is unset (nothing has been read
+    back yet, in which case the two agree), and None when the backend cannot say,
+    which keeps slot-only admission rather than inventing a budget.
+    """
+    total = _positive_int_or_none(getattr(llama_backend, "_kv_cache_context_total", None))
+    return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+
+
+def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
+    """Prompt the request carries OUTSIDE ``messages``, in tokens.
+
+    OpenAI tool definitions are rendered into the llama-server prompt, and Anthropic
+    keeps ``system`` and ``tools`` separate until they are translated. Sizing only the
+    message list let two requests with small messages but large system instructions or
+    JSON tool schemas both be admitted on a severe undercount.
+
+    Serialised and charged at the dense rate, since a JSON schema is punctuation-heavy
+    and the four-chars-per-token rule flatters it.
+    """
+    extra = 0
+    for attribute in ("system", "tools", "tool_choice", "instructions"):
+        value = getattr(payload, attribute, None)
+        if value is None or isinstance(value, (bool, int, float)):
+            continue
+        try:
+            text = value if isinstance(value, str) else json.dumps(value, default = str)
+        except Exception:
+            continue
+        if text:
+            extra += estimate_messages_tokens_dense([{"role": "system", "content": text}])
+    return extra
+
+
+def _openai_llama_admission_media_tokens(payload) -> int:
+    """Media the request carries in Unsloth's legacy top-level fields, in tokens.
+
+    Studio's own composer sends every attachment as ``image_base64`` /
+    ``audio_base64`` / ``video_base64``, never as ``messages`` content parts, and the
+    generation path splices them into the prompt AFTER this estimate is taken
+    (``_openai_messages_for_gguf_chat``, ``_inject_audio_part``,
+    ``_inject_video_part``). Charging only ``messages`` therefore priced an image at
+    zero while llama.cpp's mtmd embeddings occupy real KV positions, so two
+    media-heavy chats with a line of text each were admitted against a cache that
+    holds one.
+
+    Sized as the same media inlined as a data URL is already sized, so the two
+    spellings of one request cost the same rather than 30x apart.
+    """
+    extra = 0
+    for attribute in ("image_base64", "audio_base64", "video_base64"):
+        value = getattr(payload, attribute, None)
+        if isinstance(value, str) and value:
+            extra += max(1, len(value) // 4)
+    return extra
+
+
+def _openai_llama_admission_tokens(
+    payload, *, budget: Optional[int], capacity: int, tool_loop: bool = False
+) -> Optional[int]:
+    """KV a request will occupy: what is sent, plus what it may generate.
+
+    Uses the dense estimator, not the plain one. Undercounting is the failure this
+    accounting exists to prevent, and four-chars-per-token undercounts CJK by about
+    2x, which would hand out a slot the cache cannot back.
+
+    A shape with no messages (``/completions`` takes a prompt string) falls back to
+    an equal share of the cache: charging it the whole budget would serialise that
+    route, and charging it nothing would restore the overcommit.
+    """
+    if not budget:
+        return None
+    messages = getattr(payload, "messages", None)
+    if isinstance(messages, list) and messages:
+        try:
+            prompt_tokens = estimate_messages_tokens_dense(
+                [m if isinstance(m, dict) else m.model_dump() for m in messages]
+            )
+            prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+            prompt_tokens += _openai_llama_admission_media_tokens(payload)
+        except Exception:
+            prompt_tokens = None
+    else:
+        prompt_tokens = None
+    if prompt_tokens is None:
+        return max(1, budget // max(1, capacity))
+    # The same helper generation honours, not the raw field. A request that sets only
+    # the supported max_completion_tokens and leaves the deprecated max_tokens unset
+    # would otherwise reserve its prompt and none of its output allowance.
+    cap = _positive_int_or_none(
+        _effective_openai_max_tokens_from_values(
+            getattr(payload, "max_tokens", None),
+            getattr(payload, "max_completion_tokens", None),
+        )
+    )
+    if cap is None:
+        # No cap at all. _build_passthrough_payload then sends max_tokens = backend_ctx,
+        # so generation may run until the window is full, and reserving nothing let short
+        # uncapped prompts hold tiny commitments while each consumed most of the cache.
+        # The honest reservation is the rest of the budget, which does serialise
+        # concurrent uncapped requests. That is the true cost of not naming a cap: the
+        # alternative is admitting two runs that llama.cpp will then kill.
+        output_tokens = max(0, budget - prompt_tokens)
+    else:
+        output_tokens = cap
+    # A tool loop reserves the whole cache. One lease covers up to 25 rounds, and each
+    # round appends its tool results and re-sends the conversation, so a request that
+    # starts small can approach the full window while its commitment stays at the
+    # opening estimate. Re-costing per round would mean threading a callback through the
+    # generator; reserving the upper bound is the same guarantee without that surface,
+    # at the price of serialising concurrent tool requests. That price is real, and it
+    # is the one this accounting exists to charge: the alternative is admitting rounds
+    # the cache cannot hold and letting llama.cpp kill both.
+    #
+    # Keyed on the resolved execution path, NOT on payload.tools. The loop opens on
+    # `enable_tools`, `mcp_enabled`, the CLI --enable-tools policy or a checkpoint
+    # repair, none of which need a client `tools` array, so keying on the array
+    # undercharged Studio's own tool traffic; and a passthrough or /responses request
+    # that merely forwards `tools` to llama-server runs ONE generation per HTTP call,
+    # so charging it the whole cache serialised the client-driven loop for nothing.
+    if tool_loop:
+        return budget
+    # Clamped to the budget so an oversized request stays schedulable: the queue
+    # admits it alone rather than stranding it, and llama-server refuses it with a
+    # message naming both counts.
+    return max(1, min(budget, prompt_tokens + output_tokens))
+
+
 def _openai_llama_admission_reserve(
-    *, request: Optional[Request], llama_backend
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload = None,
+    tool_loop: bool = False,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
+    budget = _openai_llama_admission_budget(llama_backend)
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
+        budget = budget,
+        tokens = _openai_llama_admission_tokens(
+            payload,
+            budget = budget,
+            capacity = capacity,
+            tool_loop = tool_loop,
+        )
+        if payload is not None
+        else None,
     )
     return reservation, config
 
@@ -5218,6 +5393,11 @@ def _active_gguf_intent(
             strip_split_mode = False,
             strip_batch = "n_batch" in request_fields_set,
             strip_ubatch = "n_ubatch" in request_fields_set,
+            strip_ctx_checkpoints = "ctx_checkpoints" in request_fields_set,
+            strip_cache_ram = "cache_ram" in request_fields_set,
+            strip_spec_draft_cache = "spec_draft_cache_type" in request_fields_set,
+            strip_load_mode = "load_mode" in request_fields_set,
+            strip_load_mode_aliases = "load_mode" in request_fields_set,
         )
         # a strip that changed the list is an override, so the dedupe compares the stripped one
         batch_overrides_inherit = batch_stripped_extra != effective_extra
@@ -6811,6 +6991,7 @@ def _estimate_gguf_kv_gb(
     tensor_parallel: bool = False,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
+    ctx_checkpoints: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
 ) -> float:
@@ -6822,7 +7003,10 @@ def _estimate_gguf_kv_gb(
     context-linear term; ``is_diffusion`` skips them, since the diffusion
     runner ignores the llama-server batch flags. 0 if metadata is unreadable."""
     try:
-        from core.inference.llama_server_args import parse_ctx_override
+        from core.inference.llama_server_args import (
+            parse_ctx_override,
+            resolve_ctx_checkpoints,
+        )
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
@@ -6900,6 +7084,11 @@ def _estimate_gguf_kv_gb(
                 default = managed_kv_unified,
             ),
             n_ubatch = effective_ubatch,
+            # Extras beat the field, as at launch: the control emits its flag
+            # before them. Per-slot SWA snapshots scale with the slot's context, so
+            # a load asking for them needs materially more memory than one that
+            # does not.
+            ctx_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints),
             flash_attn = False,
         )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
@@ -7078,6 +7267,7 @@ def _estimate_gguf_required_gb(
     tensor_parallel: bool = False,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
+    ctx_checkpoints: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
     disable_vision: bool = False,
@@ -7356,8 +7546,9 @@ def _estimate_gguf_required_gb(
                 tensor_parallel,
                 n_batch,
                 n_ubatch,
-                n_devices,
-                is_diffusion,
+                ctx_checkpoints = ctx_checkpoints,
+                n_devices = n_devices,
+                is_diffusion = is_diffusion,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -7980,7 +8171,20 @@ def _inherited_batch_flags_stripped(request) -> bool:
     fields_set = getattr(request, "model_fields_set", set())
     strip_batch = "n_batch" in fields_set
     strip_ubatch = "n_ubatch" in fields_set
-    if not (strip_batch or strip_ubatch):
+    # The llama-server tuning group shadows the same way, so an inherited copy of
+    # one of its flags counts as an override here too.
+    strip_ctx_checkpoints = "ctx_checkpoints" in fields_set
+    strip_cache_ram = "cache_ram" in fields_set
+    strip_spec_draft_cache = "spec_draft_cache_type" in fields_set
+    strip_load_mode = "load_mode" in fields_set
+    if not (
+        strip_batch
+        or strip_ubatch
+        or strip_ctx_checkpoints
+        or strip_cache_ram
+        or strip_spec_draft_cache
+        or strip_load_mode
+    ):
         return False
     stored = list(getattr(get_llama_cpp_backend(), "extra_args", None) or ())
     if not stored:
@@ -7995,6 +8199,11 @@ def _inherited_batch_flags_stripped(request) -> bool:
             strip_split_mode = False,
             strip_batch = strip_batch,
             strip_ubatch = strip_ubatch,
+            strip_ctx_checkpoints = strip_ctx_checkpoints,
+            strip_cache_ram = strip_cache_ram,
+            strip_spec_draft_cache = strip_spec_draft_cache,
+            strip_load_mode = strip_load_mode,
+            strip_load_mode_aliases = strip_load_mode,
         )
         != stored
     )
@@ -8240,6 +8449,7 @@ def _guard_chat_load_against_training(
             # getattr: older callers hand this guard a bare request double
             n_batch = getattr(request, "n_batch", None),
             n_ubatch = getattr(request, "n_ubatch", None),
+            ctx_checkpoints = getattr(request, "ctx_checkpoints", None),
             tensor_parallel = guard_tensor_parallel,
             # size the compute buffers for the split the loader would budget
             n_devices = guard_n_devices,
@@ -8394,6 +8604,13 @@ def _resolve_inherited_extra_args(
             # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
+            # same rule for the llama-server tuning group. The load mode strips its
+            # deprecated aliases too, because a trailing one resets the whole mode.
+            strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
+            strip_cache_ram = "cache_ram" in fields_set,
+            strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
+            strip_load_mode = "load_mode" in fields_set,
+            strip_load_mode_aliases = "load_mode" in fields_set,
         )
         # Inherited, not sent: a flag denylisted since it was stored loses only
         # itself. The previous behaviour dropped the whole list, so one name added
@@ -15269,6 +15486,11 @@ async def openai_chat_completions(
                 reservation, admission_config = _openai_llama_admission_reserve(
                     request = request,
                     llama_backend = llama_backend,
+                    payload = payload,
+                    # This branch IS the resolved server-side loop (use_tools is true
+                    # here whether it came from tools, enable_tools, mcp_enabled, the
+                    # CLI policy or a checkpoint repair), so charge the upper bound.
+                    tool_loop = True,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
@@ -15976,6 +16198,7 @@ async def openai_chat_completions(
                 reservation, admission_config = _openai_llama_admission_reserve(
                     request = request,
                     llama_backend = llama_backend,
+                    payload = payload,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
@@ -16310,6 +16533,7 @@ async def openai_chat_completions(
                 reservation, admission_config = _openai_llama_admission_reserve(
                     request = request,
                     llama_backend = llama_backend,
+                    payload = payload,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
@@ -19519,6 +19743,10 @@ async def _responses_stream(
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
             llama_backend = llama_backend,
+            # chat_req, not payload: a ResponsesRequest carries `input` and
+            # `max_output_tokens`, so the estimator found no `messages` and fell back to
+            # one equal cache share no matter how large the request really was.
+            payload = chat_req,
         )
     except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(
@@ -21510,10 +21738,13 @@ async def anthropic_messages(
                 else:
                     reservation.cancel()
 
-    async def _admitted_anthropic(coro):
+    async def _admitted_anthropic(coro, *, tool_loop: bool = False):
         try:
             reservation, admission_config = _openai_llama_admission_reserve(
-                request = request, llama_backend = llama_backend
+                request = request,
+                llama_backend = llama_backend,
+                payload = payload,
+                tool_loop = tool_loop,
             )
         except LlamaAdmissionQueueFull as exc:
             coro.close()
@@ -21775,7 +22006,9 @@ async def anthropic_messages(
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     think_provenance = _think_prov,
                     count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
-                )
+                ),
+                # Same server-side loop the chat route runs, up to 25 rounds on one lease.
+                tool_loop = True,
             )
         return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
@@ -21787,7 +22020,8 @@ async def anthropic_messages(
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 think_provenance = _think_prov,
                 cancel_event = cancel_event,
-            )
+            ),
+            tool_loop = True,
         )
 
     # ── No-tool path ──────────────────────────────────────────
@@ -23721,6 +23955,7 @@ async def _openai_passthrough_stream(
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
             llama_backend = llama_backend,
+            payload = payload,
         )
     except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
@@ -24756,6 +24991,7 @@ async def _openai_passthrough_non_streaming(
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
             llama_backend = llama_backend,
+            payload = payload,
         )
     except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(

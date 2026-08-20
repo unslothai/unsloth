@@ -39,6 +39,14 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   n_ubatch?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  load_mode?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  spec_draft_cache_type?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  ctx_checkpoints?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  cache_ram?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   disable_vision?: boolean;
@@ -302,6 +310,21 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.nUbatch && config.nUbatch > 0) {
     payload.n_ubatch = config.nUbatch;
+  }
+  // Blank follows llama.cpp's own default for each: auto, f16, 32 and 8192.
+  // cacheRam is compared against null rather than tested for truth, because 0 and
+  // -1 are both meaningful values here (disable, and no limit).
+  if (config.loadMode) {
+    payload.load_mode = config.loadMode;
+  }
+  if (config.specDraftCacheDtype) {
+    payload.spec_draft_cache_type = config.specDraftCacheDtype;
+  }
+  if (config.ctxCheckpoints != null && config.ctxCheckpoints >= 0) {
+    payload.ctx_checkpoints = config.ctxCheckpoints;
+  }
+  if (config.cacheRam != null) {
+    payload.cache_ram = config.cacheRam;
   }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;

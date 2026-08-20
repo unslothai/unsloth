@@ -2620,6 +2620,24 @@ type ChatRuntimeStore = {
   nUbatch: number | null;
   /** micro-batch size the last successful load sent (null = default) */
   loadedNUbatch: number | null;
+  /** user --spec-draft-type-k/-v override, the DRAFT context's KV cache dtype
+   *  (null = llama.cpp default f16). Separate from kvCacheDtype, which is the
+   *  target model's. */
+  specDraftCacheDtype: string | null;
+  /** draft cache dtype the last successful load sent (null = default) */
+  loadedSpecDraftCacheDtype: string | null;
+  /** user --load-mode override (null = llama.cpp's own `auto`) */
+  loadMode: string | null;
+  /** load mode the last successful load sent (null = default) */
+  loadedLoadMode: string | null;
+  /** user --ctx-checkpoints override (null = llama.cpp default 32) */
+  ctxCheckpoints: number | null;
+  /** checkpoint count the last successful load sent (null = default) */
+  loadedCtxCheckpoints: number | null;
+  /** user --cache-ram override in MiB (null = llama.cpp default 8192) */
+  cacheRam: number | null;
+  /** host prompt cache size the last successful load sent (null = default) */
+  loadedCacheRam: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -3728,6 +3746,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedLlamaExtraArgs: null,
   nUbatch: null,
   loadedNUbatch: null,
+  specDraftCacheDtype: null,
+  loadedSpecDraftCacheDtype: null,
+  loadMode: null,
+  loadedLoadMode: null,
+  ctxCheckpoints: null,
+  loadedCtxCheckpoints: null,
+  cacheRam: null,
+  loadedCacheRam: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   loadedDisableVision: null,
@@ -4488,6 +4514,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedLlamaExtraArgs: null,
       nUbatch: null,
       loadedNUbatch: null,
+      specDraftCacheDtype: null,
+      loadedSpecDraftCacheDtype: null,
+      loadMode: null,
+      loadedLoadMode: null,
+      ctxCheckpoints: null,
+      loadedCtxCheckpoints: null,
+      cacheRam: null,
+      loadedCacheRam: null,
       tensorParallel: false,
       loadedTensorParallel: null,
   loadedDisableVision: null,

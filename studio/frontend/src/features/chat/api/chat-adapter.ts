@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
 import { getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -2027,6 +2032,14 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedNBatch",
   "nUbatch",
   "loadedNUbatch",
+  "specDraftCacheDtype",
+  "loadedSpecDraftCacheDtype",
+  "loadMode",
+  "loadedLoadMode",
+  "ctxCheckpoints",
+  "loadedCtxCheckpoints",
+  "cacheRam",
+  "loadedCacheRam",
   "tensorParallel",
   "loadedTensorParallel",
   "loadedDisableVision",
@@ -2965,6 +2978,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+              // Same omit-when-blank rule, and the same values the load sends:
+              // the draft cache dtype changes what the estimate charges the
+              // drafter, so a preflight without it disagrees with the launch.
+              ...serverTuningLoadPayload(config),
               // Checked with the same arguments the load below sends, or a list
               // the backend refuses would pass this gate and fail the launch.
               ...(resolvedExtraArgs !== undefined
@@ -3016,6 +3033,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+            // Remembered like the rest of this block, or the auto-load reverts
+            // an override the user asked to be remembered.
+            ...serverTuningLoadPayload(config),
             // Remembered pass-through arguments, for the same reason as the rest of
             // this block: nothing is resident at startup, so the omission path has
             // nothing to inherit them from and the model would come up without the
@@ -3134,6 +3154,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
           // What this launch is running, for a later rollback. The status applier
           // cannot seed it: the model-loading lease is held for the whole of this
           // load, which is exactly the guard that stops a mid-switch poll writing
@@ -3188,6 +3209,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: null,
           nUbatch: null,
           loadedNUbatch: null,
+          ...clearedServerTuningState(),
           // Same reason, and the baseline has to be cleared rather than left: a
           // rollback to THIS model must not resend a GGUF's arguments.
           loadedLlamaExtraArgs: null,
@@ -3518,6 +3540,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadedNBatch: null,
         nUbatch: null,
         loadedNUbatch: null,
+        ...clearedServerTuningState(),
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         loadedDisableVision: loadResp.disable_vision ?? false,

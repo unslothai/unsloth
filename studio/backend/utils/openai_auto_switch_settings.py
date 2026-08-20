@@ -430,6 +430,16 @@ VALID_SPECULATIVE_TYPES = frozenset(
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
 )
+# Only these load a separate draft model, and so a draft context for the dtype to
+# apply to (mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI).
+SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
+# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp
+# default and is not stored: an entry holding it would pin what a build may redefine.
+VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
+# Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
+CTX_CHECKPOINTS_MAX = 256
+CACHE_RAM_MIN_MIB = -1
+CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 # Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
 VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
@@ -523,6 +533,14 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+        # Same rule, narrower set: the dtype needs a separate draft model, and only
+        # the sidecar modes always load one.
+        if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
+            spec_draft_cache_type = _clean_str(
+                payload.get("spec_draft_cache_type"), VALID_KV_CACHE_DTYPES
+            )
+            if spec_draft_cache_type:
+                entry["spec_draft_cache_type"] = spec_draft_cache_type
 
     # Blank or out of range means "follow the server-wide --parallel default".
     n_parallel = _bounded_int(
@@ -536,6 +554,24 @@ def normalize_model_override(
         parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
         if parsed:
             entry[key] = parsed
+
+    load_mode = _clean_str(payload.get("load_mode"), VALID_LOAD_MODES)
+    if load_mode:
+        entry["load_mode"] = load_mode
+
+    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on
+    # "is not None" rather than on truth, unlike the batch sizes above.
+    ctx_checkpoints = _bounded_int(
+        payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
+    )
+    if ctx_checkpoints is not None:
+        entry["ctx_checkpoints"] = ctx_checkpoints
+
+    cache_ram = _bounded_int(
+        payload.get("cache_ram"), minimum = CACHE_RAM_MIN_MIB, maximum = CACHE_RAM_MAX_MIB
+    )
+    if cache_ram is not None:
+        entry["cache_ram"] = cache_ram
 
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
@@ -661,6 +697,10 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
             kwargs["n_ubatch"] = override["n_ubatch"]
+        # llama-server flags too, so GGUF-only like the rest of this block
+        for key in ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram"):
+            if override.get(key) is not None:
+                kwargs[key] = override[key]
         if override.get("gpu_memory_mode") is not None:
             kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
         if override.get("gpu_layers") is not None:
@@ -696,6 +736,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
             strip_ubatch = "n_ubatch" in kwargs,
+            strip_ctx_checkpoints = "ctx_checkpoints" in kwargs,
+            strip_cache_ram = "cache_ram" in kwargs,
+            strip_spec_draft_cache = "spec_draft_cache_type" in kwargs,
         )
     return kwargs
 
