@@ -13,6 +13,7 @@ from hub.utils.gguf import (
     gguf_variant_family,
     gguf_variant_key,
     is_big_endian_gguf_path,
+    drop_shadowed_appledouble_siblings,
     is_gguf_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
@@ -215,6 +216,10 @@ def dflash_plan_files(
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
+    # Family grouping keeps the family holding the lexicographically first name, which is the
+    # "._" one, so the plan fetched the sidecar and marked the variant complete -- leaving local
+    # discovery, which judges by header, no main GGUF to load.
+    siblings = drop_shadowed_appledouble_siblings(list(siblings))
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
     all_mmproj_filenames = frozenset(
