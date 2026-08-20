@@ -14,7 +14,10 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_snapshots_preferring_whole
+from hub.utils.gguf import (
+    extract_quant_label,
+    iter_snapshots_preferring_whole,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -30,6 +33,7 @@ from utils.paths.path_utils import (
 )
 
 from .schemas import MAX_CHAT_TEMPLATE_BYTES, ValidateChatTemplateResponse
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +236,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
             if not name.lower().endswith(".gguf") or _is_mmproj(name):
                 continue
             path = Path(current) / name
+            if is_appledouble_metadata(path):
+                continue
             try:
                 rel = path.relative_to(dir_path).as_posix()
             except ValueError:
