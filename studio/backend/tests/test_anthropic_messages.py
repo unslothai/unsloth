@@ -196,6 +196,115 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
     )
 
 
+# thinking x reasoning_effort, every combination. The request model documents
+# "[x-unsloth] reasoning controls ... win over `thinking` when both are
+# present", so reasoning_effort must be resolved BEFORE the native block: an
+# effort decides whenever it is sent, and `thinking` only speaks when neither
+# x-unsloth control did. Pinned as a full cross product so the precedence
+# cannot silently flip back -- reading resolved_enable_thinking() first made
+# `thinking: enabled` + `reasoning_effort: "none"` still think on Qwen3.
+_THINKING_EFFORT_MATRIX = [
+    # (thinking, reasoning_effort, expected enable_thinking)
+    (None, None, None),
+    (None, "none", False),
+    (None, "low", True),
+    (None, "high", True),
+    ("enabled", None, True),
+    ("enabled", "none", False),
+    ("enabled", "low", True),
+    ("enabled", "high", True),
+    ("disabled", None, False),
+    ("disabled", "none", False),
+    ("disabled", "low", True),
+    ("disabled", "high", True),
+]
+
+
+@pytest.mark.parametrize("thinking_type, effort, expected", _THINKING_EFFORT_MATRIX)
+def test_reasoning_effort_outranks_native_thinking(thinking_type, effort, expected):
+    from routes.inference import _anthropic_reasoning_args
+
+    fields = {}
+    if thinking_type is not None:
+        fields["thinking"] = {"type": thinking_type}
+    if effort is not None:
+        fields["reasoning_effort"] = effort
+    args = _anthropic_reasoning_args(_basic_payload(**fields))
+
+    assert args["enable_thinking"] is expected
+    # The raw effort still reaches effort-dial templates untouched.
+    assert args["reasoning_effort"] == effort
+    # Precedence resolution must not touch preserve_thinking (three-valued:
+    # None keeps llama-server on the load-time --chat-template-kwargs).
+    assert args["preserve_thinking"] is None
+
+
+@pytest.mark.parametrize("thinking_type, effort, expected", _THINKING_EFFORT_MATRIX)
+def test_thinking_effort_matrix_reaches_enable_thinking_templates(thinking_type, effort, expected):
+    """The matrix as the chat_template_kwargs a Qwen3-style template receives.
+
+    Plain ``enable_thinking`` templates have no effort dial, so
+    _request_reasoning_kwargs reads the boolean only -- if the effort loses to
+    `thinking` upstream it is dropped here with nothing downstream to recover
+    it, and a request that asked for no reasoning gets reasoning anyway.
+    """
+    from routes.inference import _anthropic_reasoning_args, _reasoning_template_kwargs
+
+    class _QwenStyleBackend:
+        """Mirrors LlamaCppBackend._request_reasoning_kwargs for reasoning_style
+        'enable_thinking': the boolean is the only dial, effort is ignored."""
+
+        def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
+            kwargs = {}
+            if enable_thinking is not None:
+                kwargs["enable_thinking"] = enable_thinking
+            if preserve_thinking is not None:
+                kwargs["preserve_thinking"] = preserve_thinking
+            return kwargs or None
+
+    fields = {}
+    if thinking_type is not None:
+        fields["thinking"] = {"type": thinking_type}
+    if effort is not None:
+        fields["reasoning_effort"] = effort
+    args = _anthropic_reasoning_args(_basic_payload(**fields))
+    resolved = _reasoning_template_kwargs(
+        _QwenStyleBackend(),
+        args["enable_thinking"],
+        args["reasoning_effort"],
+        args["preserve_thinking"],
+    )
+
+    if expected is None:
+        assert resolved is None
+    else:
+        assert resolved == {"enable_thinking": expected}
+
+
+def test_x_unsloth_enable_thinking_still_outranks_effort_and_thinking():
+    # Precedence WITHIN the x-unsloth group is unchanged: the explicit boolean
+    # is the most specific control and beats both the effort dial and the
+    # native block.
+    from routes.inference import _anthropic_reasoning_args
+
+    args = _anthropic_reasoning_args(
+        _basic_payload(
+            thinking = {"type": "disabled"},
+            enable_thinking = True,
+            reasoning_effort = "none",
+        )
+    )
+    assert args["enable_thinking"] is True
+    args = _anthropic_reasoning_args(
+        _basic_payload(
+            thinking = {"type": "enabled"},
+            enable_thinking = False,
+            reasoning_effort = "high",
+        )
+    )
+    assert args["enable_thinking"] is False
+
+
 def test_replayed_thinking_preserved_only_when_requested():
     from core.inference.anthropic_compat import anthropic_messages_to_openai
 

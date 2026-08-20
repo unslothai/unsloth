@@ -3042,7 +3042,16 @@ def _anthropic_reasoning_args(payload) -> dict:
     reasoning fields; without this the request is parsed and silently dropped,
     so the model can never be switched out of its load-time reasoning default.
     """
-    enable_thinking = payload.resolved_enable_thinking()
+    # Resolve in the precedence the request model documents: "[x-unsloth]
+    # reasoning controls ... win over `thinking` when both are present". Both
+    # x-unsloth controls outrank the native block, so reasoning_effort is
+    # consulted BEFORE falling back to `thinking` -- reading
+    # resolved_enable_thinking() first would let `thinking` pre-empt the effort
+    # dial and silently drop it on plain enable_thinking templates (Qwen3),
+    # whose _request_reasoning_kwargs looks at the boolean only. The
+    # effort-dial families already honor effort downstream, so this is what
+    # makes one request mean the same thing across template shapes.
+    enable_thinking = payload.enable_thinking
     reasoning_effort = payload.reasoning_effort
     # Mirror the /v1/responses mapping: an effort-only request still drives
     # enable_thinking-style templates, whose only dial is the boolean --
@@ -3050,6 +3059,11 @@ def _anthropic_reasoning_args(payload) -> dict:
     # the think-markup parsing gate reading the same effective controls.
     if enable_thinking is None and reasoning_effort is not None:
         enable_thinking = reasoning_effort != "none"
+    if enable_thinking is None:
+        # Neither x-unsloth control was sent: fall back to Anthropic's native
+        # `thinking` block (and to None when that is absent too, leaving the
+        # model in its load-time default).
+        enable_thinking = payload.resolved_enable_thinking()
     return {
         "enable_thinking": enable_thinking,
         "reasoning_effort": reasoning_effort,
