@@ -40,9 +40,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "tests" / "studio" / "playwright_settings_tabs.py"
-DIALOG = (
-    ROOT / "studio" / "frontend" / "src" / "features" / "settings" / "settings-dialog.tsx"
-)
+DIALOG = ROOT / "studio" / "frontend" / "src" / "features" / "settings" / "settings-dialog.tsx"
 
 
 def _smoke_tabs() -> list[str]:
@@ -111,9 +109,9 @@ def test_the_nav_assertion_is_not_hardcoded() -> None:
         "before blocking, not a literal. A hardcoded count fails the moment a "
         "settings page is added, and reports it as the dialog being taken down."
     )
-    assert not re.search(r'state\["nav"\]\s*!=\s*\d+', text), (
-        "found a hardcoded nav count in the blocked-panel check"
-    )
+    assert not re.search(
+        r'state\["nav"\]\s*!=\s*\d+', text
+    ), "found a hardcoded nav count in the blocked-panel check"
 
 
 def test_the_guard_reads_both_files() -> None:

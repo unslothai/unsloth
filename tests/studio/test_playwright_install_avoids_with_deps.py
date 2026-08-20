@@ -71,7 +71,7 @@ def _workflow_files() -> list[Path]:
     return sorted(WORKFLOWS.glob("*.yml"))
 
 
-@pytest.mark.parametrize("path", _workflow_files(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _workflow_files(), ids = lambda p: p.name)
 def test_no_workflow_installs_playwright_browsers_with_deps(path: Path) -> None:
     offenders = [
         f"{path.name}::{job}::{step}"
