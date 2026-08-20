@@ -558,8 +558,9 @@ export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
  *      "the request exceeds the available context size (N tokens)".
  *   2. The friendly rewrite from
  *      ``backend/routes/inference.py::_friendly_error``: "Message too long:
- *      ... context window. Try increasing the Context Length ..." (the one
- *      most users see on the streaming GGUF path).
+ *      ... context window. ..." (the one most users see on the streaming GGUF
+ *      path). Its advice branches on whether the conversation or the single
+ *      turn is oversized, so only the lead-in is stable to match on.
  *
  * Match substrings, not full regexes: both layers have drifted across
  * versions (llama.cpp phrasing and _friendly_error copy edits).
