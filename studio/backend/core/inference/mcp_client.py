@@ -947,9 +947,8 @@ def ui_resource_uris_for_tools(tools: list) -> dict:
 MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
-# Frontend-only marker carrying the widget's seed data, not the template, which
-# is fetched separately. Emitted BEFORE the image envelope, whose parse reads to
-# end of string.
+# Frontend-only marker carrying the widget's seed data, not the template (fetched
+# separately). Emitted BEFORE the image envelope, whose parse reads to end of string.
 MCP_UI_SENTINEL = "__MCP_UI__:"
 # Seed data rides the chat history, so an oversized blob is dropped instead.
 MAX_UI_STRUCTURED_CHARS = 1_000_000
@@ -963,8 +962,7 @@ def _ui_envelope(result: Any, ui_resource_uri: str) -> str:
         payload["_meta"] = meta
     if structured is not None:
         payload["structuredContent"] = structured
-    # The view is seeded from this rather than the flattened body, which carries
-    # host notes ("N images attached") the tool never sent.
+    # Seeded from the tool's own text, not the flattened body with its host notes.
     own_text = "\n".join(
         str(getattr(block, "text", "") or "")
         for block in getattr(result, "content", None) or []
@@ -1287,8 +1285,7 @@ def _content_block_json(block: Any) -> dict:
     dump = getattr(block, "model_dump", None)
     if callable(dump):
         try:
-            # by_alias, or the SDK's `meta` field reaches the widget under that
-            # name instead of the protocol's `_meta`.
+            # by_alias, or the SDK's `meta` reaches the widget instead of `_meta`.
             return dump(mode = "json", exclude_none = True, by_alias = True)
         except Exception:  # noqa: BLE001
             pass

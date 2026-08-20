@@ -138,8 +138,7 @@ def test_the_envelope_precedes_the_images_so_both_survive():
 
 
 def test_a_failed_call_renders_no_widget():
-    # There is nothing for the widget to draw, and showing the frame anyway
-    # would seed it with the absent data of a call that failed.
+    # Nothing to draw, and showing the frame would seed it with a failed call's absent data.
     flat = _flatten_result(_result(_text("boom"), is_error = True), UI)
     assert MCP_UI_SENTINEL not in flat
     assert flat == "Error: boom"
@@ -185,8 +184,7 @@ def test_a_literal_mention_before_a_real_envelope_is_kept():
         # Tolerated, not spec: the deprecated flat key.
         ({"meta": {"ui/resourceUri": UI}}, UI),
         ({"meta": {"ui": {"resourceUri": "  " + UI + "  "}}}, UI),
-        # Only ui:// is fetched: resourceUri names a template the host reads
-        # back with the server's stored credentials.
+        # Only ui:// is fetched: the host reads resourceUri back with the server's credentials.
         ({"meta": {"ui": {"resourceUri": "https://evil.example/x"}}}, None),
         ({"meta": {"ui": {"resourceUri": "file:///etc/passwd"}}}, None),
         ({"meta": {"ui": {"resourceUri": "ui://"}}}, None),
@@ -283,8 +281,7 @@ def test_a_widget_call_keeps_the_result_shape():
 
 
 def test_a_widget_call_reports_a_tool_error_rather_than_prefixing_text():
-    # The model-facing path turns is_error into an "Error: " prefix; a widget
-    # gets the flag, because it renders the failure itself.
+    # The model-facing path prefixes "Error: "; a widget gets the flag and renders it.
     out = _structured_result(_result(_text("boom"), is_error = True))
     assert out["isError"] is True
     assert out["content"] == [{"type": "text", "text": "boom"}]
@@ -327,8 +324,7 @@ def test_declared_domains_widen_only_their_own_directive():
     assert "connect-src https://api.example.com;" in csp
     assert "img-src data: blob: *.cdn.example.com;" in csp
     assert "script-src 'unsafe-inline' *.cdn.example.com;" in csp
-    # A resource domain must not become a connect domain, or a template could
-    # exfiltrate through a host it only declared for images.
+    # A resource domain must not become a connect domain, or an image host is an exfiltration route.
     assert "*.cdn.example.com" not in csp.split("connect-src ")[1].split(";")[0]
 
 
@@ -529,8 +525,7 @@ def test_a_failed_rediscovery_does_not_500_the_fetch(tmp_path, monkeypatch):
 )
 def test_only_a_declared_ui_resource_is_readable(tmp_path, monkeypatch, uri):
     # The uri arrives from the browser. Without this gate a caller could name any
-    # resource on the server and have the backend read it back with the server's
-    # stored credentials.
+    # resource on the server and have it read back with the server's stored credentials.
     from fastapi import HTTPException
 
     routes_mcp = _server_with_tools(tmp_path, monkeypatch, [_DASH_TOOL])
@@ -623,8 +618,7 @@ def test_a_widget_call_respects_the_tools_off_switch(tmp_path, monkeypatch):
 
 
 def test_a_widget_call_rides_the_conversation_stdio_session(tmp_path, monkeypatch):
-    # A widget's calls must land on the same server subprocess the chat's own
-    # calls do, or a stateful server answers the widget from a second process.
+    # A widget's calls must land on the chat's subprocess, or a stateful server spawns a second one.
     from core.inference.tools import execute_tool
     from models.mcp_servers import McpUiToolCallRequest
 
