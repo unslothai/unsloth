@@ -20,9 +20,11 @@ const {
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
+  claimAutoContinue,
   recordAutoContinue,
   rejectsAssistantPrefill,
   resetAutoContinue,
+  wasAutoContinued,
   shouldAutoContinue,
   resumesExactly,
   stripContinuationOverlap,
@@ -416,4 +418,45 @@ test("an unknown fit does not block resuming", () => {
     shouldAutoContinue("length", "parent-1", { fits: true }),
     true,
   );
+});
+
+test("a message is claimed for automatic continuation exactly once", () => {
+  resetAutoContinue();
+  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(claimAutoContinue("m1"), false);
+  assert.equal(claimAutoContinue("m1"), false);
+});
+
+test("the claim survives a remount, which a component ref did not", () => {
+  // Leave the chat with a truncated branch selected and come back: a ref was fresh
+  // while the parent still had budget, so the effect fired again and created another
+  // sibling and another paid provider request.
+  resetAutoContinue();
+  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+  assert.equal(claimAutoContinue("m1"), false);
+});
+
+test("claims are tracked per message", () => {
+  resetAutoContinue();
+  assert.equal(claimAutoContinue("m1"), true);
+  assert.equal(claimAutoContinue("m2"), true);
+  assert.equal(claimAutoContinue("m1"), false);
+});
+
+test("a missing message id is refused rather than claimed", () => {
+  resetAutoContinue();
+  assert.equal(claimAutoContinue(null), false);
+  assert.equal(claimAutoContinue(undefined), false);
+  assert.equal(claimAutoContinue(""), false);
+});
+
+test("a claim is reported and cleared by a full reset", () => {
+  resetAutoContinue();
+  assert.equal(wasAutoContinued("m1"), false);
+  claimAutoContinue("m1");
+  assert.equal(wasAutoContinued("m1"), true);
+  resetAutoContinue();
+  assert.equal(wasAutoContinued("m1"), false);
+  assert.equal(claimAutoContinue("m1"), true);
 });

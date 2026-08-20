@@ -134,6 +134,7 @@ import {
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
+  claimAutoContinue,
   recordAutoContinue,
   shouldAutoContinue,
 } from "@/features/chat/utils/continuation";
@@ -6560,18 +6561,20 @@ const ContinueMessageBarForLastMessage: FC = () => {
       partialTokens: Math.ceil(partial.length / 4),
       promptTarget: truncation?.prompt_target,
     });
-  // Which message this component has already continued. A ref, not the module-level
-  // budget: `<StrictMode>` in src/main.tsx replays effects on the same fiber, and both
-  // passes close over the same `autoContinuing`, so nothing inside would have differed.
-  // Rechecking the budget would not have helped either, since one recorded round still
-  // leaves the limit unspent. Two concurrent continuations meant two budget slots and
-  // two provider requests. Refs survive StrictMode's simulated remount, so this does not.
-  const autoContinuedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!autoContinuing || !parentId || autoContinuedRef.current === messageId) {
+    if (!autoContinuing || !parentId) {
       return;
     }
-    autoContinuedRef.current = messageId;
+    // Claimed in module scope, not a ref. `<StrictMode>` in src/main.tsx replays this
+    // effect on the same fiber with the same `autoContinuing`, so nothing inside would
+    // have differed, and rechecking the round budget would not help either: one recorded
+    // round still leaves the limit unspent. A ref fixed the replay but not a real
+    // remount, so leaving the chat with a truncated branch selected and returning fired
+    // it again, creating another sibling and another paid request. The claim survives
+    // both, and is the same seam `resetAutoContinue()` clears.
+    if (!claimAutoContinue(messageId)) {
+      return;
+    }
     // Recorded BEFORE the run, so a round that produces nothing still spends its budget
     // instead of re-firing this effect forever.
     recordAutoContinue(parentId);

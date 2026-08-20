@@ -373,10 +373,38 @@ export function autoContinueCount(key: string | null | undefined): number {
   return key ? (spent.get(key) ?? 0) : 0;
 }
 
+/**
+ * Messages this session has already continued automatically, by message id.
+ *
+ * Separate from `spent`, which counts rounds per logical turn and is what bounds a
+ * runaway loop. This answers a different question: has THIS message already been
+ * resumed once. A component-local ref cannot, because it dies with the component.
+ * Leave the chat with a truncated branch selected and come back, and the ref is fresh
+ * while the parent still has budget, so the effect fires again and creates another
+ * sibling and another paid request. Module scope outlives the remount; the ids are
+ * short and bounded by how many replies a session truncates.
+ */
+const continued = new Set<string>();
+
+/** Whether `messageId` still needs continuing. False once it has been claimed. */
+export function claimAutoContinue(messageId: string | null | undefined): boolean {
+  if (!messageId || continued.has(messageId)) {
+    return false;
+  }
+  continued.add(messageId);
+  return true;
+}
+
+/** Whether `messageId` was already continued automatically this session. */
+export function wasAutoContinued(messageId: string | null | undefined): boolean {
+  return Boolean(messageId && continued.has(messageId));
+}
+
 /** Test seam; also lets a new thread start from zero. */
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
+    continued.clear();
   } else {
     spent.delete(key);
   }
