@@ -335,27 +335,42 @@ def run(args, ab_ref = None) -> int:
             )
 
     auth = sides[0]["auth"]
-    init_scripts.append(resources.read_text("scene/dom.js"))
-    init_scripts.append(resources.read_text("scene/parity.js"))
-    # Loaded unconditionally, even without --surfaces. It defines selectors and reads dom.js and
-    # parity.js; it never runs on its own. Making the page's JS depend on a CLI flag would mean
-    # the flag changes what is on the page during the FILM as well, and the film's numbers must
-    # not depend on whether a later phase was asked for.
-    init_scripts.append(resources.read_text("scene/surfaces.js"))
 
-    # AN EXTERNAL PROBE OR ABLATION ARM, appended LAST so it can wrap anything scene/dom.js has
-    # already defined. One environment variable rather than a CLI flag per experiment, and WITH
-    # THE VARIABLE UNSET NOTHING IS APPENDED: the run is byte-identical to a run of a tree that
-    # does not have this hook. That property is the point. A potency probe perturbs the page it
-    # observes, so the probe run and the scored run have to be different runs of one harness, and
-    # the only safe way to arrange that is for the probe to be absent by default.
+    # ONE init script, not four, and the order inside it is the order of this list.
+    #
+    # Playwright is explicit that "the order of evaluation of multiple scripts installed via
+    # browserContext.addInitScript() and page.addInitScript() is not defined", so a dependency
+    # between two entries of `init_scripts` is a dependency on nothing. That was already load
+    # bearing before any probe existed: surfaces.js reads what dom.js and parity.js put on
+    # `window.__sb`, and it was relying on list order to find them. Concatenation makes the
+    # sequence a property of the string rather than of an undocumented scheduler.
+    #
+    # AN EXTERNAL PROBE OR ABLATION ARM goes LAST in that string, so it can wrap anything the
+    # scene scripts define. One environment variable rather than a CLI flag per experiment, and
+    # WITH THE VARIABLE UNSET NOTHING IS APPENDED: the run is byte-identical to a run of a tree
+    # that does not have this hook. That property is the point. A potency probe perturbs the page
+    # it observes, so the probe run and the scored run have to be different runs of one harness,
+    # and the only safe way to arrange that is for the probe to be absent by default.
+    #
+    # surfaces.js is loaded unconditionally, even without --surfaces. It defines selectors and
+    # never runs on its own. Making the page's JS depend on a CLI flag would mean the flag changes
+    # what is on the page during the FILM as well, and the film's numbers must not depend on
+    # whether a later phase was asked for.
     extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
+    page_scripts = [
+        resources.read_text("scene/dom.js"),
+        resources.read_text("scene/parity.js"),
+        resources.read_text("scene/surfaces.js"),
+    ]
     if extra_init:
-        init_scripts.append(Path(extra_init).read_text(encoding = "utf-8"))
+        page_scripts.append(Path(extra_init).read_text(encoding = "utf-8"))
         _log(
             f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and is NOT "
             f"a clean measurement of the build"
         )
+    # `;` between them: every one of these files is an IIFE, and a file whose last line has no
+    # terminator would otherwise splice into the next one's opening parenthesis.
+    init_scripts.append("\n;\n".join(page_scripts))
 
     procs_before = {}
     try:
@@ -671,12 +686,22 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
 
     probes = probe_scripts(records)
     if probes:
-        _log("")
-        _log(
+        reason = (
             f"NO A/B TABLE: this run carried an external init script ({', '.join(probes)}), so "
             f"its timings measure the page and the instrument together. The payload is kept "
             f"for the probe's own output and for --assert-liveness; it is not scorable."
         )
+        _log("")
+        _log(reason)
+        # OVERWRITTEN, not left alone and not deleted. `--resume` reuses the output directory, so
+        # an `ab.md` from an earlier clean run of the same directory would survive this refusal
+        # and sit at the standard artifact path, where it reads as this run's result. Deleting it
+        # would leave whoever opens the path with nothing to explain the absence, so the file is
+        # replaced by the refusal itself.
+        stale = paths.out / "ab.md"
+        if stale.exists():
+            stale.write_text(f"# No A/B table\n\n{reason}\n", encoding = "utf-8")
+            _log(f"  a previous {stale} was replaced by this refusal")
         _log("")
         return
 

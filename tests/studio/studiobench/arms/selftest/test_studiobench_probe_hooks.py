@@ -3,7 +3,7 @@
 
 """The two halves of the external-probe channel, pinned so neither can rot on its own.
 
-A probe needs a way IN (`SBENCH_EXTRA_INIT_SCRIPT`, appended after the scene scripts) and a way
+A probe needs a way IN (`SBENCH_EXTRA_INIT_SCRIPT`, concatenated after the scene scripts) and a way
 OUT (`SBENCH_PAGE_CONSOLE`, a prefix filter on the page's console). Neither is exercised by a
 normal run, because both are off unless the environment asks for them, which is exactly the
 property that makes them safe and exactly the property that lets them break unnoticed: delete the
@@ -114,6 +114,28 @@ def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: 
     assert "ROLE_PX" in probe_src
     assert "out.fallbackBite += 1;" in probe_src
     assert "} else if (Math.abs(r.height - px.padding) <= PX_EPS) {" in probe_src
+
+
+def test_the_page_scripts_are_installed_as_one_ordered_script(main_src: str):
+    """Playwright does not define the order of separate init scripts.
+
+    "The order of evaluation of multiple scripts installed via browserContext.addInitScript() and
+    page.addInitScript() is not defined." surfaces.js reads what dom.js and parity.js put on
+    `window.__sb`, and a probe may wrap either, so the sequence has to be a property of the string
+    rather than of the scheduler.
+    """
+
+    assert "page_scripts = [" in main_src
+    assert ".join(page_scripts))" in main_src
+    # The probe is appended to that list, never registered on its own.
+    assert "init_scripts.append(Path(extra_init)" not in main_src
+
+
+def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):
+    """`--resume` reuses the output directory, so `ab.md` may already exist from a clean run."""
+
+    assert 'stale = paths.out / "ab.md"' in main_src
+    assert "stale.write_text(" in main_src
 
 
 def test_the_event_counter_is_the_one_potency_rests_on(probe_src: str):
