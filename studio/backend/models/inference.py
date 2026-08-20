@@ -1551,7 +1551,8 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
-            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. External "
+            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html', "
+            "'read_skill']. External "
             "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
             "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
             "OpenAI Responses. If None, all local tools are enabled and no "

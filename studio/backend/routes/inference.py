@@ -3606,6 +3606,41 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     return False
 
 
+async def _filter_unavailable_skill_tool(tools: list[dict]) -> list[dict]:
+    if not any(tool["function"]["name"] == "read_skill" for tool in tools):
+        return tools
+    from core.inference.skills import SkillError, format_skill_catalog, list_skills
+
+    try:
+        enabled_skills = [
+            skill for skill in await asyncio.to_thread(list_skills) if skill["enabled"]
+        ]
+    except SkillError:
+        return [tool for tool in tools if tool["function"]["name"] != "read_skill"]
+    if not enabled_skills:
+        return [tool for tool in tools if tool["function"]["name"] != "read_skill"]
+    try:
+        catalog = format_skill_catalog(enabled_skills)
+    except SkillError:
+        return [tool for tool in tools if tool["function"]["name"] != "read_skill"]
+    selected: list[dict] = []
+    for tool in tools:
+        if tool["function"]["name"] != "read_skill":
+            selected.append(tool)
+            continue
+        function = tool["function"]
+        selected.append(
+            {
+                **tool,
+                "function": {
+                    **function,
+                    "description": f"{function['description']}\n\nEnabled skills:\n{catalog}",
+                },
+            }
+        )
+    return selected
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest,
     *,
@@ -3639,6 +3674,7 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    tools = await _filter_unavailable_skill_tool(tools)
     # Same rule for the conversation archive: offered only once this thread has had turns
     # evicted, so a short chat never sees the extra schema. On the first compaction the
     # tool is still absent (the archive is written mid-request) and the forced recall
@@ -19988,7 +20024,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation"}
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
 )
 
 
@@ -20549,17 +20585,21 @@ async def anthropic_messages(
     _server_tools_requested_pre = _selects_server_tools and not _anthropic_request_has_image(
         payload
     )
+    _selected_server_tools_pre: list[dict] = []
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
-        _selected_pre = _select_anthropic_server_tools(
+        _selected_server_tools_pre = _select_anthropic_server_tools(
             _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
+        )
+        _selected_server_tools_pre = await _filter_unavailable_skill_tool(
+            _selected_server_tools_pre
         )
         _perm_mode_pre = getattr(payload, "permission_mode", None)
         _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
         _gated_tool_selected_pre = any(
             tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
-            for tool in _selected_pre
+            for tool in _selected_server_tools_pre
         )
         # An explicit confirm_tool_calls=False opts out of the gate entirely (it
         # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
@@ -20686,7 +20726,9 @@ async def anthropic_messages(
     # enable_tools=false). Explicit False always wins. Same predicate as the
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
-    server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
+    server_tools = (
+        bool(_selected_server_tools_pre) and llama_backend.supports_tools and not _has_image
+    )
     client_tools = (
         not server_tools
         and len(openai_client_tools) > 0
@@ -21017,17 +21059,13 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+        from core.inference.tools import apply_full_access_tool_descriptions
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
         # confirm-gated request never evicts the resident model; the selection
         # here just picks the tools for the actual server-tool loop.
-        openai_tools = _select_anthropic_server_tools(
-            ALL_TOOLS,
-            requested_studio_tools,
-            payload.enabled_tools,
-        )
+        openai_tools = _selected_server_tools_pre
         # Mirrors _select_request_tools: this path builds its own selection, so
         # the Full access swap has to be repeated rather than inherited.
         _full_access = bool(getattr(payload, "bypass_permissions", False))

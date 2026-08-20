@@ -16,6 +16,7 @@ parses tool calls from the cumulative text and dispatches via
 
 import bisect
 import inspect
+import json
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -486,6 +487,7 @@ def run_safetensors_tool_loop(
     renderable_tools = None,
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    generation_stats_holder: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -691,6 +693,14 @@ def run_safetensors_tool_loop(
                 return False
             return _first_detected_tool_name(content) == "render_html"
 
+        prompt_conversation_bytes = len(
+            json.dumps(
+                conversation,
+                ensure_ascii = False,
+                separators = (",", ":"),
+                default = str,
+            ).encode("utf-8")
+        )
         gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
 
@@ -1315,23 +1325,42 @@ def run_safetensors_tool_loop(
                     if context_length and _accepts_kwarg(
                         execute_tool, "conversation_budget_tokens"
                     ):
-                        from core.inference.context_window import (
-                            estimate_messages_tokens_dense,
-                            prompt_budget,
-                        )
+                        from core.inference.context_window import prompt_budget
 
-                        # Dense, unlike the eviction estimator: four characters per token
-                        # undercounts CJK and emoji by about half, and this path has no
-                        # rolling fit to recover if the tool exchange it sizes then puts
-                        # the next prompt over the window. Measured on an 81-message CJK
-                        # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
-                        # room where 335 remained.
-                        kwargs["conversation_budget_tokens"] = max(
-                            0,
-                            prompt_budget(int(context_length), max_tokens)
-                            - estimate_messages_tokens_dense(conversation)
-                            - estimate_messages_tokens_dense(tools or []),
-                        )
+                        usage = (generation_stats_holder or {}).get("stats") or {}
+                        usage = usage.get("usage") if isinstance(usage, dict) else None
+                        prompt_tokens = usage.get("prompt_tokens") if usage else None
+                        completion_tokens = usage.get("completion_tokens") if usage else None
+                        if (
+                            isinstance(prompt_tokens, int)
+                            and not isinstance(prompt_tokens, bool)
+                            and prompt_tokens > 0
+                        ):
+                            current_conversation_bytes = len(
+                                json.dumps(
+                                    conversation,
+                                    ensure_ascii = False,
+                                    separators = (",", ":"),
+                                    default = str,
+                                ).encode("utf-8")
+                            )
+                            added_cost = max(
+                                0,
+                                current_conversation_bytes - prompt_conversation_bytes,
+                            )
+                            if (
+                                isinstance(completion_tokens, int)
+                                and not isinstance(completion_tokens, bool)
+                                and completion_tokens > 0
+                            ):
+                                added_cost = max(added_cost, completion_tokens)
+                            spent = prompt_tokens + added_cost + 64
+                            kwargs["conversation_budget_tokens"] = max(
+                                0,
+                                prompt_budget(int(context_length), max_tokens) - spent,
+                            )
+                        else:
+                            kwargs["conversation_budget_tokens"] = 0
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)

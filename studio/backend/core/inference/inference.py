@@ -969,6 +969,8 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
+        generation_stats_holder: dict = {}
+
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
@@ -993,6 +995,7 @@ class InferenceBackend:
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
             )
+            generation_stats_holder["stats"] = self.last_generation_stats
 
         initial = list(messages)
         if system_prompt:
@@ -1038,6 +1041,7 @@ class InferenceBackend:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            generation_stats_holder = generation_stats_holder,
         )
 
     def generate_chat_response(

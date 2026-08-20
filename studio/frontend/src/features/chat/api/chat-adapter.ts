@@ -33,6 +33,7 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import { hasEnabledSkills } from "./skills-api";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
@@ -1690,12 +1691,14 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+  const skillsOn = await hasEnabledSkills();
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
-    !ragOn
+    !ragOn &&
+    !skillsOn
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
     // request that never mentions them, so every pill being off has to say so.
@@ -1719,6 +1722,7 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
+      ...(skillsOn ? ["read_skill"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
     // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
@@ -4434,6 +4438,16 @@ export function createOpenAIStreamAdapter(
         }
       }
 
+      // safetensors and mlx disable their server-side tool loop for vision turns.
+      const imageBase64 = findLatestUserImageBase64(survivingMessages);
+      const skillLoaderAvailableForThisTurn = Boolean(
+        supportsStudioToolsForThisTurn &&
+          (isExternalRequest ||
+            !imageBase64 ||
+            selectedModelSummary?.isGguf === true),
+      );
+      const skillsEnabledForThisTurn =
+        skillLoaderAvailableForThisTurn && (await hasEnabledSkills());
       const combinedSystemPrompt = await resolveChatInstructions(
         resolvedThreadId,
         params.systemPrompt,
@@ -4463,7 +4477,8 @@ export function createOpenAIStreamAdapter(
         if (
           !anyWebEnabledForThisTurn &&
           !codeExecEnabledForThisTurn &&
-          !imageGenerationEnabledForThisTurn
+          !imageGenerationEnabledForThisTurn &&
+          !skillsEnabledForThisTurn
         ) {
           disabledToolGuard =
             `You do not have ${webLabel}, code execution, or image generation tools in this conversation. ` +
@@ -4472,9 +4487,13 @@ export function createOpenAIStreamAdapter(
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
         } else if (!anyWebEnabledForThisTurn && !codeExecEnabledForThisTurn) {
+          const availableTools = [
+            imageGenerationEnabledForThisTurn ? "image generation" : null,
+            skillsEnabledForThisTurn ? "Agent Skills" : null,
+          ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} or code execution tools in this conversation. ` +
-            "You may still use image generation tools when they are available and useful. " +
+            `You may still use ${availableTools.join(" and ")} when available and useful. ` +
             "If a request genuinely requires live data fetch or running code, " +
             "inform the user that you do not have access to these capabilities. " +
             "Do not return tool-call syntax inside your response.";
@@ -4482,6 +4501,7 @@ export function createOpenAIStreamAdapter(
           const availableTools = [
             codeExecEnabledForThisTurn ? "code execution" : null,
             imageGenerationEnabledForThisTurn ? "image generation" : null,
+            skillsEnabledForThisTurn ? "Agent Skills" : null,
           ].filter(Boolean);
           disabledToolGuard =
             `You do not have ${webLabel} tools in this conversation. ` +
@@ -4495,6 +4515,7 @@ export function createOpenAIStreamAdapter(
           const availableTools = [
             webLabel,
             imageGenerationEnabledForThisTurn ? "image generation" : null,
+            skillsEnabledForThisTurn ? "Agent Skills" : null,
           ].filter(Boolean);
           disabledToolGuard =
             "You do not have code execution tools in this conversation. " +
@@ -4535,7 +4556,6 @@ export function createOpenAIStreamAdapter(
 
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
-      const imageBase64 = findLatestUserImageBase64(survivingMessages);
       // A continuation resumes the turn as it was sent: picking up a clip staged in the
       // composer since would switch it onto the audio path, which cannot be continued.
       const audioBase64 = findLatestUserAudioBase64(
@@ -5325,7 +5345,8 @@ export function createOpenAIStreamAdapter(
                 studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
-                projectRagEnabled)
+                projectRagEnabled ||
+                skillsEnabledForThisTurn)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -5334,6 +5355,7 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
+                      ...(skillsEnabledForThisTurn ? ["read_skill"] : []),
                       // Hosted tools Studio has no local stand-in for. Their
                       // pills stay lit whether or not a Studio tool is on, so
                       // listing only the local names here would silently drop
@@ -5555,7 +5577,8 @@ export function createOpenAIStreamAdapter(
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
               ragEnabled ||
-              projectRagEnabled)
+              projectRagEnabled ||
+              skillsEnabledForThisTurn)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -5570,6 +5593,7 @@ export function createOpenAIStreamAdapter(
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
+                    ...(skillsEnabledForThisTurn ? ["read_skill"] : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,

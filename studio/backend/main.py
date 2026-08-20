@@ -309,6 +309,7 @@ from routes import (
     openai_codex_auth_router,
     rag_router,
     research_runs_router,
+    skills_router,
     training_history_router,
     training_router,
     video_router,
@@ -1068,6 +1069,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/hub",
     "/api/chat",
     "/api/settings",
+    "/api/skills",
     "/api/train",
     "/api/export",
     "/mcp",
@@ -1082,6 +1084,7 @@ _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
 # The diffusion dataset upload (POST /api/train/diffusion/dataset) is a multipart upload
 # under /api/train; like /api/datasets/upload it enforces its own cap. EXACT path.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
+_SKILL_BUNDLE_IMPORT_PATH = "/api/skills/import"
 _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
@@ -1093,11 +1096,16 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 # Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
+    _SKILL_BUNDLE_IMPORT_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
 )
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
+    if path.rstrip("/") == _SKILL_BUNDLE_IMPORT_PATH:
+        from core.inference.skills import MAX_ARCHIVE_BYTES
+
+        return upload_request_limit_bytes(MAX_ARCHIVE_BYTES)
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
@@ -1371,6 +1379,7 @@ app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = [
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
+app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
