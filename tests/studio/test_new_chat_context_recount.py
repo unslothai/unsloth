@@ -517,7 +517,9 @@ def _assert_prelude_covers_refresh_imports(prelude: str, body: str) -> None:
     bail with no stub here.
     """
     imported: set[str] = set()
-    for match in re.finditer(r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", read(REFRESH), re.M):
+    for match in re.finditer(
+        r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", read(REFRESH), re.M
+    ):
         for spec in match.group(1).split(","):
             spec = spec.strip()
             # `import { type Foo }` is erased at runtime, so it can never be a
@@ -527,7 +529,9 @@ def _assert_prelude_covers_refresh_imports(prelude: str, body: str) -> None:
             name = spec.split(" as ")[-1].strip()
             if name:
                 imported.add(name)
-    for match in re.finditer(r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", read(REFRESH), re.M):
+    for match in re.finditer(
+        r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", read(REFRESH), re.M
+    ):
         imported.add(match.group(1))
     # A name only discussed in a comment is not a use.
     code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", body, flags = re.S))

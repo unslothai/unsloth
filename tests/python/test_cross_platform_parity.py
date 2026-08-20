@@ -44,9 +44,9 @@ class TestNoTorchBackendAutoInInstallSh:
                     fallback_end = i
                     break
                 depth -= 1
-        assert fallback_end is not None, (
-            "could not find the `fi` closing install.sh's GPU-detection fallback block"
-        )
+        assert (
+            fallback_end is not None
+        ), "could not find the `fi` closing install.sh's GPU-detection fallback block"
         fallback_range = (
             range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
         )
