@@ -24,6 +24,12 @@ const end = source.indexOf(endMarker, start + startMarker.length);
 assert.ok(start >= 0 && end > start, "the llama job interval moved");
 const body = source.slice(start + startMarker.length, end);
 
+test("only active-job polling uses the client-side status deadline", () => {
+  assert.match(body, /requestStatus\(false, true\)/);
+  assert.match(source, /requestStatus\(true\)\.then/);
+  assert.doesNotMatch(source, /requestStatus\(true, true\)/);
+});
+
 const AsyncFunction = Object.getPrototypeOf(async () => undefined)
   .constructor as new (
   ...args: string[]

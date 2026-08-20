@@ -231,13 +231,19 @@ export function useLlamaUpdateCheck({
 
   // Every status source shares one sequence, so a response from an older
   // request cannot overwrite a newer observation even when they resolve out
-  // of order. Each read is bounded so serialization cannot latch forever.
+  // of order. Only serialized job polls need a client deadline; discovery
+  // checks retain the backend's longer source-build probe budget.
   const requestStatus = useCallback(
-    async (forceRefresh = false): Promise<SequencedLlamaUpdateStatus> => {
+    async (
+      forceRefresh = false,
+      bounded = false,
+    ): Promise<SequencedLlamaUpdateStatus> => {
       const requestId = ++statusRequestSequence.current;
-      const status = await boundedLlamaStatusRequest((signal) =>
-        fetchStatus(forceRefresh, signal),
-      );
+      const status = bounded
+        ? await boundedLlamaStatusRequest((signal) =>
+            fetchStatus(forceRefresh, signal),
+          )
+        : await fetchStatus(forceRefresh).catch(() => null);
       return { requestId, status };
     },
     [],
@@ -278,7 +284,7 @@ export function useLlamaUpdateCheck({
         if (pollInFlightGeneration.current === generation) return;
         pollInFlightGeneration.current = generation;
         try {
-          const next = await requestStatus();
+          const next = await requestStatus(false, true);
           if (
             !next.status ||
             generation !== pollGeneration.current ||
@@ -336,7 +342,7 @@ export function useLlamaUpdateCheck({
           // request can therefore carry the pre-install offer alongside a
           // terminal job. Keep this poll alive if the immediate reconciliation
           // fails, so a later interval retries instead of waiting an hour.
-          const reconciled = await requestStatus();
+          const reconciled = await requestStatus(false, true);
           const surfaceReconciled = surfaceIfAvailableRef.current;
           if (
             !reconciled.status ||
