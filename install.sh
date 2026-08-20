@@ -2925,29 +2925,41 @@ _uv_venv_arm64() {  # label
 _uv_venv_requested() {  # label
     _uvvr_label="$1"
     _uvvr_req="$(_python_request "$PYTHON_VERSION")"
-    _uvvr_out=$(mktemp) || return 1
-    _uvvr_err=$(mktemp) || { rm -f "$_uvvr_out"; return 1; }
+    # Tee, don't redirect-and-replay: Studio consumes [TAURI:*] as they arrive,
+    # and holding them until uv venv exits makes a recovered fallback look idle.
+    _uvvr_dir=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-uv-venv.XXXXXX") || return 1
+    _uvvr_out="$_uvvr_dir/out"
+    _uvvr_err="$_uvvr_dir/err"
+    if ! mkfifo "$_uvvr_dir/out_pipe" "$_uvvr_dir/err_pipe"; then
+        rm -rf "$_uvvr_dir"
+        return 1
+    fi
+    # GNU coreutils dropped POSIX -u (always unbuffered); BSD tee still has it.
+    tee -u /dev/null </dev/null >/dev/null 2>&1 && _uvvr_tee_u=-u || _uvvr_tee_u=
+    tee $_uvvr_tee_u "$_uvvr_out" < "$_uvvr_dir/out_pipe" &
+    _uvvr_tee_out=$!
+    tee $_uvvr_tee_u "$_uvvr_err" < "$_uvvr_dir/err_pipe" >&2 &
+    _uvvr_tee_err=$!
     if _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" \
-            >"$_uvvr_out" 2>"$_uvvr_err"; then
+            >"$_uvvr_dir/out_pipe" 2>"$_uvvr_dir/err_pipe"; then
         _uvvr_status=0
     else
         _uvvr_status=$?
     fi
-    cat "$_uvvr_out"
-    cat "$_uvvr_err" >&2
+    wait "$_uvvr_tee_out" "$_uvvr_tee_err" 2>/dev/null || true
     if [ "$_uvvr_status" -eq 0 ]; then
-        rm -f "$_uvvr_out" "$_uvvr_err"
+        rm -rf "$_uvvr_dir"
         return 0
     fi
     if grep -q "Python downloads are set to 'manual'" "$_uvvr_out" "$_uvvr_err" 2>/dev/null \
        || grep -q "python-downloads" "$_uvvr_out" "$_uvvr_err" 2>/dev/null; then
-        rm -f "$_uvvr_out" "$_uvvr_err"
+        rm -rf "$_uvvr_dir"
         run_install_cmd "$_uvvr_label (managed Python)" \
             uv python install "$_uvvr_req" || return $?
         _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" || return $?
         return 0
     fi
-    rm -f "$_uvvr_out" "$_uvvr_err"
+    rm -rf "$_uvvr_dir"
     return "$_uvvr_status"
 }
 

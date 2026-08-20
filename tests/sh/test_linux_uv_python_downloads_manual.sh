@@ -129,11 +129,22 @@ assert_eq "no leftover raw _run_uv_venv create venv" "0" "$_raw_create"
 _raw_recreate=$(grep -c '_run_uv_venv "recreate venv"' "$INSTALL_SH" || true)
 assert_eq "no leftover raw _run_uv_venv recreate venv" "0" "$_raw_recreate"
 
-if grep -E 'UV_PYTHON_DOWNLOADS=automatic|UV_NO_CONFIG=1' "$INSTALL_SH" | grep -q '_uv_venv_requested\|python install'; then
+if grep -E 'UV_PYTHON_DOWNLOADS=automatic|UV_NO_CONFIG=1' "$INSTALL_SH" | grep -qE '_uv_venv_requested|python install'; then
     echo "  FAIL: helper must not globally override distro uv download policy"
     FAIL=$((FAIL + 1))
 else
     echo "  PASS: helper does not set UV_PYTHON_DOWNLOADS/UV_NO_CONFIG"
+    PASS=$((PASS + 1))
+fi
+
+_helper=$(sed -n '/^_uv_venv_requested()/,/^}/p' "$INSTALL_SH")
+assert_contains "helper tees stdout/stderr live" "$_helper" "tee"
+assert_contains "helper uses mkfifo rather than redirect-and-cat" "$_helper" "mkfifo"
+if echo "$_helper" | grep -q 'cat "$_uvvr_out"'; then
+    echo "  FAIL: helper still replays captured stdout with cat"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: helper does not replay captured stdout with cat"
     PASS=$((PASS + 1))
 fi
 
@@ -172,6 +183,11 @@ case "$1" in
             echo "error: No interpreter found for Python >=3.13, !=3.13.8, <3.14 in search path or managed installations" >&2
             echo "" >&2
             echo "hint: A managed Python download is available for Python >=3.13, !=3.13.8, <3.14, but Python downloads are set to 'manual', use \`uv python install >=3.13, !=3.13.8, <3.14\` to install the required version" >&2
+            if [ "${UV_SLEEP_VENV:-0}" != 0 ]; then
+                : > "${UV_STUB_STATE}/sleeping"
+                sleep "$UV_SLEEP_VENV"
+                rm -f "${UV_STUB_STATE}/sleeping"
+            fi
             exit 2
         fi
         if [ -f "${UV_STUB_STATE}/fail_other" ]; then
@@ -221,7 +237,53 @@ assert_contains "fedora fallback ran uv python install" "$_out" \
     "python install >=3.13,<3.14,!=3.13.8"
 assert_contains "recovery clears the Studio failure" "$_out" "ERROR_CLEAR"
 assert_eq "ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
-    "$(echo "$_out" | grep -o 'ERROR_OUTPUT\|ERROR_CLEAR' | tail -1)"
+    "$(echo "$_out" | grep -oE 'ERROR_OUTPUT|ERROR_CLEAR' | tail -1)"
+
+# Redirect-and-cat would hold [TAURI:*] until uv venv returns. Tee must emit
+# OUTPUT_CLEAR while the first venv is still running (the stub sleeps).
+_sd=$(mktemp -d)
+_live=$(mktemp)
+_log=$(mktemp)
+rm -f "$_STUB_STATE/fail_manual" "$_STUB_STATE/fail_other" "$_STUB_STATE/sleeping"
+: > "$_STUB_STATE/fail_manual"
+(
+    PATH="$_UVDIR:$PATH" OS=linux VENV_DIR="$_sd/venv" PYTHON_VERSION=3.13 \
+        UV_STUB_LOG="$_log" UV_STUB_STATE="$_STUB_STATE" UV_FAIL_INSTALL=0 \
+        UV_SLEEP_VENV=2 \
+        sh -c ". '$_STREAM'; _uv_venv_requested 'create venv'; echo RC=\$?"
+) >"$_live" 2>&1 &
+_pid=$!
+_gave_up=
+_t0=$(date +%s)
+while [ ! -f "$_STUB_STATE/sleeping" ]; do
+    if ! kill -0 "$_pid" 2>/dev/null; then
+        _gave_up=exited
+        break
+    fi
+    if [ $(( $(date +%s) - _t0 )) -ge 8 ]; then
+        _gave_up=timeout
+        break
+    fi
+done
+if [ -n "$_gave_up" ]; then
+    echo "  FAIL: live-stream probe never saw the venv sleep ($_gave_up)"
+    FAIL=$((FAIL + 1))
+    kill "$_pid" 2>/dev/null || true
+elif grep -q OUTPUT_CLEAR "$_live" 2>/dev/null && [ -f "$_STUB_STATE/sleeping" ]; then
+    echo "  PASS: TAURI markers stream while venv is still running"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: TAURI markers were held back until venv creation ended"
+    FAIL=$((FAIL + 1))
+fi
+wait "$_pid" || true
+_out=$(cat "$_live")
+assert_contains "live fedora fallback still returns 0" "$_out" "RC=0"
+assert_contains "live recovery still clears the Studio failure" "$_out" "ERROR_CLEAR"
+assert_eq "live ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
+    "$(echo "$_out" | grep -oE 'ERROR_OUTPUT|ERROR_CLEAR' | tail -1)"
+rm -rf "$_sd"
+rm -f "$_live" "$_log"
 
 _out=$(_emit other)
 assert_not_contains "unrelated stream failure: no python install" "$_out" "python install"
