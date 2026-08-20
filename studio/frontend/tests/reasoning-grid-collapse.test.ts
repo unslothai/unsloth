@@ -112,7 +112,14 @@ test("the close path unmounts on transitionend for the right property, with a ti
   assert.ok(
     code.includes('event.target === node && event.propertyName === "grid-template-rows"'),
   );
-  assert.ok(code.includes("window.setTimeout(finish, closeDurationMs)"));
+  // The backstop must be armed BEYOND the transition duration. It starts counting in the same
+  // passive-effect flush that queues `setExpanded(false)`, which is before the browser starts the
+  // transition, so arming it at exactly `closeDurationMs` makes it always beat `transitionend` and
+  // cut the close short.
+  assert.ok(
+    code.includes("window.setTimeout(finish, closeDurationMs + CLOSE_FALLBACK_MARGIN_MS)"),
+  );
+  assert.match(code, /const CLOSE_FALLBACK_MARGIN_MS = \d+;/);
 });
 
 test("the flag is off by default", () => {

@@ -163,6 +163,8 @@ type UnmeasuredCollapsibleContentProps = React.ComponentPropsWithoutRef<"div"> &
   // when the transition ends; this is the fallback for the cases where `transitionend` never
   // arrives -- a closed pane inside a `display: none` ancestor, a tab in the background, or
   // reduced motion collapsing the duration to 0.01ms in a browser that then skips the event.
+  // The timer is armed at this plus `CLOSE_FALLBACK_MARGIN_MS`, so it stays a fallback rather
+  // than the path that normally wins.
   closeDurationMs?: number;
   // Rendered even while closed. Matches Radix's `forceMount`, and like Radix's it exists so a
   // caller can drive its own presence.
@@ -170,6 +172,13 @@ type UnmeasuredCollapsibleContentProps = React.ComponentPropsWithoutRef<"div"> &
 };
 
 const DEFAULT_CLOSE_DURATION_MS = 200;
+
+// The backstop is armed in the same passive-effect flush that queues `setExpanded(false)`, so its
+// countdown starts before React commits the `0fr` class and before the browser starts the
+// transition. Armed at exactly `closeDurationMs` it would therefore always win the race it is
+// supposed to lose, unmounting the children a few milliseconds early -- and more than that when a
+// busy main thread delays the commit. The margin puts it back behind `transitionend`.
+const CLOSE_FALLBACK_MARGIN_MS = 50;
 
 const UnmeasuredCollapsibleContent = React.forwardRef<
   HTMLDivElement,
@@ -241,7 +250,7 @@ const UnmeasuredCollapsibleContent = React.forwardRef<
         }
       };
       node?.addEventListener("transitionend", onTransitionEnd);
-      const timeout = window.setTimeout(finish, closeDurationMs);
+      const timeout = window.setTimeout(finish, closeDurationMs + CLOSE_FALLBACK_MARGIN_MS);
       return () => {
         node?.removeEventListener("transitionend", onTransitionEnd);
         window.clearTimeout(timeout);
