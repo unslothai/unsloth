@@ -6342,10 +6342,10 @@ class LlamaCppBackend:
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
-            # --swa-checkpoints is the older spelling of the same option, kept as an
-            # alias on builds new enough to have both. Probing only the modern name
-            # drops the Checkpoints control on a build that carries just the old one,
-            # so record WHICH name this build has, like the draft-cache pair below.
+            # --swa-checkpoints is the older spelling, kept as an alias on newer
+            # builds. Probing the modern name alone drops the Checkpoints control on
+            # a build carrying only the old one, so record WHICH name this build has,
+            # like the draft-cache pair below.
             for _alias in ("--ctx-checkpoints", "--swa-checkpoints"):
                 if _is_real(_alias):
                     ctx_checkpoints_flag = _alias
