@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -71,14 +72,27 @@ def _key() -> str:
     return str((_restore_step().get("with") or {}).get("key", ""))
 
 
-def _key_globs() -> set[str]:
-    """The paths hashFiles() reads, normalised so a trailing /** does not matter."""
+def _raw_key_patterns() -> list[str]:
     inner = re.search(r"hashFiles\((.*?)\)", _key())
     assert inner, f"the dist cache key does not call hashFiles: {_key()!r}"
-    return {
-        g.strip().strip("'\"").removesuffix("/**").rstrip("/*").rstrip("/")
-        for g in inner.group(1).split(",")
-    }
+    return [g.strip().strip("'\"") for g in inner.group(1).split(",")]
+
+
+def _normalise(glob: str) -> str:
+    return glob.removeprefix("!").removesuffix("/**").rstrip("/*").rstrip("/")
+
+
+def _key_globs() -> set[str]:
+    """The paths hashFiles() reads, normalised so a trailing /** does not matter.
+
+    Exclusions are split out rather than folded in: a `!` pattern REMOVES files from
+    the hash, so counting it as a path the key "reads" inverts its meaning.
+    """
+    return {_normalise(g) for g in _raw_key_patterns() if not g.startswith("!")}
+
+
+def _key_exclusions() -> set[str]:
+    return {_normalise(g) for g in _raw_key_patterns() if g.startswith("!")}
 
 
 def _staleness_inputs() -> set[str]:
@@ -120,6 +134,11 @@ def test_the_key_does_not_hash_paths_the_rebuild_check_ignores() -> None:
     and a lockfile change means different dependencies and so a different bundle. It is
     covered by the `studio/frontend/*` glob, which is why that glob is allowed to be
     broader than the check's maxdepth-1 scan rather than being narrowed to match it.
+
+    Note this compares glob PREFIXES, so it cannot see how far a glob descends. That
+    blind spot is real and is covered by
+    test_the_key_excludes_the_frontend_subdirs_the_rebuild_check_never_reads below --
+    `studio/frontend/*` is recursive, which this check alone would never reveal.
     """
     extra = sorted(_key_globs() - _staleness_inputs())
     assert extra == [], (
@@ -128,6 +147,60 @@ def test_the_key_does_not_hash_paths_the_rebuild_check_ignores() -> None:
         f"If the extra path genuinely affects the built bundle, say so where the key is "
         f"defined and widen this test deliberately."
     )
+
+
+def test_the_key_excludes_the_frontend_subdirs_the_rebuild_check_never_reads() -> None:
+    """`studio/frontend/*` is RECURSIVE, which is the opposite of how it reads.
+
+    @actions/glob runs with matchDirectories and implicitDescendants both true, so a bare
+    `*` matches the subdirectory ENTRY and then expands it. Confirmed against the real
+    library rather than inferred: `fe/*` yields `fe/tests/t.txt`, while `fe/*.txt` yields
+    only `fe/top.txt`. GitHub's documented non-recursive example uses an extension, so it
+    does not apply to a bare `*`.
+
+    Left alone that hashed 457 files under frontend/tests and frontend/scripts, so any
+    edit to a frontend TEST evicted a dist whose bundle is byte-identical. setup.sh reads
+    neither directory.
+
+    Derived from the tree, not a written-down list, so a subdirectory added later shows up
+    here as a decision to make rather than silently costing hit rate.
+    """
+    frontend = REPO / "studio" / "frontend"
+    if not frontend.is_dir():
+        pytest.skip("studio/frontend is absent")
+    read = {Path(p).name for p in _staleness_inputs() if Path(p).name != "frontend"}
+    # dist is the cache payload; node_modules is never committed.
+    ignored = {"dist", "node_modules"}
+    unread = {
+        d.name
+        for d in frontend.iterdir()
+        if d.is_dir() and d.name not in read and d.name not in ignored
+    }
+    missing = sorted(d for d in unread if f"studio/frontend/{d}" not in _key_exclusions())
+    assert not missing, (
+        f"studio/frontend/{{{','.join(missing)}}} is hashed into the dist cache key but "
+        f"setup.sh's rebuild check never reads it, so every edit under it evicts a dist "
+        f"that would have been byte-identical. `studio/frontend/*` descends into "
+        f"subdirectories. Either add `!studio/frontend/<dir>/**` to the key, or say at "
+        f"the key why that directory genuinely changes the built bundle."
+    )
+
+
+def test_no_exclusion_hides_a_path_the_rebuild_check_reads() -> None:
+    """The dangerous direction, and the reason the exclusions are named individually.
+
+    An exclusion that swallowed src/ or public/ would produce a key that ignores real
+    build inputs: the cache would hit on a commit that changed the bundle and serve the
+    previous one. That is wrong content rather than a wasted download, and every test
+    downstream would still pass against a stale UI.
+    """
+    for excluded in _key_exclusions():
+        for read in _staleness_inputs():
+            assert not (read == excluded or read.startswith(excluded + "/")), (
+                f"the key excludes {excluded!r}, which covers {read!r} -- a path setup.sh's "
+                f"rebuild check DOES read. The cache would serve a stale bundle on a commit "
+                f"that changed it."
+            )
 
 
 def test_the_dist_cache_has_no_restore_keys() -> None:
