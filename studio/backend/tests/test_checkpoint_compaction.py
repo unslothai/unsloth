@@ -1897,6 +1897,41 @@ def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
     assert both == ["Build a Flappy Bird game", "Actually build Tetris instead"]
 
 
+def test_an_oversized_newest_turn_does_not_hand_the_budget_to_the_opening_task():
+    """The reservation slots in behind the newest TAKEABLE turn, not the newest one.
+
+    A turn costing more than the whole cap is skipped by the walk without spending
+    anything, so reserving behind it put the opening task ahead of every usable recent
+    turn. On a 2048-token context (cap 153) an opening "Build Flappy Bird", a later
+    "Actually build Tetris" and a final oversized pasted request carried only the
+    abandoned Flappy Bird request.
+    """
+    opening = (
+        "Build a Flappy Bird clone in a single HTML file: canvas rendering, a bird that "
+        "flaps on space or click, randomly spaced pipes scrolling right to left, "
+        "gravity, collision detection against the pipes and the ground, a score counter "
+        "in the top corner, and a restart screen when you die. Keep it dependency free."
+    )
+    correction = (
+        "Actually scrap the Flappy Bird idea, build Tetris instead: a ten by twenty "
+        "grid, the seven standard tetrominoes with rotation and wall kicks, soft and "
+        "hard drop, line clears with scoring, a next piece preview, and a game over "
+        "state when the stack reaches the top. Same single HTML file, no libraries."
+    )
+    oversized = "Here is the traceback, please fix it: " + "stack frame detail. " * 60
+
+    messages = []
+    for text in (opening, correction, oversized):
+        messages.append({"role": "user", "content": text})
+        messages.append({"role": "assistant", "content": "ok"})
+
+    # 153 = int(prompt_budget(2048, 1024) * checkpoint.MAX_FRACTION), the cap a 2048
+    # context actually hands this selection. Room for one of the two, not both.
+    items = carried_forward_items(messages, max_tokens = 153)
+
+    assert items == [correction], "the newest usable direction must win the tight cap"
+
+
 def test_the_opening_task_still_survives_a_run_of_short_increments():
     """The reason reserve_oldest exists: newest-first alone spends every slot on the
     increments nearest the end and evicts the statement of the task itself."""

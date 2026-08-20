@@ -153,8 +153,20 @@ def _select_items(
             # direction. Slotting it in behind the newest qualifying turn keeps
             # both whenever there is room for two, and keeps the correction when
             # there is room for only one.
+            #
+            # The slot goes behind the newest turn that CAN BE TAKEN, not merely the
+            # newest one that qualifies. A turn costing more than the whole cap is
+            # skipped by the walk below without spending anything, so reserving behind
+            # it puts the opening task ahead of every usable recent turn and restores
+            # the bug this slotting exists to fix: "Build Flappy Bird", "Actually build
+            # Tetris", then an oversized pasted request carried only Flappy Bird at a
+            # 153-token cap.
+            def _takeable(index: int) -> bool:
+                found = _item(index)
+                return found is not None and found[1] <= max_tokens
+
             rest = [index for index in order if index != oldest]
-            newest = next((index for index in rest if _item(index)), None)
+            newest = next((index for index in rest if _takeable(index)), None)
             if newest is None:
                 order = [oldest] + rest
             else:
