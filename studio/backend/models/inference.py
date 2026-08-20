@@ -283,6 +283,13 @@ class LoadRequest(BaseModel):
             "replaces the llama-server every open conversation decodes on."
         ),
     )
+    async_load: bool = Field(
+        False,
+        description = (
+            "Return immediately and continue loading in the background; poll /status "
+            "for loading, loaded, or load_error."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -923,6 +930,13 @@ class LoadResponse(_InferenceRuntimeFields):
     )
 
 
+class LoadAcceptedResponse(BaseModel):
+    """Acknowledgement returned after an asynchronous load is admitted."""
+
+    status: str = Field("loading", description = "Always loading for an accepted load")
+    model: str = Field(..., description = "Model identifier being loaded")
+
+
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
 
@@ -1039,6 +1053,7 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
+    load_error: Optional[str] = Field(None, description = "Redacted error from the latest async load")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"

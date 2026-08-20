@@ -1944,11 +1944,13 @@ async def _tunnel_safe_json(coro, *, label: str):
                 yield json.dumps(jsonable_encoder(payload)).encode()
             return
 
-    return _SameTaskStreamingResponse(
+    response = _SameTaskStreamingResponse(
         _body(),
         media_type = "application/json",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+    response._same_task = task
+    return response
 
 
 async def _aclose_stream_resources(
@@ -2232,6 +2234,7 @@ from models.inference import (
     AudioGalleryItem,
     AudioGalleryListResponse,
     LoadResponse,
+    LoadAcceptedResponse,
     LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
@@ -5040,11 +5043,11 @@ def _active_gguf_intent(
     )
 
 
-def _resolve_model_identifier_for_request(
+def _verify_native_path_lease_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
-) -> tuple[str, str, bool]:
+):
     if not request.native_path_lease:
-        return request.model_path, request.model_path, False
+        return None
     try:
         grant = verify_native_path_lease(
             request.native_path_lease,
@@ -5061,6 +5064,18 @@ def _resolve_model_identifier_for_request(
             status_code = 400,
             detail = redact_native_paths(str(exc)),
         ) from exc
+    return grant
+
+
+def _resolve_model_identifier_for_request(
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+    native_grant = None,
+) -> tuple[str, str, bool]:
+    if native_grant is None and not request.native_path_lease:
+        return request.model_path, request.model_path, False
+    grant = native_grant or _verify_native_path_lease_for_request(request, operation = operation)
     display_label = grant.display_label or Path(request.model_path).name or "Native model"
     return str(grant.canonical_path), display_label, True
 
@@ -8498,6 +8513,7 @@ async def _run_tracked_load_model_impl(
     attempt: Optional[_ScopedLoadAttempt] = None,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    native_grant = None,
 ):
     global _running_load_attempt
 
@@ -8508,14 +8524,38 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        return await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            current_request_counted = current_request_counted,
-            on_reload_confirmed = on_reload_confirmed,
-            load_cancel_event = attempt.cancel_event,
+        load_task = asyncio.create_task(
+            _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                current_request_counted = current_request_counted,
+                on_reload_confirmed = on_reload_confirmed,
+                load_cancel_event = attempt.cancel_event,
+                native_grant = native_grant,
+            )
         )
+        try:
+            return await asyncio.shield(load_task)
+        except asyncio.CancelledError:
+            # Cancelling this waiter must not abandon a to_thread worker that can still mutate
+            # the backend. Keep the lease until the shielded load has reached its own cleanup.
+            current_task = asyncio.current_task()
+            while not load_task.done():
+                try:
+                    await asyncio.shield(load_task)
+                except asyncio.CancelledError:
+                    if current_task is not None:
+                        current_task.uncancel()
+                except BaseException:
+                    if not load_task.done():
+                        raise
+                    break
+            try:
+                load_task.result()
+            except BaseException:
+                pass
+            raise
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -8533,7 +8573,114 @@ async def _run_tracked_load_model_impl(
             _finish_load_attempt(attempt)
 
 
-@router.post("/load", response_model = LoadResponse)
+class _LoadAdmission(NamedTuple):
+    token: str
+    kind: str
+    model_path: str
+    deletion_model_path: str
+    subject: str
+    attempt: _ScopedLoadAttempt
+    lease_claimed: bool = False
+    task: Optional[asyncio.Task] = None
+
+
+_load_admissions_lock = threading.Lock()
+_load_admissions: dict[str, _LoadAdmission] = {}
+_pending_async_load: Optional[_LoadAdmission] = None
+_last_async_load_error: Optional[str] = None
+
+
+def _pending_async_model() -> Optional[str]:
+    with _load_admissions_lock:
+        operation = _pending_async_load
+        if operation is not None and operation.task is not None and not operation.task.done():
+            return operation.model_path
+    return None
+
+
+def get_pending_async_load_model() -> Optional[str]:
+    return _pending_async_model()
+
+
+def get_pending_async_load_deletion_path() -> Optional[str]:
+    with _load_admissions_lock:
+        operation = _pending_async_load
+        if operation is not None and operation.task is not None and not operation.task.done():
+            return operation.deletion_model_path
+    return None
+
+
+def _cancel_pending_async_load(model_path: str, current_subject: str) -> Optional[_LoadAdmission]:
+    with _load_admissions_lock:
+        operation = _pending_async_load
+        if (
+            operation is None
+            or operation.subject != current_subject
+            or operation.task is None
+            or operation.task.done()
+            or model_path.strip().casefold()
+            not in {
+                operation.model_path.strip().casefold(),
+                operation.deletion_model_path.strip().casefold(),
+            }
+        ):
+            return None
+        operation.attempt.cancel_event.set()
+        return operation
+
+
+def _status_loading(backend_loading = ()) -> List[str]:
+    loading = list(backend_loading)
+    pending = _pending_async_model()
+    if pending and pending not in loading:
+        loading.append(pending)
+    return loading
+
+
+def _redact_async_load_error(exc: BaseException) -> str:
+    if isinstance(exc, asyncio.CancelledError):
+        return ""
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+    else:
+        detail = "Model load failed"
+    text = str(detail)
+    if not text or "cancel" in text.casefold():
+        return ""
+    return "Model load failed"
+
+
+def _finish_load_admission(operation: _LoadAdmission) -> None:
+    global _pending_async_load
+    with _load_admissions_lock:
+        _load_admissions.pop(operation.token, None)
+        if _pending_async_load is operation:
+            _pending_async_load = None
+    _finish_load_attempt(operation.attempt)
+
+
+def _defer_sync_load_admission(operation: _LoadAdmission, task: asyncio.Task) -> None:
+    global _last_async_load_error
+    operation = operation._replace(task = task)
+    with _load_admissions_lock:
+        if _load_admissions.get(operation.token) is not None:
+            _load_admissions[operation.token] = operation
+
+    def _finish(done_task: asyncio.Task) -> None:
+        global _last_async_load_error
+        try:
+            done_task.result()
+        except BaseException:
+            pass
+        else:
+            with _load_admissions_lock:
+                _last_async_load_error = None
+        _finish_load_admission(operation)
+
+    task.add_done_callback(_finish)
+
+
+@router.post("/load", response_model = Union[LoadResponse, LoadAcceptedResponse])
 async def load_model(
     request: LoadRequest,
     fastapi_request: Request,
@@ -8548,10 +8695,139 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
-    return await _tunnel_safe_json(
-        load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
-        label = "Model load",
+    global _pending_async_load, _last_async_load_error
+    from core.inference.llama_keepwarm import (
+        acquire_inference_lifecycle_gate_nowait,
+        inference_lifecycle_gate,
+        release_inference_lifecycle_gate,
     )
+
+    if request.async_load:
+        if not request.load_request_id:
+            raise HTTPException(status_code = 422, detail = "async_load requires load_request_id")
+        native_grant = _verify_native_path_lease_for_request(request, operation = "load-model")
+        deletion_model_path = (
+            str(native_grant.canonical_path) if native_grant is not None else request.model_path
+        )
+        pending_model_label = _lifecycle_model_label(request.model_path, request.gguf_variant)
+        with _load_admissions_lock:
+            if _pending_async_load is not None:
+                raise HTTPException(
+                    status_code = 409, detail = "Another model operation is already in progress."
+                )
+            if any(item.kind == "sync" for item in _load_admissions.values()):
+                raise HTTPException(
+                    status_code = 409, detail = "Another model operation is already in progress."
+                )
+            if not acquire_inference_lifecycle_gate_nowait():
+                raise HTTPException(
+                    status_code = 409, detail = "Another model operation is already in progress."
+                )
+            try:
+                attempt = _begin_load_attempt(request, current_subject)
+            except BaseException:
+                release_inference_lifecycle_gate()
+                raise
+            operation = _LoadAdmission(
+                uuid.uuid4().hex,
+                "async",
+                pending_model_label,
+                deletion_model_path,
+                current_subject,
+                attempt,
+                True,
+            )
+            _load_admissions[operation.token] = operation
+            _pending_async_load = operation
+            _last_async_load_error = None
+
+            async def _background_load() -> None:
+                global _last_async_load_error
+                try:
+                    await asyncio.sleep(0)
+                    await _run_tracked_load_model_impl(
+                        request,
+                        fastapi_request,
+                        current_subject,
+                        attempt = attempt,
+                        on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                            force = request.force_cancel_active,
+                            action = "Loading a model",
+                            cancel = cancel,
+                        ),
+                        native_grant = native_grant,
+                    )
+                    get_llama_cpp_backend()._loaded_by_user_action = True
+                    with _load_admissions_lock:
+                        if _pending_async_load is operation:
+                            _last_async_load_error = None
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:
+                    detail = _redact_async_load_error(exc)
+                    if detail:
+                        logger.warning("inference.async_load_failed: %s", detail)
+                    with _load_admissions_lock:
+                        if _pending_async_load is operation and detail:
+                            _last_async_load_error = detail
+
+            try:
+                task = asyncio.create_task(_background_load())
+            except BaseException:
+                _load_admissions.pop(operation.token, None)
+                _pending_async_load = None
+                _finish_load_attempt(attempt)
+                release_inference_lifecycle_gate()
+                raise
+            operation = operation._replace(task = task)
+            _load_admissions[operation.token] = operation
+            _pending_async_load = operation
+
+            def _finish(done_task: asyncio.Task) -> None:
+                try:
+                    release_inference_lifecycle_gate()
+                finally:
+                    _finish_load_admission(operation)
+
+            task.add_done_callback(_finish)
+        return LoadAcceptedResponse(status = "loading", model = pending_model_label)
+
+    with _load_admissions_lock:
+        if _pending_async_load is not None or any(
+            item.kind == "async" for item in _load_admissions.values()
+        ):
+            raise HTTPException(
+                status_code = 409, detail = "Another model operation is already in progress."
+            )
+        attempt = _begin_load_attempt(request, current_subject)
+        operation = _LoadAdmission(
+            uuid.uuid4().hex,
+            "sync",
+            _lifecycle_model_label(request.model_path, request.gguf_variant),
+            request.model_path,
+            current_subject,
+            attempt,
+        )
+        _load_admissions[operation.token] = operation
+    deferred = False
+    try:
+        response = await _tunnel_safe_json(
+            load_model_gated(
+                request, fastapi_request, current_subject, user_initiated = True, attempt = attempt
+            ),
+            label = "Model load",
+        )
+        task = getattr(response, "_same_task", None)
+        if task is not None:
+            _defer_sync_load_admission(operation, task)
+            deferred = True
+        else:
+            with _load_admissions_lock:
+                _last_async_load_error = None
+        return response
+    finally:
+        if not deferred:
+            _finish_load_admission(operation)
 
 
 async def load_model_gated(
@@ -8560,6 +8836,7 @@ async def load_model_gated(
     current_subject: str,
     *,
     user_initiated: bool = False,
+    attempt: Optional[_ScopedLoadAttempt] = None,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
@@ -8574,7 +8851,8 @@ async def load_model_gated(
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    attempt = _begin_load_attempt(request, current_subject)
+    owns_attempt = attempt is None
+    attempt = attempt or _begin_load_attempt(request, current_subject)
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the lifecycle gate across the load so idle auto-unload can't unload the
@@ -8603,7 +8881,8 @@ async def load_model_gated(
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
         return response
     finally:
-        _finish_load_attempt(attempt)
+        if owns_attempt:
+            _finish_load_attempt(attempt)
 
 
 async def _load_model_impl(
@@ -8614,6 +8893,7 @@ async def _load_model_impl(
     current_request_counted: bool = False,
     on_reload_confirmed = None,
     load_cancel_event: Optional[threading.Event] = None,
+    native_grant = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -8691,9 +8971,16 @@ async def _load_model_impl(
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
 
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "load-model")
-        )
+        if native_grant is None:
+            model_identifier, model_log_label, native_grant_backed = (
+                _resolve_model_identifier_for_request(request, operation = "load-model")
+            )
+        else:
+            model_identifier, model_log_label, native_grant_backed = (
+                _resolve_model_identifier_for_request(
+                    request, operation = "load-model", native_grant = native_grant
+                )
+            )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -9152,6 +9439,8 @@ async def _load_model_impl(
             )
 
             if not success:
+                if load_cancel_event is not None and load_cancel_event.is_set():
+                    raise HTTPException(status_code = 409, detail = "Model load cancelled")
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
@@ -9276,6 +9565,8 @@ async def _load_model_impl(
         )
 
         if not success:
+            if load_cancel_event is not None and load_cancel_event.is_set():
+                raise HTTPException(status_code = 409, detail = "Model load cancelled")
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
@@ -10463,6 +10754,11 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             finally:
                 attempt.cancel_complete.set()
 
+        pending_async = _cancel_pending_async_load(request.model_path, current_subject)
+        if pending_async is not None:
+            logger.info("Cancelled pending async load: %s", request.model_path)
+            return UnloadResponse(status = "unloaded", model = request.model_path)
+
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
@@ -11054,7 +11350,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
-                loading = [],
+                loading = _status_loading(),
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
                 # still in VRAM and was invisible to every client reading this.
@@ -11079,6 +11375,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                load_error = _last_async_load_error,
             )
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
@@ -11086,10 +11383,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         backend = _peek_inference_backend()
         if backend is None:
             return InferenceStatusResponse(
+                loading = _status_loading(),
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                load_error = _last_async_load_error,
             )
 
         is_vision = False
@@ -11133,7 +11432,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
-            loading = list(getattr(backend, "loading_models", set())),
+            loading = _status_loading(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
             inference = inference_config,
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
@@ -11152,6 +11451,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             llama_cpp_prebuilt_stale = _stale,
             llama_cpp_installed_tag = _installed_tag,
             llama_cpp_latest_tag = _latest_tag,
+            load_error = _last_async_load_error,
         )
 
     except Exception as e:
