@@ -10,12 +10,18 @@ streaming drops that opening tag, so the safetensors/MLX paths must re-emit
 it for the frontend's <think> parser to render a thinking block.
 """
 
+import ast
+import json
 import os
 import sys
+
+import pytest
+from pathlib import Path
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference.tool_call_parser import parse_tool_calls_from_text
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
@@ -263,6 +269,531 @@ def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
     assert compact.feed("<|channel>thought<channel|>answer") + compact.finish() == (
         "<think></think>answer"
     )
+
+
+# --- Muse Glimmer: recipient-addressed assistant channels ---
+
+_MUSE_TEMPLATE = (
+    "{%- if message.get('reasoning_content') -%}"
+    "{{- '<|start|>assistant to=self<|message|>' + message['reasoning_content'] + '<|eom|>' -}}"
+    "{%- endif -%}{{- '<|start|>assistant' -}}"
+)
+_MUSE_MARKERS = ("self", "user")
+
+
+def _muse_normalizer():
+    from core.inference.chat_template_helpers import make_reasoning_normalizer
+    return make_reasoning_normalizer(_MUSE_MARKERS)
+
+
+def test_muse_glimmer_channel_detected_from_its_template():
+    class TemplateTokenizer:
+        chat_template = _MUSE_TEMPLATE
+
+    class PlainTokenizer:
+        chat_template = "plain assistant template"
+
+    assert detect_reasoning_channel_markers(TemplateTokenizer()) == _MUSE_MARKERS
+    assert detect_reasoning_channel_markers(PlainTokenizer()) is None
+
+
+def test_muse_glimmer_marker_pair_selects_the_recipient_normalizer():
+    from core.inference.chat_template_helpers import (
+        RecipientChannelNormalizer,
+        ReasoningChannelNormalizer,
+        make_reasoning_normalizer,
+    )
+    assert isinstance(make_reasoning_normalizer(_MUSE_MARKERS), RecipientChannelNormalizer)
+    assert isinstance(
+        make_reasoning_normalizer(("<|channel>thought", "<channel|>")),
+        ReasoningChannelNormalizer,
+    )
+
+
+def test_recipient_protocol_ignores_a_prompt_derived_open_channel():
+    """A recipient name is not a marker, so the marker-pair rule does not apply to it.
+
+    ``prompt_opens_reasoning_channel`` looks for its opener at the prompt tail, and here
+    that opener is the recipient name "self", which any prompt may end on by chance.
+    Generation resumes at "<|start|>assistant", so this protocol always starts between
+    blocks and the model writes its own header.
+    """
+    from core.inference.chat_template_helpers import make_reasoning_normalizer
+
+    assert prompt_opens_reasoning_channel("tell me about self", _MUSE_MARKERS)
+
+    parser = make_reasoning_normalizer(_MUSE_MARKERS, in_reasoning = True)
+    assert parser.feed("to=user<|message|>plain answer<|eot|>") == "plain answer"
+
+    opened = make_reasoning_normalizer(("<|channel>thought", "<channel|>"), in_reasoning = True)
+    assert opened.feed("still reasoning<channel|>answer") == "<think>still reasoning</think>answer"
+
+
+def test_muse_glimmer_reply_header_is_consumed_across_chunk_boundaries():
+    """Generation resumes after the prompt's trailing "<|start|>assistant", so
+    the first header arrives without that prefix. Every header here is split
+    across chunks, which is what the streamer sees token by token."""
+    parser = _muse_normalizer()
+    output = ""
+    for chunk in (
+        " to=self<|mess",
+        "age|>Two plus two.",
+        "<|eom|><|start|>assis",
+        "tant to=user<|message|>",
+        "4",
+    ):
+        output += parser.feed(chunk)
+    output += parser.finish()
+
+    assert output == "<think>Two plus two.</think>4"
+
+
+def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
+    """The reply header is consumed whether or not reasoning preceded it."""
+    parser = _muse_normalizer()
+    output = parser.feed(" to=user<|message|>4") + parser.finish()
+
+    assert output == "4"
+
+
+def test_muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block():
+    """A reply closes with <|eom|> like any other block, so the turn can carry
+    on afterwards; treating the reply as the end would leak the rest verbatim."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        " to=user<|message|>Partly.<|eom|>"
+        "<|start|>assistant to=self<|message|>Reconsider.<|eom|>"
+        "<|start|>assistant to=user<|message|>Actually four."
+    )
+    output += parser.finish()
+
+    assert output == "Partly.<think>Reconsider.</think>Actually four."
+
+
+def test_muse_glimmer_call_grammar_allows_attributes_beside_the_name():
+    """The checkpoint's own response_template matches `name` among other attributes;
+    a stricter reading drops parameters or fails to see the call at all."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke type="function" name="web_search">\n'
+        '<atem:parameter type="string" name="query">FIFA</atem:parameter>\n'
+        "</atem:invoke>\n</atem:function_calls><|eom|>"
+    )
+    output += parser.finish()
+
+    assert output == (
+        '<tool_call>{"name": "web_search", "arguments": {"query": "FIFA"}}</tool_call>'
+    )
+
+
+def test_muse_glimmer_text_the_model_wrote_around_a_call_is_kept():
+    """Only the call syntax and its envelope are framing; prose beside them is the
+    answer, and rewriting the call must not quietly delete it."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=web_search<|message|>Looking it up.<atem:function_calls>"
+        '<atem:invoke name="s"><atem:parameter name="q">v</atem:parameter></atem:invoke>'
+        "</atem:function_calls>One moment.<|eom|>"
+    )
+    output += parser.finish()
+
+    assert output == (
+        "Looking it up."
+        '<tool_call>{"name": "s", "arguments": {"q": "v"}}</tool_call>'
+        "One moment."
+    )
+
+
+@pytest.mark.parametrize(
+    ("written", "parsed"),
+    [
+        ("plain words", "plain words"),
+        ('{"lang": "en"}', {"lang": "en"}),
+        ("[1, 2]", [1, 2]),
+        ("1", 1),
+        ("true", True),
+    ],
+)
+def test_muse_glimmer_parameter_values_follow_the_grammars_json_parser(written, parsed):
+    """The grammar parses values as JSON and keeps whatever will not parse."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=t<|message|><atem:function_calls>"
+        '<atem:invoke name="t"><atem:parameter name="v">'
+        + written
+        + "</atem:parameter></atem:invoke></atem:function_calls><|eom|>"
+    )
+    output += parser.finish()
+    call = parse_tool_calls_from_text(output)[0]
+
+    assert json.loads(call["function"]["arguments"])["v"] == parsed
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("to=user<|message|>Done.<|eom|><|eot|>", "Done."),
+        ("to=user<|message|>Done.<|eot|>", "Done."),
+        ("to=self<|message|>Thinking.<|eot|>", "<think>Thinking.</think>"),
+        ("Hello<|eot|>", "Hello"),
+        ("stray text to=user<|message|>Hi.<|eot|>", "stray text Hi."),
+    ],
+)
+def test_muse_glimmer_turn_marker_is_framing_wherever_it_lands(raw, expected):
+    """<|eot|> ends the turn, so it terminates whichever block is open and is consumed
+    between blocks. Whitespace beside a block is framing but a space inside stray text
+    is content, and which one a space is cannot depend on where the stream split."""
+    parser = _muse_normalizer()
+    assert parser.feed(raw) + parser.finish() == expected
+
+    per_char = _muse_normalizer()
+    assert "".join(per_char.feed(c) for c in raw) + per_char.finish() == expected
+
+
+_CLOSED_CALL = '<atem:invoke name="t"><atem:parameter name="q">v</atem:parameter></atem:invoke>'
+_OPEN_CALL = '<atem:invoke name="t">half'
+_CANONICAL_CALL = '<tool_call>{"name": "t", "arguments": {"q": "v"}}</tool_call>'
+
+
+@pytest.mark.parametrize(
+    ("body", "cancelled", "completed"),
+    [
+        ("before" + _CLOSED_CALL, "before", "before" + _CANONICAL_CALL),
+        (_CLOSED_CALL + "after", "after", _CANONICAL_CALL + "after"),
+        ("before" + _OPEN_CALL, "before", "before"),
+        (_CLOSED_CALL + "mid" + _OPEN_CALL, "mid", _CANONICAL_CALL + "mid"),
+        # Where the budget usually runs out: partway through a tag.
+        ('<atem:invoke name="web', "", ""),
+        ("</atem:function_call", "", ""),
+        # Markup this parser does not own is shown rather than risk deleting an answer.
+        ("<atem:unknown>kept</atem:unknown>",) * 3,
+        ("<atem:invoker is prose",) * 3,
+        ('<atem:parameter name="q">kept',) * 3,
+        ("just words",) * 3,
+    ],
+)
+def test_muse_glimmer_text_beside_a_call_survives_wherever_the_stream_stops(
+    body, cancelled, completed
+):
+    """Holding a tool block back holds the prose beside it back too. What the model
+    wrote is content whether or not a call ever closed, and cancelling must not take
+    it down with the call it refuses to promote; only unfinished markup is dropped."""
+    parser = _muse_normalizer()
+    assert parser.feed("to=t<|message|>" + body) + parser.drain() == cancelled
+
+    finished = _muse_normalizer()
+    assert finished.feed("to=t<|message|>" + body) + finished.finish() == completed
+
+
+def test_muse_glimmer_parameter_text_reaches_the_tool_exactly_as_written():
+    """The grammar captures a value verbatim; trimming it rewrites the argument."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        'to=t<|message|><atem:invoke name="t"><atem:parameter name="q">'
+        "\nfirst\nsecond\n</atem:parameter></atem:invoke><|eom|>"
+    )
+    output += parser.finish()
+    call = parse_tool_calls_from_text(output)[0]
+
+    assert json.loads(call["function"]["arguments"])["q"] == "\nfirst\nsecond\n"
+
+
+def test_muse_glimmer_bare_repeated_invokes_are_calls_without_an_envelope():
+    """The grammar makes <atem:invoke> the call and repeats it; the surrounding
+    <atem:function_calls> is only what the prompt happens to teach. It also fixes
+    where attributes may sit: before `name` on a call, either side of it on a
+    parameter."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=t<|message|>"
+        '<atem:invoke name="a"><atem:parameter name="q">1</atem:parameter></atem:invoke>'
+        '<atem:invoke type="function" name="b"><atem:parameter name="q" type="integer">2'
+        "</atem:parameter></atem:invoke><|eom|>"
+    )
+    output += parser.finish()
+    calls = parse_tool_calls_from_text(output)
+
+    assert [call["function"]["name"] for call in calls] == ["a", "b"]
+    assert [json.loads(call["function"]["arguments"])["q"] for call in calls] == [1, 2]
+
+
+def test_muse_glimmer_tool_addressed_block_after_a_reply_keeps_its_markup():
+    """A tool block holding no call at all is markup this parser does not own, so it
+    is handed on whole rather than reshaped into something downstream might run."""
+    tool_block = (
+        '<|start|>assistant to=web_search<|message|>{"q": 1}<|eom|>'
+        "<|start|>assistant to=user<|message|>Done."
+    )
+    parser = _muse_normalizer()
+    output = parser.feed(" to=user<|message|>Checking.<|eom|>" + tool_block)
+    output += parser.finish()
+
+    assert output == "Checking." + tool_block
+
+
+def test_muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block():
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=self<|message|>First.<|eom|>"
+        "<|start|>assistant to=self<|message|>Second.<|eom|>"
+        "<|start|>assistant to=user<|message|>Done."
+    )
+    output += parser.finish()
+
+    assert output == "<think>First.</think><think>Second.</think>Done."
+
+
+@pytest.mark.parametrize("gap", [" ", "\n", "\n\n"])
+def test_muse_glimmer_whitespace_between_blocks_does_not_split_the_reasoning(gap):
+    """Whitespace separating two blocks is framing. Emitted, it lands between the
+    think blocks, and the UI merges only adjacent reasoning, so one reasoning pass
+    renders as two thinking sections."""
+    raw = (
+        f"{gap}to=self<|message|>First.<|eom|>"
+        f"{gap}<|start|>assistant to=self<|message|>Second.<|eom|>"
+        f"{gap}<|start|>assistant to=user<|message|>Done."
+    )
+    expected = "<think>First.</think><think>Second.</think>Done."
+
+    parser = _muse_normalizer()
+    assert parser.feed(raw) + parser.finish() == expected
+
+    per_char = _muse_normalizer()
+    streamed = "".join(per_char.feed(char) for char in raw) + per_char.finish()
+    assert streamed == expected
+
+
+def test_muse_glimmer_tool_call_becomes_a_canonical_tool_call():
+    """The native call syntax matches no downstream parser, so an untranslated
+    block is streamed to the user as prose instead of being executed."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=self<|message|>Need a search.<|eom|>"
+        "<|start|>assistant to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke name="web_search">\n'
+        '<atem:parameter name="query">FIFA 2026 winner</atem:parameter>\n'
+        '<atem:parameter name="filters">{"lang": "en"}</atem:parameter>\n'
+        "</atem:invoke>\n"
+        "</atem:function_calls><|eom|>"
+        "<|start|>assistant to=user<|message|>Checking."
+    )
+    output += parser.finish()
+
+    assert output == (
+        "<think>Need a search.</think>"
+        '<tool_call>{"name": "web_search", "arguments": '
+        '{"query": "FIFA 2026 winner", "filters": {"lang": "en"}}}</tool_call>'
+        "Checking."
+    )
+    assert parse_tool_calls_from_text(output)[0]["function"]["name"] == "web_search"
+
+
+def test_muse_glimmer_tool_call_survives_arriving_one_character_at_a_time():
+    raw = (
+        "to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke name="web_search">\n'
+        '<atem:parameter name="query">a "quoted" phrase\nover two lines</atem:parameter>\n'
+        "</atem:invoke>\n</atem:function_calls><|eom|>"
+    )
+    parser = _muse_normalizer()
+    output = "".join(parser.feed(char) for char in raw) + parser.finish()
+
+    assert output == (
+        '<tool_call>{"name": "web_search", "arguments": '
+        '{"query": "a \\"quoted\\" phrase\\nover two lines"}}</tool_call>'
+    )
+
+
+def test_muse_glimmer_parallel_tool_calls_each_become_a_call():
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke name="web_search">\n'
+        '<atem:parameter name="query">first</atem:parameter>\n</atem:invoke>\n'
+        '<atem:invoke name="web_search">\n'
+        '<atem:parameter name="query">second</atem:parameter>\n</atem:invoke>\n'
+        "</atem:function_calls><|eom|>"
+    )
+    output += parser.finish()
+
+    queries = [
+        json.loads(call["function"]["arguments"])["query"]
+        for call in parse_tool_calls_from_text(output)
+    ]
+    assert queries == ["first", "second"]
+
+
+def test_muse_glimmer_turn_marker_is_consumed_wherever_it_lands():
+    """<|eot|> ends the turn, so it terminates whichever block is open."""
+    for raw, expected in (
+        ("to=user<|message|>Done.<|eom|><|eot|>", "Done."),
+        ("to=user<|message|>Done.<|eot|>", "Done."),
+        ("to=self<|message|>Thinking.<|eot|>", "<think>Thinking.</think>"),
+    ):
+        parser = _muse_normalizer()
+        assert parser.feed(raw) + parser.finish() == expected
+
+        per_char = _muse_normalizer()
+        streamed = "".join(per_char.feed(char) for char in raw) + per_char.finish()
+        assert streamed == expected, raw
+
+
+def test_muse_glimmer_cut_short_tool_call_leaks_no_markup():
+    """A call the token budget truncated has no arguments worth executing, and its
+    header is protocol framing, so neither belongs in what the user reads."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=self<|message|>Need a search.<|eom|>"
+        "<|start|>assistant to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke name="web_search">\n<atem:parameter name="query">FIFA'
+    )
+    output += parser.finish()
+
+    assert output == "<think>Need a search.</think>"
+
+
+def test_muse_glimmer_call_closed_inside_a_cut_short_block_survives_finish():
+    """The block never got its terminator, but this call did close, so the answer the
+    user waited for is not thrown away with the half-written one after it."""
+    raw = (
+        "to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke name="web_search">\n'
+        '<atem:parameter name="query">first</atem:parameter>\n</atem:invoke>\n'
+        '<atem:invoke name="web_search">\n<atem:parameter name="query">sec'
+    )
+    parser = _muse_normalizer()
+    output = parser.feed(raw) + parser.finish()
+
+    assert output == (
+        '<tool_call>{"name": "web_search", "arguments": {"query": "first"}}</tool_call>'
+    )
+
+
+def test_muse_glimmer_cancelling_promotes_no_call():
+    """drain() is the cancellation path. A call still held there is one the block never
+    terminated, and promoting it would let cancelling a turn be the thing that starts a
+    tool running. A block that did terminate settled during feed(), before there was
+    anything to cancel, so the two cases are asserted together."""
+    held = (
+        "to=web_search<|message|><atem:function_calls>\n"
+        '<atem:invoke name="web_search">\n'
+        '<atem:parameter name="query">first</atem:parameter>\n</atem:invoke>\n'
+    )
+    call = '<tool_call>{"name": "web_search", "arguments": {"query": "first"}}</tool_call>'
+
+    cancelled = _muse_normalizer()
+    assert cancelled.feed(held) == ""  # nothing settles while the block is open
+    assert cancelled.drain() == ""
+
+    terminated = _muse_normalizer()
+    assert terminated.feed(held + "</atem:function_calls><|eom|>") == call
+    assert terminated.drain() == ""
+
+
+def test_muse_glimmer_tool_header_split_across_chunks_is_not_swallowed():
+    parser = _muse_normalizer()
+    output = ""
+    for chunk in (
+        "to=self<|message|>Think.<|eom|><|start|>assistant to=web_",
+        'search<|message|><atem:function_calls><atem:invoke name="s">',
+        '<atem:parameter name="q">x</atem:parameter></atem:invoke>',
+        "</atem:function_calls><|eom|>",
+    ):
+        output += parser.feed(chunk)
+    output += parser.finish()
+
+    assert output == (
+        "<think>Think.</think>" '<tool_call>{"name": "s", "arguments": {"q": "x"}}</tool_call>'
+    )
+
+
+def test_muse_glimmer_unterminated_reasoning_block_is_closed_at_finish():
+    parser = _muse_normalizer()
+    output = parser.feed("to=self<|message|>Cut short.") + parser.finish()
+
+    assert output == "<think>Cut short.</think>"
+
+
+def test_muse_glimmer_stream_ending_inside_a_header_keeps_the_text():
+    parser = _muse_normalizer()
+    output = parser.feed("to=self<|message|>Done.<|eom|><|start|>assis")
+    output += parser.finish()
+
+    assert output == "<think>Done.</think><|start|>assis"
+
+
+def test_gemma_pair_protocol_is_unchanged_by_the_recipient_normalizer():
+    parser = ReasoningChannelNormalizer("<|channel>thought", "<channel|>")
+    output = parser.feed("<|channel>thought\nReason<channel|>answer") + parser.finish()
+
+    assert output == "<think>Reason</think>answer"
+
+
+def test_every_production_site_builds_the_normalizer_through_the_factory():
+    """Markers are recipient names now, so a site still calling the marker-pair
+    parser directly would treat the literal "self"/"user" as markup."""
+    root = Path(__file__).resolve().parent.parent / "core" / "inference"
+
+    def constructions(tree):
+        return {
+            id(node): node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id.endswith("ChannelNormalizer")
+        }
+
+    built_in_factory = set()
+    built_anywhere = {}
+    for name in ("chat_template_helpers.py", "inference.py", "mlx_inference.py"):
+        tree = ast.parse((root / name).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "make_reasoning_normalizer":
+                built_in_factory |= set(constructions(node))
+        built_anywhere.update(
+            {key: f"{name}:{node.lineno}" for key, node in constructions(tree).items()}
+        )
+
+    assert built_in_factory, "the factory itself must construct a normalizer"
+    outside = sorted(
+        location for key, location in built_anywhere.items() if key not in built_in_factory
+    )
+    assert outside == [], outside
+
+
+def test_muse_glimmer_snapshot_stream_normalizes_both_channels():
+    """The non-streaming path consumes cumulative snapshots rather than deltas."""
+    from core.inference.chat_template_helpers import normalize_reasoning_snapshots
+
+    def normalized(raw):
+        snapshots = [raw[:index] for index in range(1, len(raw) + 1)]
+        emitted = list(normalize_reasoning_snapshots(iter(snapshots), markers = _MUSE_MARKERS))
+        assert all(
+            later.startswith(earlier) for earlier, later in zip(emitted, emitted[1:])
+        ), emitted
+        return emitted[-1]
+
+    turn = "to=self<|message|>Reason<|eom|><|start|>assistant to=user<|message|>Reply"
+    assert normalized(turn) == "<think>Reason</think>Reply"
+    # The transformers streamer keeps special tokens and Transformers emits the EOS
+    # token before its stopping check fires, so a completed answer really does end
+    # with the turn marker. Consume it rather than showing it.
+    assert normalized(turn + "<|eot|>") == "<think>Reason</think>Reply"
+
+
+def test_streamer_builds_the_recipient_parser_from_muse_markers():
+    from core.inference.chat_template_helpers import RecipientChannelNormalizer
+    from core.inference.inference import ReasoningTextIteratorStreamer
+
+    class _Tokenizer:
+        def decode(self, *_args, **_kwargs):
+            return ""
+
+    streamer = ReasoningTextIteratorStreamer(_Tokenizer(), markers = _MUSE_MARKERS)
+
+    assert isinstance(streamer._normalizer, RecipientChannelNormalizer)
+    assert streamer._normalizer.feed("to=self<|message|>x<|eom|>") == "<think>x</think>"
 
 
 GEMMA_MARKERS = ("<|channel>thought", "<channel|>")
