@@ -186,3 +186,37 @@ class TestSurvivesTheRouteLayer:
 
     def test_a_non_error_chunk_yields_no_exception(self):
         assert stream_error_from_chunk({"choices": [{"delta": {"content": "hi"}}]}) is None
+
+
+class TestTheNonStreamingPathAlsoReportsTheCause:
+    """`stream=false` routes the same exception through `safe_error_detail`.
+
+    That helper exists to stop raw `str(error)` leaking paths, so it returns a fixed
+    fallback for anything it does not recognise. A curated `friendly` is written to be
+    shown, so it is exempt: without that, streaming clients got the cause and
+    non-streaming clients got "An internal error occurred", which is the same defect
+    this PR fixes, one layer further out.
+    """
+
+    def _error(self, message):
+        return stream_error_from_chunk({"error": {"message": message}})
+
+    def test_starvation_reaches_a_non_streaming_client(self):
+        from utils.utils import safe_error_detail
+
+        assert safe_error_detail(self._error("Context size has been exceeded.")) == KV_STARVATION_MESSAGE
+
+    def test_an_oversize_refusal_keeps_both_counts(self):
+        from utils.utils import safe_error_detail
+
+        detail = safe_error_detail(self._error(
+            "request (2358 tokens) exceeds the available context size (2048 tokens)"
+        ))
+        assert "2358" in detail and "2048" in detail
+
+    def test_an_ordinary_exception_is_still_generalised(self):
+        """The leak guard must keep working: only the curated message is exempt."""
+        from utils.utils import safe_error_detail
+
+        assert safe_error_detail(RuntimeError("/srv/secret/path blew up")) == "An internal error occurred"
+        assert "/srv/secret" not in safe_error_detail(RuntimeError("/srv/secret/path blew up"))
