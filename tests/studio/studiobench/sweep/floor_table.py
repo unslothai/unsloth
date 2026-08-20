@@ -68,6 +68,18 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
         for key, value in (row.get("timings") or {}).items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[f"{name}.{key}"] = float(value)
+        # Correctness invariants, harvested alongside the timings and named apart from them.
+        #
+        # Same paired arithmetic, opposite meaning. A timing falling is the result a change is
+        # trying to produce; a count falling is a regression, and one that no timing can reveal.
+        # `select_all_copy.count.selected_chars` is the case this exists for: the selection is
+        # taken over the viewport's DOM, so anything that stops mounting the whole thread
+        # truncates the clipboard while every timing improves and the action still reports
+        # `expect_ok`. Reading it against the other arm needs no calibration, because both arms
+        # seed a byte-identical thread.
+        for key, value in (row.get("counts") or {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[f"{name}.count.{key}"] = float(value)
     return out
 
 
@@ -177,7 +189,8 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
     return out
 
 
-def verdict_for(stat: dict, floor: dict | None) -> tuple[float | None, str]:
+def verdict_for(stat: dict, floor: dict | None,
+                is_count: bool = False) -> tuple[float | None, str]:
     """The three gates, in the order that makes a failure most informative.
 
     Gate 1, the per-metric floor, is `max(|null delta|, null spread)` rather than the spread alone.
@@ -200,7 +213,17 @@ def verdict_for(stat: dict, floor: dict | None) -> tuple[float | None, str]:
         return f, "VOID (pairs disagree on sign)"
     if stat["n"] > 1 and stat["spread_pct"] > abs(stat["delta_pct"]):
         return f, "VOID (effect under its own scatter)"
+    if is_count:
+        # A count is an invariant, so the sign means the opposite of what it means for a timing.
+        # Less of the conversation copied is not an improvement, and calling it "faster" because
+        # the number went down is exactly the kind of misreading this table exists to prevent.
+        return f, ("LOST (invariant fell)" if stat["delta_pct"] < 0 else "gained")
     return f, ("faster" if stat["delta_pct"] < 0 else "SLOWER")
+
+
+def is_count_metric(metric: str) -> bool:
+    """`action.count.key` is an invariant; `action.key` and the frame metrics are timings."""
+    return ".count." in metric
 
 
 def render(
@@ -232,9 +255,9 @@ def render(
             f"{s['delta_pct']:>+10.1f}{s['spread_pct']:>10.1f}"
         )
         if floors is not None:
-            f, verdict = verdict_for(s, floors.get(metric))
+            f, verdict = verdict_for(s, floors.get(metric), is_count_metric(metric))
             line += (f"{'--':>13}" if f is None else f"{f:>13.1f}") + f"  {verdict}"
-            if verdict in ("faster", "SLOWER"):
+            if verdict in ("faster", "SLOWER", "LOST (invariant fell)", "gained"):
                 survivors += 1
         print(line)
     if floors is not None:

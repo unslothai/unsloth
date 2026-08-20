@@ -104,6 +104,29 @@ parity-clean and still visibly wrong. **If you touched CSS, take screenshots as 
 
 `NOT EXERCISED` is not a pass. An action that never ran is not evidence that it is stable.
 
+### The digest cannot judge a change that alters the DOM on purpose
+
+Virtualization, windowing and progressive mount all change what is mounted by design, so the digest
+reports differences everywhere and proves nothing. For those changes parity means screenshots at
+matched scroll positions plus the behavioural invariants below.
+
+## 5. Invariant counts: the metrics whose sign means the opposite
+
+Rows named `action.count.key` are correctness invariants, not timings, and the table scores them
+with the same paired arithmetic and the opposite sign. A timing falling is the result a change is
+trying to produce. A count falling is a regression, and a count is often the only thing that can see
+it.
+
+`select_all_copy.count.selected_chars` is the case this exists for. The selection is taken over the
+viewport's DOM, and the action's own assertion is only that the character count is above zero, so
+anything that stops mounting the whole thread truncates the clipboard from roughly 400,000
+characters to a few thousand while every timing improves and the action still reports `expect_ok`.
+Scored as a timing that reads `faster`; scored as an invariant it reads `LOST (invariant fell)`.
+
+The comparison is against the other arm rather than an absolute threshold, so no per-rung
+calibration is needed: both arms seed a byte-identical thread. A count on an action that did not run
+is dropped like any other reading from an action that did not run.
+
 ## Before you trust any number at all
 
 ### Check that the thing you measured actually ran

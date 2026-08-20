@@ -155,6 +155,127 @@ def test_gate_three_cannot_fire_on_a_single_pair(tmp_path):
     assert v == "faster"
 
 
+# ── correctness invariants, scored with the same arithmetic and the opposite sign ────
+
+
+def count_cell(cid: str, chars: float) -> list[dict]:
+    return [
+        {"row_type": "cell", "cell_id": cid, "completed": True},
+        {
+            "row_type": "action",
+            "cell_id": cid,
+            "action": "select_all_copy",
+            "ran": True,
+            "timings": {"copy_ms": 10.0},
+            "counts": {"selected_chars": chars},
+        },
+    ]
+
+
+def count_payload(tmp_path: Path, name: str, pairs: list[tuple[float, float]]) -> Path:
+    out = tmp_path / name
+    out.mkdir(parents = True, exist_ok = True)
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "standard"}]
+    for i, (base, treat) in enumerate(pairs):
+        rows += count_cell(f"100K.base.rep{i}", base)
+        rows += count_cell(f"100K.treatment.rep{i}", treat)
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+COUNT_METRIC = "select_all_copy.count.selected_chars"
+
+
+def test_a_count_is_harvested_under_a_name_that_marks_it_as_an_invariant(tmp_path):
+    stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 400000.0)])])
+    assert COUNT_METRIC in stats
+    assert F.is_count_metric(COUNT_METRIC)
+    # The timing on the same action must stay a timing.
+    assert "select_all_copy.copy_ms" in stats
+    assert not F.is_count_metric("select_all_copy.copy_ms")
+
+
+def test_a_count_that_fell_reads_as_a_loss_and_never_as_faster(tmp_path):
+    # The regression this exists to catch: virtualization truncates select-all from 400k characters
+    # to 3k. Every timing improves, `expect_ok` stays true because chars > 0, and the only thing
+    # that can say so is this row. Scored as a timing it would read "faster".
+    stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 3000.0)] * 4)])
+    floor = {"delta_pct": 0.0, "spread_pct": 1.0}
+    _f, v = F.verdict_for(stats[COUNT_METRIC], floor, F.is_count_metric(COUNT_METRIC))
+    assert v == "LOST (invariant fell)"
+    # Same numbers, scored as a timing, would have been reported as an improvement.
+    assert F.verdict_for(stats[COUNT_METRIC], floor, False)[1] == "faster"
+
+
+def test_a_count_that_rose_is_reported_but_not_as_a_slowdown(tmp_path):
+    stats = F.summarise([count_payload(tmp_path, "r", [(3000.0, 400000.0)] * 4)])
+    _f, v = F.verdict_for(
+        stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True
+    )
+    assert v == "gained"
+
+
+def test_an_unchanged_count_is_void_like_any_other_metric_under_the_floor(tmp_path):
+    stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 400000.0)] * 4)])
+    _f, v = F.verdict_for(
+        stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True
+    )
+    assert v == "VOID (under floor)"
+
+
+def test_a_lost_invariant_is_printed_and_counted_by_the_table(tmp_path, capsys):
+    result = count_payload(tmp_path, "result", [(400000.0, 3000.0)] * 4)
+    floors = {COUNT_METRIC: {"delta_pct": 0.0, "spread_pct": 1.0}}
+    survivors = F.render([result], "t", floors = floors)
+    out = capsys.readouterr().out
+    assert "LOST (invariant fell)" in out
+    # It has to be counted as a finding, not dropped for not being one of the two timing verdicts.
+    assert survivors >= 1
+
+
+def test_a_count_on_an_action_that_did_not_run_contributes_nothing(tmp_path):
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "action",
+            "cell_id": "100K.base.rep0",
+            "action": "select_all_copy",
+            "ran": False,
+            "counts": {"selected_chars": 400000.0},
+        },
+    ]
+    out = tmp_path / "z"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    assert F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0") == {}
+
+
+def test_a_boolean_count_is_not_harvested_as_a_number(tmp_path):
+    # `True` is an int in Python, and a flag flipping is not a 100% regression.
+    rows = [
+        {"row_type": "run_meta", "tier": "standard"},
+        {"row_type": "cell", "cell_id": "100K.base.rep0", "completed": True},
+        {
+            "row_type": "action",
+            "cell_id": "100K.base.rep0",
+            "action": "select_all_copy",
+            "ran": True,
+            "counts": {"selected_chars": 12.0, "truncated": True},
+        },
+    ]
+    out = tmp_path / "w"
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    harvested = F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0")
+    assert harvested == {"select_all_copy.count.selected_chars": 12.0}
+
+
 # ── refusals ─────────────────────────────────────────────────────────
 
 
