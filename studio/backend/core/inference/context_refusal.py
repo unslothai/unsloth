@@ -3,16 +3,13 @@
 
 """Why a prompt did not fit, carried from the context fit to the message the user reads.
 
-The fit knows the SHAPE of a refusal: how much of the prompt is the single turn just
-sent, and how much is the floor that eviction could not reduce. The message the user
-finally sees is built much later, in `_friendly_error`, out of llama-server's own error
-text, which knows only a total. So a two-message thread whose one turn is oversized is
-told to "shorten the conversation", which is not advice it can act on.
-
-Threading the diagnosis through `_friendly_error`'s forty-odd call sites would be a
-worse cure than the disease, so it rides the request instead. A ContextVar is per-task
-and asyncio copies the context per request, so one request's refusal cannot describe
-another's.
+The fit knows the SHAPE of a refusal (how much is the turn just sent vs the floor
+eviction could not reduce); `_friendly_error` builds the message much later from
+llama-server's text, which knows only a total, and so tells a two-message thread to
+"shorten the conversation". Threading the diagnosis through `_friendly_error`'s
+forty-odd call sites would be worse than the disease, so it rides the request in a
+ContextVar: per-task, and asyncio copies the context per request, so one request's
+refusal cannot describe another's.
 """
 
 from contextvars import ContextVar
@@ -30,20 +27,18 @@ _LATEST_REFUSAL: ContextVar[Optional[dict]] = ContextVar(
     "unsloth_context_refusal", default = None
 )
 
-# What share of the irreducible prompt the latest turn has to be before the turn, rather
-# than the conversation, is named as the problem. Never all of it: the system prompt and
-# the template wrapper are in the floor too, and on a small window they are not a
-# rounding error. Two thirds is comfortably above a normal turn's share of a long thread
-# and comfortably below a thread whose single turn IS the thread.
+# Share of the irreducible prompt the latest turn must be before the turn, not the
+# conversation, is named as the problem. Never all of it: the system prompt and template
+# wrapper are in the floor too. Two thirds sits above a normal turn's share of a long
+# thread and below a thread whose single turn IS the thread.
 _TURN_DOMINATES = 0.66
 
 
 def record_fit(truncation) -> None:
     """Remember a fit that refused, and forget one that succeeded.
 
-    Called on every `context_truncated` event, not only the refusals, so that a tool loop
-    whose later iteration fits does not leave the earlier refusal behind to explain an
-    unrelated error.
+    Called on every `context_truncated` event, not just refusals, so a tool loop whose
+    later iteration fits does not leave a stale refusal behind to explain another error.
     """
     if not isinstance(truncation, dict):
         return
@@ -70,18 +65,17 @@ def _int(value) -> int:
 
 
 def _oversized_turn_role(context_tokens: int) -> Optional[str]:
-    """The role of the turn that is too big on its own, or None if the history is.
+    """Role of the turn that is too big on its own, or None if the history is.
 
-    `None` also covers "no diagnosis was recorded" and "the diagnosis describes a
-    different window than the one the server just refused" -- both mean fall back to the
-    generic advice rather than guess.
+    None also covers no diagnosis recorded, and a diagnosis describing a different
+    window than the one just refused: both fall back to generic advice rather than guess.
     """
     refusal = latest_refusal()
     if not refusal:
         return None
     recorded_context = _int(refusal.get("context_length"))
     if context_tokens and recorded_context and recorded_context != context_tokens:
-        # A different load, or a different backend. It cannot describe this refusal.
+        # A different load or backend: it cannot describe this refusal.
         return None
     irreducible = _int(refusal.get("irreducible_tokens"))
     latest_turn = _int(refusal.get("latest_turn_tokens"))
@@ -97,10 +91,10 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
 
     Three shapes, because there are three different things the user can do:
 
-    * the conversation is long -- shorten it, or raise the window.
-    * the message just sent is too big by itself -- shortening the chat does nothing.
-    * a tool returned more than the window holds -- the user did not write it and cannot
-      shorten it, so the only lever is the window (or a narrower tool call).
+    * long conversation -- shorten it, or raise the window.
+    * the message just sent is too big alone -- shortening the chat does nothing.
+    * a tool returned more than the window holds -- the user did not write it, so the
+      only lever is the window (or a narrower tool call).
     """
     head = (
         f"Message too long: {request_tokens} tokens exceeds the "
