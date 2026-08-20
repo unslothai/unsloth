@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from unsloth_pwsh_runner import run_pwsh
+
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 ACTION = REPO / ".github" / "actions" / "install-unsloth-local" / "action.yml"
@@ -368,35 +370,28 @@ for _candidate in ("pwsh", "powershell"):
         continue
 
 
-# The banner pwsh prints when the interpreter itself dies rather than the script failing.
-# Seen on a hosted ubuntu runner mid-run, with completely empty stdout: no "RC=" at all,
-# not a wrong one. Read as a normal failure it accuses the pipeline of losing
-# $LASTEXITCODE, which is a claim about install.ps1, so a runner hiccup arrives looking
-# like a product regression. Distinguish the two.
-_PWSH_CRASHED = "The PowerShell process will exit"
-
-
 def _run_pwsh(script: str, attempts: int = 2):
     """Run `script` under pwsh, retrying only an interpreter crash.
+
+    Delegates to the shared `run_pwsh`, which was generalised out of this function: it keeps
+    the crash banner (an interpreter that dies mid-run and still exits normally, seen here on
+    a hosted ubuntu runner with completely empty stdout) and adds the SIGABRT case this file
+    never covered, where .NET failfasts at pwsh startup and the process is killed by a signal
+    instead of printing anything at all.
 
     A crash yields no verdict either way, so retrying it is not papering over a failure:
     there is nothing to paper over yet. A run that reaches `RC=` is returned as-is on the
     first attempt, whatever the value, so a real regression is never retried into green.
+    That is what `verdict` says here. `PwshInterpreterCrash` is an `AssertionError`, so an
+    exhausted retry loop still surfaces as a failure naming the interpreter rather than
+    accusing install.ps1 of losing $LASTEXITCODE through the pipeline.
     """
-    proc = None
-    for _ in range(attempts):
-        proc = subprocess.run(
-            [PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True
-        )
-        if "RC=" in proc.stdout:
-            return proc
-        if _PWSH_CRASHED not in (proc.stdout + proc.stderr):
-            return proc
-    raise AssertionError(
-        f"pwsh itself terminated abnormally on all {attempts} attempts and never reached "
-        f"the `RC=` line, so this run says nothing about whether $LASTEXITCODE survives "
-        f"the pipeline. That is the interpreter dying, not install.ps1 losing its exit "
-        f"code.\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    return run_pwsh(
+        [PWSH, "-NoProfile", "-Command", script],
+        attempts = attempts,
+        verdict = "RC=",
+        capture_output = True,
+        text = True,
     )
 
 
