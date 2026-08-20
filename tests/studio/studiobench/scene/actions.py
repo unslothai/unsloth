@@ -1263,8 +1263,14 @@ class Transition:
 #: first (so a normal control behaves exactly as before), then the lower band, which is what stays
 #: uncovered when a sticky header overlaps the top of a control.
 _HIT_POINTS = (
-    (0.5, 0.5), (0.5, 0.75), (0.25, 0.75), (0.75, 0.75),
-    (0.5, 0.9), (0.15, 0.5), (0.85, 0.5), (0.5, 0.25),
+    (0.5, 0.5),
+    (0.5, 0.75),
+    (0.25, 0.75),
+    (0.75, 0.75),
+    (0.5, 0.9),
+    (0.15, 0.5),
+    (0.85, 0.5),
+    (0.5, 0.25),
 )
 
 _HIT_TEST_JS = """

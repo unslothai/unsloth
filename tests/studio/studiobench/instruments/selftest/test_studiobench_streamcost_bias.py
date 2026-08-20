@@ -113,7 +113,6 @@ TIME_JS = """
 @pytest.fixture(scope = "module")
 def browser():
     from playwright.sync_api import sync_playwright
-
     with sync_playwright() as p:
         try:
             b = p.chromium.launch(args = ["--no-sandbox"])

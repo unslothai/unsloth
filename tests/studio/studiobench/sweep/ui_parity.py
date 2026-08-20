@@ -149,9 +149,7 @@ def behaviour_report(paths: list[Path], label: str) -> int:
                 )
             )
             continue
-        results.append(
-            (action, shard, rep, B.compare_behaviour(sides["base"], sides["treatment"]))
-        )
+        results.append((action, shard, rep, B.compare_behaviour(sides["base"], sides["treatment"])))
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
     print(

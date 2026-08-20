@@ -84,7 +84,13 @@ def _drift(a: Any, b: Any) -> Optional[float]:
     return abs(a - b) / biggest
 
 
-def _check(name: str, ok: Optional[bool], detail: str, *, required: bool = False) -> dict:
+def _check(
+    name: str,
+    ok: Optional[bool],
+    detail: str,
+    *,
+    required: bool = False,
+) -> dict:
     """One invariant's result.
 
     `required` marks a check WITHOUT WHICH THE REST CANNOT BE READ. It exists because of a hole

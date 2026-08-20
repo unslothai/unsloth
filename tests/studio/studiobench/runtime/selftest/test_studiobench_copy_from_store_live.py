@@ -56,7 +56,6 @@ pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reaso
 @pytest.fixture(scope = "module")
 def context():
     from playwright.sync_api import sync_playwright
-
     with sync_playwright() as p:
         try:
             b = p.chromium.launch(args = ["--no-sandbox"])

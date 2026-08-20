@@ -80,7 +80,6 @@ pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reaso
 @pytest.fixture(scope = "module")
 def browser():
     from playwright.sync_api import sync_playwright
-
     with sync_playwright() as p:
         try:
             b = p.chromium.launch(args = ["--no-sandbox"])
@@ -90,7 +89,11 @@ def browser():
         b.close()
 
 
-def _page(browser, mode: str, turns: int = TURNS):
+def _page(
+    browser,
+    mode: str,
+    turns: int = TURNS,
+):
     page = browser.new_page(viewport = {"width": 900, "height": 600})
     page.set_content("<!doctype html><meta charset=utf-8><body></body>")
     page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
@@ -170,8 +173,12 @@ def test_full_mount_is_admitted_in_full_mode(browser):
     got, log = _lines()
     try:
         r = wait_for_thread_ready(
-            page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-            mode = MODE_FULL, timeout_s = 20, log = log,
+            page,
+            MESSAGES,
+            marker = turn_marker(TURNS - 1, TURNS - 1),
+            mode = MODE_FULL,
+            timeout_s = 20,
+            log = log,
         )
     finally:
         page.close()
@@ -188,8 +195,12 @@ def test_a_virtualised_thread_is_admitted_in_windowed_mode(browser):
     got, log = _lines()
     try:
         r = wait_for_thread_ready(
-            page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-            mode = MODE_WINDOWED, timeout_s = 20, log = log,
+            page,
+            MESSAGES,
+            marker = turn_marker(TURNS - 1, TURNS - 1),
+            mode = MODE_WINDOWED,
+            timeout_s = 20,
+            log = log,
         )
     finally:
         page.close()
@@ -215,8 +226,12 @@ def test_the_ordinals_are_accepted_on_the_row_wrapper_or_on_the_message(browser,
     try:
         assert page.evaluate("() => window.__sb.dom.threadTotal()") == MESSAGES
         r = wait_for_thread_ready(
-            page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-            mode = MODE_WINDOWED, timeout_s = 20, log = log,
+            page,
+            MESSAGES,
+            marker = turn_marker(TURNS - 1, TURNS - 1),
+            mode = MODE_WINDOWED,
+            timeout_s = 20,
+            log = log,
         )
     finally:
         page.close()
@@ -230,12 +245,19 @@ def test_a_virtualised_thread_passes_the_completeness_probe(browser):
     got, log = _lines()
     try:
         wait_for_thread_ready(
-            page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-            mode = MODE_WINDOWED, timeout_s = 20, log = log,
+            page,
+            MESSAGES,
+            marker = turn_marker(TURNS - 1, TURNS - 1),
+            mode = MODE_WINDOWED,
+            timeout_s = 20,
+            log = log,
         )
         out = probe_thread_completeness(
-            page, first_marker = turn_marker(0, 0), expected_messages = MESSAGES,
-            timeout_s = 15, log = log,
+            page,
+            first_marker = turn_marker(0, 0),
+            expected_messages = MESSAGES,
+            timeout_s = 15,
+            log = log,
         )
     finally:
         page.close()
@@ -256,7 +278,12 @@ def test_windowed_mode_also_admits_a_thread_short_enough_to_mount_whole(browser)
     got, log = _lines()
     try:
         r = wait_for_thread_ready(
-            page, 4, marker = turn_marker(1, 1), mode = MODE_WINDOWED, timeout_s = 20, log = log,
+            page,
+            4,
+            marker = turn_marker(1, 1),
+            mode = MODE_WINDOWED,
+            timeout_s = 20,
+            log = log,
         )
     finally:
         page.close()
@@ -275,8 +302,12 @@ def test_a_half_mounted_thread_is_refused_in_full_mode(browser):
     try:
         with pytest.raises(ThreadNotReady) as caught:
             wait_for_thread_ready(
-                page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-                mode = MODE_FULL, timeout_s = 4, log = log,
+                page,
+                MESSAGES,
+                marker = turn_marker(TURNS - 1, TURNS - 1),
+                mode = MODE_FULL,
+                timeout_s = 4,
+                log = log,
             )
     finally:
         page.close()
@@ -302,8 +333,12 @@ def test_a_half_mounted_thread_is_refused_in_windowed_mode_too(browser):
     try:
         with pytest.raises(ThreadNotReady) as caught:
             wait_for_thread_ready(
-                page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-                mode = MODE_WINDOWED, timeout_s = 4, log = log,
+                page,
+                MESSAGES,
+                marker = turn_marker(TURNS - 1, TURNS - 1),
+                mode = MODE_WINDOWED,
+                timeout_s = 4,
+                log = log,
             )
     finally:
         page.close()
@@ -321,8 +356,12 @@ def test_a_window_that_publishes_no_total_is_refused(browser):
     try:
         with pytest.raises(ThreadNotReady) as caught:
             wait_for_thread_ready(
-                page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-                mode = MODE_WINDOWED, timeout_s = 4, log = log,
+                page,
+                MESSAGES,
+                marker = turn_marker(TURNS - 1, TURNS - 1),
+                mode = MODE_WINDOWED,
+                timeout_s = 4,
+                log = log,
             )
     finally:
         page.close()
@@ -340,8 +379,12 @@ def test_a_window_over_the_wrong_end_of_the_thread_is_refused(browser):
     try:
         with pytest.raises(ThreadNotReady) as caught:
             wait_for_thread_ready(
-                page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-                mode = MODE_WINDOWED, timeout_s = 4, log = log,
+                page,
+                MESSAGES,
+                marker = turn_marker(TURNS - 1, TURNS - 1),
+                mode = MODE_WINDOWED,
+                timeout_s = 4,
+                log = log,
             )
     finally:
         page.close()
@@ -364,13 +407,20 @@ def test_a_thread_that_lost_its_head_passes_readiness_and_fails_completeness(bro
     got, log = _lines()
     try:
         r = wait_for_thread_ready(
-            page, MESSAGES, marker = turn_marker(TURNS - 1, TURNS - 1),
-            mode = MODE_WINDOWED, timeout_s = 20, log = log,
+            page,
+            MESSAGES,
+            marker = turn_marker(TURNS - 1, TURNS - 1),
+            mode = MODE_WINDOWED,
+            timeout_s = 20,
+            log = log,
         )
         assert r.ready
         out = probe_thread_completeness(
-            page, first_marker = turn_marker(0, 0), expected_messages = MESSAGES,
-            timeout_s = 6, log = log,
+            page,
+            first_marker = turn_marker(0, 0),
+            expected_messages = MESSAGES,
+            timeout_s = 6,
+            log = log,
         )
     finally:
         page.close()
@@ -385,9 +435,18 @@ def test_a_thread_that_lost_its_head_passes_readiness_and_fails_completeness(bro
 def test_evaluate_never_reports_a_mode_inapplicable_condition_as_a_pass():
     """`None` is not `True`, and the difference is the whole design of the two modes."""
     probe = {
-        "probe_attempted": True, "mounted": 6, "elements": 40, "composer": True,
-        "setsize": None, "posinset_count": 0, "marker_found": True, "marker_from_end": 1,
-        "scroll_height": 100, "from_bottom": 0, "app_says_at_bottom": True, "pinning": False,
+        "probe_attempted": True,
+        "mounted": 6,
+        "elements": 40,
+        "composer": True,
+        "setsize": None,
+        "posinset_count": 0,
+        "marker_found": True,
+        "marker_from_end": 1,
+        "scroll_height": 100,
+        "from_bottom": 0,
+        "app_says_at_bottom": True,
+        "pinning": False,
     }
     full = evaluate(probe, probe, 18, MODE_FULL)
     assert full["total_declared"] is None

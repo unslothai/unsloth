@@ -23,7 +23,11 @@ from studiobench.analysis import behaviour as B  # noqa: E402
 from studiobench.analysis import parity as P  # noqa: E402
 
 
-def _capture(mounted: int, total: int, digest: str = "d") -> dict:
+def _capture(
+    mounted: int,
+    total: int,
+    digest: str = "d",
+) -> dict:
     return {
         "parity_attempted": True,
         "root_kind": "thread",
@@ -100,9 +104,7 @@ def test_unequal_mounted_counts_are_refused_even_without_a_declared_total():
 
 def test_a_refused_pair_is_not_evidence_of_stability_either():
     """`derive_unstable` counts observations. A pair the digest could not answer is not one."""
-    derived = P.derive_unstable(
-        [("select_text", {"verdict": P.NOT_APPLICABLE})] * 4
-    )
+    derived = P.derive_unstable([("select_text", {"verdict": P.NOT_APPLICABLE})] * 4)
     assert derived["select_text"]["observations"] == 0
     assert derived["select_text"]["unstable"] is False
     assert derived["select_text"]["undetermined"] is True
@@ -131,11 +133,23 @@ def test_the_scroll_extent_invariant_fails_a_virtualizer_that_simply_drops_rows(
     assert "scroll_extent" in got["reason"]
 
 
-def _copy_row(capture, *, clipboard, selected, mounted, readable = True):
+def _copy_row(
+    capture,
+    *,
+    clipboard,
+    selected,
+    mounted,
+    readable = True,
+):
     return _row(
-        "select_all_copy", capture,
-        selected_chars = selected, clipboard_chars = clipboard, clipboard_readable = readable,
-        clipboard_note = None, messages_total = 18, messages_mounted = mounted,
+        "select_all_copy",
+        capture,
+        selected_chars = selected,
+        clipboard_chars = clipboard,
+        clipboard_readable = readable,
+        clipboard_note = None,
+        messages_total = 18,
+        messages_mounted = mounted,
         mounted_fraction = round(mounted / 18, 3),
     )
 
@@ -175,7 +189,11 @@ def test_an_unreadable_clipboard_is_never_a_pass():
     """The one invariant where "we could not tell" must not look like "it was fine"."""
     base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
     treat = _copy_row(
-        _capture(6, 18), clipboard = None, selected = 66_000, mounted = 6, readable = False,
+        _capture(6, 18),
+        clipboard = None,
+        selected = 66_000,
+        mounted = 6,
+        readable = False,
     )
     got = B.compare_behaviour(base, treat)
     checks = {c["invariant"]: c for c in got["checks"]}
@@ -185,12 +203,18 @@ def test_an_unreadable_clipboard_is_never_a_pass():
 
 def test_a_reopen_that_loses_messages_is_broken():
     base = _row(
-        "thread_reopen", _capture(18, 18),
-        messages_before = 18, messages_after = 18, reopened_via = "click",
+        "thread_reopen",
+        _capture(18, 18),
+        messages_before = 18,
+        messages_after = 18,
+        reopened_via = "click",
     )
     treat = _row(
-        "thread_reopen", _capture(6, 18),
-        messages_before = 18, messages_after = 6, reopened_via = "click",
+        "thread_reopen",
+        _capture(6, 18),
+        messages_before = 18,
+        messages_after = 6,
+        reopened_via = "click",
     )
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
@@ -200,12 +224,18 @@ def test_a_reopen_that_loses_messages_is_broken():
 def test_a_reopen_measured_through_a_page_navigation_is_broken():
     """A document reload is not a thread rebuild. See `_click_or_navigate`."""
     base = _row(
-        "thread_reopen", _capture(18, 18),
-        messages_before = 18, messages_after = 18, reopened_via = "click",
+        "thread_reopen",
+        _capture(18, 18),
+        messages_before = 18,
+        messages_after = 18,
+        reopened_via = "click",
     )
     treat = _row(
-        "thread_reopen", _capture(6, 18),
-        messages_before = 18, messages_after = 18, reopened_via = "navigate",
+        "thread_reopen",
+        _capture(6, 18),
+        messages_before = 18,
+        messages_after = 18,
+        reopened_via = "navigate",
     )
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
@@ -250,6 +280,10 @@ def test_every_named_first_to_break_action_has_an_invariant():
     """The five the brief names as the ones that break first. An entry silently missing from the
     table would make that action UNCHECKED, which reads as clean."""
     for action in (
-        "select_all_copy", "select_text", "copy_markdown", "thread_reopen", "scroll_after",
+        "select_all_copy",
+        "select_text",
+        "copy_markdown",
+        "thread_reopen",
+        "scroll_after",
     ):
         assert action in B.INVARIANTS, f"{action} has no behavioural invariant declared"

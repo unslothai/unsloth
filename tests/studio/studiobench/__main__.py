@@ -428,7 +428,9 @@ def run(args, ab_ref = None) -> int:
     # treatment that did the same, which is the exact "flattering garbage" the gate exists to
     # refuse -- on both arms at once, so the ratio would still look fine.
     windowed = {
-        name.strip() for name in (getattr(args, "windowed_arm", "") or "").split(",") if name.strip()
+        name.strip()
+        for name in (getattr(args, "windowed_arm", "") or "").split(",")
+        if name.strip()
     }
     unknown = windowed - {s["label"] for s in sides}
     if unknown:
