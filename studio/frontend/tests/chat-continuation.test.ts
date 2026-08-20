@@ -9,12 +9,14 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  AUTO_CONTINUE_ARM_TIMEOUT_MS,
   AUTO_CONTINUE_LEASE_KEY,
   AUTO_CONTINUE_LEASE_RENEW_MS,
   AUTO_CONTINUE_LEASE_SETTLE_MS,
   AUTO_CONTINUE_LEASE_TTL_MS,
   AUTO_CONTINUE_LIMIT,
   autoContinueCount,
+  createAutoContinueLeaseKeeper,
   createAutoContinueTab,
   budgetImpliesTruncation,
   incompleteLabel,
@@ -921,6 +923,170 @@ test("the next round keeps its lease with a lock manager in the way", async () =
   // And with one, because the effect ordering is not guaranteed in our favour there
   // either -- the fix must not depend on which path ran.
   await sequentialRounds(lockManagerFake());
+});
+
+/**
+ * The per-thread run signal the keeper reads, with no notion of what is on screen.
+ *
+ * Selection is deliberately absent: it is not an input to a lease's lifetime, and the whole
+ * point of the case below is that changing it changes nothing.
+ */
+function runSignalFake(running: Set<string>) {
+  const listeners = new Set<() => void>();
+  return {
+    signal: {
+      isRunning: (threadId: string) => running.has(threadId),
+      subscribe: (onChange: () => void) => {
+        listeners.add(onChange);
+        return () => listeners.delete(onChange);
+      },
+    },
+    /** The store told everyone something changed. */
+    change: () => {
+      for (const listener of [...listeners]) {
+        listener();
+      }
+    },
+  };
+}
+
+test("a run on a background thread keeps its lease while the user reads another chat", async () => {
+  // Switching chats does not stop a generation: the chat view is keyed by project, so the
+  // provider is not remounted and the run keeps streaming on the thread the user left. A
+  // lease whose lifetime was read off the SELECTED thread was released the moment they
+  // looked away, and one settle window later a second tab could claim a message that was
+  // still being written.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const tab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+
+  // Thread A is generating; thread B, which the user is about to open, is idle.
+  const running = new Set<string>();
+  const runs = runSignalFake(running);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId, holder, now) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId, holder, now) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  assert.equal(
+    startedARun(await tab.claim("a-m1", { now: start, holder: "thread-A" })),
+    true,
+  );
+  keeper.hold("a-m1", "thread-A");
+  // The continuation starts on thread A.
+  running.add("thread-A");
+  runs.change();
+
+  // The user opens idle thread B. Nothing about thread A changed, so nothing here does.
+  for (let tick = 1; tick <= 5; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(
+    await otherTab.claim("a-m1", { now: past }),
+    "held-elsewhere",
+    "the background run keeps the message it is still writing",
+  );
+
+  // Thread A's own run ends. That, and only that, gives the lease back.
+  clock = past;
+  running.delete("thread-A");
+  runs.change();
+  await Promise.all(pending);
+  assert.equal(
+    await otherTab.claim("a-m1", {
+      now: past + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+    }),
+    "started",
+  );
+  assert.equal(keeper.held(), 0);
+});
+
+test("a hold waits for its own run, not the one already in flight", async () => {
+  // The next round is claimed while the finished one is still winding down, so a hold that
+  // armed on "the thread is busy" would arm on its predecessor's run and be released the
+  // moment THAT one ended, mid-stream.
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const pending: Promise<void>[] = [];
+  const running = new Set<string>(["thread-A"]);
+  const runs = runSignalFake(running);
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: (messageId, holder, now) => {
+      pending.push(tab.renew(messageId, holder, { now }));
+    },
+    release: (messageId, holder, now) => {
+      pending.push(tab.release(messageId, holder, { now }));
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("round-2", { now: start, holder: "thread-A" });
+  keeper.hold("round-2", "thread-A");
+
+  // The previous round ends, and the next one starts.
+  running.delete("thread-A");
+  runs.change();
+  running.add("thread-A");
+  runs.change();
+  for (let tick = 1; tick <= 5; tick += 1) {
+    clock = start + tick * AUTO_CONTINUE_LEASE_RENEW_MS;
+    keeper.tick();
+  }
+  await Promise.all(pending);
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(await otherTab.claim("round-2", { now: past }), "held-elsewhere");
+});
+
+test("a hold whose run never appears is forgotten, and its lease simply lapses", async () => {
+  const { storage } = storageFake();
+  const tab = createAutoContinueTab({ storage, locks: null });
+  const otherTab = createAutoContinueTab({ storage, locks: null });
+  const start = 1_000;
+  let clock = start;
+  const runs = runSignalFake(new Set<string>());
+  const keeper = createAutoContinueLeaseKeeper({
+    signal: runs.signal,
+    renew: () => undefined,
+    release: () => {
+      assert.fail("a hold that never armed has nothing to give back");
+    },
+    now: () => clock,
+  });
+
+  await tab.claim("a-m1", { now: start, holder: "thread-A" });
+  keeper.hold("a-m1", "thread-A");
+  clock = start + AUTO_CONTINUE_ARM_TIMEOUT_MS + 1;
+  keeper.tick();
+  assert.equal(keeper.held(), 0);
+  // Untouched, so it runs out the TTL, exactly as a tab that closed mid-claim leaves it.
+  assert.equal(
+    await otherTab.claim("a-m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
+    "held-elsewhere",
+  );
+  assert.equal(
+    await otherTab.claim("a-m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    "started",
+  );
 });
 
 test("one compare pane finishing does not release the other pane's lease", async () => {
