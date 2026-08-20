@@ -1306,6 +1306,81 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
 
 
 @requires_pwsh
+def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
+    """Preserving a directory is worth nothing if the next line deletes its parent.
+
+    The primary private temp directory sits inside the data directory, and the
+    data directory is removed wholesale. A Studio from another install root can
+    be alive on that temp directory as its %TEMP%, so the sweep has to run first
+    and the removal has to be told what the sweep kept.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+
+    # The order is a property of the script body, not of any one function, so it
+    # is checked as one: every wholesale data-dir removal is preceded by the
+    # sweep and carries what the sweep kept.
+    body = uninstall[uninstall.index("function Uninstall-UnslothStudio") :]
+    calls = [
+        line.strip()
+        for line in body.splitlines()
+        if ("_RemoveDataDirKeepingWslIcon $defaultDataDir" in line
+            or "_RemoveStudioPrivateTempTrees -Paths" in line)
+    ]
+    assert calls, "neither call is in the script body"
+    for index, line in enumerate(calls):
+        if "_RemoveDataDirKeepingWslIcon" not in line:
+            continue
+        assert "-Preserve" in line, f"data dir removed without the preserved list: {line}"
+        assert index > 0 and "_RemoveStudioPrivateTempTrees" in calls[index - 1], (
+            f"the data dir is removed before the temp sweep runs: {line}"
+        )
+
+    blocks = "\n".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", uninstall)
+        for name in (
+            "_RemoveStudioPrivateTempTrees",
+            "_RemoveTreeKeeping",
+            "_RemoveDataDirKeepingWslIcon",
+        )
+    )
+
+    data = tmp_path / "Unsloth Studio"
+    temp = data / "temp"
+    temp.mkdir(parents = True)
+    live = temp / "ust-4321-abcdef05"
+    live.mkdir()
+    (live / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    (live / "scratch.bin").write_text("in use", encoding = "utf-8")
+    dead = temp / "ust-4321-abcdef06"
+    dead.mkdir()
+    (dead / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    other = data / "launcher.db"
+    other.write_text("data", encoding = "utf-8")
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "function _Substep { param([string]$Msg, [string]$Color) }",
+                "function _RemovePath { param([string]$Path)"
+                " Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue }",
+                blocks,
+                f"$kept = @(_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}')",
+                'Write-Output ("KEPT:" + @($kept).Count)',
+                f"_RemoveDataDirKeepingWslIcon -DataDir '{data}' -ShortcutDirs @() -Preserve $kept",
+                'Write-Output "DONE:1"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert _lines(result, "KEPT:") == ["KEPT:1"]
+    assert (live / "scratch.bin").exists(), "a live Studio's %TEMP% went with the data dir"
+    assert not dead.exists()
+    assert not other.exists(), "the rest of the data dir was left behind"
+
+
+@requires_pwsh
 def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     r"""A junction does not have to sit next to the temp directory to redirect it.
 

@@ -155,6 +155,11 @@ Environment:
             # a different user's profile, so it gets the stricter rule below.
             [string]$PrimaryPath
         )
+        # Every directory this sweep decided to keep, returned so the callers can
+        # keep it too. The wholesale data-directory removal runs over the same
+        # tree, and a live owner preserved here and deleted there is not
+        # preserved at all.
+        $preserved = @()
         foreach ($temp in @($Paths)) {
             if ([string]::IsNullOrWhiteSpace($temp)) { continue }
             if (-not (Test-Path -LiteralPath $temp -PathType Container)) { continue }
@@ -202,6 +207,9 @@ Environment:
             }
             if ($linked) {
                 _Substep "skipped (reparse point): $temp" "Yellow"
+                # Whatever is behind the link is not ours to delete here, and it is
+                # not ours to delete from the data-directory pass either.
+                $preserved += $temp
                 continue
             }
             $entries = @()
@@ -228,6 +236,7 @@ Environment:
                     catch { $ownerLives = $true }
                     if ($ownerLives) {
                         _Substep "in use by pid ${ownerPid}, left alone: $($entry.FullName)" "Yellow"
+                        $preserved += $entry.FullName
                         continue
                     }
                 } elseif (-not $isPrimary) {
@@ -238,6 +247,7 @@ Environment:
                     # is not this uninstall's business. Under our own profile the shape
                     # is enough, since that is what is being removed.
                     _Substep "no recorded owner in another profile, left alone: $($entry.FullName)" "Yellow"
+                    $preserved += $entry.FullName
                     continue
                 }
                 try {
@@ -264,6 +274,40 @@ Environment:
                 } catch {}
             }
         }
+        return $preserved
+    }
+
+    # Delete a tree except for the paths in -Keep, and except for the directories
+    # above them, which have to survive to hold them. With an empty -Keep this is
+    # _RemovePath and nothing else, which is what every ordinary uninstall gets.
+    function _RemoveTreeKeeping {
+        param(
+            [string]$Path,
+            [string[]]$Keep
+        )
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $self = $Path.TrimEnd('\','/')
+        $holdsKept = $false
+        foreach ($k in @($Keep)) {
+            if ([string]::IsNullOrWhiteSpace($k)) { continue }
+            $kept = $k.TrimEnd('\','/')
+            # The kept path itself: stop here, with everything inside it.
+            if ([string]::Equals($kept, $self, [System.StringComparison]::OrdinalIgnoreCase)) { return }
+            if ($kept.StartsWith(($self + '\'), [System.StringComparison]::OrdinalIgnoreCase) -or
+                $kept.StartsWith(($self + '/'), [System.StringComparison]::OrdinalIgnoreCase)) {
+                $holdsKept = $true
+            }
+        }
+        if (-not $holdsKept) {
+            _RemovePath $Path
+            return
+        }
+        # Something below survives, so this directory does too; take the rest of
+        # its children one by one.
+        Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            _RemoveTreeKeeping -Path $_.FullName -Keep $Keep
+        }
     }
 
     # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still points
@@ -272,7 +316,10 @@ Environment:
         param(
             [string]$DataDir,
             # WSL-shortcut search dirs; default Start Menu + Desktop, overridable for tests.
-            [string[]]$ShortcutDirs = $null
+            [string[]]$ShortcutDirs = $null,
+            # Paths under the data dir that a previous pass decided to keep, typically
+            # a private temp directory a live Studio is still using as its %TEMP%.
+            [string[]]$Preserve = @()
         )
         if ([string]::IsNullOrWhiteSpace($DataDir)) { return }
         if (-not (Test-Path -LiteralPath $DataDir)) { return }
@@ -296,15 +343,18 @@ Environment:
                 $wslShortcuts += Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio (WSL*.lnk" -ErrorAction SilentlyContinue
             }
         }
-        if (@($wslShortcuts).Count -eq 0) {
+        $keep = @()
+        foreach ($p in @($Preserve)) { if (-not [string]::IsNullOrWhiteSpace($p)) { $keep += $p } }
+        if (@($wslShortcuts).Count -eq 0 -and $keep.Count -eq 0) {
             _RemovePath $DataDir
             return
         }
-        # A WSL shortcut survives: drop everything except its shared icon.
-        _Substep "keeping $(Join-Path $DataDir 'unsloth.ico') for the WSL shortcut" "Gray"
-        Get-ChildItem -LiteralPath $DataDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_.Name -ne "unsloth.ico") { _RemovePath $_.FullName }
+        if (@($wslShortcuts).Count -gt 0) {
+            # A WSL shortcut survives: keep its shared icon.
+            _Substep "keeping $(Join-Path $DataDir 'unsloth.ico') for the WSL shortcut" "Gray"
+            $keep += (Join-Path $DataDir "unsloth.ico")
         }
+        _RemoveTreeKeeping -Path $DataDir -Keep $keep
     }
 
     # Is this bin\unsloth.cmd the launcher install.ps1 wrote, or just a file with that
@@ -809,9 +859,12 @@ Environment:
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
-    # Default data dir.
-    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
-    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp
+    # Default data dir. The private temp sweep goes FIRST and hands back what it
+    # kept: the primary temp directory lives under this data dir, so a wholesale
+    # removal here would erase a live Studio's %TEMP% before the sweep ever looked
+    # at its owner.pid.
+    $preservedTemp = @(_RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp)
+    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir -Preserve $preservedTemp }
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
@@ -902,8 +955,10 @@ Environment:
     # Re-sweep: the first pass may have left unsloth.ico locked by Explorer/SMEH for
     # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
     # keeps the icon -- see the helper.)
-    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
-    _RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp
+    $preservedTemp = @(_RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp)
+    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) {
+        _RemoveDataDirKeepingWslIcon $defaultDataDir -Preserve $preservedTemp
+    }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."
