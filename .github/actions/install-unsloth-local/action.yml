@@ -123,11 +123,25 @@ runs:
       continue-on-error: true
       with:
         path: studio/frontend/dist
+        # The two negations are load-bearing, not tidiness. `studio/frontend/*` is
+        # RECURSIVE: @actions/glob sets matchDirectories and implicitDescendants true, so a
+        # bare `*` matches the subdirectory ENTRY and then expands it. Verified against the
+        # real library -- `fe/*` yields fe/tests/t.txt, while `fe/*.txt` yields only
+        # fe/top.txt, which is why the docs' non-recursive example does not apply here.
+        # Without these, the key hashed all 457 files under frontend/tests and
+        # frontend/scripts, so editing any frontend TEST evicted a dist whose bundle is
+        # byte-identical. setup.sh reads neither directory, so excluding them makes the key
+        # mean what it already claimed to mean.
+        #
+        # Negations last: they filter everything matched before them. A subdirectory added
+        # later is NOT excluded, so it lands in the key and errs toward rebuilding, which is
+        # the safe direction. Narrowing this to an extension allowlist would fail the other
+        # way, silently serving a stale dist when a new top-level file type appeared.
         # NO restore-keys, deliberately, and the opposite of the uv cache above. A
         # near-miss download cache still supplies most of the wheels, which is most of
         # the win. A near-miss dist is a bundle built from different source: wrong, not
         # partial. Only an exact match may be served.
-        key: fe-dist-${{ runner.os }}-${{ hashFiles('studio/frontend/*', 'studio/frontend/src/**', 'studio/frontend/public/**') }}
+        key: fe-dist-${{ runner.os }}-${{ hashFiles('studio/frontend/*', 'studio/frontend/src/**', 'studio/frontend/public/**', '!studio/frontend/tests/**', '!studio/frontend/scripts/**') }}
 
     - name: Make the restored frontend outrank its sources
       if: steps.fe-dist.outputs.cache-hit == 'true'
@@ -153,7 +167,7 @@ runs:
     - name: Refuse a frontend cache key that hashes nothing
       shell: bash
       env:
-        FE_KEY: ${{ hashFiles('studio/frontend/*', 'studio/frontend/src/**', 'studio/frontend/public/**') }}
+        FE_KEY: ${{ hashFiles('studio/frontend/*', 'studio/frontend/src/**', 'studio/frontend/public/**', '!studio/frontend/tests/**', '!studio/frontend/scripts/**') }}
       run: |
         # hashFiles returns the empty string when a glob matches no file, which would
         # collapse every commit onto one key and serve an arbitrary dist. That is the
