@@ -379,7 +379,7 @@ export function autoContinueCount(key: string | null | undefined): number {
  * A lease, not a permanent flag: the tab that wins can be closed or crash mid-run, and a
  * flag it never gets to clear would leave the message unresumable for the life of the
  * profile. The winner renews for as long as its run is live (see
- * `renewAutoContinueLeases`), so the TTL is not a guess at how long a continuation takes:
+ * `renewAutoContinueLease`), so the TTL is not a guess at how long a continuation takes:
  * it is how long a tab that stopped renewing is still believed to be alive.
  *
  * Three minutes because renewals are timers, and a hidden tab is throttled to roughly one
