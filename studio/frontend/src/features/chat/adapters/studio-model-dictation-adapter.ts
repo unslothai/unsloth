@@ -76,50 +76,6 @@ export function sttEngineFor(model: string): SttEngine {
   return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
-/** POST audio to the STT sidecar and return the transcript. */
-export async function transcribeAudioBlob(
-  blob: Blob,
-  options: {
-    model?: string;
-    language?: string;
-    engine?: SttEngine;
-    signal?: AbortSignal;
-  } = {},
-): Promise<string> {
-  const settings = useVoiceSettingsStore.getState();
-  const model = options.model ?? settings.sttModel;
-  const language = resolveModelDictationLanguage(
-    model,
-    options.language ?? settings.dictationLanguage,
-  );
-  const engine = options.engine ?? sttEngineFor(model);
-  const params = new URLSearchParams({ model, fast: "true", engine });
-  if (language) params.set("language", language);
-  const response = await authFetch(
-    `/api/inference/audio/transcribe/raw?${params.toString()}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": blob.type || "application/octet-stream" },
-      body: blob,
-      signal: options.signal,
-    },
-  );
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    const detail = body?.detail ?? `HTTP ${response.status}`;
-    if (response.status === 501) {
-      throw new Error(
-        "Speech-to-text is not available on this server. Run `unsloth studio update` to install it.",
-      );
-    }
-    throw sttRequestError(response.status, detail);
-  }
-  const data = (await response.json()) as { text?: string };
-  return (data.text ?? "").trim();
-}
-
 /** A transcribed span with its audio-time bounds, in seconds. */
 export interface SttSegment {
   start: number;
@@ -180,6 +136,20 @@ export async function transcribeAudioBlobDetailed(
     text: (data.text ?? "").trim(),
     segments: Array.isArray(data.segments) ? data.segments : null,
   };
+}
+
+/** POST audio to the STT sidecar and return the transcript. */
+export async function transcribeAudioBlob(
+  blob: Blob,
+  options: {
+    model?: string;
+    language?: string;
+    engine?: SttEngine;
+    signal?: AbortSignal;
+  } = {},
+): Promise<string> {
+  const { text } = await transcribeAudioBlobDetailed(blob, options);
+  return text;
 }
 
 export interface SttDownloadStatus {
