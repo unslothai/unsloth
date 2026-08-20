@@ -761,11 +761,11 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
     # Name says dead, owner.pid says alive: keep it.
-    keep = root / f"ust-{_DEAD_PID}-a"
+    keep = root / f"ust-{_DEAD_PID}-000000aa"
     keep.mkdir()
     (keep / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
     # Name says alive, owner.pid says dead: the recorded owner wins, so sweep it.
-    drop = root / f"ust-{os.getpid()}-b"
+    drop = root / f"ust-{os.getpid()}-000000bb"
     drop.mkdir()
     (drop / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
 
@@ -795,10 +795,10 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
     """
     root = tmp_path / "root"
     root.mkdir()
-    live = root / f"ust-{os.getpid()}-old"
+    live = root / f"ust-{os.getpid()}-01d01d01"
     live.mkdir()
     (live / "in-use.txt").write_text("a live process owns this", encoding = "utf-8")
-    abandoned = root / f"ust-{_DEAD_PID}-old"
+    abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
 
     aged = time.time() - 3 * 24 * 3600
@@ -830,7 +830,7 @@ def test_a_healthy_temp_still_sweeps_what_an_earlier_degraded_run_left(tmp_path:
     local_app_data = tmp_path / "localappdata"
     root = local_app_data / "Unsloth Studio" / "temp"
     root.mkdir(parents = True)
-    abandoned = root / f"ust-{_DEAD_PID}-old"
+    abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
     (abandoned / "leftover.bin").write_text("half a download", encoding = "utf-8")
     aged = time.time() - 3 * 24 * 3600
@@ -984,6 +984,89 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
 
 
 @requires_pwsh
+def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path: Path):
+    """Shape, not prefix. The delete is recursive and this is the only owner test.
+
+    A prefix match takes "ust-legacy" and "ust-user-cache" as well, and neither
+    has a parseable PID, so the liveness check is skipped for exactly the names
+    least likely to be ours. scripts/uninstall.ps1 already required the shape;
+    the installer sweep had drifted away from it.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    aged = time.time() - 3 * 24 * 3600
+
+    ours = root / f"ust-{_DEAD_PID}-abcdef01"
+    ours.mkdir()
+    (ours / "scratch.bin").write_text("x", encoding = "utf-8")
+    keep = []
+    # Case-insensitively ours: Windows filenames are case-insensitive, so refusing
+    # the uppercase spelling would leak a directory we created.
+    upper = root / f"ust-{_DEAD_PID}-ABCDEF01"
+    upper.mkdir()
+    for name in ("ust-legacy", "ust-user-cache", "ust-notapid-abcdef01", "ust-", "ust-12-abcdefg1"):
+        victim = root / name
+        victim.mkdir()
+        (victim / "keep.txt").write_text("not ours", encoding = "utf-8")
+        keep.append(victim)
+    for path in [ours, upper] + keep:
+        os.utime(path, (aged, aged))
+
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert not ours.exists()
+    assert not upper.exists()
+    for victim in keep:
+        assert (victim / "keep.txt").exists(), f"{victim.name} was swept"
+
+
+@requires_pwsh
+def test_a_native_resolver_that_throws_says_so_once(tmp_path: Path):
+    """Compiling and then failing to resolve is not the same as no compiler.
+
+    The install still proceeds on the lexical answer, and Exact = $false already
+    makes the runtime lock fail closed, but nothing said so: the degraded warning
+    fires only when the COMPILE failed. That left an operator with a silently
+    inexact identity on a host that looks perfectly healthy.
+    """
+    studio = tmp_path / "studio"
+    studio.mkdir()
+    result = _run_powershell(
+        _script(
+            f"""
+# The helper is "available" and throws anyway, which is what a rename between
+# the Test-Path walk and CreateFileW looks like.
+function Initialize-StudioFinalPathNativeType {{ return $true }}
+Add-Type -TypeDefinition @'
+public class UnslothStudioFinalPathV2 {{
+    public static string Resolve(string path) {{ throw new System.Exception("access is denied"); }}
+}}
+'@
+foreach ($i in 1..3) {{ $null = Resolve-StudioFinalPathInfo -Path '{studio}' }}
+$info = Resolve-StudioFinalPathInfo -Path '{studio}'
+Write-Output "EXACT:$($info.Exact)"
+Write-Output "PATH:$($info.Path)"
+""",
+            sabotage = False,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "EXACT:") == ["EXACT:False"]
+    assert _lines(result, "PATH:")[0].endswith("studio")
+    warnings = [
+        line for line in result.stdout.splitlines()
+        if "native helper; continuing" in line
+    ]
+    assert len(warnings) == 1, warnings
+
+
+@requires_pwsh
 def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
@@ -992,12 +1075,12 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
     # A dead owner PID, or the sweep keeps the directory for the live process its
     # name says owns it; that case is the test below.
-    stale = root / f"ust-{_DEAD_PID}-old"
+    stale = root / f"ust-{_DEAD_PID}-01d01d01"
     stale.mkdir()
     (stale / "junk").write_text("x", encoding = "utf-8")
-    fresh = root / f"ust-{_DEAD_PID}-new"
+    fresh = root / f"ust-{_DEAD_PID}-0e0e0e0e"
     fresh.mkdir()
-    link = root / f"ust-{_DEAD_PID}-link"
+    link = root / f"ust-{_DEAD_PID}-11111111"
     try:
         link.symlink_to(precious, target_is_directory = True)
     except (OSError, NotImplementedError):

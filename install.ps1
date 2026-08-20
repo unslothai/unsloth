@@ -395,6 +395,14 @@ function Install-UnslothStudio {
         try {
             $cutoff = (Get-Date).AddDays(-1)
             foreach ($stale in @(Get-ChildItem -LiteralPath $Root -Directory -Filter "ust-*" -ErrorAction Stop)) {
+                # SHAPE, not prefix. The delete below is recursive and this is the
+                # only ownership test there is, so it has to name a directory the
+                # allocator could actually have made: "ust-" + $PID + "-" + 8 hex.
+                # A prefix match takes "ust-legacy" or "ust-user-cache" too, and
+                # since neither has a parseable PID the liveness check is skipped
+                # for exactly the names least likely to be ours. scripts/uninstall.ps1
+                # already requires this shape; the two had drifted apart.
+                if ($stale.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if ($stale.LastWriteTime -ge $cutoff) { continue }
                 # Age alone is not proof it is unused, and this sweep runs before the
                 # runtime mutex, so it could delete a live process's %TEMP%. owner.pid
@@ -701,6 +709,8 @@ function Install-UnslothStudio {
     # %TEMP% we own, cache the answer (callers resolve dozens of paths), then let
     # Get-StudioLexicalPath carry the run.
     $script:StudioFinalPathNativeState = $null
+    # Reset with the rest: under `irm | iex` these are the caller's own.
+    $script:StudioNativeResolveWarned = $false
     $script:StudioFinalPathWarned = $false
     function Write-StudioFinalPathDegraded {
         param([string]$Reason)
@@ -1051,7 +1061,18 @@ public static class UnslothStudioFinalPathV2
                 $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
                 $exact = $true
             } catch {
+                # The helper COMPILED and still could not answer: a path renamed
+                # between the Test-Path walk and CreateFileW, an access denial on a
+                # component, a volume with no drive letter. Falling back keeps the
+                # install alive, and Exact = $false already makes the runtime lock
+                # fail closed, but nothing said so out loud: the degraded warning
+                # below only fires when the compile itself failed. An operator was
+                # left with a silently inexact identity on a host that looks fine.
                 $resolved = $null
+                if (-not $script:StudioNativeResolveWarned) {
+                    $script:StudioNativeResolveWarned = $true
+                    Write-StudioLine "[WARN] Could not resolve a path with the native helper; continuing with the PowerShell resolver." -ForegroundColor Yellow
+                }
             }
         }
         if ([string]::IsNullOrEmpty($resolved)) {
