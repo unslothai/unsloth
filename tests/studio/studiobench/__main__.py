@@ -343,6 +343,20 @@ def run(args, ab_ref = None) -> int:
     # not depend on whether a later phase was asked for.
     init_scripts.append(resources.read_text("scene/surfaces.js"))
 
+    # AN EXTERNAL PROBE OR ABLATION ARM, appended LAST so it can wrap anything scene/dom.js has
+    # already defined. One environment variable rather than a CLI flag per experiment, and WITH
+    # THE VARIABLE UNSET NOTHING IS APPENDED: the run is byte-identical to a run of a tree that
+    # does not have this hook. That property is the point. A potency probe perturbs the page it
+    # observes, so the probe run and the scored run have to be different runs of one harness, and
+    # the only safe way to arrange that is for the probe to be absent by default.
+    extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
+    if extra_init:
+        init_scripts.append(Path(extra_init).read_text(encoding = "utf-8"))
+        _log(
+            f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and is NOT "
+            f"a clean measurement of the build"
+        )
+
     procs_before = {}
     try:
         from .instruments.rss import new_roots, snapshot_children
@@ -353,6 +367,18 @@ def run(args, ab_ref = None) -> int:
     bundle = browser_mod.launch(
         args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
     )
+    # THE RETURN PATH for a probe installed by the hook above. Studio ships `connect-src 'self'`,
+    # so a beacon to a collector on another port is blocked by CSP before it leaves the page, and
+    # the payload schema has no row for a one-off probe. The console is what is left. Lines are
+    # filtered on a caller-supplied prefix so they can be recovered from the run log by exact
+    # match, and so a probe cannot drown the log in the app's own console traffic.
+    console_prefix = os.environ.get("SBENCH_PAGE_CONSOLE")
+    if console_prefix:
+        bundle.page.on(
+            "console",
+            lambda m: _log(f"  [page] {m.text}") if m.text.startswith(console_prefix) else None,
+        )
+
     procs = []
     if new_roots is not None:
         time.sleep(1.0)

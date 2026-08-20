@@ -224,6 +224,144 @@ straight line makes a *null* informative, which an on/off arm cannot do.
 Which knob removes the slope names the fix. If none does, your hypothesis was wrong, and saying so
 is a better contribution than a fix aimed at the wrong mechanism.
 
+## The `content-visibility` trap, in full
+
+This mechanism has cost this project three separate investigations and produced two nulls that were
+not nulls. It is written out here so nobody spends a fourth day on it. **Do not open another
+`content-visibility: auto` arm on the message roots.** The arm is dead, for the reason in the last
+subsection, and it is dominated: deferring off-screen fence highlighting monotonically reaches
+LayoutObjects -74.0% and `pre span` -96.9% at the same rung with a viewport `scrollHeight` delta of
+**0 px**, byte-identical `selected_chars`, and `select_all_ms` at -67.5% instead of +33%.
+
+Everything below generalises past this one property, which is why it is here and not in a commit
+message.
+
+### How to prove an arm fired
+
+`contentvisibilityautostatechange` is emitted by Blink's own relevance machinery and by nothing
+else. No stylesheet, no selector and no author code can produce one. That makes it a potency
+counter of a strictly stronger kind than anything you can read out of `getComputedStyle`.
+
+The method: before writing any property, attach a listener to every candidate element exactly once,
+and count events by `event.skipped`. Then run the same probe on a control arm that has no rule at
+all. On a 100K thread this read **193 `skipped === true` events on the armed side against exactly 0
+on the control**, with 384 state changes in total and 22 roots simultaneously in the skipped state.
+
+A computed-value read cannot give you that. Computed `content-visibility: auto` proves only that
+the declaration won the cascade. An element can compute to `auto` and be painted on every frame
+because it never stopped being relevant to the user, and then your arm reads null for a reason that
+has nothing to do with rendering.
+
+`arms/content_visibility_probe.js` is the working probe. Install it with
+`SBENCH_EXTRA_INIT_SCRIPT`, read it back with `SBENCH_PAGE_CONSOLE="CVPOT "`. Both are unset by
+default, so a scored run is unaffected; a run carrying the probe is a probe run and its payload is
+never scored, because the probe forces layout on every sample.
+
+### The geometry route is self-defeating
+
+This is the subtle one, and it is the first thing everyone reaches for.
+
+The reasoning is sound: a skipped subtree is not laid out, so its element descendants generate no
+layout boxes, so counting boxes should tell you whether skipping happened. The measurement is still
+useless, because **asking is what breaks it**. `getClientRects()` on content inside a locked subtree
+makes Chromium render that subtree in order to answer. The probe unlocks exactly what it came to
+observe.
+
+Measured side by side in one session, the geometry route reported **0 off-screen unrendered roots
+while the event counter recorded 22 roots in the skipped state**. Read on its own it is a clean,
+confident, wrong "the arm did not fire". Use the events.
+
+The same forced render is the mechanism behind the select-all cost below, so this is not a quirk of
+the instrument. It is the property under test biting the instrument.
+
+### The cascade rule that silently voids an arm
+
+`index.css` opens `@layer utilities` at **line 1051** and closes it at **line 2572** (check by brace
+depth, not by eye). Inside it, at **lines 2565-2567**:
+
+```css
+.aui-thread-root [data-streamdown="code-block"] {
+	content-visibility: visible !important;
+	contain-intrinsic-size: none !important;
+}
+```
+
+Per css-cascade-5 the sorting order is Origin and Importance, then Context, then **Element-Attached
+Styles**, then **Layers**, then Specificity, then Order of Appearance, and for important rules the
+declaration in the **earliest** layer wins while unlayered declarations sit in an implicit **final**
+layer. So:
+
+- an **unlayered** `content-visibility: auto !important` on code blocks **loses** to that rule at
+  any specificity, however many `html body` prefixes you pile on;
+- an **inline** `!important` **wins**, because Element-Attached Styles are checked before Layers;
+- a rule targeting the **message roots** never contests it at all, because that selector matches
+  code blocks only.
+
+An arm that loses this way reports a perfectly clean null. If you inject CSS, emit it into the same
+layer or inline, and then verify with `getComputedStyle` before you believe any timing.
+
+Worth knowing separately: a descendant's `content-visibility: visible` does **not** stop an ancestor
+from skipping. In the session above the code blocks kept computing to `visible` on both arms and
+their message roots skipped anyway.
+
+### You cannot opt out of the last remembered size
+
+Chromium ships `content-visibility: auto` **implies** `contain-intrinsic-size: auto` (Blink intent
+"content-visibility: auto implies contain-intrinsic-size: auto", CSSWG issue #8407). Declaring a
+plain `<length>` does not opt out: on Chromium 151, `contain-intrinsic-size: 300px` on such an
+element computes back as `auto 300px`. A variant built with the keyword deliberately removed
+produced byte-identical geometry to one with it, which is what that behaviour predicts and which
+wastes a build and a run if you have not read this.
+
+### The actual killer: a remembered size of zero
+
+`contain-intrinsic-size: auto <length>` uses the **last remembered size** and falls back to the
+`<length>` only if one does not yet exist (css-sizing-4 5.2, 5.2.1). The fallback being too small is
+the failure everyone anticipates. It is not the one that happens here.
+
+A message root is mounted **before its content arrives**, so the remembered size is recorded while
+the root is empty, and it is recorded as zero. The root is then skipped and frozen at zero forever.
+Measured at rest on a freshly loaded 100K thread, 13 of 18 roots reported their **padding alone**
+(18 px and 40 px) rather than the declared 300 px or 60 px fallback, and the thread's scroll height
+read **58,355 px on the control against 11,949 px armed** (min 5,101). The concurrent null control
+read 58,355 against 58,355, to the pixel.
+
+It self-heals: once the user has scrolled the whole thread, real sizes get remembered and the armed
+side climbs back to ~58,000 px. So the damage is on load and after every remount, which is the worst
+possible shape for it to have. **Static CSS has no way to override a remembered size.**
+
+UI parity records the same thing from the other side: **0 of 64 action pairs matched** on the armed
+comparison against **47 of 64** for the null in the same wave. Every timing from an arm in that
+state is a bound at best.
+
+### The select-all cost
+
+Skipped content has to be rendered before it can be selected, so select-all pays for the unlock.
+Three independent measurements, all at the 100K rung:
+
+| run | base | armed | delta | n | floor | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| `u6i_` sweep | | | **+28.8%** | 4 | 16.7% | cleared |
+| probe run, fast tier | 176.2 ms | 236.1 ms | **+34%** | 2 | none | direction only |
+| `cvs1_` standard tier | 196.2 ms | 250.8 ms | **+33.2%** | 4 | 37.5% | **void**, spread 71.5% |
+
+Stated honestly: the third run's own scatter was wider than its effect, so gate 3 voided it. Three
+measurements agreeing on sign and magnitude is not the same as one that cleared the gates, and the
+row above is the one to quote. The mechanism is not in doubt; the certification is.
+
+`select_all_copy.count.selected_chars` did **not** fall (194,992 against 195,006), which is the
+expected direction: the selection forces the content back into existence, so the clipboard is intact
+and only the clock suffers.
+
+### The 60.2 versus 64.8 figure is not a message-roots null
+
+This number has circulated as evidence that `content-visibility: auto` on message roots does
+nothing. It is not that measurement. It was `content-visibility: auto` on the **reasoning pane's
+code blocks**, PR 9073, **n=1, no floor**, and PR 9073's own investigation notes had already
+withdrawn it for the cascade reason two subsections above: the rule lost to `index.css:2566` and the
+arm never fired. Please stop citing it. The message-roots arm was never null; it fires hard and dies
+on geometry instead.
+
 ## If you have many cores
 
 Running several comparisons at once is fine and is how the 40-PR audit was done, but contention is a
