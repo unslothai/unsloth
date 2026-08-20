@@ -140,13 +140,21 @@ test("an ingest that fails after the upload is not left silent", async () => {
         error: "Could not parse the document",
       });
     }
-    return json({ documentId: "d4", jobId: "j4", filename: "Chat.md" });
+    // A name only this test uses. Every earlier save in this file also uploads
+    // a "Chat.md", and each successful one leaves a 2s ingest poll running past
+    // the end of its own test; those land here, where the handler above answers
+    // every /jobs/ with a failure, and raise a toast that reads exactly like
+    // this test's. Waiting on the shared name therefore resolved on a foreign
+    // toast, before this save's own poll had announced the second update, and
+    // the count below read 1. Observed on the Windows runner, and reproducible
+    // anywhere by delaying this test ~1.8s after the ones that arm those polls.
+    return json({ documentId: "d4", jobId: "j4", filename: "Chat p4.md" });
   });
   await saveMarkdownAsProjectSource("p4", "# Chat\n", "Chat");
   // The panel hides failed documents, so the success toast would otherwise be
   // the only thing the user ever sees about a source that never arrives.
   const failure = await waitFor(() =>
-    recordedToasts.find((t) => t.message === "Couldn't index Chat.md"),
+    recordedToasts.find((t) => t.message === "Couldn't index Chat p4.md"),
   );
   assert.equal(failure?.kind, "error");
   assert.equal(failure?.description, "Could not parse the document");
