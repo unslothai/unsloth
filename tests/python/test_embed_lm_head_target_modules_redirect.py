@@ -11,6 +11,13 @@ warns once, which also makes `embedding_learning_rate` work.
 
 import os
 import pytest
+import torch
+
+
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "embedding target redirect integration test needs a CUDA GPU",
+)
 
 
 MODEL_NAME = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
@@ -30,7 +37,6 @@ TARGET_MODULES = [
 
 def _run_redirect_check(new_model_path: bool, target_modules):
     """Core assertions shared by both FastLanguageModel paths."""
-    import torch
     from unsloth import FastLanguageModel
 
     previous_new_model = os.environ.pop("UNSLOTH_USE_NEW_MODEL", None)
