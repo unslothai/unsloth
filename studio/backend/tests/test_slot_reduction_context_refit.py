@@ -284,11 +284,11 @@ class TestAGgufWithNoNativeContext:
     ):
         got = _plan(
             tmp_path,
-            weights_mib=weights_mib,
-            n_parallel=asked,
-            spec="off",
-            vram_mib=vram_mib,
-            metadata=NO_NATIVE_CTX,
+            weights_mib = weights_mib,
+            n_parallel = asked,
+            spec = "off",
+            vram_mib = vram_mib,
+            metadata = NO_NATIVE_CTX,
         )
         assert (got["slots"], got["fit"], got["ctx"]) == (slots, "off", 4096)
 
@@ -306,10 +306,10 @@ class TestAGgufWithNoNativeContext:
         monkeypatch.setattr("core.inference.llama_cpp.logger", _Recorder())
         _plan(
             tmp_path,
-            weights_mib=9_000,
-            n_parallel=8,
-            spec="off",
-            vram_mib=12 * 1024,
-            metadata=NO_NATIVE_CTX,
+            weights_mib = 9_000,
+            n_parallel = 8,
+            spec = "off",
+            vram_mib = 12 * 1024,
+            metadata = NO_NATIVE_CTX,
         )
         assert not [w for w in warnings if "GPU selection failed" in w], warnings
