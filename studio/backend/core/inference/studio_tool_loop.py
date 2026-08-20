@@ -1262,6 +1262,11 @@ async def stream_with_studio_tools(
                 # an external model's window, and a custom OpenAI-compatible endpoint can
                 # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
                 # replayed on every later call. Unmeasurable means one recall's worth.
+                # Explicitly unknowable, not absent: this request is served by an
+                # external provider, so the resident GGUF's window says nothing about
+                # what it can hold. 0 keeps the default page cap instead of inheriting it.
+                if accepts_kwarg(execute_tool, "context_tokens"):
+                    kwargs["context_tokens"] = 0
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config
