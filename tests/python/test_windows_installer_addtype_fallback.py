@@ -1059,10 +1059,7 @@ Write-Output "PATH:$($info.Path)"
     assert result.returncode == 0, result.stderr
     assert _lines(result, "EXACT:") == ["EXACT:False"]
     assert _lines(result, "PATH:")[0].endswith("studio")
-    warnings = [
-        line for line in result.stdout.splitlines()
-        if "native helper; continuing" in line
-    ]
+    warnings = [line for line in result.stdout.splitlines() if "native helper; continuing" in line]
     assert len(warnings) == 1, warnings
 
 
