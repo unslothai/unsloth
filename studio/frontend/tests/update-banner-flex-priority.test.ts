@@ -245,11 +245,6 @@ test("the rail scrolls rather than spilling its cards", () => {
     // was.
     assert.match(rules, /\bpx-3\b/);
     assert.match(rules, /-mx-3/);
-    // And under the bottom card. Every surface here offsets its shadow
-    // downwards, so flush against the clip edge the card loses all of it and
-    // reads as cut off, which is how the llama.cpp toast was reported.
-    assert.match(rules, /\bpb-4\b/, "the rail clips the bottom card's shadow");
-    assert.match(rules, /\bpt-2\b/, "the rail clips the top card's shadow");
     // scrollHeight spans that padding, so the gutter has to be discounted or the
     // stack asks for room it does not occupy and lifts over the composer for
     // nothing. The cap stays on this node, since measure() lifts it here.
@@ -276,6 +271,7 @@ test("the rail's block gutter costs the cards no room", () => {
   const rails = PROVIDER.split('"fixed right-4 ');
   assert.equal(rails.length - 1, 2, "the rail count changed");
   for (const rail of rails.slice(1)) {
+    const rules = rail.slice(0, rail.indexOf('"'));
     const style = rail.slice(rail.indexOf("style={{"), rail.indexOf("}}"));
     assert.match(
       style,
@@ -287,6 +283,23 @@ test("the rail's block gutter costs the cards no room", () => {
       /maxHeight: railMaxHeight\(stack\.maxHeight\)/,
       "the gutter is spent on the cards' cap",
     );
+    // From the same constants, not from pb-4/pt-2. Those resolve through
+    // --spacing in rem, so at a root font size other than 16px the padding and
+    // the compensation drift apart: the cards move and their band changes size.
+    assert.match(
+      style,
+      /paddingTop: STACK_SHADOW_GUTTER_TOP/,
+      "the top gutter can drift from the cap that pays for it",
+    );
+    assert.match(
+      style,
+      /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/,
+      "the bottom gutter can drift from the offset that pays for it",
+    );
+    // Every surface here offsets its shadow downwards, so flush against the
+    // clip edge the bottom card loses all of it and reads as cut off, which is
+    // how the llama.cpp toast was reported. A zero gutter is that bug again.
+    assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
   }
 });
 

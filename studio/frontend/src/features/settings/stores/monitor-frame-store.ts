@@ -90,7 +90,9 @@ const STACK_GAP = 8;
 // 0 8px 28px -6px still paints 36px below the card, but by 16px it is one level
 // of #181818, and light's 0 2px 8px -2px is one level of white by 8px. Above,
 // light is the one that shows and it ends by 6px, dark is under a level by 8px.
-// railCardsHeight discounts both from the measurement.
+// railCardsHeight discounts both from the measurement, and provider.tsx sets
+// the rail's block padding from them: a rem utility would drift from these px
+// at any root font size but 16.
 export const STACK_SHADOW_GUTTER_BOTTOM = 16;
 export const STACK_SHADOW_GUTTER_TOP = 8;
 

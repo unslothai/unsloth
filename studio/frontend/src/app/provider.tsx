@@ -24,6 +24,8 @@ import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
+  STACK_SHADOW_GUTTER_BOTTOM,
+  STACK_SHADOW_GUTTER_TOP,
   railBottomOffset,
   railMaxHeight,
   useAppearanceCustomStore,
@@ -413,12 +415,19 @@ function TauriUpdateLayer({
       // costs it its scrollbar, and only the cards opt back in, so nothing
       // would drag the ones below the fold into view.
       className={cn(
-        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4 pt-2",
+        "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
         stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
       )}
+      // The block gutter comes from the same constants the two offsets beside
+      // it compensate with, never from a spacing utility: those resolve through
+      // --spacing in rem, so at any root font size but 16px the padding and the
+      // compensation disagree. Across it stays a utility, since px-3 and -mx-3
+      // cancel whatever a rem is worth.
       style={{
         bottom: railBottomOffset(stack.bottom),
         maxHeight: railMaxHeight(stack.maxHeight),
+        paddingTop: STACK_SHADOW_GUTTER_TOP,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
         zIndex: Z_LAYER.OVERLAY_STACK,
       }}
     >
@@ -710,12 +719,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // costs it its scrollbar, and only the cards opt back in, so nothing
           // would drag the ones below the fold into view.
           className={cn(
-            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3 pb-4 pt-2",
+            "fixed right-4 -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
             stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
           )}
+          // The block gutter comes from the same constants the two offsets
+          // beside it compensate with, never from a spacing utility: those
+          // resolve through --spacing in rem, so at any root font size but 16px
+          // the padding and the compensation disagree. Across it stays a
+          // utility, since px-3 and -mx-3 cancel whatever a rem is worth.
           style={{
             bottom: railBottomOffset(stack.bottom),
             maxHeight: railMaxHeight(stack.maxHeight),
+            paddingTop: STACK_SHADOW_GUTTER_TOP,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
             zIndex: Z_LAYER.OVERLAY_STACK,
           }}
         >
