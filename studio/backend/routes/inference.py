@@ -12475,6 +12475,81 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 # content_part type.
 _INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
 
+# The frontend stores tool-call ids as "<provider id>:<uuid4>" (chat-adapter.ts mints them
+# for part identity), which strict providers reject on replay: OpenAI caps call ids at 64
+# chars and the minted form is 66. #8913.
+_MINTED_TOOL_CALL_ID_SUFFIX = _re.compile(
+    r":[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+# Mistral rejects any replayed tool-call id not matching ^[a-zA-Z0-9]{9}$
+# ("Tool call id was ... but must be a-z, A-Z, 0-9, with a length of 9").
+_MISTRAL_TOOL_CALL_ID = _re.compile(r"[a-zA-Z0-9]{9}")
+
+# Anthropic states the charset in its 400: "tool_use.id: String should match pattern
+# '^[a-zA-Z0-9_-]+$'". No length cap is documented or observed, so this is charset only.
+# A colon is not in the set, and two stored shapes carry one in under 64 chars so the >64
+# branch never caught them: the duplicate-base fallback below, which keeps the whole
+# "call_0:<uuid>", and the frontend's "<sandbox>:<thread>:<approval>" confirmation ids.
+# Anthropic cannot originate either (its own ids are server-tool ids _filter_tool_calls
+# drops), so the path is a history replayed after switching an existing chat to Anthropic.
+_ANTHROPIC_TOOL_CALL_ID = _re.compile(r"[a-zA-Z0-9_-]+")
+_ANTHROPIC_TOOL_CALL_ID_ILLEGAL = _re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _replay_tool_call_id_map(
+    originals: "set[str]", provider_type: Optional[str] = None
+) -> dict[str, str]:
+    """Map stored tool-call ids to replay ids.
+
+    The suffix-stripped base when exactly one distinct original claims it, else
+    the full stored value: backend ids like "call_0" restart every response, so
+    the minted uuid suffix is the only cross-response uniqueness. Then per
+    provider: Mistral takes only 9-char alphanumeric ids, Anthropic only
+    [a-zA-Z0-9_-] (sanitized prefix plus sha256 tail), everything else
+    hash-shortens past 64 chars (same scheme as
+    openai_codex_client._codex_call_id, so call/output pairs stay paired).
+
+    Every branch hashes the whole pre-mapping value, not the truncated prefix,
+    so ids sharing a prefix stay distinct, and is a no-op on its own output, so
+    replaying an already-normalized history does not drift the ids again."""
+    bases = {v: _MINTED_TOOL_CALL_ID_SUFFIX.sub("", v) for v in originals}
+    claims: dict[str, int] = {}
+    for base in bases.values():
+        claims[base] = claims.get(base, 0) + 1
+    out = {}
+    for value, base in bases.items():
+        replay = base if claims[base] == 1 else value
+        if provider_type == "mistral":
+            if not _MISTRAL_TOOL_CALL_ID.fullmatch(replay):
+                replay = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:9]
+        elif provider_type == "anthropic" and not _ANTHROPIC_TOOL_CALL_ID.fullmatch(replay):
+            # Sanitizing alone would collide "a:b" and "a_b" onto one id, pairing the
+            # wrong result with the wrong call: a silent wrong answer, worse than the 400
+            # this avoids. The sha256 tail is over the unsanitized value so the mapping
+            # stays injective; the prefix is readability only. 31 + 1 + 32 is 64, as below.
+            digest = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:32]
+            sanitized = _ANTHROPIC_TOOL_CALL_ID_ILLEGAL.sub("_", replay)[:31]
+            replay = f"{sanitized}_{digest}"
+        elif len(replay) > 64:
+            digest = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:32]
+            replay = f"{replay[:31]}_{digest}"
+        out[value] = replay
+    return out
+
+
+def _replay_tool_call_ids(tool_calls: Any, replay_ids: dict[str, str]) -> Any:
+    if not isinstance(tool_calls, list):
+        return tool_calls
+    out = []
+    for tc in tool_calls:
+        if isinstance(tc, dict) and isinstance(tc.get("id"), str):
+            fixed = replay_ids.get(tc["id"], tc["id"])
+            if fixed != tc["id"]:
+                tc = {**tc, "id": fixed}
+        out.append(tc)
+    return out
+
 
 def _build_external_messages(
     messages: list,
@@ -12785,6 +12860,20 @@ def _build_external_messages(
                 if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
+    originals = {
+        tc["id"]
+        for entry in result
+        if isinstance(entry.get("tool_calls"), list)
+        for tc in entry["tool_calls"]
+        if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+    } | {entry["tool_call_id"] for entry in result if isinstance(entry.get("tool_call_id"), str)}
+    if originals:
+        replay_ids = _replay_tool_call_id_map(originals, provider_type)
+        for entry in result:
+            if entry.get("tool_calls"):
+                entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], replay_ids)
+            if isinstance(entry.get("tool_call_id"), str):
+                entry["tool_call_id"] = replay_ids.get(entry["tool_call_id"], entry["tool_call_id"])
     return result
 
 
