@@ -8,6 +8,7 @@ import {
   subscribeToLlamaJobStarted,
 } from "@/lib/llama-job-events";
 import {
+  llamaJobPollTick,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
 } from "@/lib/llama-job-lifecycle";
@@ -177,6 +178,8 @@ export function useLlamaUpdateCheck({
   const [visible, setVisible] = useState(false);
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Consecutive job-poll fetches that returned nothing (see llamaJobPollTick).
+  const pollMissesRef = useRef(0);
   const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Read through a ref so startJobPoll stays stable (apply/surfaceIfAvailable
   // depend on it) while still calling the latest callback.
@@ -190,6 +193,9 @@ export function useLlamaUpdateCheck({
   // mount (new tab, or a page reload of a tab that already resynced) doesn't
   // replay a job some tab already handled.
   const reloadNotifiedForRef = useRef<string | null>(getHandledReloadAt());
+  // Read through a ref so the poll can re-surface after a stall without
+  // depending on surfaceIfAvailable (which depends on the poll).
+  const surfaceIfAvailableRef = useRef<((next: LlamaUpdateStatus | null) => void) | null>(null);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current) {
@@ -227,8 +233,31 @@ export function useLlamaUpdateCheck({
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
+      pollMissesRef.current = 0;
       pollTimer.current = setInterval(async () => {
         const s = await fetchStatus();
+        pollMissesRef.current = s ? 0 : pollMissesRef.current + 1;
+        const tick = llamaJobPollTick(s, pollMissesRef.current);
+        if (tick.kind === "stalled") {
+          // Nothing else resets "applying" for this run, so a poll whose every
+          // fetch fails would pin the update toast forever (#9196). Drop it,
+          // hide the banner, and surface the truth once the backend answers
+          // again -- a still-running job restarts the poll from there.
+          clearPollTimer();
+          setApplying(false);
+          setVisible(false);
+          onDone?.({ ok: false, error: "update status unavailable" });
+          void recheckStatus().then((next) => surfaceIfAvailableRef.current?.(next));
+          return;
+        }
+        if (tick.kind === "polling") {
+          if (!s) return;
+          setStatus(s);
+          const presentation = llamaUpdatePresentation(s.update_available, s.job);
+          setApplying(presentation.applying);
+          setVisible(presentation.visible);
+          return;
+        }
         if (!s) return;
         setStatus(s);
         const presentation = llamaUpdatePresentation(s.update_available, s.job);
@@ -284,6 +313,10 @@ export function useLlamaUpdateCheck({
     },
     [startJobPoll, notifyReloadIfNeeded],
   );
+
+  useEffect(() => {
+    surfaceIfAvailableRef.current = surfaceIfAvailable;
+  }, [surfaceIfAvailable]);
 
   useEffect(() => {
     if (!enabled) {
