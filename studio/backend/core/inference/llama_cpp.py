@@ -16336,7 +16336,18 @@ class LlamaCppBackend:
                         # Tensor parallelism replicates a per-device buffer whose
                         # geometry the numbers below do not model, so they cannot answer
                         # for it. Same exclusion, and the same reason, as the MTP-drop
-                        # probe below.
+                        # probe below -- including the same escape: the TP downgrades
+                        # are hoisted above this gate so a request that ends up layer
+                        # split IS probed, but the pooled tensor weight-budget check
+                        # further down is not, and it prices weights + projector, so it
+                        # can downgrade a load this probe would have rescued by moving
+                        # the encoder. Not circular to re-ask once the downgrade is
+                        # final (unlike making that check pin-aware, which would decide
+                        # TP from a pin decided from TP), but it needs this whole probe
+                        # as a second application point, so the corner keeps main's
+                        # behaviour for now: the layer-split fit below still has --fit
+                        # on, and pays for it in spilled layers rather than a slower
+                        # image encode.
                         and not tensor_parallel
                         and _paravirtual_mmproj_pinnable(server_caps)
                         # llama.cpp is last-wins on the placement pair, so a user who
