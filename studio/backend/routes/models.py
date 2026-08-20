@@ -4059,6 +4059,12 @@ _VIDEO_GEN_TASK = "text-to-video"
 # Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
+# TTS-only GGUF archs llama.cpp cannot load at all ("llama-csm" only exists on an
+# unmerged branch). Tagged as speech so the chat picker routes them at the Audio page
+# instead of handing them to llama-server. Mirrors LlamaCppBackend._SPEECH_ARCHES.
+_SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
+_SPEECH_TASK = "text-to-speech"
+
 
 # The two denoiser partitions, by the filename prefix the loader itself validates against
 # (``video_minimax_h3``). These GGUFs carry no architecture metadata, so the NAME is the only
@@ -4169,6 +4175,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                 else _UNSUPPORTED_DIFFUSION_TASK
             )
         return _UNSUPPORTED_DIFFUSION_TASK
+    if a in _SPEECH_GGUF_ARCHS:
+        return _SPEECH_TASK
     if a in _DIFFUSION_GGUF_ARCHS:
         # Third gate, mirroring the cached-repo picker: a family no engine here can build can only fail.
         if not _gguf_family_buildable(name_hints):
@@ -4216,7 +4224,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
 # picker AND from the Images and Video ones, so a folder holding both a buildable denoiser and an
 # arch this backend cannot assemble has exactly one loadable answer, and returning the other on the
 # strength of where it sorts hides a model that works.
-_LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
+_LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK, _SPEECH_TASK})
 # Enough to reach the denoiser past a bundle's encoders, VAE and LoRAs. The guarantee is "the first
 # 64 in order decide", the same 64 on every host. A folder deep enough to hit this is a dump.
 _MAX_TASK_CLASSIFY_GGUFS = 64

@@ -513,6 +513,22 @@ test("only speech repos the runtime can serve are routed to the Audio page", () 
   );
 });
 
+test("a cached speech GGUF no backend can decode is not listed at all", () => {
+  assert.match(
+    pickerSource,
+    /cachedGguf\.filter\([\s\S]*passesTaskGate\([\s\S]*audioPickIsRoutable\(\{[\s\S]*isGguf: true/,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "ggml-org/sesame-csm-1b-GGUF",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+    }),
+    false,
+  );
+});
+
 test("an unroutable speech pick is refused instead of loaded into chat", () => {
   assert.match(
     pickerSource,

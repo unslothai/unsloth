@@ -3425,14 +3425,23 @@ export function HubModelPicker({
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        cachedGguf.filter((c) =>
-          passesTaskGate(
-            c.task,
-            c.repo_id,
-            task,
-            catalog,
-            activeCatalogArtifactIds,
-          ),
+        cachedGguf.filter(
+          (c) =>
+            passesTaskGate(
+              c.task,
+              c.repo_id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
+            // A speech GGUF no backend here can decode (CSM) would otherwise be listed as
+            // a chat model and only fail in llama-server. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: c.repo_id,
+              task: c.task,
+              isGguf: true,
+              isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
+            }),
         ),
         downloadedSort,
         loadTimes,

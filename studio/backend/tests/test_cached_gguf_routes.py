@@ -2807,6 +2807,15 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_arch_to_task_tags_speech_archs_as_speech():
+    # llama.cpp cannot load these at all, so chat must not claim them.
+    for arch in models_route._SPEECH_GGUF_ARCHS:
+        assert models_route._arch_to_task(arch) == models_route._SPEECH_TASK
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    assert models_route._SPEECH_GGUF_ARCHS == set(LlamaCppBackend._SPEECH_ARCHES)
+
+
 def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
     # The published MiniMax-H3 GGUFs carry kv_count 0, so general.architecture is absent and the
     # arch read alone leaves the downloaded repo without a task -- dropped from the Video picker's
