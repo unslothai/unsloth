@@ -32,8 +32,7 @@ try:
     import bitsandbytes.functional as bnb_F
     from bitsandbytes.optim.optimizer import Optimizer2State
     _HAS_BNB = True
-except Exception:
-    # Broad: a broken bitsandbytes install can raise native-load errors, not just ImportError.
+except ImportError:
     _HAS_BNB = False
     # Fallback base so the module can still be imported.
     Optimizer2State = torch.optim.Optimizer
