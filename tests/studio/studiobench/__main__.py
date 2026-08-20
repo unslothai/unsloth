@@ -354,40 +354,43 @@ def run(args, ab_ref = None) -> int:
 
     auth = sides[0]["auth"]
 
-    # ONE init script, not four, and the order inside it is the order of this list.
+    # ONE `add_init_script` CALL PER SCENE SCRIPT, which is what this always did.
     #
-    # Playwright is explicit that "the order of evaluation of multiple scripts installed via
-    # browserContext.addInitScript() and page.addInitScript() is not defined", so a dependency
-    # between two entries of `init_scripts` is a dependency on nothing. That was already load
-    # bearing before any probe existed: surfaces.js reads what dom.js and parity.js put on
-    # `window.__sb`, and it was relying on list order to find them. Concatenation makes the
-    # sequence a property of the string rather than of an undocumented scheduler.
-    #
-    # AN EXTERNAL PROBE OR ABLATION ARM goes LAST in that string, so it can wrap anything the
-    # scene scripts define. One environment variable rather than a CLI flag per experiment, and
-    # WITH THE VARIABLE UNSET NOTHING IS APPENDED: the run is byte-identical to a run of a tree
-    # that does not have this hook. That property is the point. A potency probe perturbs the page
-    # it observes, so the probe run and the scored run have to be different runs of one harness,
-    # and the only safe way to arrange that is for the probe to be absent by default.
+    # These were briefly concatenated into a single script, on the reasoning that Playwright says
+    # "the order of evaluation of multiple scripts installed via browserContext.addInitScript()
+    # and page.addInitScript() is not defined", and surfaces.js reads what dom.js and parity.js
+    # put on `window.__sb`. The reasoning is sound and the change was a REGRESSION, caught by CI:
+    # joining them means the browser parses and evaluates the three as one unit, so a throw or a
+    # parse error in any one of them stops the other two running as well. Separate scripts are
+    # separate failure domains, and on the CI fixture that difference cost `message_menu` its More
+    # button and turned a green job red. An ordering guarantee is not worth trading fault
+    # isolation for when the ordering has been correct in practice for the life of the file.
     #
     # surfaces.js is loaded unconditionally, even without --surfaces. It defines selectors and
     # never runs on its own. Making the page's JS depend on a CLI flag would mean the flag changes
     # what is on the page during the FILM as well, and the film's numbers must not depend on
     # whether a later phase was asked for.
-    page_scripts = [
-        resources.read_text("scene/dom.js"),
-        resources.read_text("scene/parity.js"),
-        resources.read_text("scene/surfaces.js"),
-    ]
+    init_scripts.append(resources.read_text("scene/dom.js"))
+    init_scripts.append(resources.read_text("scene/parity.js"))
+    init_scripts.append(resources.read_text("scene/surfaces.js"))
+
+    # AN EXTERNAL PROBE OR ABLATION ARM, its own script like the three above. One environment
+    # variable rather than a CLI flag per experiment, and WITH THE VARIABLE UNSET NOTHING IS
+    # APPENDED: the run is byte-identical to a run of a tree that does not have this hook. That
+    # property is the point. A potency probe perturbs the page it observes, so the probe run and
+    # the scored run have to be different runs of one harness, and the only safe way to arrange
+    # that is for the probe to be absent by default.
+    #
+    # BECAUSE THE ORDER IS UNDEFINED, A PROBE MUST BE SELF-CONTAINED. It cannot assume the scene
+    # scripts have run, so it cannot read `window.__sb` at install time. That is a real constraint
+    # and it is written down in CONTRIBUTING-perf.md rather than papered over with a guarantee
+    # this file is not in a position to give.
     if extra_init:
-        page_scripts.append(_isolated_probe(extra_init, extra_init_source))
+        init_scripts.append(_isolated_probe(extra_init, extra_init_source))
         _log(
             f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and is NOT "
             f"a clean measurement of the build"
         )
-    # `;` between them: every one of these files is an IIFE, and a file whose last line has no
-    # terminator would otherwise splice into the next one's opening parenthesis.
-    init_scripts.append("\n;\n".join(page_scripts))
 
     procs_before = {}
     try:

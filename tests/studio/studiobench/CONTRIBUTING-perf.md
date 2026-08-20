@@ -265,6 +265,12 @@ refuses, and `floor_table` refuses. There is no flag to override any of them. Th
 kept, because `--assert-liveness` and the probe's own output are exactly what you wanted from that
 run. Re-run with the variable unset to get a number.
 
+A probe must be **self-contained**. Playwright does not define the evaluation order of separate
+init scripts, and the scene scripts are deliberately kept as separate scripts so that a throw in
+one cannot stop the others, so a probe cannot assume `window.__sb` exists when it is installed.
+Its own parse is isolated, so a syntax error in a probe is reported and cannot take the scene
+scripts or the page with it, but that is the only guarantee it gets.
+
 Attach your listeners at **insertion**, from a `MutationObserver` installed before the app boots,
 not on your sampling tick. `contentvisibilityautostatechange` fires on a *change* of state, and a
 root inserted off screen becomes skipped once and then never changes again while the user stays

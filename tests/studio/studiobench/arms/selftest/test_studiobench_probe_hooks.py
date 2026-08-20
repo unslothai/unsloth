@@ -94,7 +94,7 @@ def test_a_malformed_probe_cannot_take_the_scene_scripts_with_it(main_src: str):
     """
 
     assert "def _isolated_probe(" in main_src
-    assert "page_scripts.append(_isolated_probe(extra_init, extra_init_source))" in main_src
+    assert "init_scripts.append(_isolated_probe(extra_init, extra_init_source))" in main_src
     # Indirect eval, so the source evaluates in global scope exactly as a separate init script
     # would rather than in the wrapper's scope.
     assert "(0, eval)(" in main_src
@@ -183,19 +183,31 @@ def test_detached_roots_stop_counting_as_skipped(probe_src: str):
     assert "doc.contains(wel)" in probe_src
 
 
-def test_the_page_scripts_are_installed_as_one_ordered_script(main_src: str):
-    """Playwright does not define the order of separate init scripts.
+def test_each_scene_script_keeps_its_own_failure_domain(main_src: str):
+    """Separate `add_init_script` calls, which is what this always did.
 
-    "The order of evaluation of multiple scripts installed via browserContext.addInitScript() and
-    page.addInitScript() is not defined." surfaces.js reads what dom.js and parity.js put on
-    `window.__sb`, and a probe may wrap either, so the sequence has to be a property of the string
-    rather than of the scheduler.
+    They were briefly joined into one script to pin the evaluation order, which Playwright does
+    not define. That was a regression: the browser evaluates a joined script as one unit, so a
+    throw in any one of the three stops the other two, and on the CI fixture it cost
+    `message_menu` its More button. Fault isolation beats an ordering guarantee for a sequence
+    that has been correct in practice for the life of the file.
     """
 
-    assert "page_scripts = [" in main_src
-    assert ".join(page_scripts))" in main_src
-    # The probe is appended to that list, never registered on its own.
-    assert "init_scripts.append(Path(extra_init)" not in main_src
+    for name in ("scene/dom.js", "scene/parity.js", "scene/surfaces.js"):
+        assert f'init_scripts.append(resources.read_text("{name}"))' in main_src
+    assert "page_scripts" not in main_src
+
+
+def test_the_probe_is_its_own_script_and_its_own_parse(main_src: str):
+    """Order is undefined, so a probe has to be self-contained; that is the documented rule.
+
+    Its parse is still isolated, because a malformed probe must not be able to stop the scene
+    scripts or the page.
+    """
+
+    assert "init_scripts.append(_isolated_probe(extra_init, extra_init_source))" in main_src
+    assert "(0, eval)(" in main_src
+    assert 'bundle.page.on("pageerror"' in main_src
 
 
 def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):
