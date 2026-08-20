@@ -1648,6 +1648,12 @@ export function ChatProvidersSettings({
                       connected.authStatus,
                     );
                   }
+                } catch (error) {
+                  // A failed sync still has to answer the ownership question: the user
+                  // can cancel this form while it is out and start another request, and
+                  // clearing the flag then would re-enable Save during that one.
+                  owned = request === codexCatalogRequestRef.current;
+                  throw error;
                 } finally {
                   // Only the request that still owns the form clears the shared flag.
                   if (owned) setModelsLoading(false);
