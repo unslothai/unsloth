@@ -516,31 +516,62 @@ class CellRunner:
             page.evaluate("() => document.activeElement && document.activeElement.blur()")
             page.wait_for_timeout(250)
 
-        def timed(fn) -> float:
+        def settled(fn) -> float:
+            """Time `fn` AND the wait for the main thread to be free again.
+
+            Timing the call alone measures the wrong thing, and differently wrong per engine.
+            `page.mouse.click` hands an input event to the browser over the debug protocol and
+            returns; whether the acknowledgement waits for the renderer to process it is an
+            implementation detail of each engine's Playwright backend, not a property of the app.
+            Read that way, Chromium came back at 3 ms for both 100K and 500K, which does not mean
+            the work was free, only that the ack did not wait for it.
+
+            So every path is followed by a round trip into the page. `page.evaluate` CANNOT return
+            while the main thread is blocked, and `offsetHeight` forces any pending style and
+            layout to be resolved rather than deferred. The reading is then "how long until the
+            page could serve me again", which is the thing a user actually experiences and is
+            comparable across engines.
+            """
             started = time.monotonic()
             fn()
+            page.evaluate("() => document.body.offsetHeight")
             return (time.monotonic() - started) * 1000.0
 
         box = page.query_selector(selector).bounding_box()
         x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-        out: dict[str, float] = {}
+        # The cost of the round trip itself, on an idle page, so every reading below can be read
+        # net of it. Without this a 3 ms figure cannot be told from a 0 ms one.
         blur()
-        out["click_ms"] = timed(
+        out: dict[str, float] = {"roundtrip_ms": settled(lambda: None)}
+        blur()
+        out["click_ms"] = settled(
             lambda: page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
         )
         blur()
-        out["mouse_ms"] = timed(lambda: page.mouse.click(x, y))
+        out["mouse_ms"] = settled(lambda: page.mouse.click(x, y))
         blur()
-        out["dispatch_ms"] = timed(lambda: page.dispatch_event(selector, "click"))
+        out["dispatch_ms"] = settled(lambda: page.dispatch_event(selector, "click"))
         blur()
-        out["focus_ms"] = timed(lambda: page.eval_on_selector(selector, "e => { e.focus(); }"))
+        out["focus_ms"] = settled(lambda: page.eval_on_selector(selector, "e => { e.focus(); }"))
         blur()
         page.mouse.move(2, 2)
         page.wait_for_timeout(250)
-        # `offsetHeight` after the move, so the reading includes the recalc the move provoked
-        # rather than stopping at the point the event was delivered.
-        out["hover_thread_ms"] = timed(
-            lambda: (page.mouse.move(x, 300), page.evaluate("() => document.body.offsetHeight"))
+        out["hover_thread_ms"] = settled(lambda: page.mouse.move(x, 300))
+        # The reading that decides what `roundtrip_ms` meant. If the first forced layout of a huge
+        # thread is expensive and every later one is cheap, this comes back near zero and the cost
+        # is a ONE-TIME layout of the mounted thread, not a per-interaction cost. If it is
+        # expensive again, every interaction pays it and the story is the opposite.
+        blur()
+        out["roundtrip_again_ms"] = settled(lambda: None)
+        # Measured INSIDE the page, so the protocol round trip is not in the number. `offsetHeight`
+        # is read after a write that dirties layout, so it cannot be served from a clean tree.
+        out["forced_layout_ms"] = page.evaluate(
+            "() => { const t = performance.now();"
+            " document.body.style.minHeight = (1 + Math.random()) + 'px';"
+            " void document.body.offsetHeight;"
+            " document.body.style.minHeight = '';"
+            " void document.body.offsetHeight;"
+            " return performance.now() - t; }"
         )
         out["code_token_spans"] = page.evaluate(
             "() => document.querySelectorAll('[data-streamdown=\"code-block\"] code > span').length"
@@ -548,7 +579,8 @@ class CellRunner:
         self.log(
             "  click attribution: "
             + ", ".join(
-                f"{k.replace('_ms', '')}={v:,.0f}ms" for k, v in out.items() if k.endswith("_ms")
+                f"{k.replace('_ms', '')}={v:,.0f}ms" for k, v in out.items()
+                if k.endswith("_ms")
             )
             + f", code token spans={out['code_token_spans']:,}"
         )
