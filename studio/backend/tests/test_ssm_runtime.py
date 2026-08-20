@@ -327,9 +327,7 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
         time.sleep(0.02)
     released.set()
     thread.join(timeout = 2.0)
-    assert any(
-        "Still installing causal-conv1d (prebuilt kernel)" in s for s in statuses
-    ), statuses
+    assert any("Still installing causal-conv1d (prebuilt kernel)" in s for s in statuses), statuses
     assert any("Installing causal-conv1d (prebuilt kernel)" in s for s in statuses)
 
 
