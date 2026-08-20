@@ -102,7 +102,9 @@ test("the composer asks the thread-wide research question through the cache", ()
 
 test("the newest message still gets the whole continue bar", () => {
   // The gate must delegate rather than have deleted the work: the bar Max Tokens, Stop and a
-  // dropped stream rely on is the one below it.
+  // dropped stream rely on is the one below it. The shared availability conditions now live in
+  // useContinuationAvailability, reused by both this bar and the "Save & Continue" edit action,
+  // instead of being duplicated here.
   const full = body(
     thread,
     "const ContinueMessageBarForLastMessage: FC = () => {",
@@ -112,10 +114,40 @@ test("the newest message still gets the whole continue bar", () => {
     /useAuiState\(\(\{ message \}\) => message\.status\)/,
     /useAuiState\(\(\{ message \}\) => message\.metadata\)/,
     /assistantMessageText\(message\.content\)/,
-    /isContinuableContent\(message\.content\)/,
-    /findLatestUserAudioBase64\(thread\.messages, false\)/,
-    /modeAllowsContinuation\(\{/,
+    /useContinuationAvailability\(messageContent\)/,
   ]) {
     assert.match(full, marker);
   }
+
+  const availability = body(
+    thread,
+    "function useContinuationAvailability(",
+    "\n}",
+  );
+  for (const marker of [
+    /isContinuableContent\(content\)/,
+    /findLatestUserAudioBase64\(thread\.messages, false\)/,
+    /modeAllowsContinuation\(\{/,
+  ]) {
+    assert.match(availability, marker);
+  }
+});
+
+test("Save & Continue only subscribes while the edit textarea is open", () => {
+  // useContinuationAvailability's useAuiState subscriptions are the expensive part; this pins
+  // them to a component mounted only for the message being edited, not to AssistantMessage,
+  // which renders once per message in the thread.
+  const editButton = body(
+    thread,
+    "const SaveAndContinueButton: FC<{",
+    "\n};",
+  );
+  assert.match(editButton, /useContinuationAvailability\(messageContent\)/);
+
+  const assistantMessage = body(thread, "const AssistantMessage: FC = () => {", "\n};");
+  assert.doesNotMatch(
+    assistantMessage,
+    /useContinuationAvailability\(/,
+    "AssistantMessage calls useContinuationAvailability directly, so it runs on every assistant message again",
+  );
 });
