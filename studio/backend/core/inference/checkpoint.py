@@ -112,7 +112,11 @@ def _neutralise(text: str) -> str:
 
 
 def _select_items(
-    evicted: list[dict], *, max_tokens: int, max_items: int, min_chars: int,
+    evicted: list[dict],
+    *,
+    max_tokens: int,
+    max_items: int,
+    min_chars: int,
     reserve_oldest: bool = False,
 ) -> list[str]:
     """The instruction turns out of `evicted`, oldest first, under both caps.
@@ -204,13 +208,18 @@ def carried_forward_items(
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
     items = _select_items(
-        evicted, max_tokens = max_tokens, max_items = max_items,
+        evicted,
+        max_tokens = max_tokens,
+        max_items = max_items,
         min_chars = INSTRUCTION_MIN_CHARS,
     )
     if items:
         return items
     return _select_items(
-        evicted, max_tokens = max_tokens, max_items = max_items, min_chars = 0,
+        evicted,
+        max_tokens = max_tokens,
+        max_items = max_items,
+        min_chars = 0,
         reserve_oldest = True,
     )
 
