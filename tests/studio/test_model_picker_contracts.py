@@ -2264,9 +2264,9 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     seed_args = _call_arguments(_code_only(src), "resolveBatchSizeSeed")
     assert len(seed_args) >= 2, "the batch pair alone should be two seeds"
     for args in seed_args:
-        assert "modelChanged: slotsModelChanged," in args, (
-            f"a resolveBatchSizeSeed call is not told modelChanged from slotsModelChanged: {args}"
-        )
+        assert (
+            "modelChanged: slotsModelChanged," in args
+        ), f"a resolveBatchSizeSeed call is not told modelChanged from slotsModelChanged: {args}"
     assert "{ nBatch: null, nUbatch: null }" not in status
     # The remembered override is re-adopted only when the echo proves it.
     assert (
