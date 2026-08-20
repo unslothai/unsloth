@@ -2427,7 +2427,7 @@ from core.inference.studio_tool_loop import (
     stream_with_studio_tools,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
-from routes.provider_credentials import resolve_provider_api_key_or_400
+from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
@@ -3211,34 +3211,105 @@ async def _stop_local_disconnect_cancel_watcher(
         pass
 
 
-async def _drain_pending_next_task(task, cancel_event) -> None:
-    """Wait for a pending ``asyncio.to_thread(next, gen, ...)`` task to finish
-    before its generator is closed.
+async def _drain_pending_worker(worker, cancel_event) -> None:
+    """Wait for a pending blocking worker before its resources are released.
 
-    On disconnect a ``next(gen)`` call may still run in a worker thread;
-    cancelling the awaiting task does NOT stop it, and ``gen.close()`` mid-
-    ``next(gen)`` raises ``ValueError: generator already executing``, leaking the
-    generator's cleanup. So re-set the cancel flag (the generator polls it) and
-    shield the task until the worker returns. No-op when there is no pending task.
+    ``worker`` is the task or future the request awaits: a streaming
+    ``next(gen)`` step, or a whole non-streaming generation. Cancelling it does
+    NOT stop the thread behind it. Re-set the cancel flag (the generator polls
+    it) and shield the worker until it returns, so admission and generation
+    tracking still cover its real lifetime. No-op when there is no pending
+    worker.
     """
-    if task is None:
+    if worker is None:
         return
     if cancel_event is not None:
         cancel_event.set()
-    while not task.done():
+    while not worker.done():
         try:
-            await asyncio.shield(task)
+            await asyncio.shield(worker)
         except asyncio.CancelledError:
             if cancel_event is not None:
                 cancel_event.set()
             continue
         except Exception:
             break
-    if task.done():
+    if worker.done():
         try:
-            task.exception()
+            worker.exception()
         except (asyncio.CancelledError, Exception):
             pass
+
+
+def _settle_daemon_worker(future: "asyncio.Future", succeeded: bool, value) -> None:
+    """Publish a daemon worker outcome unless its event loop has moved on."""
+    if future.done():
+        return
+    if succeeded:
+        future.set_result(value)
+    else:
+        future.set_exception(value)
+
+
+def _start_daemon_worker(fn, *, name: str) -> "asyncio.Future":
+    """Start blocking request work without adding an interpreter-exit join.
+
+    ``asyncio.to_thread`` uses the loop's non-daemon default executor. A local
+    generation can be inside a cancellation-ignoring tool for its full timeout,
+    so that executor would defeat the launcher's bounded server-thread join and
+    keep the process alive. The request still awaits this future during ordinary
+    cancellation; daemon status only preserves the process shutdown boundary.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    context = contextvars.copy_context()
+
+    def _run() -> None:
+        try:
+            value = context.run(fn)
+        except BaseException as exc:  # noqa: BLE001 - delivered to the awaiting request
+            outcome = (False, exc)
+        else:
+            outcome = (True, value)
+        try:
+            loop.call_soon_threadsafe(_settle_daemon_worker, future, *outcome)
+        except RuntimeError:
+            pass  # the daemon may finish after process shutdown closed the loop
+
+    try:
+        threading.Thread(target = _run, name = name, daemon = True).start()
+    except BaseException as exc:  # noqa: BLE001 - mirror executor submission failures
+        future.set_exception(exc)
+    return future
+
+
+async def _run_blocking_generation(
+    fn,
+    cancel_event,
+    *,
+    name: str,
+    daemon: bool = False,
+):
+    """Run one synchronous generation unit without blocking the event loop.
+
+    Shield the worker so task cancellation cannot shorten the tracker or
+    admission-lease lifetime. Use a daemon only for server-tool loops that may
+    ignore cancellation; ordinary generation stays on the bounded default pool.
+
+    Unlike the streaming paths, which release their default-executor thread
+    between tokens, a non-daemon unit holds one for the whole generation. Keep
+    unrelated blocking work off that pool (see _STATUS_PROBE_EXECUTOR).
+    """
+    worker = (
+        _start_daemon_worker(fn, name = name)
+        if daemon
+        else asyncio.create_task(asyncio.to_thread(fn))
+    )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await _drain_pending_worker(worker, cancel_event)
+        raise
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
@@ -5982,7 +6053,11 @@ def _remote_gguf_companion_bytes(
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_sizes: dict[str, int] = {}
-        for sibling in info.siblings or []:
+        from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+        # The same listing the downloader resolves against: a sidecar outranking the real drafter
+        # here budgets its own few KB for a load that then fetches the whole thing.
+        for sibling in drop_shadowed_appledouble_siblings(list(info.siblings or [])):
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
@@ -6105,9 +6180,13 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         from huggingface_hub import model_info
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
 
+        from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
         info = model_info(repo, token = hf_token, files_metadata = True)
         sizes: dict[str, int] = {}
-        for sibling in info.siblings or []:
+        # A sidecar's few KB stands in for the drafter the launch then fetches, and this figure
+        # is what admits or refuses a load beside a training run.
+        for sibling in drop_shadowed_appledouble_siblings(list(info.siblings or [])):
             name = sibling.rfilename or ""
             if not Path(name).name.lower().endswith(".gguf"):
                 continue
@@ -6182,7 +6261,10 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
                 ),
                 None,
             ) or max(revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None)
-            for f in getattr(chosen, "files", ()) or ():
+            from hub.services.models.cache_inventory import cached_repo_files
+
+            # Quant subdirectories share a basename, so the largest file carrying one is charged.
+            for f in cached_repo_files(chosen):
                 name = str(f.file_name)
                 if name.lower().endswith(".gguf"):
                     sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
@@ -12399,9 +12481,11 @@ async def _proxy_to_external_provider(
     # Resolve provider type and base URL
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
+    saved_provider_snapshot: Optional[dict] = None
 
     if payload.provider_id and not payload.encrypted_api_key:
-        config = providers_db.get_provider(payload.provider_id)
+        # Saved-provider SQLite reads must not block the event loop.
+        config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
             raise HTTPException(
                 status_code = 404,
@@ -12414,6 +12498,7 @@ async def _proxy_to_external_provider(
             )
         # A saved credential is scoped to this saved provider. Never pair it with
         # request-controlled routing metadata.
+        saved_provider_snapshot = config
         provider_type = config["provider_type"]
         base_url = config["base_url"]
 
@@ -12779,20 +12864,42 @@ async def _proxy_to_external_provider(
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    api_key = resolve_provider_api_key_or_400(
-        payload.provider_id,
-        payload.encrypted_api_key,
-        # A durable Deep Research hop authenticates with an internal workflow key,
-        # which is still an API key, so the plain check would drop the saved
-        # provider id and fail before the provider is ever contacted. The run's
-        # connection was already validated as an enabled saved one by
-        # research_runs._sanitize_config, and the key is verified against storage.
-        # Scoped to that one workflow rather than to "internal", because the other
-        # internal key Studio mints is held by a user-authored recipe subprocess.
-        allow_saved_key = (
-            not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
-        ),
-    )
+    api_key: Optional[str] = None
+    if saved_provider_snapshot is not None:
+        async with provider_config_guard(payload.provider_id):
+            current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
+            routing_fields = ("provider_type", "base_url", "is_enabled")
+            if current is None or any(
+                current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
+            ):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Provider changed while the request was starting; retry.",
+                )
+            api_key = await asyncio.to_thread(
+                resolve_provider_api_key_or_400,
+                payload.provider_id,
+                None,
+                allow_saved_key = (
+                    not _request_has_api_key(request)
+                    or _request_is_saved_credential_workflow(request)
+                ),
+            )
+    else:
+        api_key = resolve_provider_api_key_or_400(
+            payload.provider_id,
+            payload.encrypted_api_key,
+            # A durable Deep Research hop authenticates with an internal workflow key,
+            # which is still an API key, so the plain check would drop the saved
+            # provider id and fail before the provider is ever contacted. The run's
+            # connection was already validated as an enabled saved one by
+            # research_runs._sanitize_config, and the key is verified against storage.
+            # Scoped to that one workflow rather than to "internal", because the other
+            # internal key Studio mints is held by a user-authored recipe subprocess.
+            allow_saved_key = (
+                not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
+            ),
+        )
 
     model = payload.external_model or payload.model
     if model == "default":
@@ -13052,6 +13159,10 @@ def _resolve_openai_cloud_client(
     below. The shell tool only exists on api.openai.com, so rejecting non-cloud
     bases up front prevents confusing 404s on ollama / llama.cpp / vLLM /
     custom presets.
+
+    Callers run this on the event loop, not in a worker: the row read and the
+    credential read have to see one provider, or an edit landing between them
+    pairs the old base URL with the new key.
     """
     base_url = body.provider_base_url or get_base_url("openai")
     if body.provider_id and not body.encrypted_api_key:
@@ -13769,13 +13880,28 @@ async def openai_chat_completions(
                 _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
                 try:
-                    full_text = ""
-                    for chunk_text in audio_input_generate():
-                        if isinstance(chunk_text, GenStreamError):
-                            _msg = _friendly_gen_stream_error(chunk_text)
-                            api_monitor.fail(monitor_id, _msg)
-                            raise HTTPException(status_code = 500, detail = _msg)
-                        full_text += chunk_text
+
+                    def _drain_audio_input():
+                        text_parts = []
+                        for chunk_text in audio_input_generate():
+                            if isinstance(chunk_text, GenStreamError):
+                                return chunk_text
+                            text_parts.append(chunk_text)
+                        return "".join(text_parts)
+
+                    full_text = await _run_blocking_generation(
+                        _drain_audio_input,
+                        cancel_event,
+                        name = "openai-audio-input-nonstream",
+                    )
+                    if isinstance(full_text, GenStreamError):
+                        _msg = _friendly_gen_stream_error(full_text)
+                        api_monitor.fail(monitor_id, _msg)
+                        raise HTTPException(status_code = 500, detail = _msg)
+                except asyncio.CancelledError:
+                    cancel_event.set()
+                    api_monitor.finish(monitor_id, "cancelled")
+                    raise
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -15983,7 +16109,7 @@ async def openai_chat_completions(
                 # Drain a still-running next(gen) worker before closing: closing
                 # mid-next(gen) raises ValueError('generator already executing') and
                 # skips the generator's cleanup finally. Matches the GGUF tool stream.
-                await _drain_pending_next_task(_sf_next_task, cancel_event)
+                await _drain_pending_worker(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
                         # Offload the close so the generator's cleanup runs off the event
@@ -16461,7 +16587,7 @@ async def openai_chat_completions(
                 # Drain a still-running next(gen) worker before closing: closing
                 # mid-next(gen) raises ValueError('generator already executing') and
                 # skips the generator's cleanup finally. Matches the safetensors stream.
-                await _drain_pending_next_task(_next_task, cancel_event)
+                await _drain_pending_worker(_next_task, cancel_event)
                 if gen is not None:
                     try:
                         # Offload the close so the generator's cleanup runs off the event
@@ -16491,14 +16617,25 @@ async def openai_chat_completions(
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
         try:
-            full_text = ""
-            for token in generate():
-                if isinstance(token, GenStreamError):
-                    backend.reset_generation_state(cancel_event)
-                    _msg = _friendly_gen_stream_error(token)
-                    api_monitor.fail(monitor_id, _msg)
-                    raise HTTPException(status_code = 500, detail = _msg)
-                full_text = token
+
+            def _drain_generate(messages_override = None):
+                final = ""
+                for token in generate(messages_override):
+                    if isinstance(token, GenStreamError):
+                        return token
+                    final = token
+                return final
+
+            full_text = await _run_blocking_generation(
+                _drain_generate,
+                cancel_event,
+                name = "openai-chat-nonstream",
+            )
+            if isinstance(full_text, GenStreamError):
+                backend.reset_generation_state(cancel_event)
+                _msg = _friendly_gen_stream_error(full_text)
+                api_monitor.fail(monitor_id, _msg)
+                raise HTTPException(status_code = 500, detail = _msg)
 
             # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
             # the shared generate(). Client-tool healing then runs on the visible
@@ -16532,11 +16669,15 @@ async def openai_chat_completions(
                         # and restore them if the retry is discarded.
                         _first_stats = stats_holder.get("stats")
                         try:
-                            retry_text = ""
-                            for token in generate(
-                                [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
-                            ):
-                                retry_text = token
+                            retry_messages = [
+                                *gen_kwargs["messages"],
+                                *nudge_messages(_data, _sf_heal),
+                            ]
+                            retry_text = await _run_blocking_generation(
+                                lambda: _drain_generate(retry_messages),
+                                cancel_event,
+                                name = "openai-chat-nudge-nonstream",
+                            )
                             # Re-split reasoning on the retry so its visible text is
                             # what heals into a call (and reaches the monitor).
                             # The nudge retry appends messages, so it is not a
@@ -16609,6 +16750,11 @@ async def openai_chat_completions(
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state(cancel_event)
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except HTTPException:
             raise
         except GenStreamErrorRaised as exc:
@@ -16664,6 +16810,7 @@ from core.inference.tools import (
     _MAX_SNAPSHOT_FILES,
     _servable_segment,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -16726,6 +16873,8 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
             except OSError:
+                continue
+            if is_appledouble_metadata(Path(path)):
                 continue
             names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
             if len(names) >= _MAX_SNAPSHOT_FILES:
@@ -19831,7 +19980,11 @@ async def chat_count_tokens(
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
         from core.inference.tools import cached_mcp_tools
-        _mcp_tools, _mcp_complete = cached_mcp_tools()
+        from core.inference.mcp_client import mcp_server_snapshot_guard
+
+        # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
+        async with mcp_server_snapshot_guard():
+            _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
         if not _mcp_complete:
             raise HTTPException(
                 status_code = 503,
@@ -20673,6 +20826,7 @@ async def anthropic_messages(
                 model_name,
                 disable_parallel_tool_use = _disable_parallel,
                 openai_tools = openai_tools,
+                cancel_event = cancel_event,
             )
         )
 
@@ -20713,6 +20867,7 @@ async def anthropic_messages(
             _run_plain_gen,
             message_id,
             model_name,
+            cancel_event = cancel_event,
         )
     )
 
@@ -20858,7 +21013,7 @@ async def _anthropic_tool_stream(
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
                 # its resources; closing first races into 'already executing'.
-                await _drain_pending_next_task(_next_task, cancel_event)
+                await _drain_pending_worker(_next_task, cancel_event)
                 if gen is not None:
                     try:
                         await asyncio.to_thread(gen.close)
@@ -20956,7 +21111,7 @@ async def _anthropic_plain_stream(
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
                 # its resources; closing first races into 'already executing'.
-                await _drain_pending_next_task(_next_task, cancel_event)
+                await _drain_pending_worker(_next_task, cancel_event)
                 if gen is not None:
                     try:
                         await asyncio.to_thread(gen.close)
@@ -20992,6 +21147,7 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
 def _collect_anthropic_events(run_gen) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500."""
+
     try:
         return list(run_gen())
     except HTTPException:
@@ -21019,14 +21175,14 @@ def _anthropic_message_json_response(
     )
 
 
-async def _anthropic_tool_non_streaming(
-    run_gen,
+def _anthropic_tool_response_from_events(
+    events,
     message_id,
     model_name,
     disable_parallel_tool_use = False,
     openai_tools = None,
 ):
-    """Non-streaming response for the tool-calling path.
+    """Reduce collected tool events into one non-streaming response.
 
     Builds ``content_blocks`` in generation order (text → tool_use → text →
     tool_use → ...), mirroring the streaming emitter. Deltas within one
@@ -21049,8 +21205,6 @@ async def _anthropic_tool_non_streaming(
     # Pending client tool_use; cleared by tool_end (server execution) or
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
-
-    events = _collect_anthropic_events(run_gen)
 
     for event in events:
         etype = event.get("type", "")
@@ -21122,14 +21276,39 @@ async def _anthropic_tool_non_streaming(
     )
 
 
-async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
-    """Non-streaming response for the no-tool path."""
+async def _anthropic_tool_non_streaming(
+    run_gen,
+    message_id,
+    model_name,
+    disable_parallel_tool_use = False,
+    openai_tools = None,
+    cancel_event = None,
+):
+    """Generate and reduce a tool response entirely off the event loop."""
+
+    def _drain_and_build():
+        return _anthropic_tool_response_from_events(
+            _collect_anthropic_events(run_gen),
+            message_id,
+            model_name,
+            disable_parallel_tool_use = disable_parallel_tool_use,
+            openai_tools = openai_tools,
+        )
+
+    return await _run_blocking_generation(
+        _drain_and_build,
+        cancel_event,
+        name = "anthropic-tool-nonstream",
+        daemon = True,
+    )
+
+
+def _anthropic_plain_response_from_events(events, message_id, model_name):
+    """Reduce collected plain events into one non-streaming response."""
     text_parts = []
     usage = {}
     prev_text = ""
     captured_finish_reason = None
-
-    events = _collect_anthropic_events(run_gen)
 
     for cumulative in events:
         if isinstance(cumulative, dict):
@@ -21153,6 +21332,28 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
 
     return _anthropic_message_json_response(
         message_id, model_name, content_blocks, stop_reason, usage
+    )
+
+
+async def _anthropic_plain_non_streaming(
+    run_gen,
+    message_id,
+    model_name,
+    cancel_event = None,
+):
+    """Generate and reduce a plain response entirely off the event loop."""
+
+    def _drain_and_build():
+        return _anthropic_plain_response_from_events(
+            _collect_anthropic_events(run_gen),
+            message_id,
+            model_name,
+        )
+
+    return await _run_blocking_generation(
+        _drain_and_build,
+        cancel_event,
+        name = "anthropic-plain-nonstream",
     )
 
 
