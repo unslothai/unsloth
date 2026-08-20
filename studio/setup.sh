@@ -1839,6 +1839,25 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # If the desktop app specifies a minimum required backend version and the installed
+        # package is older than that requirement, force the dependency pass to upgrade it.
+        if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
+            if ! "$VENV_DIR/bin/python" -c "
+import re, sys
+try:
+    from packaging.version import parse as parse_v
+except ImportError:
+    def parse_v(v):
+        match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', (v or '').strip())
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3))) if match else None
+installed = parse_v(sys.argv[1])
+required = parse_v(sys.argv[2])
+sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
+" "$INSTALLED_VER" "$UNSLOTH_DESKTOP_BACKEND_VERSION" 2>/dev/null; then
+                substep "$_PKG_NAME $INSTALLED_VER < $UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..."
+                _SKIP_PYTHON_DEPS=false
+            fi
+        fi
         # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
         # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
         # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package

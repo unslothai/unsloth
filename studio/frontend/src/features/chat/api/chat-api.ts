@@ -534,7 +534,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
@@ -661,6 +661,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {

@@ -269,7 +269,7 @@ def test_research_website_limits_are_configurable_and_sent_with_each_run() -> No
     assert 'label="Allow only"' in component
     assert 'label="Always block"' in component
     assert "their subdomains" in component
-    assert "<DialogTitle>Website access</DialogTitle>" in component
+    assert "<DialogTitle>Deep research</DialogTitle>" in component
     assert "DeepResearchWebsiteAccessDialog" in thread
     assert "researchWebsitePolicy" in store
     assert "CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY" in store

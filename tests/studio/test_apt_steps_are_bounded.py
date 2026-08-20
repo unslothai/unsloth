@@ -239,6 +239,62 @@ def test_helper_defaults_are_what_the_budgets_assume() -> None:
     assert LOCK_WAIT_SECONDS == 24 * 5 + 5
 
 
+def test_the_helper_makes_apt_fail_fast() -> None:
+    """
+    The bound is the backstop; this is the part that stops the stall happening.
+
+    apt's `Acquire::http::Timeout` defaults to 120s and is an *idle* timeout, so a
+    socket that is open and trickling never trips it. That is how a 126 kB index
+    file cost 29 minutes: apt did not consider waiting on it an error at all.
+    Without these four options the helper still works, but every stall costs the
+    full step budget and ends in a kill -- and the kill is what orphans the dpkg
+    lock, so an apt that gives up on its own is one we never have to kill.
+    """
+    source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
+
+    # The generated config only, not the whole file. Searching the file matches the
+    # header comment, which names these options while explaining them -- so deleting
+    # the line that actually sets one would have gone unnoticed. It did, on the
+    # first version of this test.
+    written = re.search(r'conf="(.*?)"\n', source, re.DOTALL)
+    assert written, f"{HELPER} no longer builds an apt config to write"
+    conf = written.group(1)
+
+    for option in (
+        "Acquire::Retries",
+        "Acquire::http::Timeout",
+        "Acquire::https::Timeout",
+        "Acquire::ftp::Timeout",
+    ):
+        assert option in conf, f"{HELPER} no longer sets {option}; it writes: {conf!r}"
+
+    # Well under apt's 120s default, or it buys nothing. The whole point is that a
+    # dead transfer is abandoned in seconds rather than minutes.
+    match = re.search(r'APT_TIMEOUT="\$\{APT_ACQUIRE_TIMEOUT:-(\d+)\}"', source)
+    assert match, f"{HELPER} does not define a default transfer timeout"
+    assert int(match.group(1)) <= 30, (
+        f"a {match.group(1)}s transfer timeout is close enough to apt's 120s "
+        f"default that a stalled mirror still eats the step budget"
+    )
+
+    # Ordering is the whole value: configured inside or after the retry loop, the
+    # first attempt -- the one that actually stalls -- runs unconfigured.
+    configure = source.index("configure_apt_fail_fast\n\nfor attempt")
+    loop = source.index('for attempt in $(seq 1 "$ATTEMPTS")')
+    assert configure < loop, (
+        f"{HELPER} configures apt at or after the retry loop, so the first "
+        f"attempt runs with apt's 120s idle timeout"
+    )
+
+    # Best effort: a runner that cannot write the file must still run the command.
+    # `set -e` is absent here by design, but a bare failing `tee` would still leave
+    # the function returning non-zero into a caller that may have it set.
+    assert "could not write" in source, (
+        f"{HELPER} does not handle an unwritable apt config, so a runner that "
+        f"refuses the write would fail before running the command at all"
+    )
+
+
 def test_the_guard_is_not_vacuous() -> None:
     """
     Every assertion above is a for-loop over steps this finds. If the detector
@@ -249,3 +305,48 @@ def test_the_guard_is_not_vacuous() -> None:
         len(found) >= 10
     ), f"only {len(found)} workflows matched; the detector looks broken: {found}"
     assert sum(found.values()) >= 15, f"only {sum(found.values())} apt steps matched: {found}"
+
+
+def test_install_deps_does_not_let_apt_retry_inside_the_attempt() -> None:
+    """
+    `playwright install-deps` runs its own `apt-get update`, and that is the one apt
+    call in this repo that cannot be restructured to try the image's lists first.
+    So it is the one step where a stalled mirror is still paid in full, and the only
+    lever left is how many times apt repeats the stall before giving up.
+
+    On 2026-08-19 the helper's 20s transfer cap was applied and confirmed in the log
+    -- "apt configured to fail fast: 20s transfer timeout" -- and the update still
+    burned 4m31s of a 300s attempt, twice, so the step failed having never reached
+    the download. Four InRelease URIs stalling to the cap, repeated over apt's
+    default `Acquire::Retries "3"`, is 4 x 4 x 20s, which is what was measured.
+
+    Retrying belongs in the outer loop, not inside apt: the outer loop re-runs the
+    command under a fresh timeout and prints which way each attempt went, whereas
+    apt's internal retries are invisible and are charged to the caller's budget.
+
+    This is a guard rather than a comment because reverting it looks harmless. The
+    value would go back to apt's default, the step would still be "bounded and
+    retried" by every other assertion in this file, and the symptom would return as
+    a step that fails slowly against a mirror -- which reads as bad luck, not as a
+    setting someone changed.
+    """
+    steps = [
+        (f"{path.name}: {step.get('name', '<unnamed>')}", step)
+        for path in _workflows()
+        for _job_id, _job, step in _steps(yaml.safe_load(path.read_text(encoding = "utf-8")))
+        if "install-deps" in step["run"]
+    ]
+    assert steps, "no step runs `playwright install-deps`; this guard checks nothing"
+
+    for name, step in steps:
+        retries = (step.get("env") or {}).get("APT_ACQUIRE_RETRIES")
+        assert retries is not None, (
+            f"step '{name}' runs `playwright install-deps` without setting "
+            f"APT_ACQUIRE_RETRIES, so apt falls back to 3 internal retries and a "
+            f"stalled mirror costs roughly four times the per-URI timeout"
+        )
+        assert str(retries) == "0", (
+            f"step '{name}' sets APT_ACQUIRE_RETRIES={retries!r}; anything above 0 "
+            f"spends the attempt budget inside apt, where the retries are invisible "
+            f"and the outer attempt loop cannot see or report them"
+        )
