@@ -451,8 +451,12 @@ def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
         store.add_chunks(conn, scope, document, [chunk], [[0.0, 0.0, 0.0, 0.0]])
     conn.commit()
 
-    oldest = [chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, oldest_first = True)]
-    newest = [chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, newest_first = True)]
+    oldest = [
+        chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, oldest_first = True)
+    ]
+    newest = [
+        chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, newest_first = True)
+    ]
 
     assert oldest and newest
     assert oldest != newest, "both ends of the fetch returned the same rows"
