@@ -253,6 +253,11 @@ def _normalize_archive_name(name: str) -> PurePosixPath:
         or any(part in ("", ".", "..") for part in path.parts)
     ):
         raise SkillError(f"Archive contains unsafe path '{name}'.")
+    try:
+        if any(len(part.encode("utf-8")) > 255 for part in path.parts):
+            raise SkillError("Archive path components must fit in 255 UTF-8 bytes.")
+    except UnicodeEncodeError as exc:
+        raise SkillError(f"Archive contains unsafe path '{name}'.") from exc
     return path
 
 

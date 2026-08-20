@@ -25,6 +25,7 @@ tool-call parser tests. Follow-up to the parser test PRs (#5620 / #5704).
 """
 
 from core.inference.chat_template_helpers import apply_chat_template_for_generation
+from core.inference.orchestrator import InferenceOrchestrator
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
 
 TOOL_NAME = "get_weather"
@@ -178,3 +179,30 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     for e in contents:
         assert "<tool_call>" not in e["text"]
         assert TOOL_NAME not in e["text"]
+
+
+def test_orchestrator_consumes_the_safetensors_tool_loop(monkeypatch):
+    from core.inference import chat_template_helpers
+
+    monkeypatch.setattr(chat_template_helpers, "mapped_chat_template", lambda *_args: None)
+    monkeypatch.setattr(chat_template_helpers, "markup_for_tokenizer", lambda *_args: None)
+    monkeypatch.setattr(
+        chat_template_helpers,
+        "renderable_tool_catalog",
+        lambda tools, *_args, **_kwargs: tools,
+    )
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.models = {"test": {}}
+    orchestrator.active_model_name = "test"
+    orchestrator.generate_chat_response = lambda **_kwargs: iter([FINAL_ANSWER])
+
+    events = list(
+        orchestrator.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What is the weather in Paris?"}],
+            tools = [FAKE_TOOL],
+            stats_holder = {},
+        )
+    )
+
+    assert any(event["type"] == "content" and FINAL_ANSWER in event["text"] for event in events)

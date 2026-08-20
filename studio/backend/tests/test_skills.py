@@ -164,6 +164,19 @@ def test_rejects_skill_names_over_filesystem_component_limit(tmp_path: Path):
         skills.import_skill_archive(archive)
 
 
+def test_rejects_resource_paths_over_filesystem_component_limit(tmp_path: Path):
+    archive = _bundle(
+        tmp_path / "long-resource.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            f"unsloth/references/{'x' * 256}": "resource",
+        },
+    )
+
+    with pytest.raises(skills.SkillError, match = "255 UTF-8 bytes"):
+        skills.import_skill_archive(archive)
+
+
 def test_repository_files_do_not_count_toward_bundle_limits(tmp_path: Path):
     entries = {"repo/skills/unsloth/SKILL.md": SKILL_MD}
     entries.update({f"repo/source/file-{index}.txt": "source" for index in range(1_100)})
