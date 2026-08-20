@@ -1182,14 +1182,13 @@ export function useChatModelRuntime() {
           // The diffusion runner has no projector to skip, so the toggle is inert
           // there for the same reason tensorParallel is.
           //
-          // Unlike tensorParallel, this does NOT survive a model switch. It is
-          // per-model config with a default of vision on, so a target that saved no
-          // config gets that default rather than the outgoing model's setting.
-          // Carrying it over loaded the new model text-only, and silently: the dedupe
-          // comparison a few hundred lines up already builds its own view of an
-          // unconfigured switch out of DEFAULT_PER_MODEL_CONFIG, so the two halves
-          // disagreed about the same load. The later resetsPerModelSettings block
-          // cannot repair it, since this constant is captured before it runs.
+          // Unlike tensorParallel, this does NOT survive a model switch: it is
+          // per-model config defaulting to vision on, so a target that saved none gets
+          // that default, not the outgoing model's setting. Carrying it over loaded the
+          // new model text-only and silently, because the dedupe comparison above
+          // already builds its own view of an unconfigured switch from
+          // DEFAULT_PER_MODEL_CONFIG. resetsPerModelSettings cannot repair it: this
+          // constant is captured before that block runs.
           const loadSwitchesModelOrVariant = Boolean(
             currentCheckpoint &&
               (currentCheckpoint !== modelId ||
@@ -1919,13 +1918,12 @@ export function useChatModelRuntime() {
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
                   // What the PREVIOUS server was loaded with. Not the control field:
-                  // applyPerModelConfigToRuntime(pendingLoadConfig) writes disableVision
-                  // before this baseline is captured, so that holds the target's setting
-                  // and a failed switch would roll the old model back with the new
-                  // model's Vision choice. Not loadedVisionDisabledByUser either: that is
-                  // narrowed to models that can do images, so a non-vision GGUF carrying
-                  // the switch would come back with vision on while the control restored
-                  // to off. Same separately tracked baseline tensor_parallel uses above.
+                  // applyPerModelConfigToRuntime writes disableVision before this
+                  // baseline is captured, so it holds the TARGET's setting. Not
+                  // loadedVisionDisabledByUser either: that is narrowed to models that
+                  // can do images, so a non-vision GGUF would come back with vision on
+                  // while the control restored to off. Same separately tracked baseline
+                  // tensor_parallel uses above.
                   disable_vision: stateBeforeUnload.loadedDisableVision ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
@@ -1979,15 +1977,12 @@ export function useChatModelRuntime() {
                   loadedDisableVision:
                     rollbackResponse.disable_vision ?? false,
                   // The rolled-back model's own loaded value, matching the request
-                  // above field for field so the control cannot disagree with the
-                  // server it just asked for. Not stateBeforeUnload.disableVision:
-                  // applyPerModelConfigToRuntime wrote the TARGET's value into the
-                  // store before this snapshot was taken, so that field holds the
-                  // failed model's setting and would leave Vision showing off over a
-                  // restored projector, arming the next Apply to switch it off for
-                  // real. Not the echo either: the replayed request is gated on the
-                  // model having a projector, so a text-only GGUF the user switched
-                  // off echoes false and would flip Vision back on.
+                  // above field for field. Not stateBeforeUnload.disableVision, which
+                  // holds the TARGET's value by now and would show Vision off over a
+                  // restored projector, arming the next Apply to switch it off for real.
+                  // Not the echo either: the replayed request is gated on the model
+                  // having a projector, so a text-only GGUF switched off echoes false
+                  // and would flip Vision back on.
                   disableVision: stateBeforeUnload.loadedDisableVision ?? false,
                   loadedVisionDisabledByUser:
                     rollbackResponse.vision_disabled_by_user ?? false,

@@ -6999,17 +6999,13 @@ def _estimate_gguf_required_gb(
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
-        # Same gate as the remote branch's include_mmproj below, and for the same
-        # reason: llama_cpp.py resolves no projector when vision is switched off, so
-        # the file is never opened and the guard must not refuse a chat load over
-        # bytes it provably does not take. A constrained machine is exactly where the
-        # switch gets used and exactly where this guard bites.
-        # The switch turns VISION off, though, and the loader keeps an AUDIO-ONLY
-        # projector loaded despite it (there is no image tower to drop). So ask the
-        # same question the loader asks, on the same file, rather than assuming the
-        # switch always means no projector: dropping the bytes of one that does get
-        # opened would let this guard admit a load the running training job cannot
-        # afford. Locally the file is on disk, so the answer is readable here.
+        # Vision off means llama_cpp.py resolves no projector, so the guard must not
+        # refuse a chat load over bytes it provably does not take -- a constrained
+        # machine is where the switch gets used and where this guard bites. But the
+        # loader keeps an AUDIO-ONLY projector despite the switch, and dropping the
+        # bytes of one that does get opened would admit a load the running training job
+        # cannot afford. So ask the loader's own question of the same file, which is on
+        # disk here. Same gate as the remote branch's include_mmproj below.
         _sized_attrs = ["gguf_mmproj_file"]
         if disable_vision:
             _dv_mmproj = getattr(config, "gguf_mmproj_file", None)
@@ -7120,14 +7116,12 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                # Charged whenever the repo ships one, switch or no switch. The load
-                # now fetches a remote projector either way, because only the file's
-                # own metadata says whether it is an image tower the switch drops or
-                # an audio encoder the loader keeps, and nothing here has the file to
-                # ask. Under-charging is the direction that lets this guard admit a
-                # chat load over VRAM a running training job needs, so a projector of
-                # unknown kind is charged; the local branch, where the file is on
-                # disk, asks it instead.
+                # Charged whenever the repo ships one, switch or no switch: the load
+                # fetches a remote projector either way, only the file's metadata
+                # separates an image tower from an audio encoder, and nothing here has
+                # the file to ask. Under-charging is what would admit a chat load over
+                # VRAM a training job needs, so an unknown projector is charged. The
+                # local branch, holding the file, asks instead.
                 include_mmproj = bool(has_vision),
                 # Remote, so which sidecar the repo ships is unknown until the
                 # listing. Under Auto size both: a repo has one kind or the other,

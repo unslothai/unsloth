@@ -19168,25 +19168,21 @@ class LlamaCppBackend:
                 self._is_vision = effective_is_vision
                 self._disable_vision = bool(disable_vision)
                 # is_vision, NOT effective_is_vision: the latter means "a projector is
-                # attached", which this load deliberately made false, so reading it
-                # would report False for the one case the field exists to describe.
-                # The intent flag is the model's own capability, so a text-only GGUF
-                # carrying a stale toggle falls through to the generic "cannot accept
-                # images" instead of pointing at a switch that would not help.
-                # An audio-only projector is the same case wearing a mmproj: it is kept
-                # loaded on purpose above and has no image encoder, so claiming the
-                # switch is what withholds images would promise a capability turning it
-                # back on cannot deliver.
-                # An advanced argument that drops the projector is the same story
-                # again: resolution is skipped so nothing reads the file, the
-                # capability default stays True, and the switch would take the blame
-                # for images that turning it back on cannot restore while the argument
-                # still suppresses the projector.
-                # One signal, recorded where the decision was actually made, rather
-                # than re-derived from state that cannot tell the cases apart: it is
-                # True only where a usable image projector was resolved and the switch
-                # is what dropped it. That covers the advanced-argument case and the
-                # audio-only case as well, since neither reaches the assignment.
+                # attached", which this load deliberately made false, so it would report
+                # False for the one case this field exists to describe. The intent flag
+                # is the model's own capability.
+                #
+                # Three cases must NOT blame the switch, because turning it back on
+                # would not restore images: a text-only GGUF with a stale toggle, an
+                # audio-only projector (kept on purpose, no image encoder), and an
+                # advanced argument that drops the projector (nothing reads the file, so
+                # the capability default stays True). All three fall through to the
+                # generic "cannot accept images".
+                #
+                # So this is one signal recorded where the decision was made rather than
+                # re-derived from state that cannot tell the cases apart: True only where
+                # a usable image projector was resolved and the switch dropped it. None
+                # of the three reaches that assignment.
                 self._vision_disabled_by_user = bool(
                     is_vision and disable_vision and _dv_dropped_image_projector
                 )

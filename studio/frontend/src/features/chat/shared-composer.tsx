@@ -1377,10 +1377,9 @@ export function SharedComposer({
         // there for the same reason tensorParallel is.
         //
         // A pane with no saved config gets the per-model DEFAULT, not the store's
-        // current value, which belongs to whichever model happens to be loaded. That
-        // is where this parts company with tensorParallel above: tensorParallel is
-        // deliberately standing across models, while Vision is per-model config and a
-        // model nobody has configured is a model with vision on.
+        // current value, which belongs to whichever model is loaded. Where this parts
+        // company with tensorParallel: that one deliberately stands across models,
+        // while an unconfigured model is a model with vision on.
         const effectiveDisableVision = resolvedIsDiffusion
           ? false
           : ownRemembered
