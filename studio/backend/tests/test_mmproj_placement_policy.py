@@ -1441,13 +1441,10 @@ def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path
 
 def _paravirtual(monkeypatch):
     import core.inference.llama_cpp as _llama_cpp
-
     monkeypatch.setattr(_llama_cpp, "_metal_device_is_paravirtual", lambda: True)
 
 
-def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(
-    tmp_path, monkeypatch
-):
+def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(tmp_path, monkeypatch):
     """The paravirtual scrub runs after the switch's and takes BOTH projector vars
     unconditionally, so a file the switch kept is gone by launch.
 
@@ -1466,9 +1463,7 @@ def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(
     import utils.models.gguf_metadata as _meta
 
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
-        result = _launch(
-            backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
-        )
+        result = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])
 
     assert "LLAMA_ARG_MMPROJ" not in result["env"]
     # Nothing survives to rediscover a projector with.
@@ -1477,9 +1472,7 @@ def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(
     assert backend._mmproj_has_audio is False
 
 
-def test_dropping_an_inherited_image_projector_points_at_the_switch(
-    tmp_path, monkeypatch
-):
+def test_dropping_an_inherited_image_projector_points_at_the_switch(tmp_path, monkeypatch):
     """Turning Vision back on restores an inherited image projector, so the composer
     must name the switch rather than send the user hunting for a valid mmproj."""
     ambient = tmp_path / "ambient-mmproj.gguf"
