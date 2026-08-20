@@ -354,49 +354,54 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
 
 
 def _dedupe_sibling_gguf_folder_entries(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
-    """Drop standalone ``.gguf`` rows when a sibling directory already indexes them.
+    """Drop standalone ``.gguf`` rows when a directory entry already indexes them.
 
-    Custom-folder scans list child directories and root-level ``*.gguf`` independently, so a
-    layout like ``bge-m3/`` plus ``bge-m3-q8_0.gguf`` appears twice in the picker (#9128).
+    Custom-folder scans list child directories and root-level ``*.gguf`` independently, and
+    other scanners can also surface a file that already lives inside a directory row, so a
+    layout like ``bge-m3/bge-m3-q8_0.gguf`` plus ``bge-m3-q8_0.gguf`` (or the in-dir file
+    listed again) appears twice in the picker (#9128).
+
+    Only drop when the directory actually indexes that file -- either the file lives inside
+    the directory, or a same-named sibling copy exists beside a directory that contains it.
+    Name-prefix similarity alone is not enough.
     """
-    by_parent: dict[str, list[LocalModelInfo]] = {}
+    dir_models: list[LocalModelInfo] = []
+    file_models: list[LocalModelInfo] = []
     for model in models:
         try:
-            parent = str(Path(model.path).parent)
+            path = Path(model.path)
         except (TypeError, ValueError):
-            parent = ""
-        by_parent.setdefault(parent, []).append(model)
+            continue
+        try:
+            if path.is_dir():
+                dir_models.append(model)
+            elif path.is_file() and path.suffix.lower() == ".gguf":
+                file_models.append(model)
+        except OSError:
+            continue
 
     drop_paths: set[str] = set()
-    for group in by_parent.values():
-        dir_by_name: dict[str, LocalModelInfo] = {}
-        files: list[Path] = []
-        for model in group:
+    for file_model in file_models:
+        try:
+            file_path = Path(file_model.path)
+        except (TypeError, ValueError):
+            continue
+        for dir_model in dir_models:
             try:
-                path = Path(model.path)
+                dir_path = Path(dir_model.path)
             except (TypeError, ValueError):
                 continue
-            if path.is_dir():
-                dir_by_name[path.name] = model
-            elif path.is_file() and path.suffix.lower() == ".gguf":
-                files.append(path)
-
-        for file_path in files:
-            stem = file_path.stem
-            for dirname, dir_model in dir_by_name.items():
-                if (
-                    stem == dirname
-                    or stem.startswith(f"{dirname}-")
-                    or stem.startswith(f"{dirname}_")
-                ):
+            try:
+                # File is itself inside the indexed directory.
+                if file_path.parent == dir_path:
                     drop_paths.add(str(file_path))
                     break
-                try:
-                    if (Path(dir_model.path) / file_path.name).is_file():
-                        drop_paths.add(str(file_path))
-                        break
-                except OSError:
-                    continue
+                # Sibling loose copy of a filename the directory indexes.
+                if file_path.parent == dir_path.parent and (dir_path / file_path.name).is_file():
+                    drop_paths.add(str(file_path))
+                    break
+            except OSError:
+                continue
 
     if not drop_paths:
         return models

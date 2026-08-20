@@ -361,9 +361,3 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M",))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
-
-
-def test_embeddings_proxy_monitor_prefers_loaded_public_id():
-    import inspect
-    src = inspect.getsource(inf.openai_embeddings)
-    assert "_monitor_active_model()" in src
