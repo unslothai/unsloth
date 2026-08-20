@@ -63,11 +63,6 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ModelCheckpoints } from "./api/export-api";
-import {
-  cleanupExport,
-  fetchCheckpoints,
-  loadCheckpoint,
-} from "./api/export-api";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
@@ -1396,11 +1391,6 @@ export function ExportPage() {
               />
 
               <AnimatePresence>
-                {exportMethod === "gguf" && (
-                  <motion.div {...collapseAnim} className="overflow-visible">
-                    <QuantPicker value={quantLevels} onChange={setQuantLevels} />
-                  </motion.div>
-                )}
                 {exportMethod === "autoround4bit" && (
                   <motion.div {...collapseAnim} className="overflow-visible">
                     <div className="flex flex-col gap-3">
