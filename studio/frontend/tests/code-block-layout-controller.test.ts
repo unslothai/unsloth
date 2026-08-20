@@ -14,9 +14,12 @@ import test from "node:test";
 
 import {
   CODE_BLOCK_LAYOUT_ATTRIBUTE,
+  CODE_BLOCK_SELECTOR,
   CODE_BLOCK_SETTLE_MS,
   type CodeBlockLayout,
+  addedACodeBlock,
   createCodeBlockLayoutController,
+  createCodeBlockRemountWatcher,
 } from "../src/components/assistant-ui/code-block-layout.ts";
 
 /** A hand-cranked clock, so the tests assert on the ORDER of events rather than on wall time. */
@@ -303,6 +306,220 @@ test("disposing cancels a release armed by a remount", () => {
   assert.equal(clock.pendingTimeouts(), 0);
   clock.flushTimeouts();
   assert.equal(controller.layout(), "building");
+});
+
+// ── the remount watcher ──────────────────────────────────────────────────────────────────────
+//
+// The controller only knows about runs. What tells it that blocks were re-created on a thread
+// that never stopped being quiet is a MutationObserver on the thread root, and the policy for
+// when that observer is connected is the part worth pinning down: connected only while settled,
+// disconnected before it reports anything, re-armed only when the controller settles again.
+// Every test below is a way of getting that wrong that costs either a flicker or a live loop.
+
+/** A node stand-in. The real predicate is "is, or contains, a code block"; here it is a flag. */
+type FakeNode = { block: boolean };
+const isBlock = (node: FakeNode): boolean => node.block;
+const records = (...batches: FakeNode[][]) =>
+  batches.map((addedNodes) => ({ addedNodes }));
+
+function buildWatcher() {
+  const calls: string[] = [];
+  const watcher = createCodeBlockRemountWatcher({
+    connect: () => calls.push("connect"),
+    disconnect: () => calls.push("disconnect"),
+    onRemount: () => calls.push("remount"),
+  });
+  return { calls, watcher };
+}
+
+test("a batch is only interesting if something in it is, or contains, a code block", () => {
+  // The containment half is why the predicate is injected rather than a marker check: React
+  // mounts a reply's rendered parts as ONE added node, with the blocks beneath it. A scan that
+  // asked only whether the added node itself was a block would answer no on every real path.
+  assert.equal(addedACodeBlock(records([{ block: false }]), isBlock), false);
+  assert.equal(addedACodeBlock(records([]), isBlock), false);
+  assert.equal(addedACodeBlock(records([], []), isBlock), false);
+  assert.equal(
+    addedACodeBlock(records([{ block: false }], [{ block: true }]), isBlock),
+    true,
+    "the block can be anywhere in the batch, not just the first record",
+  );
+  // The selector is shared with index.css and with streamdown's own markup, so a rename that
+  // only touched one of the two would silently stop matching anything.
+  assert.equal(CODE_BLOCK_SELECTOR, '[data-streamdown="code-block"]');
+});
+
+test("the watcher observes only while the thread is settled", () => {
+  // During a run the hold is already on, so there is nothing to take back -- and a childList
+  // observer with subtree:true on a thread root fires on every streaming mutation there is.
+  const { calls, watcher } = buildWatcher();
+  assert.equal(
+    watcher.connected(),
+    false,
+    "a controller starts held, so this starts off",
+  );
+
+  watcher.layoutChanged("building");
+  assert.deepEqual(
+    calls,
+    [],
+    "already off; connecting is not toggled for its own sake",
+  );
+
+  watcher.layoutChanged("settled");
+  assert.deepEqual(calls, ["connect"]);
+  watcher.layoutChanged("settled");
+  assert.deepEqual(calls, ["connect"], "a repeated state does not re-observe");
+
+  watcher.layoutChanged("building");
+  assert.deepEqual(calls, ["connect", "disconnect"]);
+});
+
+test("a mutation that creates no code block leaves the hold alone", () => {
+  // A settled thread still mutates: an action bar mounting under the cursor, a tooltip, a
+  // branch counter. Taking the hold back for those would put every reply in the thread back
+  // under `content-visibility: visible` each time the mouse crossed one.
+  const { calls, watcher } = buildWatcher();
+  watcher.layoutChanged("settled");
+  watcher.sawMutations(records([{ block: false }, { block: false }]), isBlock);
+  assert.deepEqual(calls, ["connect"]);
+  assert.equal(
+    watcher.connected(),
+    true,
+    "and it stays armed for the one that matters",
+  );
+});
+
+test("the first qualifying batch disconnects BEFORE it reports the remount", () => {
+  // The disconnect is what makes "can this re-trigger itself" answerable without reasoning
+  // about what onRemount does to the DOM. Order matters: reporting first would leave a window
+  // in which the observer is live during the handler.
+  const { calls, watcher } = buildWatcher();
+  watcher.layoutChanged("settled");
+  watcher.sawMutations(records([{ block: true }]), isBlock);
+  assert.deepEqual(calls, ["connect", "disconnect", "remount"]);
+  assert.equal(watcher.connected(), false);
+});
+
+test("a batch delivered after the disconnect does not spend a second remeasure", () => {
+  // An observer can still deliver records for mutations that happened before disconnect() was
+  // called, and the second reply of a two-reply commit is exactly that shape.
+  const { calls, watcher } = buildWatcher();
+  watcher.layoutChanged("settled");
+  watcher.sawMutations(records([{ block: true }]), isBlock);
+  watcher.sawMutations(records([{ block: true }]), isBlock);
+  assert.deepEqual(calls, ["connect", "disconnect", "remount"]);
+});
+
+test("the watcher terminates: driving it from a real controller reaches a fixed point", () => {
+  // The loop this is guarding against is remeasure() -> "building" -> DOM change -> observer ->
+  // remeasure(). Wire the two together for real, feed it one remount, and run the clock out: it
+  // has to come to rest settled and armed, having spent exactly one remeasure.
+  const clock = fakeClock();
+  const seen: CodeBlockLayout[] = [];
+  let observing = false;
+  let remeasures = 0;
+  const controller = createCodeBlockLayoutController({
+    settleMs: 900,
+    timers: clock.timers,
+    onChange: (layout) => {
+      seen.push(layout);
+      watcher.layoutChanged(layout);
+    },
+  });
+  const watcher = createCodeBlockRemountWatcher({
+    connect: () => {
+      observing = true;
+    },
+    disconnect: () => {
+      observing = false;
+    },
+    onRemount: () => {
+      remeasures += 1;
+      controller.remeasure();
+      // What remeasure() actually does to the DOM is one attribute write on the observed root.
+      // The observer is registered for childList only, so feeding an attribute-shaped batch
+      // back in stands for that write: it must not be seen, and it must not requeue anything.
+      watcher.sawMutations(records([{ block: false }]), isBlock);
+    },
+  });
+
+  controller.setRunning(false);
+  clock.flushFrame();
+  clock.flushFrame();
+  clock.flushTimeouts();
+  assert.equal(controller.layout(), "settled");
+  assert.equal(observing, true, "a settled thread is watched");
+
+  watcher.sawMutations(records([{ block: true }]), isBlock);
+  assert.equal(remeasures, 1);
+  assert.equal(
+    controller.layout(),
+    "building",
+    "the hold is back on the same tick",
+  );
+  assert.equal(observing, false, "and the observer is off while it is");
+
+  clock.flushFrame();
+  clock.flushFrame();
+  assert.deepEqual(clock.flushTimeouts(), [900]);
+  assert.equal(controller.layout(), "settled");
+  assert.equal(remeasures, 1, "exactly one remeasure for one remount");
+  assert.equal(observing, true, "re-armed by settling, and by nothing else");
+  assert.equal(
+    clock.pendingFrames(),
+    0,
+    "nothing left queued: this is a fixed point",
+  );
+  assert.equal(clock.pendingTimeouts(), 0);
+  assert.deepEqual(seen, ["settled", "building", "settled"]);
+});
+
+test("a remount seen mid-run neither re-arms the watcher nor settles the thread", () => {
+  // Streaming commits add code blocks constantly. If the watcher were live during a run every
+  // one of them would land here, and an armed release from any of them would settle the thread
+  // inside the reply still writing into it.
+  const clock = fakeClock();
+  let observing = false;
+  const controller = createCodeBlockLayoutController({
+    settleMs: 900,
+    timers: clock.timers,
+    onChange: (layout) => {
+      watcher.layoutChanged(layout);
+    },
+  });
+  const watcher = createCodeBlockRemountWatcher({
+    connect: () => {
+      observing = true;
+    },
+    disconnect: () => {
+      observing = false;
+    },
+    onRemount: () => {
+      controller.remeasure();
+    },
+  });
+
+  controller.setRunning(true);
+  assert.equal(observing, false);
+  // Even if a stale batch arrives, it is refused at the gate rather than by the controller.
+  watcher.sawMutations(records([{ block: true }]), isBlock);
+  assert.equal(clock.pendingFrames(), 0);
+  assert.equal(clock.pendingTimeouts(), 0);
+  assert.equal(controller.layout(), "building");
+});
+
+test("disposing the watcher disconnects it", () => {
+  const { calls, watcher } = buildWatcher();
+  watcher.layoutChanged("settled");
+  watcher.dispose();
+  assert.deepEqual(calls, ["connect", "disconnect"]);
+  watcher.dispose();
+  assert.deepEqual(
+    calls,
+    ["connect", "disconnect"],
+    "and disposing twice is quiet",
+  );
 });
 
 test("the shipped settle delay outlasts a frame at 60Hz by a wide margin", () => {

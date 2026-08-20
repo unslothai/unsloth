@@ -88,11 +88,12 @@ export type CodeBlockLayoutController = {
   /**
    * Report that code blocks have just been re-created outside a run, and take the hold back.
    *
-   * A run is not the only thing that mounts fresh block elements. Leaving the edit textarea on
-   * a COMPLETED reply swaps the whole message body back for its rendered parts, so every block
-   * in that reply is a new element with nothing recorded, on a thread that is quiet and has
-   * therefore already been released. Not idempotent, unlike setRunning: each call is a distinct
-   * remount and restarts the measurement window.
+   * A run is not the only thing that mounts fresh block elements, and the paths that do are not
+   * enumerable from the run state. Three are known -- leaving the edit textarea on a completed
+   * reply, switching response branches, expanding a collapsed reasoning or tool section -- and
+   * the reason this is a single primitive driven by a DOM observer rather than one hook per
+   * path is that a fourth is always possible. Not idempotent, unlike setRunning: each call is a
+   * distinct remount and restarts the measurement window.
    */
   remeasure(): void;
   layout(): CodeBlockLayout;
@@ -177,5 +178,115 @@ export function createCodeBlockLayoutController(options: {
     },
     layout: () => layout,
     dispose: cancelPending,
+  };
+}
+
+/**
+ * The attribute streamdown puts on every code-block wrapper, and so the thing a remount of one
+ * is recognised by. Kept next to the decision rather than in the React file because the CSS in
+ * src/index.css keys off the same selector.
+ */
+export const CODE_BLOCK_SELECTOR = '[data-streamdown="code-block"]';
+
+/** The shape of a MutationRecord this cares about, narrowed so the decision needs no DOM. */
+export type AddedNodes<TNode> = { readonly addedNodes: Iterable<TNode> };
+
+/**
+ * Whether a batch of mutations created a code block, given a way to recognise one.
+ *
+ * Separate from the watcher below so the scan can be exercised on plain objects. The predicate
+ * is injected for the same reason: in the browser it is "is, or contains, a code block", and a
+ * containment test is what makes this work at all, because React mounting a reply adds the
+ * message subtree as one node and the blocks are descendants of it, never the added node.
+ */
+export function addedACodeBlock<TNode>(
+  records: Iterable<AddedNodes<TNode>>,
+  isCodeBlock: (node: TNode) => boolean,
+): boolean {
+  for (const record of records) {
+    for (const node of record.addedNodes) {
+      if (isCodeBlock(node)) return true;
+    }
+  }
+  return false;
+}
+
+export type CodeBlockRemountWatcher = {
+  /** Feed every layout change the controller reports. */
+  layoutChanged(layout: CodeBlockLayout): void;
+  /** Feed a batch of mutations. Calls back onRemount at most once per connected period. */
+  sawMutations<TNode>(
+    records: Iterable<AddedNodes<TNode>>,
+    isCodeBlock: (node: TNode) => boolean,
+  ): void;
+  connected(): boolean;
+  dispose(): void;
+};
+
+/**
+ * When to watch the thread root for freshly mounted code blocks.
+ *
+ * The hold has to be taken back whenever blocks are re-created on a thread that has already
+ * been released, and the run state does not report those. Three paths reach it today (see
+ * remeasure above) and hooking each one individually leaves the next one broken, so this
+ * watches the DOM for the thing itself: a node carrying, or containing, streamdown's code-block
+ * marker being added under the thread root.
+ *
+ * Three properties, each of which is a way to get this wrong:
+ *
+ *   1. Connected ONLY while the layout is `settled`. While the thread is building the hold is
+ *      already on, so there is nothing to take back, and a `subtree: true, childList: true`
+ *      observer on a thread root fires on every single streaming mutation. The gating is what
+ *      makes this affordable: on a settled thread the mutation rate is whatever hovering and
+ *      clicking produce, which is nothing.
+ *   2. DISCONNECTED on the first qualifying batch, before onRemount is called. Not because
+ *      re-entry would be wrong but because the disconnect is what makes the answer to "can it
+ *      re-trigger itself" independent of what onRemount does to the DOM.
+ *   3. Re-armed only by the controller settling again, which it does through layoutChanged.
+ *
+ * Termination, which is the property worth stating explicitly: onRemount drives
+ * controller.remeasure(), whose entire effect on the DOM is one attribute write on the thread
+ * root. The observer is registered for `childList` only, so an attribute write produces no
+ * record even if it lands while connected; and the CSS that attribute drives changes
+ * `content-visibility`, which changes what the engine renders and never what is in the tree.
+ * So there are two independent reasons the loop cannot close, and the disconnect in (2) is the
+ * one that does not depend on reading the CSS correctly.
+ */
+export function createCodeBlockRemountWatcher(options: {
+  connect: () => void;
+  disconnect: () => void;
+  onRemount: () => void;
+}): CodeBlockRemountWatcher {
+  let connected = false;
+
+  const setConnected = (next: boolean): void => {
+    if (connected === next) return;
+    connected = next;
+    if (next) options.connect();
+    else options.disconnect();
+  };
+
+  return {
+    layoutChanged(layout: CodeBlockLayout): void {
+      setConnected(layout === "settled");
+    },
+    sawMutations<TNode>(
+      records: Iterable<AddedNodes<TNode>>,
+      isCodeBlock: (node: TNode) => boolean,
+    ): void {
+      // A batch delivered after the disconnect, which an observer can still do for mutations
+      // that happened before it, must not spend a remeasure.
+      if (!connected) return;
+      // A settled thread still mutates: an action bar mounting under the cursor, a tooltip, a
+      // branch counter. None of those create an unmeasured block, and a remeasure for each one
+      // would put the thread back under the hold every time the mouse crossed a reply.
+      if (!addedACodeBlock(records, isCodeBlock)) return;
+      setConnected(false);
+      options.onRemount();
+    },
+    connected: () => connected,
+    dispose(): void {
+      setConnected(false);
+    },
   };
 }
