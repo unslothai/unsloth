@@ -5481,19 +5481,17 @@ class LlamaCppBackend:
         # Same rule for the tuning group: each is compared requested-against-
         # requested, so a resident server launched with a different mode, draft
         # cache dtype, checkpoint count or host cache size is a reload rather than
-        # a match. The draft dtype is compared only when the caller names one, like
-        # spec_draft_n_max above: an unset value asks for no change.
+        # a match. Every one of them is compared even when the intent leaves it
+        # blank, unlike spec_draft_n_max above: blank means the llama.cpp default,
+        # and both sides record what was REQUESTED, so a load that asked for
+        # nothing holds None and still matches. Guarding on "the intent names one"
+        # would mean clearing a knob back to its default never relaunched.
         if not self._is_diffusion and (
             _normalized_load_mode(self._requested_load_mode)
             != _normalized_load_mode(intent.load_mode)
+            or self._requested_spec_draft_cache_type != intent.spec_draft_cache_type
             or self._requested_ctx_checkpoints != intent.ctx_checkpoints
             or self._requested_cache_ram != intent.cache_ram
-        ):
-            return False
-        if (
-            not self._is_diffusion
-            and intent.spec_draft_cache_type is not None
-            and self._requested_spec_draft_cache_type != intent.spec_draft_cache_type
         ):
             return False
 

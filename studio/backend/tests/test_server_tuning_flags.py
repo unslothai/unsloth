@@ -304,14 +304,18 @@ def test_dedupe_reloads_on_a_tuning_change(changed):
     assert backend._runtime_matches_intent(intent, None) is False
 
 
-def test_dedupe_compares_the_draft_cache_only_when_the_intent_names_one():
-    # An unset dtype asks for no change, like spec_draft_n_max: comparing it
-    # against a resident load that attached no drafter would reload every time.
+def test_dedupe_reloads_when_the_draft_cache_is_cleared():
+    # Clearing the control back to the f16 default has to relaunch, or the server
+    # keeps the quantized draft cache the panel no longer shows. Both sides hold
+    # what was REQUESTED, so a load that asked for nothing still matches one that
+    # asked for nothing.
     backend = _loaded_backend()
     backend._requested_spec_draft_cache_type = "q8_0"
-    assert backend._runtime_matches_intent(_intent(), None) is True
+    assert backend._runtime_matches_intent(_intent(), None) is False
     assert backend._runtime_matches_intent(_intent(spec_draft_cache_type = "q8_0"), None) is True
     assert backend._runtime_matches_intent(_intent(spec_draft_cache_type = "q4_0"), None) is False
+    backend._requested_spec_draft_cache_type = None
+    assert backend._runtime_matches_intent(_intent(), None) is True
 
 
 def test_dedupe_ignores_the_tuning_for_diffusion():
@@ -321,6 +325,33 @@ def test_dedupe_ignores_the_tuning_for_diffusion():
     backend._diffusion_requested_ngl = None
     backend._gpu_layers = -1
     assert backend._runtime_matches_intent(_intent(load_mode = "mlock"), None) is True
+
+
+def test_the_coexistence_estimate_charges_the_requested_checkpoints():
+    """The training guard must size the SWA checkpoints the load will ask for.
+
+    Checkpoints are per-slot snapshots whose size scales with the slot's context
+    (ggml-org/llama.cpp#21690 is an OOM caused by exactly this), so an estimate
+    that assumes zero can admit a load beside training that then runs out of VRAM.
+    """
+    import inspect
+
+    from routes import inference as inference_routes
+
+    # threaded end to end: the guard reads the field, the estimator forwards it,
+    # and the KV sizing charges it
+    assert (
+        "ctx_checkpoints"
+        in inspect.signature(inference_routes._estimate_gguf_required_gb).parameters
+    )
+    assert (
+        "ctx_checkpoints"
+        in inspect.signature(inference_routes._estimate_gguf_kv_gb).parameters
+    )
+    source = inspect.getsource(inference_routes._guard_chat_load_against_training)
+    assert 'ctx_checkpoints = getattr(request, "ctx_checkpoints", None)' in source
+    kv_source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
+    assert "ctx_checkpoints = int(ctx_checkpoints or 0)" in kv_source
 
 
 # ------------------------------------------------------------------- override storage

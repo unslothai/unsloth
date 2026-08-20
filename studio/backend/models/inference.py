@@ -491,9 +491,11 @@ class ValidateModelRequest(BaseModel):
     spec_draft_cache_type: Optional[str] = Field(
         None,
         description = (
-            "Draft KV cache dtype intended for the follow-up load. The draft "
-            "context is priced separately from the target's, so omitting it "
-            "makes this preflight charge f16 for a cache the load quantizes."
+            "Draft KV cache dtype intended for the follow-up load. Sent so this "
+            "preflight strips the same inherited draft-cache flags /load would, "
+            "and so approves the command the load actually runs. The coexistence "
+            "estimate prices the drafter's weights but not its KV, so the value "
+            "itself does not move the number."
         ),
     )
     ctx_checkpoints: Optional[int] = Field(
@@ -502,7 +504,9 @@ class ValidateModelRequest(BaseModel):
         le = CTX_CHECKPOINTS_MAX,
         description = (
             "Checkpoints (--ctx-checkpoints) intended for the follow-up load, so "
-            "the coexistence estimate sizes the SWA cache like /load."
+            "the coexistence estimate sizes the SWA cache like /load. Each one is "
+            "a per-slot snapshot that scales with the slot's context, so a load "
+            "asking for them needs materially more memory than one that does not."
         ),
     )
     include_context_length: bool = Field(

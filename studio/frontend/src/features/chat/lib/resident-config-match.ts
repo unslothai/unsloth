@@ -349,10 +349,12 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Only when the pick names one, like spec_draft_n_max: the dtype belongs to a
-    // draft context that a resident load without a drafter does not have, and
-    // comparing null against its absence would reload every time.
-    pinned: (c) => c.specDraftCacheDtype != null,
+    // Always pinned, unlike spec_draft_n_max: the status echoes what the load
+    // REQUESTED, so a resident server that asked for nothing reports null and a
+    // blank control agrees with it. Reading blank as "no opinion" instead would
+    // mean clearing the dtype back to the f16 default never relaunched, leaving
+    // the server on the quantized draft cache the panel no longer shows.
+    pinned: () => true,
     agrees: (c, s) =>
       (c.specDraftCacheDtype ?? null) ===
       (s.requested_spec_draft_cache_type ?? null),
