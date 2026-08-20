@@ -411,6 +411,25 @@ def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
     return False
 
 
+def _local_unmanaged_llama_runtime() -> tuple[Path, str, str] | None:
+    """A llama runtime sitting at the canonical install location WITHOUT the
+    managed prebuilt marker: the --with-llama-cpp-dir shape, where setup links
+    a user-built tree into $UNSLOTH_HOME/llama.cpp. The tag is empty on
+    purpose — a source build carries no release tag — so tag-based pairing
+    refuses and callers must fall back to the per-file ABI gates
+    (requires_ggml_sonames, backend module glob), which is exactly what
+    slim_pairing_for_artifact does with it.
+    """
+    root = llama.default_managed_llama_dir()
+    bin_dir = root / "build" / "bin"
+    if os.name == "nt":
+        bin_dir = bin_dir / "Release"
+    if not bin_dir.is_dir():
+        return None
+    has_runtime = any(bin_dir.glob("libggml*")) or any(bin_dir.glob("ggml*.dll"))
+    return (bin_dir, "", "") if has_runtime else None
+
+
 def slim_pairing_for_artifact(
     artifact: dict[str, Any], host: HostInfo, backend: str
 ) -> tuple[Path, str] | None:
@@ -419,12 +438,23 @@ def slim_pairing_for_artifact(
     then retries via CPU or reports the prebuilt unavailable."""
     asset = artifact.get("asset")
     runtime = installed_llama_runtime()
+    unmanaged = False
+    if runtime is None:
+        runtime = _local_unmanaged_llama_runtime()
+        if runtime is not None:
+            # A --with-llama-cpp-dir tree: no release tag exists, so the tag
+            # heuristic cannot speak; the per-file ABI gates below decide.
+            unmanaged = True
+            log(
+                f"slim_selection: {asset}: no managed llama.cpp prebuilt marker; "
+                "pairing with the local llama.cpp runtime via the per-file ABI gates"
+            )
     if runtime is None:
         log(f"slim_selection: {asset} skipped: no managed llama.cpp prebuilt install")
         return None
     llama_bin_dir, llama_tag, _profile = runtime
     requires_tag = artifact.get("requires_llama_tag")
-    if not llama_runtime_pairs(
+    if not unmanaged and not llama_runtime_pairs(
         llama_tag,
         requires_tag,
         installed_ggml_tree = installed_llama_ggml_tree(),
@@ -937,11 +967,16 @@ def selection_from_artifact(
     # A slim selection carries its pairing so the install wiring and marker know
     # which llama runtime provides the ggml libraries.
     runtime = installed_llama_runtime()
-    if runtime is None or not llama_runtime_pairs(
-        runtime[1],
-        artifact.get("requires_llama_tag"),
-        installed_ggml_tree = installed_llama_ggml_tree(),
-        required_ggml_tree = artifact.get("requires_ggml_tree"),
+    if runtime is None:
+        runtime = _local_unmanaged_llama_runtime()
+    if runtime is None or (
+        runtime[1]
+        and not llama_runtime_pairs(
+            runtime[1],
+            artifact.get("requires_llama_tag"),
+            installed_ggml_tree = installed_llama_ggml_tree(),
+            required_ggml_tree = artifact.get("requires_ggml_tree"),
+        )
     ):
         raise PrebuiltFallback(
             "the paired llama.cpp runtime changed underneath the slim whisper selection"
