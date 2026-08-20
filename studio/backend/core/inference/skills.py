@@ -428,9 +428,7 @@ def list_skills() -> list[dict]:
         installed_names = {skill["name"] for skill in skills}
         for name, (_, metadata) in _builtin_skills().items():
             if name not in installed_names:
-                skills.append(
-                    {**metadata, "enabled": registry.get(name, True), "bundled": True}
-                )
+                skills.append({**metadata, "enabled": registry.get(name, True), "bundled": True})
         return sorted(skills, key = lambda skill: skill["name"])
 
 
