@@ -6537,10 +6537,29 @@ const ContinueMessageBarForLastMessage: FC = () => {
     });
   }, [aui, messageId, partial, thoughtSignature]);
 
+  // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
+  // which the fit protects, so a partial too big to sit beside the system turn makes the
+  // request irreducible and every further round fails identically.
+  const truncation = useAuiState(({ message }) => {
+    const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
+      ?.custom;
+    return (custom?.contextTruncation ?? null) as
+      | { fits?: boolean; prompt_target?: number }
+      | null;
+  });
+
   // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
   // user made, so it resumes on its own and the bar never appears. Bounded, and only for
   // `length`: see `shouldAutoContinue`.
-  const autoContinuing = resumable && shouldAutoContinue(reason, parentId);
+  const autoContinuing =
+    resumable &&
+    shouldAutoContinue(reason, parentId, {
+      fits: truncation?.fits,
+      // The same cheap estimator the backend fit uses, which is all that is needed to
+      // spot a partial that has already eaten the whole budget.
+      partialTokens: Math.ceil(partial.length / 4),
+      promptTarget: truncation?.prompt_target,
+    });
   useEffect(() => {
     if (!autoContinuing || !parentId) {
       return;

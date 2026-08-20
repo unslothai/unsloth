@@ -375,3 +375,45 @@ test("a turn with no parent is never resumed automatically", () => {
   // to count against and an unbounded loop is the failure mode.
   assert.equal(shouldAutoContinue("length", null), false);
 });
+
+test("a turn whose own fit was refused is never resumed automatically", () => {
+  resetAutoContinue();
+  // Resuming replays the partial as the final assistant turn, which the fit protects, so
+  // the next round sends a partial that is only ever longer. Observed at a 4,864-token
+  // context: three automatic rounds, each refused identically.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", { fits: false }),
+    false,
+  );
+});
+
+test("a partial that already fills the budget is not resumed", () => {
+  resetAutoContinue();
+  // 3,217 tokens of partial against a 3,648-token target left no room for the system turn
+  // and the carried-forward block, so the request was irreducible before it was sent.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      partialTokens: 3648,
+      promptTarget: 3648,
+    }),
+    false,
+  );
+  // Comfortably inside the budget still resumes.
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", {
+      partialTokens: 400,
+      promptTarget: 3648,
+    }),
+    true,
+  );
+});
+
+test("an unknown fit does not block resuming", () => {
+  resetAutoContinue();
+  // A turn that never truncated carries no metadata, and that is the ordinary case.
+  assert.equal(shouldAutoContinue("length", "parent-1", {}), true);
+  assert.equal(
+    shouldAutoContinue("length", "parent-1", { fits: true }),
+    true,
+  );
+});

@@ -308,13 +308,55 @@ export const AUTO_CONTINUE_LIMIT = 3;
  */
 const spent = new Map<string, number>();
 
-/** Whether this cut should resume on its own. */
+/**
+ * Whether this cut should resume on its own.
+ *
+ * `fits` and `promptTarget` come from the resumed turn's own truncation metadata, and
+ * both exist because resuming FIGHTS the context window. A continuation replays the
+ * partial as the final assistant turn, and the fit protects the final group, so the
+ * partial is the one thing compaction may not evict. Once it is large enough that the
+ * system turn plus the carried-forward block will not fit beside it, the request is
+ * irreducible and every further round produces the same refusal.
+ *
+ * Measured at a 4,864-token context: a 3,217-token partial plus system and X came to
+ * 4,218 against a 3,648-token target, so the answer could not be resumed at all -- and
+ * three automatic rounds each asked anyway and each failed identically.
+ */
 export function shouldAutoContinue(
   reason: IncompleteReason | null | undefined,
   key: string | null | undefined,
-  { limit = AUTO_CONTINUE_LIMIT }: { limit?: number } = {},
+  {
+    limit = AUTO_CONTINUE_LIMIT,
+    fits,
+    partialTokens,
+    promptTarget,
+  }: {
+    limit?: number;
+    /** `contextTruncation.fits` of the turn being resumed. */
+    fits?: boolean;
+    /** Estimated size of the partial that would be replayed. */
+    partialTokens?: number;
+    /** `contextTruncation.prompt_target`: what the window leaves for the prompt. */
+    promptTarget?: number;
+  } = {},
 ): boolean {
   if (reason !== "length" || !key) {
+    return false;
+  }
+  if (fits === false) {
+    // This turn's own fit was already refused. Resuming re-sends a partial that is only
+    // ever longer, so the next round cannot fit either.
+    return false;
+  }
+  if (
+    typeof partialTokens === "number" &&
+    typeof promptTarget === "number" &&
+    promptTarget > 0 &&
+    partialTokens >= promptTarget
+  ) {
+    // The partial alone meets the budget, so nothing can be sent beside it -- not the
+    // system prompt, not the user's own question. Raising Context Length is the only
+    // remedy and the bar says so.
     return false;
   }
   return (spent.get(key) ?? 0) < limit;
