@@ -45,7 +45,7 @@ DIALOG = ROOT / "studio" / "frontend" / "src" / "features" / "settings" / "setti
 
 def _smoke_tabs() -> list[str]:
     """The TABS list literal the smoke drives."""
-    text = SMOKE.read_text()
+    text = SMOKE.read_text(encoding = "utf-8")
     block = re.search(r"^TABS = \[(.*?)^\]", text, re.S | re.M)
     assert block, "could not find the TABS list in playwright_settings_tabs.py"
     return re.findall(r'"([a-z0-9-]+)"', block.group(1))
@@ -53,7 +53,7 @@ def _smoke_tabs() -> list[str]:
 
 def _dialog_tabs() -> list[str]:
     """The tab ids the dialog renders, in declaration order."""
-    text = DIALOG.read_text()
+    text = DIALOG.read_text(encoding = "utf-8")
     # Scope to the tab array first: `id:` appears on other objects in this file, and
     # a bare scan would invent tabs. Both spellings live in here -- the one-line
     # `{ id: "general", labelKey: ... }` and the multi-line form -- so the id match
@@ -90,7 +90,9 @@ def test_the_chunk_fail_tab_is_one_the_dialog_has() -> None:
     run blocking nothing at all, and the smoke would still report PASS on a
     panel it never broke.
     """
-    workflow = (ROOT / ".github" / "workflows" / "studio-frontend-ci.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(
+        encoding = "utf-8"
+    )
     targets = re.findall(r"PW_CHUNK_FAIL:\s*([a-z0-9-]+)", workflow)
     assert targets, "no PW_CHUNK_FAIL in studio-frontend-ci.yml; the blocked-panel run is not wired"
     dialog = set(_dialog_tabs())
@@ -103,7 +105,7 @@ def test_the_chunk_fail_tab_is_one_the_dialog_has() -> None:
 
 def test_the_nav_assertion_is_not_hardcoded() -> None:
     """A literal count here is what made a new settings page look like a regression."""
-    text = SMOKE.read_text()
+    text = SMOKE.read_text(encoding = "utf-8")
     assert 'state["nav"] != nav_before' in text, (
         "the blocked-panel check must compare the nav against the size measured "
         "before blocking, not a literal. A hardcoded count fails the moment a "
