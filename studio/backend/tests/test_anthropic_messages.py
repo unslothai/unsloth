@@ -3520,9 +3520,9 @@ def assert_anthropic_stream_conformant(lines):
         if name == "content_block_start":
             assert not saw_message_delta, "content_block_start after message_delta"
             assert open_index is None, f"block {open_index} still open"
-            assert data["index"] == next_index, (
-                f"index {data['index']} out of sequence, expected {next_index}"
-            )
+            assert (
+                data["index"] == next_index
+            ), f"index {data['index']} out of sequence, expected {next_index}"
             block = data["content_block"]
             if block["type"] == "thinking":
                 assert block.get("thinking") == ""
@@ -3540,9 +3540,9 @@ def assert_anthropic_stream_conformant(lines):
                 "signature_delta": "thinking",
                 "input_json_delta": "tool_use",
             }[delta["type"]]
-            assert blocks[open_index]["type"] == expected, (
-                f"{delta['type']} inside a {blocks[open_index]['type']} block"
-            )
+            assert (
+                blocks[open_index]["type"] == expected
+            ), f"{delta['type']} inside a {blocks[open_index]['type']} block"
             blocks[open_index]["text"] += delta.get("text") or delta.get("thinking") or ""
         elif name == "content_block_stop":
             assert open_index is not None, "content_block_stop with no open block"
@@ -3566,7 +3566,12 @@ def assert_anthropic_stream_conformant(lines):
     return [(blocks[i]["type"], blocks[i]["text"]) for i in sorted(blocks)]
 
 
-def _drive_emitter(chunks, provenance = None, parse_think = True, extra = ()):
+def _drive_emitter(
+    chunks,
+    provenance = None,
+    parse_think = True,
+    extra = (),
+):
     """Feed cumulative content deltas (plus any extra events) through the emitter."""
     emitter = AnthropicStreamEmitter(parse_think = parse_think, think_provenance = provenance)
     lines = list(emitter.start("msg_1", "test-model", input_tokens = 3))
@@ -3609,7 +3614,9 @@ class TestAnthropicStreamGrammar:
             "halves": [text[: len(text) // 2], text[len(text) // 2 :]],
         }[split]
         assert_anthropic_stream_conformant(
-            _drive_emitter([c for c in chunks if c], json.loads(json.dumps(provenance)), parse_think)
+            _drive_emitter(
+                [c for c in chunks if c], json.loads(json.dumps(provenance)), parse_think
+            )
         )
 
     def test_a_reply_with_no_content_is_still_a_valid_stream(self):
@@ -3625,10 +3632,18 @@ class TestAnthropicStreamGrammar:
         """A tool call must take the next index, and text after it another one --
         whether or not text preceded it."""
         tool = [
-            {"type": "tool_start", "tool_call_id": "call_1", "name": "get_weather",
-             "arguments": '{"city": "SF"}'},
-            {"type": "tool_end", "tool_call_id": "call_1", "name": "get_weather",
-             "result": "sunny"},
+            {
+                "type": "tool_start",
+                "tool_call_id": "call_1",
+                "name": "get_weather",
+                "arguments": '{"city": "SF"}',
+            },
+            {
+                "type": "tool_end",
+                "tool_call_id": "call_1",
+                "name": "get_weather",
+                "result": "sunny",
+            },
         ]
         chunks = ["checking"] if extra_first else []
         blocks = assert_anthropic_stream_conformant(_drive_emitter(chunks, extra = tool))
@@ -3640,14 +3655,34 @@ class TestAnthropicStreamGrammar:
         emitter = AnthropicStreamEmitter(parse_think = True, think_provenance = provenance)
         lines = list(emitter.start("msg_1", "test-model"))
         lines.extend(emitter.feed({"type": "content", "text": "<think>need the weather</think>"}))
-        lines.extend(emitter.feed({"type": "tool_start", "tool_call_id": "call_1",
-                                   "name": "get_weather", "arguments": "{}"}))
-        lines.extend(emitter.feed({"type": "tool_end", "tool_call_id": "call_1",
-                                   "name": "get_weather", "result": "sunny"}))
+        lines.extend(
+            emitter.feed(
+                {
+                    "type": "tool_start",
+                    "tool_call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                }
+            )
+        )
+        lines.extend(
+            emitter.feed(
+                {
+                    "type": "tool_end",
+                    "tool_call_id": "call_1",
+                    "name": "get_weather",
+                    "result": "sunny",
+                }
+            )
+        )
         lines.extend(emitter.feed({"type": "content", "text": "It is sunny"}))
         lines.extend(emitter.finish())
         blocks = assert_anthropic_stream_conformant(lines)
-        assert blocks == [("thinking", "need the weather"), ("tool_use", ""), ("text", "It is sunny")]
+        assert blocks == [
+            ("thinking", "need the weather"),
+            ("tool_use", ""),
+            ("text", "It is sunny"),
+        ]
 
 
 class TestThinkTagSplitAcrossDeltas:
@@ -3674,9 +3709,10 @@ class TestThinkTagSplitAcrossDeltas:
             blocks = assert_anthropic_stream_conformant(
                 _drive_emitter(chunks, {"wrapped": 1, "wraps": [{"len": 3}]})
             )
-            assert blocks == [("thinking", "abc"), ("text", "def")], (
-                f"split at {first},{second} produced {blocks}"
-            )
+            assert blocks == [
+                ("thinking", "abc"),
+                ("text", "def"),
+            ], f"split at {first},{second} produced {blocks}"
 
     @pytest.mark.parametrize("cut", range(1, len("<think>")))
     def test_a_partial_tag_at_end_of_stream_is_literal_text(self, cut):
@@ -3712,8 +3748,11 @@ class TestWhitespaceOnlyThinkingIsNotABlock:
             _drive_emitter([text], json.loads(json.dumps(provenance)))
         )
         response = _anthropic_plain_response_from_events(
-            iter([text]), "msg_1", "test-model",
-            parse_think = True, think_provenance = json.loads(json.dumps(provenance)),
+            iter([text]),
+            "msg_1",
+            "test-model",
+            parse_think = True,
+            think_provenance = json.loads(json.dumps(provenance)),
         )
         reduced = [
             (b["type"], b.get("thinking") or b.get("text", ""))
@@ -3756,13 +3795,20 @@ class TestReasoningSurvivesTheWholeChain:
         backend._supports_preserve_thinking = False
 
         @contextlib.contextmanager
-        def fake_stream(_client, _url, payload, _cancel, headers = None,
-                        first_token_deadline = None):
+        def fake_stream(
+            _client,
+            _url,
+            payload,
+            _cancel,
+            headers = None,
+            first_token_deadline = None,
+        ):
             yield type("R", (), {"status_code": 200, "chunks": chunks})()
 
         monkeypatch.setattr(backend, "_stream_with_retry", fake_stream)
         monkeypatch.setattr(
-            backend, "_iter_text_cancellable",
+            backend,
+            "_iter_text_cancellable",
             lambda response, _c, first_token_deadline = None: iter(response.chunks),
         )
         monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *a, **k: False)
@@ -3773,9 +3819,7 @@ class TestReasoningSurvivesTheWholeChain:
         return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
     def _run(self, monkeypatch, deltas):
-        backend = self._backend(
-            monkeypatch, [self._sse(d) for d in deltas] + ["data: [DONE]\n"]
-        )
+        backend = self._backend(monkeypatch, [self._sse(d) for d in deltas] + ["data: [DONE]\n"])
         provenance = {"wrapped": 0}
         emitter = AnthropicStreamEmitter(parse_think = True, think_provenance = provenance)
         lines = list(emitter.start("msg_1", "test-model"))
@@ -3789,12 +3833,15 @@ class TestReasoningSurvivesTheWholeChain:
         return assert_anthropic_stream_conformant(lines)
 
     def test_reasoning_then_answer_becomes_a_thinking_block_and_a_text_block(self, monkeypatch):
-        blocks = self._run(monkeypatch, [
-            {"reasoning_content": "First I "},
-            {"reasoning_content": "check the map."},
-            {"content": "It is "},
-            {"content": "north."},
-        ])
+        blocks = self._run(
+            monkeypatch,
+            [
+                {"reasoning_content": "First I "},
+                {"reasoning_content": "check the map."},
+                {"content": "It is "},
+                {"content": "north."},
+            ],
+        )
         assert blocks == [("thinking", "First I check the map."), ("text", "It is north.")]
 
     def test_a_reasoning_only_reply_is_not_empty(self, monkeypatch):
@@ -3805,26 +3852,30 @@ class TestReasoningSurvivesTheWholeChain:
     def test_a_literal_think_tag_in_content_stays_text(self, monkeypatch):
         """No reasoning_content, so the generator wraps nothing and provenance
         stays at zero -- the model merely quoted the tag."""
-        blocks = self._run(monkeypatch, [
-            {"content": "<think>"},
-            {"content": " is the tag"},
-        ])
+        blocks = self._run(
+            monkeypatch,
+            [
+                {"content": "<think>"},
+                {"content": " is the tag"},
+            ],
+        )
         assert blocks == [("text", "<think> is the tag")]
 
     def test_a_close_tag_quoted_inside_the_trace_does_not_end_it(self, monkeypatch):
-        blocks = self._run(monkeypatch, [
-            {"reasoning_content": "the closer is </think>"},
-            {"reasoning_content": " and it is quoted"},
-            {"content": "done"},
-        ])
+        blocks = self._run(
+            monkeypatch,
+            [
+                {"reasoning_content": "the closer is </think>"},
+                {"reasoning_content": " and it is quoted"},
+                {"content": "done"},
+            ],
+        )
         assert blocks == [
             ("thinking", "the closer is </think> and it is quoted"),
             ("text", "done"),
         ]
 
-    def test_an_old_llama_server_that_never_sends_reasoning_content_is_unchanged(
-        self, monkeypatch
-    ):
+    def test_an_old_llama_server_that_never_sends_reasoning_content_is_unchanged(self, monkeypatch):
         """Pre-reasoning_content builds only ever populate `content`."""
         blocks = self._run(monkeypatch, [{"content": "plain "}, {"content": "answer"}])
         assert blocks == [("text", "plain answer")]
@@ -3832,8 +3883,11 @@ class TestReasoningSurvivesTheWholeChain:
     def test_a_blank_reasoning_trace_does_not_open_a_thinking_block(self, monkeypatch):
         """Qwen3 with thinking off renders "<think>\\n\\n</think>" and llama-server
         reports it as reasoning_content, on every single reply."""
-        blocks = self._run(monkeypatch, [
-            {"reasoning_content": "\n\n"},
-            {"content": "The answer"},
-        ])
+        blocks = self._run(
+            monkeypatch,
+            [
+                {"reasoning_content": "\n\n"},
+                {"content": "The answer"},
+            ],
+        )
         assert blocks == [("text", "The answer")]
