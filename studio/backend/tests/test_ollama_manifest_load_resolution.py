@@ -86,9 +86,7 @@ def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     assert native_grant_backed is False
 
 
-def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(
-    tmp_path, monkeypatch
-):
+def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from models.inference import LoadRequest

@@ -8313,9 +8313,7 @@ async def _load_model_impl(
         # Materialization is only the load artifact. Keep the inventory ref as
         # the backend/client identity so status, dedupe, and unload round-trip it.
         public_model_identifier = (
-            request.model_path
-            if is_ollama_manifest_ref(request.model_path)
-            else model_identifier
+            request.model_path if is_ollama_manifest_ref(request.model_path) else model_identifier
         )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
