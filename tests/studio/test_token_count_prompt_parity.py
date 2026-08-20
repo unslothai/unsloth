@@ -102,6 +102,7 @@ const state: any = {
   reasoningEffortLevels: ["low", "medium", "high"],
   supportsPreserveThinking: false,
   preserveThinking: false,
+  skillsEnabled: false,
 };
 
 const useChatRuntimeStore: any = { getState: () => state };
@@ -134,6 +135,10 @@ async function resolveProjectId(_threadId: any): Promise<string | null> {
 
 async function projectHasSources(_projectId: any): Promise<boolean> {
   return false;
+}
+
+async function hasEnabledSkills(): Promise<boolean> {
+  return state.skillsEnabled;
 }
 
 // A stand-in for the server-side tokenizer: proportional to the rendered prompt, so a
