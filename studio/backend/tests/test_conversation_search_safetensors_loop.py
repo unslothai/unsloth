@@ -143,6 +143,33 @@ def test_the_budget_fails_closed_without_generation_usage():
     assert seen["conversation_budget_tokens"] == 0
 
 
+def test_the_orchestrator_passes_generation_usage_to_the_tool_loop(monkeypatch):
+    import core.inference.safetensors_agentic as agentic
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    seen = {}
+
+    def capture_loop(**kwargs):
+        seen.update(kwargs)
+        return iter(())
+
+    monkeypatch.setattr(agentic, "run_safetensors_tool_loop", capture_loop)
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend.active_model_name = "sf-model"
+    backend.models = {"sf-model": {"context_length": 4096}}
+    stats_holder = {}
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = list(MESSAGES),
+            tools = [{"type": "function", "function": {"name": "search_conversation"}}],
+            stats_holder = stats_holder,
+        )
+    )
+
+    assert seen["generation_stats_holder"] is stats_holder
+
+
 def test_the_budget_charges_an_in_place_continuation():
     from core.inference.context_window import prompt_budget
 
