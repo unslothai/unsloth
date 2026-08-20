@@ -1101,8 +1101,13 @@ class DiffusionBackend:
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
         # Every request waiting for the generation slot. cancel_generate() signals these only
-        # when nothing is denoising, i.e. when the wait really is a model transition.
+        # when no generation OWNS the slot, i.e. when the wait really is a model transition.
         self._queued_generate_cancels: set[threading.Event] = set()
+        # True from admission until _generate_lock is released. Not the same as having a live
+        # _active_generate_cancel: a generation drops that at its last-word check, while it still
+        # owns the slot for the epilogue, and a request queued behind it is still queued behind a
+        # GENERATION for all of it.
+        self._generation_owns_slot = False
         # Unloads / superseding loads waiting on _generate_lock to free this pipeline. A queued
         # generation is not the ACTIVE one teardown should cancel, so without this fence it could
         # win the lock after an eject and denoise anyway. A count lets concurrent teardowns reserve.
@@ -1191,6 +1196,7 @@ class DiffusionBackend:
                             if not cancelled:
                                 self._queued_generate_cancels.discard(cancel)
                                 self._active_generate_cancel = cancel
+                                self._generation_owns_slot = True
                                 admitted = True
                     else:
                         cancelled = cancel.is_set()
@@ -1209,10 +1215,14 @@ class DiffusionBackend:
             try:
                 yield
             finally:
+                # Releasing inside the section so giving up the slot and giving up the lock are
+                # one step: a Stop cannot land between them and mistake a waiter for one queued
+                # behind a model transition.
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                self._generate_lock.release()
+                    self._generation_owns_slot = False
+                    self._generate_lock.release()
         finally:
             if not admitted:
                 with self._generation_cancel_lock:
@@ -5889,8 +5899,14 @@ class DiffusionBackend:
             if active is not None:
                 active.set()
                 return True
-            # Nothing is denoising, so every waiter is queued behind a model transition and
-            # Stop is the answer for all of them. Decided here, on live state, rather than by
+            if self._generation_owns_slot:
+                # A generation still owns the slot but has already committed its images, so it is
+                # past cancelling (the route must not be told true and then handed the picture).
+                # A request waiting behind it is still waiting on a GENERATION, so it keeps its
+                # turn rather than inheriting that Stop.
+                return False
+            # No generation owns the slot, so every waiter is queued behind a model transition
+            # and Stop is the answer for all of them. Decided here, on live state, rather than by
             # each waiter polling: a waiter asleep in its timed acquisition cannot notice that
             # the generation it was behind has exited.
             cancels = set(self._queued_generate_cancels)

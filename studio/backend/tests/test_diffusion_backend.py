@@ -7579,6 +7579,69 @@ def test_cancel_reaches_a_waiter_once_the_generation_it_queued_behind_exits(
         waiter.join(5)
 
 
+def test_cancel_spares_a_serialized_request_through_the_active_epilogue(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The active generation drops its cancel event at the last-word check, while it still owns
+    # the slot for the epilogue that builds the result. Reading "no cancel event" as "nothing
+    # owns the slot" there failed a request that was only serialised behind it.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    from core.inference import diffusion as diffusion_module
+
+    queued = threading.Event()
+    stop_answered: list[bool] = []
+    fired: list[int] = []
+    real_baked = diffusion_module._baked_lora_names
+
+    def _baked(pipe):
+        # Runs in the epilogue, after the last-word check cleared _active_generate_cancel and
+        # before _generation_slot releases the lock. Only the first generation's epilogue has a
+        # request queued behind it.
+        if not fired:
+            fired.append(1)
+            if queued.wait(5):
+                stop_answered.append(backend.cancel_generate())
+        return real_baked(pipe)
+
+    monkeypatch.setattr(diffusion_module, "_baked_lora_names", _baked)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
+    active.start()
+    serialized = threading.Thread(target = generate, args = ("serialized", "serialized"), daemon = True)
+    serialized.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    queued.set()
+
+    active.join(5)
+    serialized.join(5)
+    assert not active.is_alive() and not serialized.is_alive()
+    assert stop_answered == [False], "Stop claimed a generation that had already committed"
+    assert isinstance(outcomes["active"], dict), outcomes["active"]
+    assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
+    assert outcomes["serialized"]["images"]
+
+
 class _FirstAcquireHookLock:
     """Generation-lock wrapper that runs a hook before the first acquisition attempt."""
 
