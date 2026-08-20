@@ -40,6 +40,7 @@ router = APIRouter()
 
 
 class LlamaUpdateJob(BaseModel):
+    job_id: Optional[str] = Field(None, description = "Opaque identity of the current job.")
     state: str = Field("idle", description = "idle | running | success | error")
     operation: Optional[Literal["update", "switch"]] = None
     requested_backend: Optional[Literal["auto", "cpu", "cuda", "rocm", "vulkan"]] = None
