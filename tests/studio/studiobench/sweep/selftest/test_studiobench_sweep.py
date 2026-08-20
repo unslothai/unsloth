@@ -433,9 +433,17 @@ def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
     """
     path = probe_payload(tmp_path, "resumed", None)
     with path.open("a", encoding = "utf-8") as fh:
-        fh.write(json.dumps({"row_type": "run_meta", "tier": "standard",
-                             "corpus_hash": "corpus0000",
-                             "probe_init_script": "late_probe.js"}) + "\n")
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "run_meta",
+                    "tier": "standard",
+                    "corpus_hash": "corpus0000",
+                    "probe_init_script": "late_probe.js",
+                }
+            )
+            + "\n"
+        )
     with pytest.raises(SystemExit) as excinfo:
         F.load([path])
     assert "late_probe.js" in str(excinfo.value)
@@ -446,8 +454,17 @@ def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
     # is still refused.
     path = probe_payload(tmp_path, "gated", None)
     with path.open("a", encoding = "utf-8") as fh:
-        fh.write(json.dumps({"row_type": "gate", "name": "probe_free", "passed": False,
-                             "detail": {"probe_init_script": "gate_only.js"}}) + "\n")
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "gate",
+                    "name": "probe_free",
+                    "passed": False,
+                    "detail": {"probe_init_script": "gate_only.js"},
+                }
+            )
+            + "\n"
+        )
     with pytest.raises(SystemExit) as excinfo:
         F.load([path])
     assert "gate_only.js" in str(excinfo.value)
@@ -456,8 +473,17 @@ def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
 def test_a_passing_probe_free_gate_scores_normally(tmp_path):
     path = probe_payload(tmp_path, "clean_gate", None)
     with path.open("a", encoding = "utf-8") as fh:
-        fh.write(json.dumps({"row_type": "gate", "name": "probe_free", "passed": True,
-                             "detail": {"probe_init_script": None}}) + "\n")
+        fh.write(
+            json.dumps(
+                {
+                    "row_type": "gate",
+                    "name": "probe_free",
+                    "passed": True,
+                    "detail": {"probe_init_script": None},
+                }
+            )
+            + "\n"
+        )
     pooled, _ = F.load([path])
     assert pooled["message_menu.open_close_ms"]
 

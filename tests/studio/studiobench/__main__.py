@@ -668,12 +668,15 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     # request. This is the same refusal `--report` and `floor_table` make, on the same evidence,
     # and it is the entry point that actually runs at the end of every session.
     from .scoring.from_payload import probe_scripts
+
     probes = probe_scripts(records)
     if probes:
         _log("")
-        _log(f"NO A/B TABLE: this run carried an external init script ({', '.join(probes)}), so "
-             f"its timings measure the page and the instrument together. The payload is kept "
-             f"for the probe's own output and for --assert-liveness; it is not scorable.")
+        _log(
+            f"NO A/B TABLE: this run carried an external init script ({', '.join(probes)}), so "
+            f"its timings measure the page and the instrument together. The payload is kept "
+            f"for the probe's own output and for --assert-liveness; it is not scorable."
+        )
         _log("")
         return
 

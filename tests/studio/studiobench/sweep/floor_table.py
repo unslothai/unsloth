@@ -155,8 +155,6 @@ def corpus_of(records: list[dict]) -> str:
     return "?"
 
 
-
-
 def read_rows(path: Path) -> list[dict]:
     return [
         json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
