@@ -1599,14 +1599,15 @@ class ChatCompletionRequest(BaseModel):
             "the process default."
         ),
     )
-    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
-            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
-            "context window. 'error' (default) returns a 400 with "
-            "code=context_length_exceeded. 'truncate_middle' drops middle "
-            "turn-groups (system prompt, first turn, and recent turns kept; "
-            "tool calls stay paired with their results) and retries."
+            "[x-unsloth] Local GGUF context-overflow behavior. 'error' (default) "
+            "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
+            "limited to client-tool or response_format passthrough and retries after "
+            "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
+            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
@@ -2148,6 +2149,7 @@ class ChatCompletionChunk(BaseModel):
     choices: list[ChunkChoice]
     usage: Optional[CompletionUsage] = None
     timings: Optional[dict] = None
+    context_truncated: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────

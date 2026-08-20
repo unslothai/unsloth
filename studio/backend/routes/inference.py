@@ -54,6 +54,11 @@ from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
 )
+from core.inference.context_window import (
+    estimate_message_tokens as _estimate_message_tokens,
+    estimate_messages_tokens as _estimate_messages_tokens,
+    truncate_oldest_messages as _truncate_oldest_messages,
+)
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -641,13 +646,48 @@ _OVERFLOW_TRUNCATE_MAX_RETRIES = 3
 _OVERFLOW_PROMPT_TARGET_FRACTION = 0.75
 
 
+def _overflow_truncation_policy(payload) -> Optional[str]:
+    requested = getattr(payload, "context_overflow", None)
+    if requested is not None:
+        return requested if requested in ("truncate_middle", "truncate_oldest") else None
+    server_default = os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower()
+    return server_default if server_default in ("truncate_middle", "truncate_oldest") else None
+
+
+def _rolling_context_policy(payload) -> Optional[str]:
+    policy = _overflow_truncation_policy(payload)
+    return policy if policy == "truncate_oldest" else None
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
-    requested = getattr(payload, "context_overflow", None)
-    if requested is not None:
-        return requested == "truncate_middle"
-    return os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower() == "truncate_middle"
+    return _overflow_truncation_policy(payload) is not None
+
+
+def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation: dict) -> str:
+    data = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [],
+        "context_truncated": truncation,
+    }
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
+    incoming = {key: value for key, value in event.items() if key != "type"}
+    if current is None:
+        return incoming
+    combined = {**current, **incoming}
+    for counter in ("dropped_messages", "archived_messages", "recalled_chunks"):
+        if counter in current or counter in incoming:
+            combined[counter] = int(current.get(counter) or 0) + int(incoming.get(counter) or 0)
+    if current.get("prompt_tokens_before") is not None:
+        combined["prompt_tokens_before"] = current["prompt_tokens_before"]
+    return combined
 
 
 def _parse_overflow_counts(err_text: str):
@@ -658,24 +698,6 @@ def _parse_overflow_counts(err_text: str):
     if m_prompt and m_ctx:
         return int(m_prompt.group(1)), int(m_ctx.group(1))
     return None
-
-
-def _estimate_message_tokens(msg: dict) -> int:
-    try:
-        return max(1, len(json.dumps(msg, ensure_ascii = False)) // 4)
-    except Exception:
-        return 1
-
-
-def _estimate_messages_tokens(messages: list) -> int:
-    """Conservatively estimate a complete message list.
-
-    Templates disagree about when historical ``reasoning_content`` renders,
-    and arbitrary GGUFs can carry custom templates. Counting the serialized
-    field avoids a retry that still exceeds context. The overflow recovery path
-    clips large reasoning traces before it evicts conversation turns.
-    """
-    return sum(_estimate_message_tokens(msg) for msg in messages)
 
 
 def _truncate_middle_messages(messages: list, keep_ratio: float):
@@ -793,14 +815,18 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     return clipped
 
 
-def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
+def _apply_overflow_truncation(
+    body: dict,
+    err_text: str,
+    policy: str = "truncate_middle",
+) -> bool:
     """Shrink a passthrough body after an upstream context overflow: drop
     middle turn-groups, clip still-oversized contents, clamp ``max_tokens``
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
     pre_clip_est = _estimate_messages_tokens(messages)
-    clipped = _clip_reasoning_contents(messages)
+    clipped = 0 if policy == "truncate_oldest" else _clip_reasoning_contents(messages)
     total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
@@ -820,10 +846,16 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     # Scale the server-token target into char-estimate units.
     target_est = int(total_est * keep_ratio)
 
-    new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
+    truncate = (
+        _truncate_oldest_messages if policy == "truncate_oldest" else _truncate_middle_messages
+    )
+    new_messages, dropped = truncate(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
+    if (
+        policy != "truncate_oldest"
+        and _estimate_messages_tokens(body.get("messages") or []) > target_est
+    ):
         clipped += _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
@@ -832,13 +864,21 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
         cur_max = body.get("max_tokens")
         body["max_tokens"] = min(cur_max, headroom) if cur_max else headroom
     logger.warning(
-        "context_overflow=truncate_middle: dropped %d middle messages, clipped "
+        "context_overflow=%s: dropped %d messages, clipped "
         "%d contents (keep_ratio %.2f); retrying within the real window",
+        policy,
         dropped,
         clipped,
         keep_ratio,
     )
     return True
+
+
+def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) -> Optional[int]:
+    before = len(body.get("messages") or [])
+    if not _apply_overflow_truncation(body, err_text, policy):
+        return None
+    return max(0, before - len(body.get("messages") or []))
 
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
@@ -2853,6 +2893,58 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
+_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+
+
+def _tool_call_names(message) -> list[Optional[str]]:
+    """Every function name in a message's ``tool_calls``, or []. None for a nameless call."""
+    calls = (
+        message.get("tool_calls")
+        if isinstance(message, dict)
+        else getattr(message, "tool_calls", None)
+    )
+    names: list[Optional[str]] = []
+    for call in calls or []:
+        function = (
+            call.get("function") if isinstance(call, dict) else getattr(call, "function", None)
+        ) or {}
+        names.append(
+            function.get("name") if isinstance(function, dict) else getattr(function, "name", None)
+        )
+    return names
+
+
+def _only_studio_memory_tool_history(payload) -> bool:
+    """True when the request's ONLY tool history is Studio's own conversation memory.
+
+    Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
+    turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
+    tool contract, that history routes every later turn to the llama-server passthrough,
+    which runs no context fit, so the epoch, the carried-forward block and the automatic
+    recall vanish one turn after the compaction that created them. It is Studio's own
+    read-only tool run by Studio's own loop, so it must route as a tools-on Studio chat.
+
+    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
+    any other tool name means "not ours", so a real client tool loop is never claimed.
+    """
+    if getattr(payload, "tools", None):
+        return False
+    saw_call = False
+    for message in getattr(payload, "messages", None) or []:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        for name in _tool_call_names(message):
+            saw_call = True
+            if name not in _STUDIO_MEMORY_TOOLS:
+                return False
+        if role == "tool":
+            result_name = (
+                message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
+            )
+            if result_name not in _STUDIO_MEMORY_TOOLS:
+                return False
+    return saw_call
+
+
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
     """True when a GGUF request is forwarded to llama-server verbatim.
 
@@ -2866,7 +2958,9 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or _has_openai_tool_history(payload.messages)
+    ) or (
+        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
+    )
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
@@ -3469,8 +3563,138 @@ _RAG_GROUNDING_NUDGE = (
 )
 
 
+def _thread_has_conversation_archive(thread_id) -> bool:
+    """Whether the rolling window has archived anything for this thread yet."""
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive.has_archive(str(thread_id))
+    except Exception:
+        return False
+
+
+def _as_plain_messages(messages):
+    """Request messages as plain dicts, whatever shape the route received them in."""
+    if not messages:
+        return messages
+    plain = []
+    for message in messages:
+        if isinstance(message, dict):
+            plain.append(message)
+            continue
+        dump = getattr(message, "model_dump", None)
+        if dump is None:
+            return messages
+        try:
+            plain.append(dump())
+        except Exception:
+            return messages
+    return plain
+
+
+def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
+    """Whether an epoch was ever committed on this thread, read from what it persisted.
+
+    An archive is not a checkpoint: a rolling-window thread archives too, and re-admitting
+    the search tool there overrides the caller's `enable_tools = false` for a repair that
+    cannot happen, and costs the request the tool-path guards that reject `n > 1` and
+    non-streaming ask/auto.
+
+    Read from the assistant turn's own `contextTruncation`, the same metadata the sticky
+    boundary uses, so no new state is stored and it survives a restart. The NEWEST turn
+    answers: while an epoch is in force every fit records it on the turn it produced, so
+    a thread mid-epoch still says yes, and a thread whose window grew until the whole
+    branch fits again says no rather than forcing the loop open for ever.
+    """
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+        from storage import studio_db
+
+        # Scoped to the branch the request is on. The stored rows are the whole DAG, so a
+        # Retry that forked BEFORE the epoch-recording turn leaves it on an abandoned
+        # sibling; a thread-wide scan would then report a checkpoint for a branch that
+        # never reset. Same filter the sticky boundary applies, for the same reason.
+        # As dicts: on the ordinary completions path these are `ChatMessage` models, and
+        # the archive helper reads them with `.get`, so it raised, the caller swallowed it
+        # and every thread reported no checkpoint. A tools-off thread that HAD reset then
+        # never reopened the loop, so the block's promise that the history is searchable
+        # was false for the whole of that epoch.
+        branch = conversation_archive.branch_message_texts(
+            _as_plain_messages(branch_messages), ("assistant",)
+        )
+        if branch_messages and not branch:
+            # A branch with no reply of its own never recorded an epoch. Without this the
+            # filter below is skipped rather than applied and the scan goes thread-wide
+            # again, which editing or regenerating the FIRST user turn hits by re-sending
+            # [system, user]. `_sticky_compaction_boundary` returns 0 there.
+            return False
+        live = set(branch or ())
+        rows = [
+            message
+            for message in reversed(studio_db.list_chat_messages(str(thread_id)) or [])
+            if message.get("role") == "assistant"
+        ]
+        if branch:
+            # Exact matches where any exist, substring only as the fallback: the branch
+            # check is textual, so an abandoned short reply rides in on a longer live one
+            # ("Done" against "Not done yet") and reopens the loop on the live branch. The
+            # sticky boundary prefers exact matches for the same collision.
+            exact = [
+                message
+                for message in rows
+                if conversation_archive.message_text(message.get("content")) in live
+            ]
+            rows = exact or [
+                message
+                for message in rows
+                if conversation_archive.content_on_branch(message.get("content"), branch)
+            ]
+        if not rows:
+            return False
+        # Rows the text cannot tell apart decide TOGETHER. Two Retry siblings can carry
+        # byte-identical replies with only the abandoned one having reset, and taking the
+        # first match reopened the loop on the branch that never did. Where the branch
+        # check cannot separate them, choose the reading that leaves the request as it was,
+        # as the sticky boundary's `min(boundaries)` does. The case this loses -- a real
+        # epoch on the live sibling -- is one the sticky boundary declines to replay
+        # anyway, so there is nothing for the tool to reach back to.
+        newest = conversation_archive.message_text(rows[0].get("content"))
+        twins = [
+            message
+            for message in rows
+            if conversation_archive.message_text(message.get("content")) == newest
+        ]
+
+        def _checkpointed(message: dict) -> bool:
+            metadata = message.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                return False
+            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
+                "contextTruncation"
+            )
+            return bool(isinstance(truncation, dict) and truncation.get("checkpoint"))
+
+        # The NEWEST distinguishable state answers, and nothing older. While an epoch is
+        # in force every fit records it on the turn it produced, so the newest row says
+        # so too; once the window grows and the whole branch fits again the fit records
+        # nothing, and scanning back to an older reset then forced the tool loop on for
+        # the rest of the thread's life -- overriding enable_tools = false, and the n > 1
+        # and non-streaming guards with it, to repair a compaction that no longer exists.
+        return all(_checkpointed(message) for message in twins)
+    except Exception:
+        return False
+    return False
+
+
 async def _select_request_tools(
-    payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
+    payload: ChatCompletionRequest,
+    *,
+    tools_on: bool,
+    mcp_allowed: bool,
+    checkpoint_fitted: bool = False,
 ) -> list[dict]:
     """Resolve the tool list for a chat request: built-ins filtered by the
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
@@ -3498,6 +3722,26 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Same rule for the conversation archive: offered only once this thread has had turns
+    # evicted, so a short chat never sees the extra schema. On the first compaction the
+    # tool is still absent (the archive is written mid-request) and the forced recall
+    # covers that turn. getattr, because this helper also serves the token-count request
+    # model, which carries no thread_id.
+    # Follows the ARCHIVE, not the caller's allowlist: Studio always sends an explicit
+    # enabled_tools array and has no reason to name an internal tool it shows no pill for,
+    # so the filter above removed search_conversation and neither it nor the compaction
+    # nudge gated on it ever reached a Studio chat. It is read-only and always-safe, so it
+    # is added on that condition rather than requested.
+    has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+    tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
+        tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
+        if not tools_on:
+            # After a reset, search_conversation is the only route back to what was
+            # dropped, so it is admitted even with the user's tools off, and ALONE: models
+            # meeting a large catalogue at a compaction boundary have been seen calling a
+            # guessed tool name. Read-only and always-safe, so it prompts for nothing.
+            tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3506,6 +3750,70 @@ async def _select_request_tools(
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
+
+
+_COMPACTED_SESSION_NUDGE = (
+    "This conversation is long, so older turns have been removed from your context. "
+    "The relevant ones are retrieved and shown to you automatically when that happens. "
+    "If the user refers to something you cannot see, call search_conversation before "
+    "answering. Never tell the user you have no record of an earlier turn, and never "
+    "assume the conversation began where your visible context begins."
+)
+# Said only under checkpoint compaction, where the reset is total: the automatic retrieval
+# runs on the turn that reset and NOT after, so "I was shown this" versus "I must go and
+# look" is the difference between a right answer and an invented one.
+#
+# Written CONDITIONALLY because the system prompt is assembled before the fit that would
+# reset, so nobody here knows whether this turn produced a carried_forward block. Asserting
+# a reset that did not happen would tell the model its history is gone and discourage the
+# search that would recover it; a conditional is true either way and costs a clause.
+_CHECKPOINT_SESSION_NUDGE = (
+    "If a carried_forward block appears in this system prompt, the conversation was reset "
+    "to free space: everything before that block is gone from your context and only the "
+    "block was kept. It is a lossy record of the user's earlier instructions, not the "
+    "conversation itself. Earlier turns are retrieved for you automatically on the turn "
+    "the reset happens; on every later turn you must call search_conversation yourself to "
+    "see them."
+)
+
+
+def _checkpoint_needs_search() -> bool:
+    """Whether the context policy makes search_conversation load-bearing rather than extra.
+
+    Read at call time, so flipping UNSLOTH_CONTEXT_POLICY needs no restart.
+    """
+    try:
+        from core.inference import checkpoint
+        return checkpoint.enabled()
+    except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
+        return False
+
+
+def _apply_compaction_nudge(
+    nudge: str,
+    tools: list[dict],
+    *,
+    checkpoint_fitted: bool = False,
+) -> str:
+    """Append the compacted-session nudge when the conversation-archive tool is active.
+
+    Gated on the tool rather than separate state, so it appears exactly when there is an
+    archive to search and stays a no-op for chats that never compacted.
+
+    `checkpoint_fitted` is the CALLER's answer to "does this request go through
+    `_fit_context`, which can reset the epoch", not the process-wide policy. Only the
+    llama.cpp path fits that way; reading the global policy instead told a safetensors
+    model that a carried_forward block had removed its history when no such block exists.
+    Defaults to False so a new call site claims the reset rather than inheriting it."""
+    tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
+    if "search_conversation" not in tool_names:
+        return nudge
+    text = _COMPACTED_SESSION_NUDGE
+    if checkpoint_fitted and _checkpoint_needs_search():
+        text = text + " " + _CHECKPOINT_SESSION_NUDGE
+    if not nudge:
+        return text
+    return nudge + " " + text
 
 
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
@@ -7876,6 +8184,16 @@ def _model_json_response(model, status_code: int = 200) -> Response:
         media_type = "application/json",
         status_code = status_code,
     )
+
+
+def _model_json_response_with_context_truncation(
+    model, context_truncation: Optional[dict]
+) -> Response:
+    if context_truncation is None:
+        return _model_json_response(model)
+    content = model.model_dump()
+    content["context_truncated"] = context_truncation
+    return JSONResponse(content = content)
 
 
 _NOT_SUPPORTED_HINTS = (
@@ -14060,6 +14378,27 @@ async def openai_chat_completions(
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
     _client_disabled_tool_calls = payload.tool_choice == "none" and not _studio_tool_loop_requested
+    # Wider than `tool_choice: "none"`, and used only to ask "can this request ever reach
+    # search_conversation", never to narrow the catalogue. `max_tool_calls_per_message: 0`
+    # means disabled, so the loop runs no iterations and its final pass withholds tools;
+    # `n > 1` is rejected by the tool-path guard the moment the loop opens. Either way the
+    # epoch would sit behind an uncallable tool, so these keep the rolling window.
+    _tool_loop_unusable = (
+        _client_disabled_tool_calls
+        or payload.max_tool_calls_per_message == 0
+        or _wants_multiple_choices(payload)
+        # A confirmation gate with nowhere to ask. The first overflowing turn would open
+        # an epoch, and the NEXT identical request would enter the checkpoint repair,
+        # enable the tool, and be refused 400 by the stream guard below, permanently:
+        # the epoch is replayed from the boundary, so the thread never recovers on its
+        # own. Measured on a non-streaming request with permission_mode ask, and equally
+        # on auto and on a bare confirm_tool_calls, which the validator folds to ask.
+        or (
+            _confirm_gate_needs_stream(payload)
+            and not payload.bypass_permissions
+            and not payload.stream
+        )
+    )
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
@@ -14264,10 +14603,41 @@ async def openai_chat_completions(
             and _cli_policy is not False
         )
         use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
+        # A compacted thread opens the tool loop even with the user's tools off, since
+        # search_conversation is the only way back to what the reset dropped, and
+        # `_select_request_tools` admits it alone. Still gated on `supports_tools`: a
+        # template that cannot render one tool must not be told it has a memory (which is
+        # why such a model never gets checkpoint mode at all, see `_can_reset_epoch`).
+        #
+        # Gated on the request's own overflow policy too: every checkpoint fit sits behind
+        # `context_overflow == "truncate_oldest"`, so a request that did not ask for
+        # truncation cannot reset and has nothing to go back for. Re-admitting the tool
+        # there overrode `enable_tools = false` for an impossible repair and cost n > 1 and
+        # non-streaming ask/auto requests the guards below.
+        if (
+            not use_tools
+            and not _tool_loop_unusable
+            and _cli_policy is not False
+            and llama_backend.supports_tools
+            and _rolling_context_policy(payload) is not None
+            and _checkpoint_needs_search()
+            and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+            # And an epoch actually happened here: a rolling-window thread archives
+            # identically, and there the loop would open for a repair that cannot happen.
+            and _thread_has_checkpoint(
+                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+            )
+        ):
+            use_tools = True
 
         if use_tools:
             tools_to_use = await _select_request_tools(
-                payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
+                payload,
+                tools_on = _tools_on,
+                mcp_allowed = _mcp_allowed,
+                # Only this branch runs the checkpoint fit. The process-wide policy says a
+                # reset is POSSIBLE somewhere, not that this request can perform one.
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
@@ -14315,6 +14685,14 @@ async def openai_chat_completions(
 
             # Nudge the model to ground in attached documents instead of memory.
             _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
+            # This path fits through `_fit_context`, the only fit that can reset the epoch,
+            # and only when the request asked for truncation. Otherwise the checkpoint half
+            # of the nudge would describe a reset that cannot happen.
+            _nudge = _apply_compaction_nudge(
+                _nudge,
+                tools_to_use,
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            )
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -14386,6 +14764,7 @@ async def openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
+                    context_overflow = _rolling_context_policy(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -14580,6 +14959,14 @@ async def openai_chat_completions(
                         if event["type"] == "reasoning_summary":
                             # Forward server-side reasoning timing to the UI.
                             yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
+                        if event["type"] == "context_truncated":
+                            yield _context_truncated_sse_chunk(
+                                completion_id,
+                                model_name,
+                                {key: value for key, value in event.items() if key != "type"},
+                            )
                             continue
 
                         # "content" type -- cumulative text. Sanitize the full
@@ -14834,6 +15221,7 @@ async def openai_chat_completions(
                 usage = None
                 finish = None
                 timings = None
+                context_truncation = None
                 gen = gguf_generate_with_tools()
                 try:
                     for event in gen:
@@ -14843,6 +15231,10 @@ async def openai_chat_completions(
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
                             timings = event.get("timings")
+                        elif event.get("type") == "context_truncated":
+                            context_truncation = _accumulate_context_truncation(
+                                context_truncation, event
+                            )
                         elif event.get("type") == "content":
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
@@ -14854,7 +15246,7 @@ async def openai_chat_completions(
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                                 enabled_tool_names = _gguf_display_tool_names,
                             )
-                    return full_text, usage, finish, timings
+                    return full_text, usage, finish, timings, context_truncation
                 finally:
                     # Close the generator on early break/cancel so the underlying
                     # llama-server stream socket is released, like the SSE path.
@@ -14922,6 +15314,7 @@ async def openai_chat_completions(
                     completion_usage,
                     completion_finish,
                     completion_timings,
+                    completion_context_truncation,
                 ) = await asyncio.shield(drain_task)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
@@ -14969,7 +15362,9 @@ async def openai_chat_completions(
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
-                return _model_json_response(response)
+                return _model_json_response_with_context_truncation(
+                    response, completion_context_truncation
+                )
             except asyncio.CancelledError:
                 cancel_event.set()
                 await _drain_cancelled_gguf_tool_task()
@@ -15060,6 +15455,13 @@ async def openai_chat_completions(
                 continue_final_message = _continue_final_message(payload),
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
+                context_overflow = _rolling_context_policy(payload),
+                thread_id = payload.thread_id,
+                # These requests suppress the tool loop AND are excluded from the checkpoint
+                # repair above, so search_conversation is offered neither now nor on the
+                # next identical turn. The epoch gate cannot see that from the process
+                # policy alone, so tell it.
+                tools_withheld = _tool_loop_unusable,
             )
 
         _gguf_sentinel = object()
@@ -15149,6 +15551,16 @@ async def openai_chat_completions(
                                 # Diffusion frame (per-step canvas): pass through as a raw SSE line on the
                                 # tool_status channel. No assistant text, so it never enters the cumulative diff.
                                 yield f"data: {json.dumps(cumulative)}\n\n"
+                            elif cumulative.get("type") == "context_truncated":
+                                yield _context_truncated_sse_chunk(
+                                    completion_id,
+                                    model_name,
+                                    {
+                                        key: value
+                                        for key, value in cumulative.items()
+                                        if key != "type"
+                                    },
+                                )
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",
@@ -15523,6 +15935,7 @@ async def openai_chat_completions(
                     _prompt_details = None
                     _last_timings = None
                     _last_finish = None
+                    _context_truncation = None
                     for _idx in range(_n):
                         # Stop spawning the remaining choices once cancelled.
                         if cancel_event.is_set():
@@ -15530,6 +15943,7 @@ async def openai_chat_completions(
                         full_text = ""
                         completion_usage = None
                         completion_finish = None
+                        _choice_context_truncation = None
                         for token in gguf_generate(_idx):
                             if isinstance(token, dict):
                                 if token.get("type") == "metadata":
@@ -15537,8 +15951,21 @@ async def openai_chat_completions(
                                     completion_finish = token.get("finish_reason")
                                     _last_timings = token.get("timings")
                                     _last_finish = completion_finish
+                                elif token.get("type") == "context_truncated":
+                                    _choice_context_truncation = _accumulate_context_truncation(
+                                        _choice_context_truncation, token
+                                    )
                                 continue
                             full_text = token
+
+                        if _choice_context_truncation is not None and (
+                            _context_truncation is None
+                            or int(_choice_context_truncation.get("dropped_messages") or 0)
+                            >= int(_context_truncation.get("dropped_messages") or 0)
+                        ):
+                            # Choices share one prompt: report the choice that dropped
+                            # the most, rather than summing across choices.
+                            _context_truncation = _choice_context_truncation
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,
@@ -15575,6 +16002,7 @@ async def openai_chat_completions(
                         _prompt_details,
                         _last_timings,
                         _last_finish,
+                        _context_truncation,
                     )
 
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
@@ -15587,6 +16015,7 @@ async def openai_chat_completions(
                     _prompt_details,
                     _last_timings,
                     _last_finish,
+                    _context_truncation,
                 ) = await asyncio.shield(drain_task)
 
                 response = ChatCompletion(
@@ -15625,7 +16054,7 @@ async def openai_chat_completions(
                     ),
                 )
                 api_monitor.finish(monitor_id)
-                return _model_json_response(response)
+                return _model_json_response_with_context_truncation(response, _context_truncation)
 
             except asyncio.CancelledError:
                 cancel_event.set()
@@ -15829,6 +16258,9 @@ async def openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
+        # is no reset and no carried_forward block to describe.
+        _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -19701,7 +20133,9 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # this channel has no way to present, so an omitted permission_mode ("ask") only
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
-_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation"}
+)
 
 
 def _anthropic_selects_server_tools(
@@ -23010,12 +23444,22 @@ async def _openai_passthrough_stream_admitted(
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
         )
-        _truncate_budget = (
-            _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
-        )
+        _truncate_policy = _overflow_truncation_policy(payload)
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
+        _truncated_messages = 0
+        _context_was_truncated = False
         # One respawn per request: a second unreachable upstream after a successful
         # relaunch is a real failure, not a stale port.
         _respawn_retried = False
+
+        def _apply_passthrough_truncation(err_text: str) -> bool:
+            nonlocal _context_was_truncated, _truncated_messages
+            dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+            if dropped is None:
+                return False
+            _context_was_truncated = True
+            _truncated_messages += dropped
+            return True
 
         while True:
             try:
@@ -23124,7 +23568,7 @@ async def _openai_passthrough_stream_admitted(
             if (
                 _truncate_budget > 0
                 and _classify_llama_generation_error(Exception(err_text))
-                and _apply_overflow_truncation(body, err_text)
+                and _apply_passthrough_truncation(err_text)
             ):
                 _truncate_budget -= 1
                 continue
@@ -23427,7 +23871,7 @@ async def _openai_passthrough_stream_admitted(
                     if (
                         _truncate_budget > 0
                         and _classify_llama_generation_error(Exception(err_text))
-                        and _apply_overflow_truncation(body, err_text)
+                        and _apply_passthrough_truncation(err_text)
                     ):
                         _truncate_budget -= 1
                         req = client.build_request(
@@ -23458,6 +23902,15 @@ async def _openai_passthrough_stream_admitted(
                     yield _openai_stream_error_sse(error_payload)
                     return
 
+                if _context_was_truncated:
+                    yield _context_truncated_sse_chunk(
+                        completion_id,
+                        model_name,
+                        {
+                            "dropped_messages": _truncated_messages,
+                            "fits": True,
+                        },
+                    )
                 cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
@@ -23883,11 +24336,21 @@ async def _openai_passthrough_non_streaming_upstream(
     body["stream"] = False
     body.pop("stream_options", None)
 
-    _truncate_budget = (
-        _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
-    )
+    _truncate_policy = _overflow_truncation_policy(payload)
+    _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
+    _truncated_messages = 0
+    _context_was_truncated = False
     # One respawn per request, as on the streaming twin.
     _respawn_retried = False
+
+    def _apply_nonstream_truncation(err_text: str) -> bool:
+        nonlocal _context_was_truncated, _truncated_messages
+        dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+        if dropped is None:
+            return False
+        _context_was_truncated = True
+        _truncated_messages += dropped
+        return True
 
     async def _post(body_to_send):
         if cancel_event is None and request is None:
@@ -23974,7 +24437,7 @@ async def _openai_passthrough_non_streaming_upstream(
         if (
             _truncate_budget > 0
             and _classify_llama_generation_error(Exception(resp.text))
-            and _apply_overflow_truncation(body, resp.text)
+            and _apply_nonstream_truncation(resp.text)
         ):
             _truncate_budget -= 1
             continue
@@ -24034,6 +24497,12 @@ async def _openai_passthrough_non_streaming_upstream(
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
     changed = False
+    if _context_was_truncated and isinstance(data, dict):
+        data["context_truncated"] = {
+            "dropped_messages": _truncated_messages,
+            "fits": True,
+        }
+        changed = True
     for choice in data.get("choices", []):
         if not isinstance(choice, dict):
             continue

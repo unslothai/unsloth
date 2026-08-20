@@ -125,17 +125,21 @@ jobs:
   #   it serves exactly one model on its own port.
   # ═════════════════════════════════════════════════════════════════════
   connection:
-    name: connection (${{ matrix.agent }})
+    name: connection (${{ matrix.agent }}, ${{ matrix.opencode_channel }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         agent: [claude, codex, hermes, openclaw, opencode, pi]
+        opencode_channel: [stable]
         include:
           # OpenClaw needs Node 24; everything else is happy on 22.
           - agent: openclaw
             node: '24'
+          # V2 uses beta until @opencode-ai/cli@latest publishes opencode2.
+          - agent: opencode
+            opencode_channel: v2
     env:
       # gemma-4-E4B (128K context, capable enough to drive every agent for a
       # trivial reply; the 270m model produced empty/failed responses for
@@ -286,6 +290,7 @@ jobs:
       - name: Install agent CLI (class-b isolation)
         env:
           AGENT: ${{ matrix.agent }}
+          OPENCODE_CHANNEL: ${{ matrix.opencode_channel }}
         run: bash .github/scripts/agent-guides-install.sh "$AGENT"
 
       # ── (c) drive the agent via start.py and assert a reply ──────────
@@ -333,7 +338,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: connection-${{ matrix.agent }}-log
+          name: connection-${{ matrix.agent }}-${{ matrix.opencode_channel }}-log
           path: |
             logs/
             redacted-configs/

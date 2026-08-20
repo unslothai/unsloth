@@ -1878,6 +1878,9 @@ class InferenceOrchestrator:
             permission_mode = permission_mode,
             reasoning_prefilled = reasoning_prefilled,
             continue_final_message = continue_final_message,
+            # So a conversation search can be sized against what this model can hold.
+            context_length = _model_info.get("context_length"),
+            max_tokens = max_new_tokens,
         )
 
     def generate_with_adapter_control(
