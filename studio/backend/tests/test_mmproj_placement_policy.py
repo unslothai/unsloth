@@ -791,3 +791,29 @@ def test_a_host_that_is_only_shared_memory_still_never_pins(tmp_path):
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" not in cmd
+
+
+def test_a_user_pinned_projector_still_costs_a_shared_pool(tmp_path):
+    """--no-mmproj-offload on an APU moves the encoder inside one pool.
+
+    On a discrete card the flag really does take those bytes off the device, so
+    dropping them from the fit is right. A shared pool has nowhere to move them
+    to: the projector sits in the very memory the context is being fitted
+    against, and spending it on KV as well over-commits. The reference load
+    charges the same bytes as model weights with no projector at all, which is
+    exactly what a CPU-resident projector costs here, so the two must fit to the
+    same context.
+    """
+    memory = [(0, 9_000, 0)]
+
+    backend, gguf = _backend(tmp_path, memory = memory)
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
+    pinned_ctx = int(cmd[cmd.index("-c") + 1])
+
+    reference, ref_gguf = _backend(
+        tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0
+    )
+    ref_cmd = _launch(reference, ref_gguf)["cmd"]
+    reference_ctx = int(ref_cmd[ref_cmd.index("-c") + 1])
+
+    assert pinned_ctx == reference_ctx

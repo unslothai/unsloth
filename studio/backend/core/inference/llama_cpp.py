@@ -16790,7 +16790,23 @@ class LlamaCppBackend:
                         _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
                     if _mtp_reserves_gpu:
                         _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
-                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
+                    # A CPU-pinned projector left model_size, which is right exactly when
+                    # the bytes it gave up landed somewhere else: --no-mmproj-offload on a
+                    # discrete card really does take them off the device. When no device in
+                    # play has a budget of its own -- an APU / iGPU shared pool, Apple
+                    # unified memory, or a total the probe could not read -- there is
+                    # nowhere else, and the projector sits in the very memory this fit is
+                    # measuring. Dropping it there lets the context spend the same bytes a
+                    # second time and walk past the over-commit refusal into an OOM. Same
+                    # question _discrete_vram asks before handing the pin out, answered the
+                    # same way, off the same list.
+                    _shared_pool_mmproj = 0 if _mm_budgeted_gpus else _mmproj_pinned_bytes
+                    model_size_fit = (
+                        model_size
+                        + _compute_buffer_pipeline
+                        + _soft_overhead
+                        + _shared_pool_mmproj
+                    )
 
                     def _subset_model_size(n_gpus: int) -> int:
                         return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
@@ -17127,14 +17143,11 @@ class LlamaCppBackend:
                         _apple_fit_budget_mib = int(
                             _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
                         )
-                        # A CPU-pinned projector left model_size, and on a discrete card
-                        # that is right: --no-mmproj-offload really does move those bytes
-                        # off the device. Unified memory has nowhere to move them TO. The
-                        # projector sits in the same pool this budget is measuring, so
-                        # dropping it here overstates the context that fits and can walk
-                        # past the overcommit refusal below into an OOM. Weighed the same
-                        # way the APU shortfall guard weighs it, and for the same reason.
-                        _apple_model_size_fit = model_size_fit + _mmproj_pinned_bytes
+                        # A CPU-pinned projector is already carried by model_size_fit here:
+                        # this arm is reached only with no GPU enumerated, so no device has
+                        # a budget of its own and _shared_pool_mmproj charged those bytes.
+                        # Adding them again would price the encoder twice.
+                        _apple_model_size_fit = model_size_fit
 
                         def _apple_ctx_fit(target: int, min_ctx: int) -> int:
                             return self._fit_context_to_vram(

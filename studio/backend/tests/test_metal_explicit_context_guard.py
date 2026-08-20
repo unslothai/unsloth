@@ -920,3 +920,25 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
             **self._COMMON,
         )
         assert _ctx_values(captured["cmd"])[-1] == "32768"
+
+    def test_the_pinned_projector_is_charged_once_and_not_twice(
+        self, tmp_path, monkeypatch
+    ):
+        """The other side of the same coin. The shared-pool charge now lives in the
+        common fit total, so an Apple-specific one on top of it prices the encoder
+        twice and refuses loads that do fit.
+
+        Sized so only the second charge decides it: 1024 of weights, ~5120 of fixed
+        overhead and 1280 of KV at 40960 tokens leave 768 MiB of the 8192 budget, and
+        a 512 MiB projector fits in that once but not twice.
+        """
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 40960,
+            budget_bytes = 8 * 1024**3,
+            mmproj_bytes = 512 * 1024**2,
+            extra_args = ["--no-mmproj-offload"],
+            **self._COMMON,
+        )
+        assert _ctx_values(captured["cmd"])[-1] == "40960"
