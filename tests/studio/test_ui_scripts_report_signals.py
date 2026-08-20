@@ -85,9 +85,9 @@ def test_the_snapshot_does_not_print_command_lines(script: str) -> None:
     """
     body = _body(script)
     assert "pid,ppid,comm" in body, f"{script}'s process snapshot is not limited to names"
-    assert not re.search(r"ps\s+-o\s+[\w,]*args", body), (
-        f"{script} snapshots full command lines into a public log"
-    )
+    assert not re.search(
+        r"ps\s+-o\s+[\w,]*args", body
+    ), f"{script} snapshots full command lines into a public log"
 
 
 def test_the_guard_reads_real_files() -> None:
