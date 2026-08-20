@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { getClientPlatform } from "@/components/tauri/window-titlebar"
+import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
 
 /** Pointer travel (px) below which a drag counts as a plain click. */
 const DRAG_SLOP = 4
@@ -56,6 +57,18 @@ export type PanelResizeHandleProps = {
   className?: string
   /** Mirrors the live width onto :root for chrome outside the panel. */
   rootVar?: string
+  /**
+   * Narrower element for `cssVar`, replacing `target()` under
+   * PANEL_RESIZE_SCOPED_VARS_ENABLED. Must hold every consumer and nothing
+   * else: the write invalidates inherited style for everything below it.
+   */
+  scopedTarget?: () => HTMLElement | null
+  /**
+   * The elements that actually read `rootVar`, replacing
+   * `document.documentElement` under PANEL_RESIZE_SCOPED_VARS_ENABLED. Empty
+   * means no consumer, so the write is skipped.
+   */
+  rootVarTargets?: () => HTMLElement[]
 }
 
 /**
@@ -86,6 +99,8 @@ export function PanelResizeHandle({
   dataSlot = "panel-resize-handle",
   className,
   rootVar,
+  scopedTarget,
+  rootVarTargets,
 }: PanelResizeHandleProps) {
   const ref = React.useRef<HTMLButtonElement>(null)
   const dragRef = React.useRef<DragState | null>(null)
@@ -112,11 +127,17 @@ export function PanelResizeHandle({
     committedRef.current = width
   }, [width])
 
+  // Where `rootVar` is painted, resolved once on pointer down. Always
+  // [document.documentElement] with the flag off, which is what shipped.
+  const rootTargetsRef = React.useRef<HTMLElement[]>([])
+
   const paint = React.useCallback(
     (value: string) => {
       targetRef.current?.style.setProperty(cssVar, value)
       if (rootVar) {
-        document.documentElement.style.setProperty(rootVar, value)
+        for (const el of rootTargetsRef.current) {
+          el.style.setProperty(rootVar, value)
+        }
       }
     },
     [cssVar, rootVar],
@@ -148,7 +169,10 @@ export function PanelResizeHandle({
     // Hand the property back to the committed value. A commit re-renders with
     // the new width; a cancel or a no-commit drag keeps DOM and store in step.
     paint(`${committedRef.current}px`)
-    if (rootVar) document.documentElement.style.removeProperty(rootVar)
+    if (rootVar) {
+      for (const el of rootTargetsRef.current) el.style.removeProperty(rootVar)
+    }
+    rootTargetsRef.current = []
     targetRef.current?.removeAttribute("data-resizing")
     document.documentElement.removeAttribute("data-panel-resizing")
     targetRef.current = null
@@ -161,7 +185,15 @@ export function PanelResizeHandle({
     if (event.button !== 0) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    targetRef.current = target()
+    // Resolved once per drag, never per frame: the write is what costs, and a
+    // DOM walk here is already how `target()` worked.
+    targetRef.current =
+      (PANEL_RESIZE_SCOPED_VARS_ENABLED && scopedTarget?.()) || target()
+    rootTargetsRef.current = !rootVar
+      ? []
+      : PANEL_RESIZE_SCOPED_VARS_ENABLED
+        ? (rootVarTargets?.() ?? [])
+        : [document.documentElement]
     // Collapsed: grow from the rendered size so the edge tracks the pointer.
     const start = open ? width : measure()
     dragRef.current = { startX: event.clientX, startWidth: start, moved: false }

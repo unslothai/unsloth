@@ -13,9 +13,12 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Iterable, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
 # Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
@@ -27,6 +30,12 @@ PARALLEL_MAX = 64
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
+
+# Sanity bounds, not upstream ones: a stray keystroke fails here rather than in the
+# child. --cache-ram floors at -1 ("no limit"); 0 disables the cache. Mirrored by
+# CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX in per-model-config.ts.
+CTX_CHECKPOINTS_MAX = 256
+CACHE_RAM_MAX_MIB = 1024 * 1024
 
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
@@ -523,11 +532,12 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         # and HF --spec-draft-hf aliases) are Unsloth-managed since the separate-
         # drafter support (Gemma 4): an inherited copy must not last-wins-override
         # the auto-detected drafter. Explicit extras for the current load are never
-        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
-        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
-        # them via the same parsers the child honors, so they stay consistent on
-        # inherit, and stripping them would silently move a CPU-offloaded drafter
-        # back onto the GPU.
+        # stripped. The per-drafter tuning knobs (-ngld, --spec-draft-device) are
+        # deliberately NOT stripped: the VRAM budget reads them via the same parsers
+        # the child honors, so they stay consistent on inherit, and stripping them
+        # would silently move a CPU-offloaded drafter back onto the GPU. The draft
+        # cache dtype is in that group too, and has its own toggle used only when
+        # spec_draft_cache_type is set, the same rule the batch pair follows.
         "--model-draft",
         "-md",
         "--spec-draft-model",
@@ -577,6 +587,21 @@ _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-l
 # inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
 _BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
 _UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
+# Same rule for the tuning group: stripped only when its field is supplied.
+# --swa-checkpoints is upstream's older spelling of --ctx-checkpoints.
+_CTX_CHECKPOINTS_FLAGS: frozenset[str] = frozenset(
+    {"-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"}
+)
+_CACHE_RAM_FLAGS: frozenset[str] = frozenset({"-cram", "--cache-ram"})
+# One group: the control sets a single dtype, so an inherited pair that split K
+# from V has to go whole.
+_SPEC_DRAFT_CACHE_K_FLAGS: frozenset[str] = frozenset(
+    {"-ctkd", "--cache-type-k-draft", "--spec-draft-type-k"}
+)
+_SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
+    {"-ctvd", "--cache-type-v-draft", "--spec-draft-type-v"}
+)
+_SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
@@ -675,6 +700,33 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
         override = value
 
     return override
+
+
+def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--ctx-checkpoints`` value, or None.
+
+    The control emits its flag before the extras, so a copy typed for this load
+    last-wins at launch. Sizing has to price that value, not the field, or a
+    ``--ctx-checkpoints 256`` in the extras allocates 256 per-slot snapshots
+    against a fit that budgeted the field's count.
+    """
+    value = _last_flag_value(args, _CTX_CHECKPOINTS_FLAGS)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        # Malformed extras are refused at the boundary; sizing must not raise here.
+        return None
+    return max(0, parsed)
+
+
+def resolve_ctx_checkpoints(
+    args: Optional[Iterable[str]], requested: Optional[int]
+) -> int:
+    """The checkpoint count the launch will actually run: extras beat the field."""
+    override = parse_ctx_checkpoints_override(args)
+    return int(override if override is not None else (requested or 0))
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
@@ -953,6 +1005,9 @@ def strip_shadowing_flags(
     strip_load_mode: bool = False,
     strip_batch: bool = False,
     strip_ubatch: bool = False,
+    strip_ctx_checkpoints: bool = False,
+    strip_cache_ram: bool = False,
+    strip_spec_draft_cache: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -1003,6 +1058,12 @@ def strip_shadowing_flags(
         shadowing |= _BATCH_FLAGS
     if strip_ubatch:
         shadowing |= _UBATCH_FLAGS
+    if strip_ctx_checkpoints:
+        shadowing |= _CTX_CHECKPOINTS_FLAGS
+    if strip_cache_ram:
+        shadowing |= _CACHE_RAM_FLAGS
+    if strip_spec_draft_cache:
+        shadowing |= _SPEC_DRAFT_CACHE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -1083,6 +1144,9 @@ def apply_model_memory_policy(
     "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
     default mmap path. With both off nothing is stripped, so a hand-typed flag
     still applies.
+
+    The per-model Mmap/Mlock control is resolved separately, by
+    ``apply_load_mode_policy``, which runs after this and defers to it.
     """
     try:
         from utils.model_memory_settings import get_model_memory_settings
@@ -1125,6 +1189,77 @@ def apply_model_memory_policy(
             strip_load_mode = True,
         )
     return managed, tokens
+
+
+def apply_load_mode_policy(
+    extra_args: Optional[Iterable[str]],
+    *,
+    supports_load_mode: bool = False,
+    weights_in_host_memory: bool = True,
+    requested_load_mode: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
+    """Resolve the per-model Mmap/Mlock control into llama-server flags.
+
+    Returns ``(managed_flags, extras)``, like ``apply_model_memory_policy``, and
+    is meant to run straight after it on the extras that call returned.
+
+    The Model Memory settings win, which is what the Run settings panel tells the
+    user, so changing the order without changing ``loadModeOverrideNotice`` makes
+    that note wrong. "Keep model in GPU memory" owns the mode outright while it
+    applies; "Don't reserve system RAM" vetoes the values holding a full host copy
+    (``none``, ``mlock``, ``mmap+mlock``) and leaves ``mmap`` and ``dio`` alone.
+
+    ``auto`` emits nothing: it IS llama.cpp's default, so pinning it would freeze
+    what a later build may redefine. An unknown value is dropped rather than passed
+    through, since llama-server exits on one.
+    """
+    tokens = list(extra_args or [])
+    mode = _normalize_load_mode_value(requested_load_mode)
+    if not mode:
+        return [], tokens
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+        keep_resident, no_ram_reserve = get_model_memory_settings()
+    except Exception:
+        # Settings unavailable (bare unit-test import): nothing to defer to.
+        keep_resident, no_ram_reserve = False, False
+    if keep_resident and not no_ram_reserve and weights_in_host_memory:
+        logger.info(
+            "Model Memory: 'Keep model in GPU memory' owns the load mode; "
+            "ignoring the requested %r.",
+            mode,
+        )
+        return [], tokens
+    if no_ram_reserve and mode in _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES:
+        logger.info(
+            "Model Memory: 'Don't reserve system RAM' drops the requested load mode %r.",
+            mode,
+        )
+        return [], tokens
+    if not supports_load_mode:
+        # A build predating the enum understands the spellings it replaced, and
+        # only for the values that had one.
+        legacy = _LEGACY_LOAD_MODE_FLAGS.get(mode)
+        if not legacy:
+            logger.info("llama-server has no --load-mode; skipping the requested %r mode.", mode)
+            return [], tokens
+        return list(legacy), tokens
+    # Emitted BEFORE the extras and stripping nothing, like every other control
+    # here: a flag typed for THIS load is appended after and last-wins, which is
+    # what the panel's diagnostics promise. An INHERITED copy is a different
+    # thing, and the route drops that one before it ever reaches here.
+    return ["--load-mode", mode], tokens
+
+
+def _normalize_load_mode_value(value: Optional[str]) -> str:
+    """Canonical --load-mode, or "" for "no opinion" (unset, auto, unknown)."""
+    mode = (value or "").strip().lower()
+    if mode in {"", "auto"}:
+        return ""
+    if mode not in _LOAD_MODE_VALUES:
+        logger.warning("Ignoring unknown load mode %r", value)
+        return ""
+    return mode
 
 
 def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
@@ -1322,6 +1457,18 @@ def scrub_memory_env(env: dict) -> list[str]:
 _ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _ENV_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 
+# Every --load-mode value llama-server documents, so an unknown one is dropped
+# here rather than exiting the child. Mirrored by LOAD_MODES in per-model-config.ts.
+_LOAD_MODE_VALUES = frozenset({"auto", "none", "mmap", "mlock", "mmap+mlock", "dio"})
+# What each mode meant before the enum existed, for a build that predates it.
+# "auto" is the default and needs no flag; "mmap+mlock" is what a bare --mlock
+# asked for alongside the default mmap. There is no pre-enum spelling for plain
+# "mmap" or for "dio", so those are skipped rather than approximated.
+_LEGACY_LOAD_MODE_FLAGS: dict[str, list[str]] = {
+    "none": ["--no-mmap"],
+    "mlock": ["--no-mmap", "--mlock"],
+    "mmap+mlock": ["--mlock"],
+}
 _LOAD_MODE_MLOCK_VALUES = frozenset({"mlock", "mmap+mlock"})
 # Modes that read the weights into a full host buffer. "dio" streams via
 # DirectIO and "mmap" maps, so neither reserves RAM for the whole model.

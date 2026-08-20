@@ -27,6 +27,7 @@ from core.inference.mcp_client import (
     parse_stdio_command,
     probe_timeout,
     record_probe_failure,
+    serialize_mcp_server_mutation,
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
 )
@@ -128,8 +129,9 @@ def _row_to_response(row: dict) -> McpServerResponse:
     )
 
 
+# FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[McpServerResponse])
-async def list_mcp_servers(
+def list_mcp_servers(
     current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
 ):
     rows = mcp_servers_db.list_servers()
@@ -199,6 +201,7 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
 
 
 @router.put("/{server_id}", response_model = McpServerResponse)
+@serialize_mcp_server_mutation
 async def update_mcp_server(
     server_id: str,
     payload: McpServerUpdate,
@@ -240,13 +243,17 @@ async def update_mcp_server(
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
-    mcp_servers_db.update_server(server_id, changes)
     # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
     # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
     # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
     # resends url/headers/oauth unchanged on a rename, which must not drop the session.
-    if any(changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS):
+    invalidates_tools = any(
+        changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
+    )
+    mcp_servers_db.update_server(server_id, changes)
+    if invalidates_tools:
         invalidate_tool_cache(server_id)
+    if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
@@ -254,6 +261,7 @@ async def update_mcp_server(
 
 
 @router.delete("/{server_id}", status_code = 204)
+@serialize_mcp_server_mutation
 async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
     old = mcp_servers_db.get_server(server_id)
     if not old:
