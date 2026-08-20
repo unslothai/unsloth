@@ -96,6 +96,53 @@ def test_validate_payload_accepts_a_zero_inside_a_measure():
     validate_payload(payload)
 
 
+def test_validate_payload_accepts_the_first_parity_message_row():
+    """`i` is the ordinal scene/parity.js writes for message 0, not a missing measurement.
+
+    Without this exemption every payload carrying parity rows failed validation, so the
+    documented `--report` step never ran at all.
+    """
+
+    payload = {
+        "excluded_cells": [],
+        "cells": [
+            {
+                "parity": {
+                    "parity_attempted": True,
+                    "digest": "abc123",
+                    "chars": 4211,
+                    "messages": [
+                        {"i": 0, "role": "user", "digest": "d0", "chars": 120},
+                        {"i": 1, "role": "assistant", "digest": "d1", "chars": 900},
+                    ],
+                }
+            }
+        ],
+    }
+    validate_payload(payload)
+
+
+def test_validate_payload_still_rejects_a_bare_zero_beside_a_parity_ordinal():
+    """The exemption is the ordinal alone; a zero-length signature stays a loud failure."""
+
+    payload = {
+        "excluded_cells": [],
+        "cells": [
+            {
+                "parity": {
+                    "parity_attempted": True,
+                    "digest": "abc123",
+                    "chars": 4211,
+                    "messages": [{"i": 0, "role": "user", "digest": "d0", "chars": 0}],
+                }
+            }
+        ],
+    }
+    with pytest.raises(PayloadSchemaError) as caught:
+        validate_payload(payload)
+    assert "chars" in str(caught.value)
+
+
 def test_validate_payload_requires_excluded_cells():
     with pytest.raises(PayloadSchemaError):
         validate_payload({"windows": []})
