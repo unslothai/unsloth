@@ -835,9 +835,7 @@ def test_a_pinned_projector_costs_the_shared_pool_beside_a_discrete_card(tmp_pat
 
     # Same reference as the single-device case: a CPU-resident projector in a
     # shared pool costs exactly what the same bytes cost as model weights.
-    reference, ref_gguf = _backend(
-        tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0
-    )
+    reference, ref_gguf = _backend(tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0)
     ref_cmd = _launch(reference, ref_gguf)["cmd"]
 
     assert pinned_ctx == int(ref_cmd[ref_cmd.index("-c") + 1])
