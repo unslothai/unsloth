@@ -2914,14 +2914,50 @@ _uv_venv_arm64() {  # label
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
 }
 
+# Generic (non-arm64-macOS) venv. Fedora ships /etc/uv/uv.toml with
+# python-downloads = "manual", so the installer-pinned uv still will not fetch a
+# matching interpreter on its own. Fedora 44's system Python is 3.14, which the
+# <3.14 bound (torch / 3.13.8) rejects, and uv then prints the hint that
+# `uv python install <request>` is the explicit fetch. Do that and retry -- and
+# only then: any other venv failure must stay failed. Do not set
+# UV_PYTHON_DOWNLOADS or UV_NO_CONFIG; those would override distro policy for
+# the rest of the install, not just this missing interpreter.
+_uv_venv_requested() {  # label
+    _uvvr_label="$1"
+    _uvvr_req="$(_python_request "$PYTHON_VERSION")"
+    _uvvr_out=$(mktemp) || return 1
+    _uvvr_err=$(mktemp) || { rm -f "$_uvvr_out"; return 1; }
+    if _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" \
+            >"$_uvvr_out" 2>"$_uvvr_err"; then
+        _uvvr_status=0
+    else
+        _uvvr_status=$?
+    fi
+    cat "$_uvvr_out"
+    cat "$_uvvr_err" >&2
+    if [ "$_uvvr_status" -eq 0 ]; then
+        rm -f "$_uvvr_out" "$_uvvr_err"
+        return 0
+    fi
+    if grep -q "Python downloads are set to 'manual'" "$_uvvr_out" "$_uvvr_err" 2>/dev/null \
+       || grep -q "python-downloads" "$_uvvr_out" "$_uvvr_err" 2>/dev/null; then
+        rm -f "$_uvvr_out" "$_uvvr_err"
+        run_install_cmd "$_uvvr_label (managed Python)" \
+            uv python install "$_uvvr_req" || return $?
+        _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" || return $?
+        return 0
+    fi
+    rm -f "$_uvvr_out" "$_uvvr_err"
+    return "$_uvvr_status"
+}
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
         _uv_venv_arm64 "create venv"
     else
-        _run_uv_venv "create venv" "$VENV_DIR" \
-            --python "$(_python_request "$PYTHON_VERSION")"
+        _uv_venv_requested "create venv"
     fi
 fi
 
@@ -3014,8 +3050,7 @@ if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
         echo "  WARNING: Python $_PY_VER cannot import torch."
         echo "  Recreating venv..."
         _discard_venv_for_recreate "$VENV_DIR"
-        _run_uv_venv "recreate venv" "$VENV_DIR" \
-            --python "$(_python_request "$PYTHON_VERSION")"
+        _uv_venv_requested "recreate venv"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
