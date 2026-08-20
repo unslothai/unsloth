@@ -815,3 +815,29 @@ def test_a_user_pinned_projector_still_costs_a_shared_pool(tmp_path):
     reference_ctx = int(ref_cmd[ref_cmd.index("-c") + 1])
 
     assert pinned_ctx == reference_ctx
+
+
+def test_a_pinned_projector_costs_the_shared_pool_beside_a_discrete_card(tmp_path):
+    """The mixed host, where asking "is any device budgeted?" gets it backwards.
+
+    _discrete_vram drops shared devices to decide whether the pin frees anything
+    ANYWHERE, and one discrete card is enough for that. The fit is a different
+    question: the selection walks prefixes of the enumerated list, so a shared
+    device ranked first is a candidate subset on its own, and a context fitted
+    against that pool without the pinned projector over-commits it. The discrete
+    card here is nearly full, so the shared pool is what the load runs on.
+    """
+    memory = [(0, 9_000, 0), (1, 100, 16_384)]
+
+    backend, gguf = _backend(tmp_path, memory = memory)
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
+    pinned_ctx = int(cmd[cmd.index("-c") + 1])
+
+    # Same reference as the single-device case: a CPU-resident projector in a
+    # shared pool costs exactly what the same bytes cost as model weights.
+    reference, ref_gguf = _backend(
+        tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0
+    )
+    ref_cmd = _launch(reference, ref_gguf)["cmd"]
+
+    assert pinned_ctx == int(ref_cmd[ref_cmd.index("-c") + 1])

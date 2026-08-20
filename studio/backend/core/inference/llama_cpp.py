@@ -16798,9 +16798,26 @@ class LlamaCppBackend:
                     # nowhere else, and the projector sits in the very memory this fit is
                     # measuring. Dropping it there lets the context spend the same bytes a
                     # second time and walk past the over-commit refusal into an OOM. Same
-                    # question _discrete_vram asks before handing the pin out, answered the
-                    # same way, off the same list.
-                    _shared_pool_mmproj = 0 if _mm_budgeted_gpus else _mmproj_pinned_bytes
+                    # question _discrete_vram asks before handing the pin out, but NOT off
+                    # the same list: that one drops shared devices to decide whether the
+                    # pin frees anything anywhere, and a host with one discrete card is a
+                    # host where it does. The fit is asked about the memory a candidate
+                    # subset actually draws on, and every subset here may include the
+                    # shared device -- the selection walks prefixes of `gpus`, so a shared
+                    # device ranked first IS a candidate on its own. Measured: 9000 MiB of
+                    # shared pool beside a nearly full discrete card fitted a 6 GiB model
+                    # to 32000 tokens with a 1 GiB projector pinned into that same pool.
+                    #
+                    # So the charge follows the presence of shared memory among the
+                    # devices in play, not its absence. On a mixed host whose chosen
+                    # subset turns out to be purely discrete this over-charges by the
+                    # projector, which costs context rather than correctness, and the
+                    # shared device was a candidate for that split either way.
+                    _shared_pool_mmproj = (
+                        _mmproj_pinned_bytes
+                        if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
+                        else 0
+                    )
                     model_size_fit = (
                         model_size + _compute_buffer_pipeline + _soft_overhead + _shared_pool_mmproj
                     )
