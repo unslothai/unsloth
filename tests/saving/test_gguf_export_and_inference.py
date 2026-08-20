@@ -26,8 +26,11 @@ import torch
 
 from unsloth import FastLanguageModel
 
+cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not (cuda_available or xpu_available),
     reason = "GGUF export smoke test needs a GPU to train + merge",
 )
 
