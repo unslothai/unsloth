@@ -526,14 +526,14 @@ export function createAutoContinueTab({
 } = {}): {
   claim: (
     messageId: string | null | undefined,
-    options?: { now?: number },
+    options?: { now?: number; holder?: string },
   ) => Promise<AutoContinueClaim>;
   claimed: (
     messageId: string | null | undefined,
     options?: { now?: number },
   ) => boolean;
-  renew: (options?: { now?: number }) => Promise<void>;
-  release: (options?: { now?: number }) => Promise<void>;
+  renew: (holder: string, options?: { now?: number }) => Promise<void>;
+  release: (holder: string, options?: { now?: number }) => Promise<void>;
   reset: () => void;
 } {
   /**
@@ -552,8 +552,15 @@ export function createAutoContinueTab({
   /** Claims this tab has in flight. The lock is async, so a second call can arrive. */
   const claiming = new Set<string>();
 
-  /** Lease tokens this tab holds, so it renews and releases its own and nobody else's. */
-  const ownTokens = new Map<string, string>();
+  /**
+   * Lease tokens this tab holds, by message id, each tagged with the holder that took it.
+   *
+   * Tagged, because "this tab" is not one runtime. Compare mode mounts two of them side by
+   * side, each with its own thread and its own run, and either can be resuming a truncated
+   * reply while the other is idle. A holder renews and releases what IT took; the pane that
+   * finishes first must not hand the other pane's still-generating message to anyone.
+   */
+  const ownTokens = new Map<string, { token: string; holder: string }>();
 
   const leaseSeam = (): AutoContinueLeaseStorage | null =>
     storage === undefined ? browserLeaseStorage() : storage;
@@ -622,7 +629,11 @@ export function createAutoContinueTab({
    * module-only claim, which is what single-tab use has always relied on, rather than
    * refusing a continuation the user is waiting for.
    */
-  function takeLease(messageId: string, now: number): AutoContinueClaim {
+  function takeLease(
+    messageId: string,
+    now: number,
+    holder: string,
+  ): AutoContinueClaim {
     const store = leaseSeam();
     if (!store) {
       return "started";
@@ -634,7 +645,11 @@ export function createAutoContinueTab({
       return "started";
     }
     const held = leases[messageId];
-    if (held && held.expires > now && held.token !== ownTokens.get(messageId)) {
+    if (
+      held &&
+      held.expires > now &&
+      held.token !== ownTokens.get(messageId)?.token
+    ) {
       return "held-elsewhere";
     }
     const token = newLeaseToken();
@@ -650,25 +665,43 @@ export function createAutoContinueTab({
     } catch {
       return "started";
     }
-    ownTokens.set(messageId, token);
+    ownTokens.set(messageId, { token, holder });
     return "started";
   }
 
-  /** Rewrite every lease this tab holds with a new expiry. Runs inside the lock. */
-  function restamp(expires: number, now: number): void {
+  /** Every lease `holder` took, in the order they were taken. */
+  function heldBy(holder: string): string[] {
+    const out: string[] = [];
+    for (const [id, held] of ownTokens) {
+      if (held.holder === holder) {
+        out.push(id);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Rewrite the leases `holder` took with a new expiry. Runs inside the lock.
+   *
+   * Scoped to the holder, never to the whole map: another runtime in this same tab may be
+   * mid-run, and restamping its lease to a settle window would end its hold without its
+   * knowledge and let another tab start the duplicate.
+   */
+  function restamp(holder: string, expires: number, now: number): void {
     const store = leaseSeam();
-    if (!store || ownTokens.size === 0) {
+    const mine = heldBy(holder);
+    if (!store || mine.length === 0) {
       return;
     }
     try {
       const leases = prune(readLeases(store), now);
-      for (const [id, token] of [...ownTokens]) {
-        if (leases[id]?.token !== token) {
+      for (const id of mine) {
+        if (leases[id]?.token !== ownTokens.get(id)?.token) {
           // Lapsed, or taken over while this tab was not looking. Not ours to stamp.
           ownTokens.delete(id);
           continue;
         }
-        leases[id] = { token, expires };
+        leases[id] = { token: leases[id].token, expires };
       }
       store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(leases));
     } catch {
@@ -677,7 +710,7 @@ export function createAutoContinueTab({
   }
 
   return {
-    async claim(messageId, { now = Date.now() } = {}) {
+    async claim(messageId, { now = Date.now(), holder = "" } = {}) {
       if (!messageId || continued.has(messageId) || claiming.has(messageId)) {
         return "skipped";
       }
@@ -689,7 +722,7 @@ export function createAutoContinueTab({
       claiming.add(messageId);
       try {
         const outcome = await exclusively(
-          () => takeLease(messageId, now),
+          () => takeLease(messageId, now, holder),
           "held-elsewhere" as AutoContinueClaim,
         );
         if (outcome === "started") {
@@ -710,25 +743,29 @@ export function createAutoContinueTab({
       // `claim` itself.
       return continued.has(messageId) || Boolean(liveLease(messageId, now));
     },
-    async renew({ now = Date.now() } = {}) {
-      if (ownTokens.size === 0) {
+    async renew(holder, { now = Date.now() } = {}) {
+      if (heldBy(holder).length === 0) {
         return;
       }
       await exclusively(
-        () => restamp(now + AUTO_CONTINUE_LEASE_TTL_MS, now),
+        () => restamp(holder, now + AUTO_CONTINUE_LEASE_TTL_MS, now),
         undefined,
       );
     },
-    async release({ now = Date.now() } = {}) {
-      if (ownTokens.size === 0) {
+    async release(holder, { now = Date.now() } = {}) {
+      const mine = heldBy(holder);
+      if (mine.length === 0) {
         return;
       }
       await exclusively(
-        () => restamp(now + AUTO_CONTINUE_LEASE_SETTLE_MS, now),
+        () => restamp(holder, now + AUTO_CONTINUE_LEASE_SETTLE_MS, now),
         undefined,
       );
-      // Held no longer: nothing renews it, and it lapses at the settle window.
-      ownTokens.clear();
+      // Held no longer: nothing renews these, and they lapse at the settle window. Only
+      // this holder's, so a second runtime in the same tab keeps renewing its own.
+      for (const id of mine) {
+        ownTokens.delete(id);
+      }
     },
     reset() {
       continued.clear();
@@ -742,8 +779,8 @@ export function createAutoContinueTab({
       // starting from zero, neither of which races another tab for this key.
       try {
         const leases = readLeases(store);
-        for (const [id, token] of ownTokens) {
-          if (leases[id]?.token === token) {
+        for (const [id, held] of ownTokens) {
+          if (leases[id]?.token === held.token) {
             delete leases[id];
           }
         }
@@ -768,8 +805,9 @@ const tab = createAutoContinueTab();
  */
 export function claimAutoContinue(
   messageId: string | null | undefined,
+  holder: string,
 ): Promise<AutoContinueClaim> {
-  return tab.claim(messageId);
+  return tab.claim(messageId, { holder });
 }
 
 /**
@@ -786,26 +824,33 @@ export function wasAutoContinued(messageId: string | null | undefined): boolean 
 }
 
 /**
- * Keep this tab's leases alive while the run behind them is still going.
+ * Keep `holder`'s leases alive while the run behind them is still going.
  *
- * Called on a timer for as long as the thread is running. Without it the TTL would have to
- * guess the longest continuation anyone might generate, and a slow local model on a big
- * Max Tokens would outlive that guess and have its message taken by another tab mid-
- * stream.
+ * Called on a timer for as long as that runtime's thread is running. Without it the TTL
+ * would have to guess the longest continuation anyone might generate, and a slow local
+ * model on a big Max Tokens would outlive that guess and have its message taken by another
+ * tab mid-stream.
+ *
+ * Per holder, because a tab can be running more than one thread: compare mode mounts a
+ * runtime per pane, and each renews only what it claimed.
  */
-export function renewAutoContinueLeases(): Promise<void> {
-  return tab.renew();
+export function renewAutoContinueLeases(holder: string): Promise<void> {
+  return tab.renew(holder);
 }
 
 /**
- * Give the leases back when the run reaches a terminal state, cancelled included.
+ * Give `holder`'s leases back when its run reaches a terminal state, cancelled included.
  *
  * They are cut to the settle window rather than deleted, so a tab still showing the
  * pre-continuation branch cannot immediately start the duplicate this file exists to
  * prevent, and the full TTL is left to mean one thing only: the holder crashed.
+ *
+ * Per holder for the same reason renewal is: in compare mode the pane that finishes first
+ * would otherwise release the pane still generating, whose renewals would then find
+ * nothing held and whose message would be free to claim one settle window later.
  */
-export function releaseAutoContinueLeases(): Promise<void> {
-  return tab.release();
+export function releaseAutoContinueLeases(holder: string): Promise<void> {
+  return tab.release(holder);
 }
 
 /**
@@ -841,6 +886,11 @@ export function shouldAutoContinueMessage(
  * A full reset gives back the leases this tab wrote as well, so "start from zero" means
  * the same thing it did before the lease existed. Leases other tabs hold are left alone:
  * they are not this tab's to release, and a run they are driving is still going.
+ *
+ * Deliberately wholesale, unlike renewal and release, which are per holder. A run ending
+ * is one runtime saying it is finished, and says nothing about the others; a reset is the
+ * whole tab being told it has no claims at all, which is what a test between cases and a
+ * cleared history both mean. Nothing in the run lifecycle calls it.
  */
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {

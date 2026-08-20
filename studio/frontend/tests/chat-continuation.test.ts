@@ -39,6 +39,12 @@ const {
 const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
 
+/**
+ * The runtime a claim belongs to. One Thread is one holder; compare mode has two, which is
+ * what the two-pane test below stands up.
+ */
+const PANE = "pane-1";
+
 test("a token-exact continuation is appended verbatim", () => {
   // A local model's prompt ended inside the partial turn, so the continuation opens
   // on the next word with nothing repeated.
@@ -428,9 +434,9 @@ test("an unknown fit does not block resuming", () => {
 
 test("a message is claimed for automatic continuation exactly once", async () => {
   resetAutoContinue();
-  assert.equal(await claimAutoContinue("m1"), "started");
-  assert.equal(await claimAutoContinue("m1"), "skipped");
-  assert.equal(await claimAutoContinue("m1"), "skipped");
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
 });
 
 test("the claim survives a remount, which a component ref did not", async () => {
@@ -438,40 +444,40 @@ test("the claim survives a remount, which a component ref did not", async () => 
   // while the parent still had budget, so the effect fired again and created another
   // sibling and another paid provider request.
   resetAutoContinue();
-  assert.equal(await claimAutoContinue("m1"), "started");
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
   assert.equal(shouldAutoContinue("length", "parent-1"), true);
-  assert.equal(await claimAutoContinue("m1"), "skipped");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
 });
 
 test("claims are tracked per message", async () => {
   resetAutoContinue();
-  assert.equal(await claimAutoContinue("m1"), "started");
-  assert.equal(await claimAutoContinue("m2"), "started");
-  assert.equal(await claimAutoContinue("m1"), "skipped");
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
+  assert.equal(await claimAutoContinue("m2", PANE), "started");
+  assert.equal(await claimAutoContinue("m1", PANE), "skipped");
 });
 
 test("a missing message id is refused rather than claimed", async () => {
   resetAutoContinue();
-  assert.equal(await claimAutoContinue(null), "skipped");
-  assert.equal(await claimAutoContinue(undefined), "skipped");
-  assert.equal(await claimAutoContinue(""), "skipped");
+  assert.equal(await claimAutoContinue(null, PANE), "skipped");
+  assert.equal(await claimAutoContinue(undefined, PANE), "skipped");
+  assert.equal(await claimAutoContinue("", PANE), "skipped");
 });
 
 test("a claim is reported and cleared by a full reset", async () => {
   resetAutoContinue();
   assert.equal(wasAutoContinued("m1"), false);
-  await claimAutoContinue("m1");
+  await claimAutoContinue("m1", PANE);
   assert.equal(wasAutoContinued("m1"), true);
   resetAutoContinue();
   assert.equal(wasAutoContinued("m1"), false);
-  assert.equal(await claimAutoContinue("m1"), "started");
+  assert.equal(await claimAutoContinue("m1", PANE), "started");
 });
 
 test("a message already claimed stops reporting itself as continuing", async () => {
   resetAutoContinue();
   // The turn that fires it: nothing has claimed the message yet.
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
-  await claimAutoContinue("m1");
+  await claimAutoContinue("m1", PANE);
   recordAutoContinue("parent-1");
 
   // Back on the truncated branch, whether through the branch picker or by returning to
@@ -483,7 +489,7 @@ test("a message already claimed stops reporting itself as continuing", async () 
 
 test("a claim on one message does not silence another", async () => {
   resetAutoContinue();
-  await claimAutoContinue("m1");
+  await claimAutoContinue("m1", PANE);
   // The next round of the same turn is a new message with budget left, and continues.
   recordAutoContinue("parent-1");
   assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
@@ -806,10 +812,15 @@ test("a running continuation keeps its lease past the TTL", async () => {
   const other = createAutoContinueTab({ storage, locks });
   const start = 1_000;
 
-  assert.equal(startedARun(await running.claim("m1", { now: start })), true);
+  assert.equal(
+    startedARun(await running.claim("m1", { now: start, holder: PANE })),
+    true,
+  );
   // Three renewals at the interval the keeper uses, still inside the run.
   for (let tick = 1; tick <= 3; tick += 1) {
-    await running.renew({ now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS });
+    await running.renew(PANE, {
+      now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
+    });
   }
   const past =
     start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
@@ -826,8 +837,11 @@ test("a finished run gives its lease back, without handing over a stale branch",
   const other = createAutoContinueTab({ storage, locks });
   const start = 1_000;
 
-  assert.equal(await running.claim("m1", { now: start }), "started");
-  await running.release({ now: start });
+  assert.equal(
+    await running.claim("m1", { now: start, holder: PANE }),
+    "started",
+  );
+  await running.release(PANE, { now: start });
   assert.equal(
     await other.claim("m1", { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS - 1 }),
     "held-elsewhere",
@@ -837,12 +851,64 @@ test("a finished run gives its lease back, without handing over a stale branch",
     "started",
   );
   // And a release holds nothing, so a later renewal cannot resurrect it.
-  await running.renew({ now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 2 });
+  await running.renew(PANE, { now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 2 });
   assert.equal(
     await createAutoContinueTab({ storage, locks }).claim("m1", {
       now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 3,
     }),
     "held-elsewhere",
+  );
+});
+
+test("one compare pane finishing does not release the other pane's lease", async () => {
+  // Compare mode mounts two Thread runtimes in ONE tab, each with its own thread and its
+  // own run, and either can be resuming a truncated reply while the other is idle. A
+  // release that restamped every lease the tab owns and then dropped the lot would end the
+  // hold on the pane still generating: its renewals would find nothing held, and one settle
+  // window later another tab could claim its message and pay for a second run.
+  const { storage } = storageFake();
+  const locks = lockManagerFake();
+  const compareTab = createAutoContinueTab({ storage, locks });
+  const otherTab = createAutoContinueTab({ storage, locks });
+  const base = "pane-base";
+  const lora = "pane-lora";
+  const start = 1_000;
+
+  assert.equal(
+    startedARun(
+      await compareTab.claim("base-m1", { now: start, holder: base }),
+    ),
+    true,
+  );
+  assert.equal(
+    startedARun(
+      await compareTab.claim("lora-m1", { now: start, holder: lora }),
+    ),
+    true,
+  );
+
+  // The base pane finishes first. Only its own lease goes back.
+  await compareTab.release(base, { now: start });
+
+  // The lora pane is still generating, and its keeper is still renewing.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    await compareTab.renew(lora, {
+      now: start + tick * AUTO_CONTINUE_LEASE_RENEW_MS,
+    });
+  }
+  const past =
+    start + AUTO_CONTINUE_LEASE_TTL_MS + AUTO_CONTINUE_LEASE_RENEW_MS;
+  assert.equal(
+    await otherTab.claim("lora-m1", { now: past }),
+    "held-elsewhere",
+    "the still-running pane keeps its message",
+  );
+  // And the pane that did finish settles on the usual schedule.
+  assert.equal(
+    await otherTab.claim("base-m1", {
+      now: start + AUTO_CONTINUE_LEASE_SETTLE_MS + 1,
+    }),
+    "started",
   );
 });
 
@@ -853,9 +919,9 @@ test("a renewal touches this tab's leases and nobody else's", async () => {
   const theirs = createAutoContinueTab({ storage, locks });
   const start = 1_000;
 
-  await mine.claim("m1", { now: start });
-  await theirs.claim("m2", { now: start });
-  await mine.renew({ now: start + AUTO_CONTINUE_LEASE_RENEW_MS });
+  await mine.claim("m1", { now: start, holder: PANE });
+  await theirs.claim("m2", { now: start, holder: PANE });
+  await mine.renew(PANE, { now: start + AUTO_CONTINUE_LEASE_RENEW_MS });
 
   const leases = JSON.parse(store.get(AUTO_CONTINUE_LEASE_KEY) ?? "{}");
   assert.equal(
