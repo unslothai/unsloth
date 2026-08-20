@@ -102,6 +102,11 @@ def build_report(
 ) -> tuple[str, LadderScore, dict[str, Any]]:
     """Return (rendered summary, ladder, assembled payload)."""
 
+    # FIRST, before the payload is assembled. `score_payload` refuses too, but it runs second
+    # here, and `assemble_rows` validates the schema on the way past: a probed payload that also
+    # trips some unrelated schema complaint would report THAT instead, and the refusal would
+    # never be reached. A refusal that any other failure can pre-empt is not a refusal.
+    refuse_if_probed(_records(path), str(path))
     payload = assemble_rows(path)
     ladder = score_payload(path, declared_rungs)
     text = render_summary(payload, ladder, extra_sections = extra_sections)

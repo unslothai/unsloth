@@ -34,6 +34,11 @@ def main_src() -> str:
 
 
 @pytest.fixture(scope = "module")
+def build_src() -> str:
+    return (STUDIOBENCH / "report" / "build.py").read_text(encoding = "utf-8")
+
+
+@pytest.fixture(scope = "module")
 def probe_src() -> str:
     return PROBE.read_text(encoding = "utf-8")
 
@@ -164,6 +169,29 @@ def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):
 
     assert 'stale = paths.out / "ab.md"' in main_src
     assert "stale.write_text(" in main_src
+
+
+def test_a_refused_report_does_not_leave_a_stale_summary(main_src: str):
+    """`--report` writes `summary.md` beside the payload, and `--resume` reuses the directory.
+
+    The refusal is a `SystemExit`, which is not an `Exception`, so it would leave the process
+    before the write and an earlier clean summary would survive next to a probed payload.
+    """
+
+    assert "except SystemExit as exc:" in main_src
+    assert 'out = path.parent / "summary.md"' in main_src
+    assert '# No summary' in main_src
+
+
+def test_the_report_refuses_before_it_assembles(build_src: str):
+    """A refusal any other failure can pre-empt is not a refusal.
+
+    `assemble_rows` validates the payload schema on the way past, so a probed payload that also
+    tripped an unrelated schema complaint reported that instead and was never refused.
+    """
+
+    before = build_src.index("refuse_if_probed(_records(path)")
+    assert before < build_src.index("payload = assemble_rows(path)")
 
 
 def test_the_event_counter_is_the_one_potency_rests_on(probe_src: str):

@@ -814,8 +814,21 @@ def report_only(args) -> int:
     declared = (
         _rung_tokens(args.rungs.split(",")) if args.rungs else _rung_tokens(TIER_RUNGS[args.tier])
     )
+    out = path.parent / "summary.md"
     try:
         text, ladder, _payload = build_report(path, declared)
+    except SystemExit as exc:
+        # A REFUSAL, not a crash, and it has to reach the artefact rather than only the terminal.
+        # `SystemExit` is not an `Exception`, so without this clause it would leave the process
+        # before the write below. `--resume` reuses the output directory, so a `summary.md` from
+        # an earlier clean report of the same directory would survive the refusal and sit next to
+        # a now-probed payload, reading as its result. Same reasoning as the stale `ab.md` in
+        # `_render_ab`: overwritten rather than deleted, so opening the path gives the reason.
+        _log(str(exc))
+        if out.exists():
+            out.write_text(f"# No summary\n\n{exc}\n", encoding = "utf-8")
+            _log(f"  a previous {out} was replaced by this refusal")
+        return 2
     except Exception as exc:  # noqa: BLE001
         # A payload that cannot be scored is reported as such rather than half-rendered: a
         # partial report is exactly the artefact that gets quoted without its caveats.
@@ -823,7 +836,6 @@ def report_only(args) -> int:
         return 1
 
     print(text)
-    out = path.parent / "summary.md"
     out.write_text(text, encoding = "utf-8")
     _log(f"summary written to {out}")
     return 0
