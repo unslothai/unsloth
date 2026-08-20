@@ -306,6 +306,37 @@ def test_system_node_probe_is_memoized(managed_node_install, monkeypatch, tmp_pa
     assert len(calls) == after_first, calls
 
 
+def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypatch, tmp_path):
+    """One npm shim, two PATHs, two different runtimes. npm and npx are
+    ``#!/usr/bin/env node`` scripts, so the shim clears the floor only under the PATH whose
+    node is adequate. The success memo must not let the passing PATH answer for the other."""
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    _make_executable(shim, "npm")
+    _make_executable(shim, "npx")
+    good = tmp_path / "good"
+    good.mkdir()
+    _make_executable(good, "node")
+    old = tmp_path / "old"
+    old.mkdir()
+    _make_executable(old, "node")
+
+    # Patched directly rather than through _patch_floors: that helper drops the path
+    # argument, which is the whole dimension under test here.
+    def _npm_floor(executable, path = None):
+        # The shim runs whichever node its PATH reaches, so only the good PATH clears.
+        return path is not None and str(good) in path
+
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    monkeypatch.setattr(node_runtime, "_npm_version_ok", _npm_floor)
+    good_path = f"{shim}{os.pathsep}{good}"
+    old_path = f"{shim}{os.pathsep}{old}"
+    assert node_runtime._path_has_usable_node(good_path) is True
+    # Same npm executable, PATH whose node is below the floor: must be re-probed, not served
+    # from the entry the good PATH cached.
+    assert node_runtime._path_has_usable_node(old_path) is False
+
+
 def test_managed_node_used_when_system_lacks_npx(managed_node_install, monkeypatch, tmp_path):
     """decide_node_source installs bundled when npm is missing, so node alone is not enough."""
     sysbin = _system_node_dir(tmp_path, with_npx = False)

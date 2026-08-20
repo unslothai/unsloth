@@ -98,7 +98,7 @@ def managed_node_bin_dir() -> Path | None:
 # Success-only memoization, like _resolved_node: the installer may finish after the
 # first probe, so a negative verdict must not stick until restart.
 _managed_node_ok: bool = False
-_usable_node_cache: dict[str, bool] = {}
+_usable_node_cache: dict[tuple[str, str | None], bool] = {}
 
 
 def _reset_managed_node_check() -> None:
@@ -149,12 +149,17 @@ def _probe_ok(
     check,
     path: str | None = None,
 ) -> bool:
-    """Version check for one executable, memoized on success (see _usable_node_cache)."""
-    if _usable_node_cache.get(executable):
+    """Version check for one executable, memoized on success (see _usable_node_cache).
+    The PATH is part of the key: npm and npx are ``#!/usr/bin/env node`` scripts, so the
+    same shim resolves a different runtime under a different PATH and can clear the floor
+    on one and fail it on another. Keying on the executable alone would let the first
+    PATH that passed answer for every later one."""
+    cache_key = (executable, path)
+    if _usable_node_cache.get(cache_key):
         return True
     ok = check(executable, path)
     if ok:
-        _usable_node_cache[executable] = True
+        _usable_node_cache[cache_key] = True
     return ok
 
 
