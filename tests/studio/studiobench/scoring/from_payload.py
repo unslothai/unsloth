@@ -243,6 +243,29 @@ def _stream_windows(windows: Sequence[Mapping[str, Any]]) -> tuple[list[Mapping[
     return picked, rejected
 
 
+def _unaided(windows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Of the streaming windows, the ones with no scripted action running in them.
+
+    THE TWO NUMERATORS NEED DIFFERENT WINDOW SETS, and conflating them was a real defect in the
+    first version of this metric rather than a refinement.
+
+    `delta_task_ms` is attributable by construction: it sums only the task chains an SSE chunk
+    started, so it does not matter what else shared the window, and it should see every streaming
+    window or it under-counts the stream.
+
+    Everything derived from a WHOLE WINDOW -- blocked time, the frame distribution, the worst
+    frame -- charges the entire window to the stream. Three of the film's slots run during
+    generation on purpose (`scroll_during_generation` twice and `keystroke`), so those windows
+    carry scrolling and typing cost. Measured on a fast-tier 100K null, admitting them put a
+    1,738 ms worst frame into `stream_max_frame_ms` when the unaided streaming stretch beside it
+    peaked at 286 ms. That is a scroll, reported as a streaming stall.
+
+    So the window-wide quantities are taken from the GAP windows only: the quiet stretches where
+    the stream is doing its work unaided, which is what those metrics claim to describe.
+    """
+    return [w for w in windows if str(w.get("kind") or "") == "gap"]
+
+
 def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     """The streaming phase alone, integrated, and divided by the characters it streamed.
 
@@ -281,8 +304,18 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
             for k, u in unit_by_key.items()
         }
 
+    # The TARGETED numerator, over every streaming window: an SSE task chain is attributable to
+    # the stream no matter what else shared the window.
     chars = 0
     delta_task_ms = 0.0
+    for w in picked:
+        sc = (w.get("instruments") or {}).get("stream_cost") or {}
+        chars += int(sc.get("reply_chars_delta") or 0)
+        delta_task_ms += float(sc.get("delta_task_ms") or 0.0)
+
+    # Everything WINDOW-WIDE, over the unaided streaming windows only. See _unaided.
+    unaided = _unaided(picked)
+    unaided_chars = 0
     blocked_ms = 0.0
     blocked_reason: str | None = None
     streaming_ms = 0.0
@@ -290,11 +323,10 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
     window_ms = 0.0
     max_frame: float | None = None
 
-    for w in picked:
+    for w in unaided:
         inst = w.get("instruments") or {}
         sc = inst.get("stream_cost") or {}
-        chars += int(sc.get("reply_chars_delta") or 0)
-        delta_task_ms += float(sc.get("delta_task_ms") or 0.0)
+        unaided_chars += int(sc.get("reply_chars_delta") or 0)
         streaming_ms += float(sc.get("streaming_ms") or 0.0)
         blocked = sc.get("stream_blocked_ms")
         if blocked is None:
@@ -320,35 +352,45 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
 
     out: dict[str, Measure] = {}
     note = f"{len(picked)} streaming window(s), {chars} streamed characters"
+    unaided_note = (
+        f"{len(unaided)} unaided streaming window(s), {unaided_chars} streamed characters"
+    )
 
-    if chars <= 0:
-        for key in ("stream_delta_cost_ms_per_kchar", "stream_cost_ms_per_kchar"):
-            out[key] = Measure.failed(
-                unit_by_key[key], "the streaming windows recorded no streamed characters"
-            )
-    else:
-        out["stream_delta_cost_ms_per_kchar"] = Measure.read(
-            1000.0 * delta_task_ms / chars, "ms/kchar", note = note
+    out["stream_delta_cost_ms_per_kchar"] = (
+        Measure.read(1000.0 * delta_task_ms / chars, "ms/kchar", note = note)
+        if chars > 0
+        else Measure.failed(
+            "ms/kchar", "the streaming windows recorded no streamed characters"
         )
-        out["stream_cost_ms_per_kchar"] = (
-            Measure.failed("ms/kchar", blocked_reason)
-            if blocked_reason
-            else Measure.read(1000.0 * blocked_ms / chars, "ms/kchar", note = note)
+    )
+    if blocked_reason:
+        out["stream_cost_ms_per_kchar"] = Measure.failed("ms/kchar", blocked_reason)
+    elif unaided_chars <= 0:
+        out["stream_cost_ms_per_kchar"] = Measure.failed(
+            "ms/kchar",
+            "no window streamed without a scripted action running in it, so there is no "
+            "unaided streaming cost to divide",
+        )
+    else:
+        out["stream_cost_ms_per_kchar"] = Measure.read(
+            1000.0 * blocked_ms / unaided_chars, "ms/kchar", note = unaided_note
         )
 
     out["stream_busy_pct"] = (
         Measure.failed("%", blocked_reason)
         if blocked_reason
         else (
-            Measure.read(100.0 * blocked_ms / streaming_ms, "%", note = note)
+            Measure.read(100.0 * blocked_ms / streaming_ms, "%", note = unaided_note)
             if streaming_ms > 0
-            else Measure.failed("%", "the instrument observed no streaming time in these windows")
+            else Measure.failed(
+                "%", "the instrument observed no unaided streaming time in this cell"
+            )
         )
     )
     out["stream_max_frame_ms"] = (
-        Measure.read(max_frame, "ms", note = "worst frame inside the streaming windows")
+        Measure.read(max_frame, "ms", note = "worst frame inside the UNAIDED streaming windows")
         if max_frame is not None
-        else Measure.failed("ms", "the frame recorder observed no frames while streaming")
+        else Measure.failed("ms", "the frame recorder observed no frames streaming unaided")
     )
 
     if deltas and window_ms > 0:
@@ -356,7 +398,7 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
         out["stream_time_in_jank_pct"] = stats.time_in_jank_pct
         out["stream_jank_index"] = stats.jank_index
     else:
-        reason = "the streaming windows exported no per-frame deltas"
+        reason = "the unaided streaming windows exported no per-frame deltas"
         out["stream_time_in_jank_pct"] = Measure.failed("%", reason)
         out["stream_jank_index"] = Measure.failed("ms", reason)
     return out

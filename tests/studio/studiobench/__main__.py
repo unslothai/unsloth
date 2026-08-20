@@ -316,6 +316,25 @@ def run(args, ab_ref = None) -> int:
         # the same code and the gate cannot rot while unused.
         init_scripts.append(origin_scoped(side["base_url"], seed))
 
+        if getattr(args, "inject_stream_cost_ms", None) and side is not sides[0]:
+            # VALIDATION, not a measurement mode. Burns a known amount of main-thread time per SSE
+            # chunk on the TREATMENT side only, so an A/B whose two arms are otherwise the same
+            # build has a known answer. It is origin-gated like the seed above, because a context
+            # init script fires on every document and burning on both sides would inject the cost
+            # into the control as well and read back a recovery of zero.
+            from .instruments.selfcheck import stream_cost_injection_init_script
+
+            init_scripts.append(
+                origin_scoped(
+                    side["base_url"],
+                    stream_cost_injection_init_script(args.inject_stream_cost_ms),
+                )
+            )
+            _log(
+                f"  {side['label']}: INJECTING {args.inject_stream_cost_ms} ms of main-thread "
+                f"time per SSE chunk. This arm is not a measurement of the build."
+            )
+
     auth = sides[0]["auth"]
     init_scripts.append(resources.read_text("scene/dom.js"))
     init_scripts.append(resources.read_text("scene/parity.js"))
@@ -884,6 +903,17 @@ def main(argv: list) -> int:
         "is constant across the whole ladder and reads as a floor. This is the axis that "
         "can see one. Raising it makes the film's after-generation slots run mid-stream, "
         "so check the payload with --assert-liveness rather than trusting the labels",
+    )
+    ap.add_argument(
+        "--inject-stream-cost-ms",
+        type = float,
+        dest = "inject_stream_cost_ms",
+        help = "VALIDATION. Burn this many milliseconds of main-thread time per SSE chunk on the "
+        "treatment side, inside the task chain the chunk starts. Needs --ab. The point is to "
+        "check that the streaming-cost metric reads back a cost this harness injected itself: a "
+        "metric that cannot see a known cost cannot see an unknown one, and the recovery fraction "
+        "is what says which of the two a null result was. An arm running this is not a "
+        "measurement of the build",
     )
     ap.add_argument(
         "--corpus-dollars",

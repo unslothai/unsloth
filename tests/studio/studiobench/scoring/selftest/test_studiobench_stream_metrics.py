@@ -42,7 +42,7 @@ from studiobench.scoring.from_payload import (  # noqa: E402
 def _window(
     name: str,
     *,
-    kind: str = "stream",
+    kind: str = "gap",
     duration_ms: float = 10_000.0,
     streaming_observed: bool = True,
     streaming_ms: float = 9_000.0,
@@ -246,6 +246,21 @@ def test_the_worst_streaming_frame_excludes_the_action_windows():
         ),
     ]
     assert _stream_measures(windows)["stream_max_frame_ms"].value == pytest.approx(100.2)
+
+
+def test_an_action_running_during_generation_does_not_set_the_worst_streaming_frame():
+    """MEASURED. `scroll_during_generation` runs mid-stream by design, so its window carries SSE
+    traffic AND a scroll. On a fast-tier 100K null it put a 1,738 ms worst frame into this metric
+    while the unaided stretch beside it peaked at 286 ms. A scroll is not a streaming stall."""
+    windows = [
+        _window("stream:gap3", max_frame_ms = 286.0),
+        _window("action:scroll_during_generation", kind = "action", max_frame_ms = 1_738.0),
+    ]
+    m = _stream_measures(windows)
+    assert m["stream_max_frame_ms"].value == pytest.approx(286.0)
+    # ... but its SSE task chains still count toward the targeted numerator, because those ARE
+    # the stream's own work wherever they happened.
+    assert "2 streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
 
 
 # ── refusing rather than reporting zero ──────────────────────────────────────────────────────
