@@ -27,6 +27,7 @@ from hub.utils.gguf import (
     is_imatrix_filename,
     list_gguf_variants,
     list_local_gguf_variants,
+    list_partial_gguf_variants_from_state,
     pick_best_gguf,
 )
 from hub.utils.gguf_plan import build_gguf_variant_plans, is_main_gguf_variant_path
@@ -121,6 +122,59 @@ def test_local_listing_and_load_path_skip_the_imatrix(tmp_path):
     assert detect_gguf_model(os.fspath(tmp_path)) == os.fspath(
         tmp_path / "Qwen3.8-27B-UD-Q4_K_XL.gguf"
     )
+
+
+def _state_sources(monkeypatch, manifests, markers, manifest_for):
+    from hub.utils import download_manifest
+
+    monkeypatch.setattr(
+        download_manifest,
+        "iter_variant_manifests",
+        lambda *_a, **_k: iter([(v, Path(f"{v}.json")) for v in manifests]),
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "iter_variant_markers",
+        lambda *_a, **_k: iter([(v, Path(f"{v}.marker")) for v in markers]),
+    )
+    monkeypatch.setattr(
+        download_manifest, "read_manifest", lambda _t, _r, variant, **_k: manifest_for(variant)
+    )
+
+
+def test_interrupted_imatrix_state_does_not_come_back_as_a_row(monkeypatch):
+    # An older build offered the imatrix as a variant, so a cancelled download of it can
+    # still be on disk. Skipping only its expected file left main_filename unset, and the
+    # synthetic "<variant>.gguf" fallback put the row back at zero bytes on exactly the
+    # offline path this listing serves.
+    manifest = SimpleNamespace(
+        expected_files = [SimpleNamespace(path = "imatrix_unsloth.gguf", size = 13_642_656)]
+    )
+    _state_sources(
+        monkeypatch,
+        manifests = ["imatrix_unsloth"],
+        markers = [],
+        manifest_for = lambda _variant: manifest,
+    )
+
+    variants, _has_vision = list_partial_gguf_variants_from_state("unsloth/Qwen3.8-27B-GGUF")
+    assert variants == []
+
+
+def test_a_marker_only_imatrix_variant_is_dropped_but_a_real_quant_survives(monkeypatch):
+    # A cancel marker carries no manifest at all, so the filtered-file check above cannot
+    # see it; the stored variant key is the only evidence. A real quant in the same state
+    # must keep its synthetic row, or an interrupted download becomes unresumable.
+    _state_sources(
+        monkeypatch,
+        manifests = [],
+        markers = ["imatrix_unsloth", "UD-Q4_K_XL"],
+        manifest_for = lambda _variant: None,
+    )
+
+    variants, _has_vision = list_partial_gguf_variants_from_state("unsloth/Qwen3.8-27B-GGUF")
+    assert [v.quant for v in variants] == ["UD-Q4_K_XL"]
+    assert variants[0].filename == "UD-Q4_K_XL.gguf"
 
 
 def test_an_imatrix_only_folder_offers_no_model(tmp_path):

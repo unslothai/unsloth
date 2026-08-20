@@ -877,6 +877,7 @@ def list_partial_gguf_variants_from_state(
         main_filename: Optional[str] = None
         size_bytes = 0
         companion_bytes = 0
+        imatrix_only = False
         if manifest is not None:
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
@@ -884,6 +885,7 @@ def list_partial_gguf_variants_from_state(
                 if is_imatrix_filename(expected.path):
                     # A manifest predating this filtering can still name one; it is
                     # neither weights nor a companion, so it counts towards neither size.
+                    imatrix_only = True
                     continue
                 if is_mtp_drafter_path(expected.path):
                     # Downloaded with every variant (like mmproj) but not a
@@ -899,6 +901,13 @@ def list_partial_gguf_variants_from_state(
                     main_filename = expected.path
                 size_bytes += max(0, int(expected.size or 0))
         if main_filename is None:
+            # An older build could download the imatrix as a variant of its own, so its
+            # interrupted state is still on disk. Naming the synthetic file after the
+            # variant would put that row back in the menu, at zero bytes, on exactly the
+            # offline path this listing serves. Only when NOTHING eligible was found:
+            # a marker-only quant keeps its synthetic row so it can be resumed or deleted.
+            if imatrix_only or is_imatrix_filename(variant):
+                continue
             main_filename = f"{variant}.gguf"
         variants.append(
             GgufVariantInfo(
