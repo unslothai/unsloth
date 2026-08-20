@@ -72,12 +72,11 @@ def _run_detail(model_type: str, path: str, run: Optional[dict]) -> str:
 def _runs_by_output_dir() -> dict:
     try:
         from storage.studio_db import list_runs
-
-        runs = list_runs(limit=1000)["runs"]
+        runs = list_runs(limit = 1000)["runs"]
     except Exception:
         return {}
     by_dir = {}
-    for run in sorted(runs, key=lambda r: r.get("started_at") or ""):
+    for run in sorted(runs, key = lambda r: r.get("started_at") or ""):
         if run.get("output_dir"):
             by_dir[os.path.normpath(run["output_dir"])] = run
     return by_dir
@@ -97,7 +96,6 @@ def trained_entries() -> List[ModelEntry]:
 
 def exported_entries() -> List[ModelEntry]:
     from utils.models import scan_exported_models
-
     return [
         ModelEntry("Exports", name, export_type, path)
         for name, path, export_type, _base in scan_exported_models()
@@ -155,8 +153,10 @@ def local_folder_entries() -> List[ModelEntry]:
         if model.source not in LOCAL_SOURCES or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
-        if not is_gguf and model.model_format != "safetensors":
-            continue
+        # No format gate here: _dir_model_format only ever reports "gguf" or None, so an
+        # ordinary safetensors checkpoint arrives with model_format None. Comparing against
+        # a "safetensors" literal matched nothing and dropped every non-GGUF local model,
+        # which is the bulk of what ./models, LM Studio and custom scan folders hold.
         if _local_model_task(model) in NON_CHAT_TASKS:
             continue
         entries.append(
@@ -164,7 +164,10 @@ def local_folder_entries() -> List[ModelEntry]:
                 "Local folders",
                 model.display_name,
                 "gguf" if is_gguf else "",
-                model.load_id or model.id,
+                # LocalModelInfo carries `id`, not `load_id`; the attribute access raised
+                # AttributeError, which _safe() swallowed, silently discarding the whole
+                # "Local folders" source instead of one row.
+                model.id,
             )
         )
     return entries

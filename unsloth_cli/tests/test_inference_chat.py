@@ -78,7 +78,7 @@ def _clear_mlx_distributed_env(monkeypatch):
         *(rank for rank, _size in _EXPECTED_MPI_ENV_PAIRS + _IGNORED_DISTRIBUTED_ENV_PAIRS),
         *(size for _rank, size in _EXPECTED_MPI_ENV_PAIRS + _IGNORED_DISTRIBUTED_ENV_PAIRS),
     ):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
 
 
 def _set_mlx_nccl_env(
@@ -93,35 +93,35 @@ def _set_mlx_nccl_env(
     monkeypatch.setenv("NCCL_PORT", "12345")
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _isolate_mlx_distributed_env(monkeypatch):
     _clear_mlx_distributed_env(monkeypatch)
-    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising = False)
 
 
 def test_visible_text_passthrough_when_shown():
     text = "<think>reasoning</think>answer"
-    assert visible_text(text, show_thinking=True) == text
+    assert visible_text(text, show_thinking = True) == text
 
 
 def test_visible_text_strips_closed_think_block():
     text = "<think>step 1\nstep 2</think>The answer is 42."
-    assert visible_text(text, show_thinking=False) == "The answer is 42."
+    assert visible_text(text, show_thinking = False) == "The answer is 42."
 
 
 def test_visible_text_holds_unclosed_think():
     # An open <think> is held back so partial reasoning never leaks mid-stream.
-    assert visible_text("<think>still thinking", show_thinking=False) == ""
-    assert visible_text("done.<think>more thinking", show_thinking=False) == "done."
+    assert visible_text("<think>still thinking", show_thinking = False) == ""
+    assert visible_text("done.<think>more thinking", show_thinking = False) == "done."
 
 
 def test_visible_text_holds_partial_think_prefix():
     # Streams are cumulative, so the opening tag can arrive as "<", "<thi",
     # then "<think>". Hold possible tag prefixes until they are disambiguated.
-    assert visible_text("<", show_thinking=False) == ""
-    assert visible_text("<thi", show_thinking=False) == ""
-    assert visible_text("done.<thi", show_thinking=False) == "done."
-    assert visible_text("2 < 3", show_thinking=False) == "2 < 3"
+    assert visible_text("<", show_thinking = False) == ""
+    assert visible_text("<thi", show_thinking = False) == ""
+    assert visible_text("done.<thi", show_thinking = False) == "done."
+    assert visible_text("2 < 3", show_thinking = False) == "2 < 3"
 
 
 def _option(command_fn, name):
@@ -231,13 +231,13 @@ class _FakeBackend:
 
 
 _STREAM_KWARGS = dict(
-    system_prompt="",
-    temperature=0.7,
-    top_p=0.9,
-    top_k=40,
-    max_new_tokens=8,
-    repetition_penalty=1.1,
-    enable_thinking=False,
+    system_prompt = "",
+    temperature = 0.7,
+    top_p = 0.9,
+    top_k = 40,
+    max_new_tokens = 8,
+    repetition_penalty = 1.1,
+    enable_thinking = False,
 )
 
 
@@ -245,8 +245,8 @@ def test_chatbackend_routes_compare_to_adapter_control():
     fake = _FakeBackend()
     backend = ChatBackend("unsloth", fake)
 
-    list(backend.stream([{"role": "user", "content": "x"}], use_adapter=False, **_STREAM_KWARGS))
-    list(backend.stream([{"role": "user", "content": "x"}], use_adapter=True, **_STREAM_KWARGS))
+    list(backend.stream([{"role": "user", "content": "x"}], use_adapter = False, **_STREAM_KWARGS))
+    list(backend.stream([{"role": "user", "content": "x"}], use_adapter = True, **_STREAM_KWARGS))
 
     assert [(path, flag) for path, flag, _ in fake.calls] == [
         ("adapter", False),
@@ -265,7 +265,7 @@ def test_chatbackend_normal_path_skips_adapter_control():
 
 def test_collect_stream_returns_last_cumulative_think_stripped():
     stream = iter(["<think>r</think>hel", "<think>r</think>hello"])
-    assert collect_stream(stream, show_thinking=False) == "hello"
+    assert collect_stream(stream, show_thinking = False) == "hello"
 
 
 def test_render_columns_emits_both_answers_with_separator(capsys):
@@ -280,20 +280,20 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
     gnu = types.ModuleType("readline")
     gnu.__doc__ = "Importing this module enables command line editing using GNU readline."
     monkeypatch.setitem(sys.modules, "readline", gnu)
-    prompt = chatmod._you_prompt(colors=True)
+    prompt = chatmod._you_prompt(colors = True)
     assert "You: " in prompt and "\001" in prompt
 
     libedit = types.ModuleType("readline")
     libedit.__doc__ = "Importing this module enables command line editing using libedit readline."
     monkeypatch.setitem(sys.modules, "readline", libedit)
-    assert chatmod._you_prompt(colors=True) == "\n\x1b[1;36mYou: \x1b[0m"
-    assert chatmod._you_prompt(colors=False) == "\nYou: "
+    assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
+    assert chatmod._you_prompt(colors = False) == "\nYou: "
 
     # Windows: no readline module at all; the console's own line editing
     # handles backspace, so plain ANSI color (no markers) is safe.
     monkeypatch.setitem(sys.modules, "readline", None)
-    assert chatmod._you_prompt(colors=True) == "\n\x1b[1;36mYou: \x1b[0m"
-    assert chatmod._you_prompt(colors=False) == "\nYou: "
+    assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
+    assert chatmod._you_prompt(colors = False) == "\nYou: "
 
 
 def test_chat_registered_on_app():
@@ -322,7 +322,7 @@ def test_chat_exits_cleanly_on_slash_exit(monkeypatch):
     runner = CliRunner()
     for args in (["fake-model"], ["fake-model", "--compare"]):
         closed.clear()
-        result = runner.invoke(_chat_app(), args, input="hi\n/exit\n")
+        result = runner.invoke(_chat_app(), args, input = "hi\n/exit\n")
         assert result.exit_code == 0, result.output
         assert closed == [True]
         assert "Bye." in result.output
@@ -342,15 +342,15 @@ def test_pick_model_lists_groups_and_selects(monkeypatch):
     monkeypatch.setattr(cat, "list_chat_models", lambda: entries)
     monkeypatch.setattr(chatmod, "ensure_studio_backend_path", lambda: None)
 
-    console = Console(record=True, width=100)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "3")
+    console = Console(record = True, width = 100)
+    monkeypatch.setattr("builtins.input", lambda prompt = "": "3")
     assert chatmod._pick_model(console) == "org/Tiny-GGUF"
     out = console.export_text()
     assert "Fine-tunes" in out and "GGUF" in out
     assert "1. run-new" in out and "lora · Aug 1" in out
     assert "3. org/Tiny-GGUF" in out
 
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    monkeypatch.setattr("builtins.input", lambda prompt = "": "")
     assert chatmod._pick_model(Console()) == "outputs/run-new"
 
 
@@ -403,7 +403,7 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
 
     repo = tmp_path / "models--org--Tiny-GGUF"
     snap = repo / "snapshots" / "abc"
-    snap.mkdir(parents=True)
+    snap.mkdir(parents = True)
     for name in ("Tiny-Q4_K_M.gguf", "Tiny-Q2_K.gguf", "mmproj-F16.gguf"):
         (snap / name).write_bytes(b"")
 
@@ -429,6 +429,49 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         ("Downloaded", "org/Tiny-GGUF", "Q2_K, Q4_K_M", "org/Tiny-GGUF"),
         ("Downloaded", "org/Chat", "", "org/Chat"),
         ("Downloaded", "org/Pinned", "", "/snap/path"),
+    ]
+
+
+def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
+    from unsloth_cli import _model_catalog as cat
+
+    class _LocalModelInfo:
+        """Mirrors models.models.LocalModelInfo: it exposes ``id`` and deliberately has
+        no ``load_id``. Reading a missing ``load_id`` raised AttributeError, and _safe()
+        turned that into an empty "Local folders" group rather than one skipped row."""
+
+        def __init__(
+            self,
+            id,
+            display_name,
+            path,
+            source,
+            model_format = None,
+            partial = False,
+        ):
+            self.id = id
+            self.display_name = display_name
+            self.path = path
+            self.source = source
+            self.model_format = model_format
+            self.partial = partial
+
+    rows = [
+        # _dir_model_format reports None for a safetensors folder, never "safetensors".
+        _LocalModelInfo("/models/Qwen3-0.6B", "Qwen3-0.6B", "/models/Qwen3-0.6B", "models_dir"),
+        _LocalModelInfo("/m/Tiny.gguf", "Tiny", "/m/Tiny.gguf", "lmstudio", model_format = "gguf"),
+        _LocalModelInfo("/models/Half", "Half", "/models/Half", "models_dir", partial = True),
+    ]
+
+    fake_routes = types.ModuleType("routes.models")
+    fake_routes.collect_local_models = lambda root: rows
+    fake_routes._local_model_task = lambda model: None
+    monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
+
+    entries = cat.local_folder_entries()
+    assert [(e.group, e.name, e.detail, e.model) for e in entries] == [
+        ("Local folders", "Qwen3-0.6B", "", "/models/Qwen3-0.6B"),
+        ("Local folders", "Tiny", "gguf", "/m/Tiny.gguf"),
     ]
 
 
@@ -482,7 +525,7 @@ def test_chat_no_arg_chats_with_picked_trained_model(monkeypatch):
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
-    result = CliRunner().invoke(_chat_app(), [], input="/exit\n")
+    result = CliRunner().invoke(_chat_app(), [], input = "/exit\n")
     assert result.exit_code == 0, result.output
     assert resolved == ["outputs/run-42"]
 
@@ -590,8 +633,8 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
     def fake_request(
         method,
         path,
-        payload=None,
-        timeout=None,
+        payload = None,
+        timeout = None,
     ):
         requests.append((method, path, payload, timeout))
         return _FakeLoadResponse()
@@ -600,13 +643,13 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
 
     backend.ensure_loaded(
         "org/model-GGUF",
-        hf_token="hf_x",
-        max_seq_length=8192,
-        load_in_4bit=False,
-        tensor_parallel=True,
-        speculative_type="dspark",
-        spec_draft_n_max=3,
-        llama_extra_args=["--top-k", "20"],
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        load_in_4bit = False,
+        tensor_parallel = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
+        llama_extra_args = ["--top-k", "20"],
     )
 
     assert requests == [
@@ -635,7 +678,7 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     monkeypatch.setattr(
         backend,
         "_request",
-        lambda method, path, payload=None, timeout=None: (
+        lambda method, path, payload = None, timeout = None: (
             requests.append((method, path, payload, timeout)),
             _FakeLoadResponse(),
         )[1],
@@ -643,10 +686,10 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
 
     backend.ensure_loaded(
         "org/model-GGUF",
-        hf_token=None,
-        max_seq_length=4096,
-        load_in_4bit=True,
-        tensor_parallel=False,
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
+        tensor_parallel = False,
     )
 
     assert requests[0][2]["tensor_parallel"] is False
@@ -664,9 +707,9 @@ def test_http_backend_load_drains_the_padded_body(monkeypatch):
 
     backend.ensure_loaded(
         "org/model-GGUF",
-        hf_token=None,
-        max_seq_length=4096,
-        load_in_4bit=True,
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
     )
 
     assert response.reads == 1, "the padded body must be drained, not closed at the headers"
@@ -686,9 +729,9 @@ def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
     with pytest.raises(typer.Exit) as excinfo:
         backend.ensure_loaded(
             "org/model-GGUF",
-            hf_token=None,
-            max_seq_length=4096,
-            load_in_4bit=True,
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
         )
 
     # Same exit code as an early HTTP failure: ensure_loaded's except block is reused.
@@ -721,9 +764,9 @@ def test_http_backend_load_rejects_a_truncated_padded_body(monkeypatch, capsys, 
     with pytest.raises(typer.Exit) as excinfo:
         backend.ensure_loaded(
             "org/model-GGUF",
-            hf_token=None,
-            max_seq_length=4096,
-            load_in_4bit=True,
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
         )
 
     assert excinfo.value.exit_code == 1, what
@@ -746,7 +789,6 @@ def test_padded_body_helper_passes_a_real_payload_through():
 
 def test_padded_body_helper_names_the_route_and_the_recovery():
     from unsloth_cli._inference import require_completed_padded_body
-
     url = "http://x/api/inference/load"
     for body in (None, {}, [], "", 0, "loaded"):
         with pytest.raises(RuntimeError) as excinfo:
@@ -819,8 +861,8 @@ def _stub_studio_gguf_load(monkeypatch):
         *,
         requested_tensor,
         extra_args,
-        label="",
-        cancelled=None,
+        label = "",
+        cancelled = None,
     ):
         return await attempt_load(requested_tensor, extra_args)
 
@@ -860,7 +902,7 @@ def _stub_studio_gguf_load(monkeypatch):
             },
         ),
     ],
-    ids=("hugging-face", "local"),
+    ids = ("hugging-face", "local"),
 )
 def test_load_gguf_backend_forwards_source_and_runtime_options(
     monkeypatch, source, expected_source
@@ -870,20 +912,20 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
     calls = _stub_studio_gguf_load(monkeypatch)
 
     config = SimpleNamespace(
-        gguf_variant="Q4_K_M",
-        identifier="org/model-GGUF",
-        is_vision=False,
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
         **source,
     )
 
     backend = inference._load_gguf_backend(
         config,
-        hf_token="hf_x",
-        max_seq_length=8192,
-        tensor_parallel=True,
-        speculative_type="dspark",
-        spec_draft_n_max=3,
-        llama_extra_args=["--top-k", "20"],
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        tensor_parallel = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
+        llama_extra_args = ["--top-k", "20"],
     )
 
     assert isinstance(backend, ChatBackend)
@@ -910,18 +952,18 @@ def test_load_gguf_backend_hands_a_local_dflash_sidecar_to_the_load(monkeypatch)
 
     calls = _stub_studio_gguf_load(monkeypatch)
     config = SimpleNamespace(
-        gguf_variant="Q4_K_M",
-        identifier="org/model-GGUF",
-        is_vision=False,
-        gguf_hf_repo=None,
-        gguf_file="/models/model.gguf",
-        gguf_mmproj_file=None,
-        gguf_mtp_file=None,
-        gguf_dspark_file=None,
-        gguf_dflash_file="/models/dflash-kquant.gguf",
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = None,
+        gguf_file = "/models/model.gguf",
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = "/models/dflash-kquant.gguf",
     )
 
-    inference._load_gguf_backend(config, hf_token=None, max_seq_length=8192)
+    inference._load_gguf_backend(config, hf_token = None, max_seq_length = 8192)
 
     assert [intent.dflash_draft_path for intent in calls] == ["/models/dflash-kquant.gguf"]
 
@@ -949,18 +991,18 @@ def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
     monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
 
     config = SimpleNamespace(
-        gguf_variant="Q4_K_M",
-        identifier="org/model-GGUF",
-        is_vision=False,
-        gguf_hf_repo="org/model-GGUF",
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
     )
 
     with pytest.raises(typer.Exit) as excinfo:
         inference._load_gguf_backend(
             config,
-            hf_token="hf_x",
-            max_seq_length=8192,
-            llama_extra_args=["--model"],
+            hf_token = "hf_x",
+            max_seq_length = 8192,
+            llama_extra_args = ["--model"],
         )
 
     assert excinfo.value.exit_code == 1
@@ -989,8 +1031,8 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
         *,
         requested_tensor,
         extra_args,
-        label="",
-        cancelled=None,
+        label = "",
+        cancelled = None,
     ):
         fallback_calls.append((requested_tensor, extra_args, label))
         ok = await attempt_load(requested_tensor, extra_args)
@@ -1008,17 +1050,17 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
     monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
 
     config = SimpleNamespace(
-        gguf_variant="Q4_K_M",
-        identifier="org/model-GGUF",
-        is_vision=False,
-        gguf_hf_repo="org/model-GGUF",
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
     )
 
     backend = inference._load_gguf_backend(
         config,
-        hf_token="hf_x",
-        max_seq_length=8192,
-        tensor_parallel=True,
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        tensor_parallel = True,
     )
 
     assert isinstance(backend, ChatBackend)
@@ -1060,7 +1102,7 @@ def test_chat_prefers_running_studio_server(monkeypatch):
     monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: local_loads.append(1))
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
 
-    result = CliRunner().invoke(_chat_app(), ["fake-model"], input="hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert local_loads == []
@@ -1097,7 +1139,7 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "--llama-extra-arg",
             "20",
         ],
-        input="/exit\n",
+        input = "/exit\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -1199,7 +1241,7 @@ def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
     monkeypatch.setattr(chatmod, "load_chat_backend", fake_local_load)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input="/compare\nhi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert "(compare on)" in result.output
@@ -1232,7 +1274,7 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: True)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run", "--compare"], input="hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["tuned-run", "--compare"], input = "hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert loads == [("tuned-run", False), ("fake/base", True)]
@@ -1320,7 +1362,7 @@ def test_chat_local_handles_stream(monkeypatch, chunk_kind):
     result = CliRunner().invoke(
         _chat_app(),
         ["fake-model"],
-        input="first\nsecond\n/exit\n",
+        input = "first\nsecond\n/exit\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -1370,7 +1412,7 @@ def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunk_kind, expe
         def close(self):
             closed.append(True)
 
-    _set_mlx_nccl_env(monkeypatch, rank="0")
+    _set_mlx_nccl_env(monkeypatch, rank = "0")
     monkeypatch.setattr(
         infermod,
         "connect_studio_server",
@@ -1407,7 +1449,7 @@ def test_chat_under_mlx_launch_nonzero_rank_drains_stdin(monkeypatch):
             self,
             obj,
             *,
-            timeout=300.0,
+            timeout = 300.0,
         ):
             assert obj is None
             return next(turns)
@@ -1418,7 +1460,7 @@ def test_chat_under_mlx_launch_nonzero_rank_drains_stdin(monkeypatch):
         def close(self):
             closed.append(True)
 
-    _set_mlx_nccl_env(monkeypatch, rank="1")
+    _set_mlx_nccl_env(monkeypatch, rank = "1")
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
     monkeypatch.setattr(
         chatmod,
@@ -1429,7 +1471,7 @@ def test_chat_under_mlx_launch_nonzero_rank_drains_stdin(monkeypatch):
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
     monkeypatch.setattr(chatmod, "_drain_available_stdin", lambda: drains.append(True))
 
-    result = CliRunner().invoke(_chat_app(), ["fake-model"], input="hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert "Chatting with" not in result.output
@@ -1445,7 +1487,7 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
             self,
             obj,
             *,
-            timeout=300.0,
+            timeout = 300.0,
         ):
             shares.append((obj, timeout))
             return obj
@@ -1456,7 +1498,7 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
         def close(self):
             closed.append(True)
 
-    _set_mlx_nccl_env(monkeypatch, rank="0")
+    _set_mlx_nccl_env(monkeypatch, rank = "0")
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
     monkeypatch.setattr(
         chatmod,
@@ -1473,7 +1515,7 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
     result = CliRunner().invoke(
         _chat_app(),
         ["fake-model", "--tensor-parallel"],
-        input="hi\n/exit\n",
+        input = "hi\n/exit\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -1504,7 +1546,7 @@ def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_err
             self,
             obj,
             *,
-            timeout=300.0,
+            timeout = 300.0,
         ):
             return obj
 
@@ -1519,7 +1561,7 @@ def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_err
         def close(self):
             closed.append(True)
 
-    _set_mlx_nccl_env(monkeypatch, rank="0")
+    _set_mlx_nccl_env(monkeypatch, rank = "0")
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
     monkeypatch.setattr(
         chatmod,
@@ -1529,7 +1571,7 @@ def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_err
     monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
 
-    result = CliRunner().invoke(_chat_app(), ["fake-model"], input="hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
 
     assert result.exit_code == expected_exit
     if expected_exit:
@@ -1562,7 +1604,7 @@ def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):
     fake_models = types.ModuleType("utils.models")
     fake_models.ModelConfig = _FakeModelConfig
 
-    _set_mlx_nccl_env(monkeypatch, rank="0")
+    _set_mlx_nccl_env(monkeypatch, rank = "0")
     monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
     monkeypatch.setitem(sys.modules, "core.inference", fake_inference)
     monkeypatch.setitem(sys.modules, "utils", fake_utils)
@@ -1571,10 +1613,10 @@ def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):
 
     inference.load_chat_backend(
         "fake-model",
-        hf_token=None,
-        max_seq_length=2048,
-        load_in_4bit=True,
-        tensor_parallel=True,
+        hf_token = None,
+        max_seq_length = 2048,
+        load_in_4bit = True,
+        tensor_parallel = True,
     )
 
     assert calls[0]["tensor_parallel"] is True
