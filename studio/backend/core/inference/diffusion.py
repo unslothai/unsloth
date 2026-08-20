@@ -163,6 +163,10 @@ from .diffusion_transformer_quant import (
     quantize_transformer,
     select_transformer_quant_scheme,
 )
+from utils.paths.path_utils import (
+    any_not_appledouble_metadata,
+    is_appledouble_metadata,
+)
 
 logger = get_logger(__name__)
 
@@ -341,12 +345,14 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
         # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction.
         if (root / "adapter_config.json").is_file():
             return None
+
         checkpoints = [
             p.name
             for p in root.iterdir()
             if p.is_file()
             and p.suffix.lower() == ".safetensors"
             and p.stem.lower() != "adapter_model"
+            and not is_appledouble_metadata(p)
         ]
     except OSError:
         return None
@@ -902,6 +908,28 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
+@functools.lru_cache(maxsize = None)
+def _no_recast_pipeline_class(pipe_cls: Any) -> Any:
+    """``pipe_cls`` with the dtype half of ``.to()`` dropped; device moves still work.
+
+    Pipelines built by ``from_pipe`` share the resident pipeline's module objects, so a
+    dtype cast through one rewrites the loaded model (#9186). Cached because a ControlNet
+    swap rebuilds its pipeline: one subclass per class, not a new type per build.
+    """
+
+    def to(self, *args: Any, **kwargs: Any) -> Any:
+        import torch
+
+        args = tuple(arg for arg in args if not isinstance(arg, torch.dtype))
+        kwargs.pop("dtype", None)
+        if not args and not kwargs:
+            return self
+        return super(no_recast, self).to(*args, **kwargs)
+
+    no_recast = type(pipe_cls.__name__, (pipe_cls,), {"to": to})
+    return no_recast
+
+
 _NO_WEIGHT = object()
 
 
@@ -1013,7 +1041,9 @@ def _local_base_transformer_present(base_repo: Optional[str]) -> bool:
         return False
     try:
         transformer = Path(base).expanduser() / "transformer"
-        return transformer.is_dir() and any(transformer.glob("*.safetensors"))
+        return transformer.is_dir() and any_not_appledouble_metadata(
+            transformer.glob("*.safetensors")
+        )
     except OSError:  # an id with invalid path characters is simply not a directory
         return False
 
@@ -4923,6 +4953,19 @@ class DiffusionBackend:
             explicit_offload = cpu_offload,
         )
 
+    @staticmethod
+    def _from_pipe_no_recast(pipe: Any, pipe_cls: Any, **extra: Any) -> Any:
+        """``Pipeline.from_pipe``, minus the cast it ends on.
+
+        from_pipe casts every component it reuses, to float32 unless the caller named a
+        dtype, and on the pinned revision an explicit ``torch_dtype = None`` no longer
+        suppresses it. Those components are the resident pipeline's own, so the cast raises
+        on a quantized denoiser (#9186) and silently doubles an unquantized one. Catching
+        that error is not enough -- components are cast in name order, so earlier ones are
+        float32 already when a later one refuses.
+        """
+        return _no_recast_pipeline_class(pipe_cls).from_pipe(pipe, **extra)
+
     def _workflow_pipe(self, state: _LoadState, class_name: Optional[str], workflow: str) -> Any:
         """The diffusers pipeline for an image-conditioned ``workflow``, built once and
         cached. ``Pipeline.from_pipe`` re-wires the loaded text-to-image pipe's resident
@@ -4938,9 +4981,7 @@ class DiffusionBackend:
             return cached
         import diffusers
 
-        # torch_dtype=None is load-bearing: from_pipe otherwise recasts EVERY component to fp32, which hard-crashes the
-        # dense-quant path (torchao subclasses cannot swap_tensors). None reuses resident modules at their loaded dtype.
-        pipe = getattr(diffusers, class_name).from_pipe(state.pipe, torch_dtype = None)
+        pipe = self._from_pipe_no_recast(state.pipe, getattr(diffusers, class_name))
         # Publish to the shared aux cache only if THIS load is still current: from_pipe runs without _lock, so an unload can null _state and caching would hand out stale modules.
         with self._lock:
             if self._state is state:
@@ -4950,9 +4991,8 @@ class DiffusionBackend:
     def _controlnet_pipe(self, state: _LoadState, resolved_cn: Any, cancel: threading.Event) -> Any:
         """Build (once, cached) the family's diffusers ControlNet pipeline around the requested
         ControlNet model. The ControlNet model is a small extra module loaded via from_pretrained
-        and cached by id; the pipeline is assembled with ``Pipeline.from_pipe(base,
-        controlnet=model)`` -- reusing the resident base modules at their loaded dtype (no reload,
-        no recast; torch_dtype=None for the same reason as _workflow_pipe). Raises a clear
+        and cached by id; the pipeline is assembled from the resident base pipe through
+        ``_from_pipe_no_recast``, reusing its modules at their loaded dtype. Raises a clear
         ValueError when the family declares no ControlNet classes."""
         fam = state.family
         pipe_cls_name = getattr(fam, "controlnet_pipeline_class", None)
@@ -5011,8 +5051,8 @@ class DiffusionBackend:
         key = (pipe_cls_name, resolved_cn.id)
         pipe = self._cn_pipes.get(key)
         if pipe is None:
-            pipe = getattr(diffusers, pipe_cls_name).from_pipe(
-                state.pipe, controlnet = cn_model, torch_dtype = None
+            pipe = self._from_pipe_no_recast(
+                state.pipe, getattr(diffusers, pipe_cls_name), controlnet = cn_model
             )
             with self._lock:
                 # Same race as the model cache: an unload may have cleared _cn_pipes while from_pipe ran.

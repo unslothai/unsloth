@@ -31,23 +31,23 @@ Download the native Unsloth Desktop app for your operating system:
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-Ubuntu.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
@@ -80,6 +80,7 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Search:** Use private and unlimited web search, deep research, and RAG.
 * **Hardware:** Supports CPU, Apple, NVIDIA, AMD, Intel, and multi GPU setups.
 * **Remote Access:** Serve your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
+* **Connect:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Also connect your ChatGPT/Codex subscription and [cloud providers](https://unsloth.ai/docs/integrations/connections)
 
 
 ### Train & Deploy
@@ -87,8 +88,7 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Complete support:** Supports [reinforcement learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide), LoRA, QLoRA, full fine tuning, pretraining, RL, GRPO, DPO, and FP8.
 * **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models with including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
 * **Datasets:** Build datasets from PDFs, CSVs, DOCX files, and more with [Data Recipes](https://unsloth.ai/docs/new/studio/data-recipe).
-* **OpenAI Compatible API:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api) and also connect to [cloud providers](https://unsloth.ai/docs/integrations/connections)
-
+  
 ## 🚀 Unsloth Start
 
 [Unsloth Start](https://unsloth.ai/docs/integrations/unsloth-start) connects [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex) and other agents to local models with one command.
@@ -130,23 +130,23 @@ The Tauri based desktop app is the easiest way to use Unsloth and needs no setup
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-Ubuntu.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.800-beta/Unsloth-Desktop-0_1_800_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
@@ -157,6 +157,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
 * **AMD:** Training, RL, chat and deployment work on Windows, WSL and Linux. [Read the AMD guide](https://unsloth.ai/docs/basics/amd).
+* **Intel:** Training and GGUF inference are supported on Intel GPUs (XPU).
 * **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819). Vulkan accelerates GGUF inference only; training still requires a supported PyTorch or MLX backend.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 

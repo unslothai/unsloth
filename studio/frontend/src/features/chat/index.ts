@@ -112,6 +112,7 @@ export {
 } from "./utils/prompt-queue-boundary";
 export {
   adoptPreStreamRunReservation,
+  cancelPreStreamRunReservations,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -120,6 +121,11 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
+export {
+  confirmStopRunningChatsIfNeeded,
+  type StopRunningChatsDecision,
+} from "./utils/confirm-stop-running-chats";
 export {
   promptQueueActiveItemChanged,
   reorderPromptQueueItems,
@@ -157,6 +163,7 @@ export {
   useChatModelRuntime,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
+export { compareModelDisplayName } from "./lib/external-model-label";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
@@ -177,6 +184,10 @@ export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
+export {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "./utils/mcp-tool-name";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentText,
@@ -206,6 +217,10 @@ export {
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  forkCountFor,
+  subscribeForkCounts,
+} from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningAutoOpensWhileStreaming,
@@ -244,7 +259,10 @@ export {
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
   exportFineTuneJsonl,
+  type ConvExportFormat,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
@@ -259,7 +277,9 @@ export {
 export {
   archiveAllChatItems,
   archiveChatItem,
+  archiveChatItems,
   deleteChatItem,
+  deleteChatItems,
   renameChatItem,
   unarchiveChatItem,
   useChatSidebarItems,

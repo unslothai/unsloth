@@ -25,7 +25,9 @@ from _playwright_robust import (  # noqa: E402
     is_benign_page_error,
     recover_or_replace_page,
     robust_evaluate,
+    wait_for_first,
     wait_for_health,
+    click_forced,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -394,31 +396,53 @@ with sync_playwright() as p:
     step("Compare tab: send to two panes")
     # Compare lives in the composer "Tools and attachments" menu.
     compare_opened = False
-    plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
-    if plus_btn.count() > 0:
-        plus_btn.click(force = True)
-        page.wait_for_timeout(400)
-        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
-        if compare_item.count() == 0:
+    # Waited for, not counted. This is the first step after load, so it is the one
+    # that pays for anything slowing first paint: #9251's reload snapshot overlay
+    # opened a window where the composer is on screen but not yet in the
+    # accessibility tree, and `count()` answered 0 six milliseconds in and called
+    # it "Compare nav not found". See wait_for_first().
+    plus_btn = wait_for_first(
+        page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I))
+    )
+    if plus_btn is not None:
+        click_forced(plus_btn)
+        # The menu items get a short wait rather than the full one: a miss here is
+        # a real branch (the item lives under "More"), not a slow render, and the
+        # fallbacks below must stay quick.
+        compare_item = wait_for_first(
+            page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)),
+            timeout_ms = 2000,
+        )
+        if compare_item is None:
             # Fallback: Compare chat may be under the "More" submenu.
-            more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
-            if more_trigger.count() > 0:
+            more_trigger = wait_for_first(
+                page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)),
+                timeout_ms = 2000,
+            )
+            if more_trigger is not None:
                 more_trigger.hover()
-                page.wait_for_timeout(400)
-                compare_item = page.get_by_role(
-                    "menuitem", name = re.compile(r"Compare chat", re.I)
-                ).first
-                if compare_item.count() == 0:
-                    more_trigger.click(force = True)
-                    page.wait_for_timeout(400)
-                    compare_item = page.get_by_role(
-                        "menuitem", name = re.compile(r"Compare chat", re.I)
-                    ).first
-        if compare_item.count() > 0:
-            compare_item.click(force = True)
+                compare_item = wait_for_first(
+                    page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)),
+                    timeout_ms = 2000,
+                )
+                if compare_item is None:
+                    click_forced(more_trigger)
+                    compare_item = wait_for_first(
+                        page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)),
+                        timeout_ms = 2000,
+                    )
+        if compare_item is not None:
+            click_forced(compare_item)
             compare_opened = True
     if not compare_opened:
-        soft_fail("Compare nav not found")
+        # Which of the two was missing, because "Compare nav not found" sent the
+        # last reader looking for a removed menu item that was never removed.
+        missing = (
+            "the composer's Tools and attachments button"
+            if plus_btn is None
+            else "the Compare chat menu item"
+        )
+        soft_fail(f"Compare nav not found: {missing} never appeared")
     else:
         page.wait_for_timeout(1500)
         shoot("02-compare-opened")
