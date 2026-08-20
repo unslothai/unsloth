@@ -2569,7 +2569,17 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     if not search_dir.name:
         return str(search_dir)
     if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
-        return str(search_dir.parent)
+        search_dir = search_dir.parent
+    # An HF-cache checkout keeps the weights under models--<repo>/snapshots/<sha>/
+    # (optionally a quant subdir deeper), and a user adding a projector by hand
+    # drops it wherever their file manager showed the model — most often the
+    # models--<repo> root. Stop the walk at that root: the cache itself is
+    # shared by every repo, so a sibling repo's projector must stay invisible.
+    for parent in search_dir.parents:
+        if parent.name == "snapshots" and parent.parent.name.startswith("models--"):
+            return str(parent.parent)
+        if parent.name.startswith("models--"):
+            return str(parent)
     return str(search_dir)
 
 
