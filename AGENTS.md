@@ -23,6 +23,7 @@ and with work from other contributors.
 - Do not overwrite or revert changes that are unrelated to the current task.
 - Keep logical changes separated so they can be reviewed or reverted independently.
 - Add or update focused tests for changed behavior without rewriting unrelated tests.
+- Always include automated unit or integration tests for newly added features if they are missing or not yet covered.
 - Before finishing, inspect the final diff, remove unrelated changes, and report
   that no unrelated diff remains.
 
