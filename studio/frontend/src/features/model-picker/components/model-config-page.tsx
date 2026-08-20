@@ -86,11 +86,19 @@ import {
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
+  CACHE_RAM_LLAMA_DEFAULT,
+  CACHE_RAM_MAX,
+  CACHE_RAM_MIN,
   CONTEXT_LENGTH_MIN,
+  CTX_CHECKPOINTS_LLAMA_DEFAULT,
+  CTX_CHECKPOINTS_MAX,
+  CTX_CHECKPOINTS_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   DRAFT_N_MAX_SPEC_TYPES,
   KV_CACHE_DTYPES,
+  LOAD_MODES,
+  LOAD_MODE_DEFAULT,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
@@ -101,6 +109,7 @@ import {
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   type PerModelConfig,
+  SEPARATE_DRAFT_MODEL_SPEC_TYPES,
   SPECULATIVE_TYPES,
   deletePerModelConfig,
   floorMaxSeqLength,
@@ -148,6 +157,45 @@ const SPECULATIVE_TYPE_LABELS: Record<
   off: "Off",
 };
 
+// Lower-case where the value is the flag's own spelling, so the pick reads the
+// same as the launch command.
+const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
+  auto: "Auto",
+  none: "None",
+  mmap: "mmap",
+  mlock: "mlock",
+  "mmap+mlock": "mmap+mlock",
+  dio: "DirectIO",
+};
+
+// What "Don't reserve system RAM" vetoes: mmap maps and dio streams, so neither
+// holds a full host copy. Mirrors _LOAD_MODE_MLOCK_VALUES |
+// _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
+const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
+
+/**
+ * What Model Memory does to this load mode, or null when the pick reaches the
+ * command line untouched: a row showing the pick alone would name a flag the
+ * child never sees. Keep resident is first because it wins outright.
+ */
+function loadModeOverrideNotice(
+  mode: string | null,
+  settings: ModelMemorySettings | null,
+): string | null {
+  if (mode == null || settings == null) {
+    return null;
+  }
+  if (settings.keepResident && !settings.noRamReserve) {
+    return mode === "mmap+mlock"
+      ? null
+      : "This will be replaced by mmap+mlock: Keep model in GPU memory, in Settings, owns how the weights are held.";
+  }
+  if (settings.noRamReserve && RAM_RESERVING_LOAD_MODES.has(mode)) {
+    return "This will be removed and the load runs the default mmap path: Don't reserve system RAM, in Settings, owns how the weights are held.";
+  }
+  return null;
+}
+
 /**
  * The batch size llama-server will not go below for this load.
  *
@@ -177,9 +225,13 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.kvCacheDtype != null ||
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
+    config.specDraftCacheDtype != null ||
     config.nParallel != null ||
     config.nBatch != null ||
     config.nUbatch != null ||
+    config.loadMode != null ||
+    config.ctxCheckpoints != null ||
+    config.cacheRam != null ||
     config.tensorParallel ||
     config.disableVision ||
     config.chatTemplateOverride != null ||
@@ -910,10 +962,90 @@ function MlxAdvancedSettings({
   );
 }
 
+/**
+ * Mmap/Mlock, with the note that says when Settings wins. Its own component
+ * because it subscribes to the Model Memory settings and must keep following
+ * them: the settings page is reachable without unmounting this panel.
+ */
+function LoadModeRow({
+  config,
+  update,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+}) {
+  const adviceId = useId();
+  const [modelMemory, setModelMemory] = useState<ModelMemorySettings | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    loadModelMemorySettings()
+      .then((loaded) => {
+        if (!cancelled) {
+          setModelMemory(loaded);
+        }
+      })
+      .catch(() => {});
+    const unsubscribe = subscribeModelMemorySettings(setModelMemory);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+  const notice = loadModeOverrideNotice(config.loadMode ?? null, modelMemory);
+  return (
+    <div className="space-y-1">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Mmap/Mlock</span>
+          <InfoHint>
+            How the weights are read off disk (--load-mode). Auto memory-maps
+            unless a device cannot, which is the default. mmap forces the
+            mapping, mlock keeps the model in RAM rather than letting it swap or
+            compress, mmap+mlock does both, DirectIO streams the file where the
+            platform supports it, and None asks for no special mode. Model
+            Memory, in Settings, owns this when either of its toggles is on.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.loadMode ?? LOAD_MODE_DEFAULT}
+          onValueChange={(v) =>
+            update({ loadMode: v === LOAD_MODE_DEFAULT ? null : v })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            aria-describedby={notice ? adviceId : undefined}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            {LOAD_MODES.map((mode) => (
+              <SelectItem key={mode} value={mode}>
+                {LOAD_MODE_LABELS[mode]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {notice && (
+        <p id={adviceId} className="text-ui-11 text-amber-500">
+          {notice}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
   showDraftTokens,
+  showSpecDraftCacheDtype,
   speculativeFallback,
   onEditTemplate,
   layerCount,
@@ -927,6 +1059,7 @@ function GgufAdvancedSettings({
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   showDraftTokens: boolean;
+  showSpecDraftCacheDtype: boolean;
   speculativeFallback: string;
   onEditTemplate: () => void;
   layerCount: number | null;
@@ -1019,6 +1152,11 @@ function GgufAdvancedSettings({
               specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
                 ? config.specDraftNMax
                 : null,
+              // Dropped with the drafter, like the depth above: the draft
+              // context exists only while a separate model is loaded.
+              specDraftCacheDtype: SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(v)
+                ? config.specDraftCacheDtype
+                : null,
             })
           }
         >
@@ -1070,6 +1208,49 @@ function GgufAdvancedSettings({
             aria-label="Speculative decoding draft tokens"
             className={NUMBER_INPUT_CLASS}
           />
+        </div>
+      )}
+
+      {showSpecDraftCacheDtype && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS_WRAP}>Spec Decoding KV Cache Dtype</span>
+            <InfoHint>
+              KV cache precision for the draft model's own context
+              (--spec-draft-type-k / --spec-draft-type-v). Separate from the KV
+              Cache Dtype above, which is the target model's. f16 is the
+              default; bf16 and f32 are full precision; q8_0 through iq4_nl are
+              quantized, and a quantized draft cache saves VRAM on a drafter
+              whose output is verified by the target anyway.
+            </InfoHint>
+          </div>
+          <Select
+            value={config.specDraftCacheDtype ?? KV_CACHE_DTYPE_DEFAULT}
+            onValueChange={(v) =>
+              update({
+                specDraftCacheDtype: v === KV_CACHE_DTYPE_DEFAULT ? null : v,
+              })
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              className={`w-[92px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
+                {KV_CACHE_DTYPE_DEFAULT}
+              </SelectItem>
+              {KV_CACHE_DTYPES.map((dtype) => (
+                <SelectItem key={dtype} value={dtype}>
+                  {dtype}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 
@@ -1254,6 +1435,94 @@ function GgufAdvancedSettings({
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
+
+      {/* Host-side knobs, after the ones that shape the model itself. All three
+          are llama-server's own, and the diffusion runner launches no
+          llama-server, so they are hidden for it like the batch sizes above. */}
+      {!isDiffusion && (
+        <>
+          <LoadModeRow config={config} update={update} />
+
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Checkpoints</span>
+              <InfoHint>
+                Context checkpoints kept per slot (--ctx-checkpoints), which let
+                a sliding-window model rewind instead of re-processing the
+                prompt. Leave blank for the llama.cpp default (
+                {CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0 disables them. Each one costs
+                host memory, and models without a sliding window ignore the
+                setting.
+              </InfoHint>
+            </div>
+            <input
+              type="number"
+              min={CTX_CHECKPOINTS_MIN}
+              max={CTX_CHECKPOINTS_MAX}
+              step={1}
+              value={config.ctxCheckpoints ?? ""}
+              placeholder="auto"
+              onChange={(event) => {
+                const raw = event.target.value;
+                if (raw === "") {
+                  update({ ctxCheckpoints: null });
+                  return;
+                }
+                const parsed = Number.parseInt(raw, 10);
+                if (Number.isFinite(parsed)) {
+                  update({
+                    ctxCheckpoints: Math.max(
+                      CTX_CHECKPOINTS_MIN,
+                      Math.min(CTX_CHECKPOINTS_MAX, parsed),
+                    ),
+                  });
+                }
+              }}
+              aria-label="Context checkpoints per slot"
+              className={NUMBER_INPUT_CLASS}
+            />
+          </div>
+
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Cache RAM</span>
+              <InfoHint>
+                Host memory in MiB llama-server may spend caching prompt state it
+                has evicted from a slot (--cache-ram), so a returning
+                conversation is not re-processed. Leave blank for the llama.cpp
+                default ({CACHE_RAM_LLAMA_DEFAULT}); 0 disables the cache and -1
+                lifts the limit.
+              </InfoHint>
+            </div>
+            <input
+              type="number"
+              min={CACHE_RAM_MIN}
+              max={CACHE_RAM_MAX}
+              step={1}
+              value={config.cacheRam ?? ""}
+              placeholder="auto"
+              onChange={(event) => {
+                const raw = event.target.value;
+                if (raw === "") {
+                  update({ cacheRam: null });
+                  return;
+                }
+                const parsed = Number.parseInt(raw, 10);
+                if (Number.isFinite(parsed)) {
+                  update({
+                    cacheRam: Math.max(
+                      CACHE_RAM_MIN,
+                      Math.min(CACHE_RAM_MAX, parsed),
+                    ),
+                  });
+                }
+              }}
+              aria-label="Host prompt cache size in MiB"
+              className={NUMBER_INPUT_CLASS}
+            />
+          </div>
+        </>
+      )}
 
       {/* Last, because it is the escape hatch for everything the rows above do not
           cover, and because llama.cpp's last-wins parsing means these really are
@@ -2002,6 +2271,12 @@ export function ModelConfigPage({
   const showDraftTokens =
     config.speculativeType != null &&
     DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
+  // Narrower than the row above: the dtype needs a second context, and only the
+  // sidecar modes always load one. MTP may read baked-in heads out of the target
+  // GGUF, which the loader knows and this panel does not.
+  const showSpecDraftCacheDtype =
+    config.speculativeType != null &&
+    SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(config.speculativeType);
   const nativeContextLength =
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
@@ -2371,6 +2646,7 @@ export function ModelConfigPage({
                 config={config}
                 update={update}
                 showDraftTokens={showDraftTokens}
+                showSpecDraftCacheDtype={showSpecDraftCacheDtype}
                 speculativeFallback={speculativeFallback}
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
