@@ -100,6 +100,41 @@ def test_function_role_is_treated_as_a_tool_result():
     assert "A tool returned" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
+def test_an_oversized_assistant_prefill_does_not_ask_the_user_to_split_it():
+    # Reachable through auto-continue, which resends the truncated reply as the final
+    # assistant message. The user did not write it and cannot send it in pieces.
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = "assistant"))
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert "The reply being continued is already too long for this window" in message
+    assert "start a new reply" in message
+    assert "send it in smaller pieces" not in message
+
+
+@pytest.mark.parametrize("role", ["system", "developer"])
+def test_oversized_instructions_point_at_the_system_prompt(role):
+    # System and developer turns survive eviction, so splitting one across messages
+    # preserves the total and resolves nothing.
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = role))
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert "The system instructions do not fit on their own" in message
+    assert "shorten the system prompt" in message
+    assert "send it in smaller pieces" not in message
+
+
+def test_a_dominating_assistant_prefill_hedges_the_same_way():
+    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500, role = "assistant"))
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert "Most of this prompt is the reply being continued" in message
+    assert "shortening the conversation will not help much" in message
+
+
+@pytest.mark.parametrize("role", ["", "moderator"])
+def test_an_unnameable_role_falls_back_to_the_generic_advice(role):
+    # Better to give advice that is merely unspecific than advice aimed at the wrong turn.
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = role))
+    assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
+
+
 def test_every_wording_keeps_the_counts_and_the_client_markers():
     # `isContextLimitError` in chat-adapter.ts matches on these substrings, and the
     # numbers are the only concrete thing the user has to size the window by.

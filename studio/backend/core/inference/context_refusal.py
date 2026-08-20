@@ -124,43 +124,69 @@ def _blame_latest_turn(context_tokens: int):
     # The prompt's real budget is the window minus the reply reserved out of it. Fall
     # back to the window itself, which is the same test one reservation looser.
     budget = _int(refusal.get("prompt_target")) or recorded_context or context_tokens
-    role = str(refusal.get("latest_turn_role") or "") or "user"
+    # Not defaulted to "user": a role we cannot name is a turn we cannot give advice
+    # about, and `describe_oversize` falls back to the generic wording for it.
+    role = str(refusal.get("latest_turn_role") or "")
     return role, not (budget and latest_turn > budget)
+
+
+# Per role: what to call the oversized turn when it merely dominates the prompt, what to
+# call it when it does not fit at all, and the one lever besides the window that is worth
+# offering. The lever is the whole point of splitting by role -- "send it in smaller
+# pieces" is sound advice for a pasted message and useless for the other three, which the
+# user did not type and mostly cannot shorten by splitting.
+_ROLE_ADVICE = {
+    "user": (
+        "Most of this prompt is the message just sent",
+        "The message just sent does not fit on its own",
+        "send it in smaller pieces",
+    ),
+    "tool": (
+        "Most of this prompt is a single tool result",
+        "A tool returned more than this context window can hold",
+        "ask for a smaller slice of the file or page",
+    ),
+    # The reply being resumed after it hit Max Tokens. Splitting it is not a thing the
+    # user can do, and there is nothing to shorten: the partial is what it is.
+    "assistant": (
+        "Most of this prompt is the reply being continued",
+        "The reply being continued is already too long for this window",
+        "start a new reply",
+    ),
+    # System and developer turns survive eviction by construction, so splitting one
+    # across several messages preserves the total and changes nothing.
+    "system": (
+        "Most of this prompt is the system instructions",
+        "The system instructions do not fit on their own",
+        "shorten the system prompt",
+    ),
+}
+_ROLE_ADVICE["function"] = _ROLE_ADVICE["tool"]
+_ROLE_ADVICE["developer"] = _ROLE_ADVICE["system"]
 
 
 def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     """The user-facing message for a prompt that exceeds the loaded context window.
 
     The advice splits on the only two things that change what the user can do: whose
-    turn is the bulk of the prompt (the user can rewrite their own message; a tool
-    result they cannot), and whether that turn is merely most of the prompt or actually
-    too big to send at all.
+    turn is the bulk of the prompt, and whether that turn is merely most of the prompt
+    or actually too big to send at all. An unrecognised role falls back to the generic
+    wording rather than blaming a turn it cannot describe.
     """
     head = (
         f"Message too long: {request_tokens} tokens exceeds the "
         f"{context_tokens}-token context window. "
     )
     blamed = _blame_latest_turn(context_tokens)
-    if blamed is None:
+    advice = _ROLE_ADVICE.get(blamed[0]) if blamed else None
+    if advice is None:
         return (
             head + "Try increasing the Context Length in Model settings, or shorten the "
             "conversation."
         )
-    role, fits_alone = blamed
-    if role in ("tool", "function"):
-        cause = (
-            "Most of this prompt is a single tool result"
-            if fits_alone
-            else "A tool returned more than this context window can hold"
-        )
-        lever = "ask for a smaller slice of the file or page"
-    else:
-        cause = (
-            "Most of this prompt is the message just sent"
-            if fits_alone
-            else "The message just sent does not fit on its own"
-        )
-        lever = "send it in smaller pieces"
+    dominant_cause, oversize_cause, lever = advice
+    fits_alone = blamed[1]
+    cause = dominant_cause if fits_alone else oversize_cause
     hedge = "will not help much" if fits_alone else "will not help"
     return (
         f"{head}{cause}, so shortening the conversation {hedge}. Increase the Context "
