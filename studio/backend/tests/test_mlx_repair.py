@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MLX self-heal: on Apple Silicon with MLX missing, reinstall it by name on a
-background thread (off the startup critical path). No-op elsewhere. A present stack is
-not a no-op: it overturns a chat-only verdict that contradicts it, including for a user
-who has disabled the reinstall. Models on core.training.worker's runtime backend self-heal.
+"""MLX self-heal: on Apple Silicon with MLX missing, reinstall it by name on a background
+thread (off the startup critical path). No-op elsewhere, but a present stack still overturns
+a chat-only verdict that contradicts it, even when the reinstall is disabled. Models on
+core.training.worker's runtime backend self-heal.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ import utils.mlx_repair as mr  # noqa: E402
 @pytest.fixture(autouse = True)
 def _reset_attempt_guard(monkeypatch):
     monkeypatch.setattr(mr, "_attempted", False)
-    # Both halves, or a worker reaches _run_repair_and_redetect's "the install ran" branch
-    # on a latch an earlier test left set and re-detects for real against the next test.
+    # Both halves, or a worker takes _run_repair_and_redetect's "install ran" branch on a
+    # latch an earlier test left set and re-detects for real against the next test.
     monkeypatch.setattr(mr, "_environment_mutated", False)
     monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
     yield
-    # Still inside the test's stubs: a worker outliving its own test would otherwise run
-    # the real detect_hardware() against the next one's globals.
+    # Join inside the test's stubs: an outliving worker would run the real detect_hardware()
+    # against the next test's globals.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
             thread.join(timeout = 5)
@@ -491,9 +491,9 @@ def test_an_unresolvable_interpreter_is_diagnosed_not_retried(monkeypatch, tmp_p
 
 
 def _published_verdict(monkeypatch, *, chat_only: bool, reason):
-    """Settled means a device and a set event beside the reason -- a chat-only Mac measured
-    its way to CPU, not to nothing -- or a success check ignoring the verdict would pass.
-    The publication state is this test's own, so nothing leaks to the next."""
+    """Settled means a device and a set event beside the reason (a chat-only Mac measured its
+    way to CPU, not to nothing), or a success check ignoring the verdict would pass. The state
+    is monkeypatched, so nothing leaks to the next test."""
     import utils.hardware.hardware as hw
 
     settled = threading.Event()
@@ -600,9 +600,9 @@ def test_the_stack_is_measured_once_before_the_decision(monkeypatch, usable):
 
 
 def test_the_overturn_cannot_republish_into_a_stopped_lifespan(monkeypatch):
-    """detect_hardware() reads the current epoch when it owns none, so an unscoped
-    re-detect would adopt the one shutdown moved to and publish for a dead lifespan, which
-    the next then inherits instead of measuring for itself."""
+    """detect_hardware() reads the current epoch when it owns none, so an unscoped re-detect
+    adopts the one shutdown moved to and publishes for a dead lifespan, which the next then
+    inherits instead of measuring for itself."""
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
@@ -672,9 +672,8 @@ def test_a_redetect_that_publishes_nothing_is_not_announced(monkeypatch):
 
 
 def test_an_opted_out_host_with_nothing_to_overturn_imports_nothing(monkeypatch):
-    """Under the warm's own kill switch join_background_warm() is a no-op, so detection has
-    not run and this would be the process's first MLX import -- for no one, since the
-    reinstall it would inform is opted out."""
+    """Under the warm's own kill switch join_background_warm() is a no-op, so detection has not
+    run and this would be the process's first MLX import, for a reinstall that is opted out."""
     monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     _published_verdict(monkeypatch, chat_only = True, reason = None)

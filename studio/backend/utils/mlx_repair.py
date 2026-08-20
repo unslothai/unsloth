@@ -545,32 +545,30 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
 
 
 def start_mlx_autorepair_if_needed() -> bool:
-    """If this is an Apple Silicon host whose MLX stack is missing or too old,
-    reinstall it on a daemon thread (off the startup critical path) and re-detect
-    on success. Returns True iff a repair thread was started. No-op (returns False)
-    off Apple Silicon, when already attempted this process, or when disabled via
-    UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still
+    """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on
+    a daemon thread (off the startup critical path) and re-detect on success. True iff a repair
+    thread was started; False off Apple Silicon, when already attempted this process, or when
+    disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still
     overturns a verdict that contradicts it."""
     global _attempted, _repair_thread, _repair_started_at
     if not is_apple_silicon():
         return False
     from utils.hardware import hardware as _hw
 
-    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs --
-    # but only when one is waiting on it: under the warm's own kill switch this would
-    # otherwise be the process's first MLX import, for no one.
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but
+    # only when one waits on it: under the warm's kill switch it would be a first MLX import
+    # for no one.
     opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
     if opted_out and not _hw.verdict_blames_the_mlx_stack():
         return False
-    # Before the measurement, so a shutdown during it discards what is published on the
-    # strength of it. The repair worker shares it rather than reading its own, later one.
+    # Read before the measurement, so a shutdown during it discards whatever is published on
+    # the strength of it. The repair worker shares this epoch rather than a later one.
     epoch = _hw.current_detection_epoch()
     if mlx_stack_available():
-        # Detection asks this as the warm's first stage, early enough to race another
-        # thread's first transformers import: CPython hands the loser a partially initialised
-        # module rather than deadlock, so mlx_lm's chain raises on a healthy install (#9120).
-        # Usable here therefore means the verdict was raced. Only the warm's is reachable --
-        # with the warm switched off, one published later stands unreconciled.
+        # Detection asks this as the warm's first stage, early enough to race another thread's
+        # first transformers import: CPython hands the loser a partially initialised module, so
+        # mlx_lm's chain raises on a healthy install (#9120). Usable here means the verdict was
+        # raced. Only the warm's is reachable; with the warm off, a later one stands unreconciled.
         if _hw.overturn_the_mlx_verdict(epoch):
             logger.info(
                 "MLX stack measures usable after the warm, against a chat-only verdict "
