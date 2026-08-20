@@ -38,7 +38,7 @@ from core.inference.context_window import (
     prompt_budget,
     truncate_oldest_messages,
 )
-from core.inference.instruction_pin import is_substantive
+from core.inference.instruction_pin import INSTRUCTION_MIN_CHARS, is_substantive
 
 # "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is
 # both the A/B arm and the escape hatch for a template family that misbehaves.
@@ -111,6 +111,67 @@ def _neutralise(text: str) -> str:
     return _DELIMITERS.sub(lambda match: match.group(0).replace("<", "‹"), text)
 
 
+def _select_items(
+    evicted: list[dict], *, max_tokens: int, max_items: int, min_chars: int,
+    reserve_oldest: bool = False,
+) -> list[str]:
+    """The instruction turns out of `evicted`, oldest first, under both caps.
+
+    `reserve_oldest` takes the oldest qualifying turn before the newest-first walk. It is
+    for the no-floor pass, where the thread is one of short prompts and the FIRST turn is
+    the one that says what is being built: newest-first alone would spend all eight slots
+    on the increments nearest the end ("add music", "now the score", "fix the pipes") and
+    evict the statement of the task itself, which is the loss this pass exists to stop.
+    The walk still runs newest-first afterwards, so a later change of direction is kept
+    too, and rendering is oldest-first either way.
+    """
+    groups = list(group_turns(evicted))
+
+    def _item(index: int) -> Optional[tuple[str, int]]:
+        """`groups[index]` as (text, cost) if it is an instruction, else None."""
+        head = groups[index][0]
+        if not is_substantive(head, min_chars = min_chars):
+            return None
+        text = _text_of(head).strip()
+        if not text:
+            return None
+        return _neutralise(text), estimate_message_tokens(head)
+
+    order = list(reversed(range(len(groups))))
+    if reserve_oldest:
+        first = next((i for i in range(len(groups)) if _item(i)), None)
+        if first is not None:
+            order = [first] + [i for i in order if i != first]
+
+    # Kept as (position, text) so the render can sort by position: with a reserved item
+    # the selection order is no longer simply the reverse of the transcript order, and
+    # `reversed(chosen)` put the oldest turn LAST, inverting the supersession the header
+    # promises.
+    picked: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    spent = 0
+    for index in order:
+        if len(picked) >= max_items:
+            break
+        found = _item(index)
+        if found is None:
+            continue
+        item, cost = found
+        if item in seen:
+            # Users restate a standing rule, and each copy used to take a slot out of
+            # eight: one rule repeated eight times crowded out the user's other rule.
+            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
+            continue
+        if spent + cost > max_tokens:
+            # Skipped, not truncated, and the loop continues: an older instruction that
+            # still fits beats nothing.
+            continue
+        picked.append((index, item))
+        seen.add(item)
+        spent += cost
+    return [item for _, item in sorted(picked)]
+
+
 def carried_forward_items(
     evicted: list[dict],
     *,
@@ -125,36 +186,33 @@ def carried_forward_items(
     silently dropped, which is why `max_items` is small and the header says "lossy".
 
     Repeats collapse to their newest copy, on the same key `_recap` uses.
+
+    Two passes. The first wants a paragraph, on the reasoning that someone who typed one
+    wrote an instruction. That floor is 80 characters, and a real chat does not clear it:
+    measured on a live session, "Create a Flappy Bird game in HTML" (33), "Add music to
+    the game" (21) and "Continue work" (13) all failed it, so three resets each carried an
+    EMPTY block and the statement of what the user was building was evicted with the rest.
+    The budget was never the constraint there -- 473 tokens free and nothing to spend it
+    on.
+
+    So when the first pass finds nothing, take the same walk again without the length
+    floor. `is_substantive` still applies `_CONTINUATIONS`, which is what actually keeps
+    "ok" and "continue" out of the system turn; the floor was only ever a second guess at
+    the same question, and an empty block is not the safer answer -- it is the one where
+    the model is told the conversation was compacted and given nothing of it.
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
-    chosen: list[str] = []
-    seen: set[str] = set()
-    spent = 0
-    for group in reversed(group_turns(evicted)):
-        if len(chosen) >= max_items:
-            break
-        head = group[0]
-        if not is_substantive(head):
-            continue
-        text = _text_of(head).strip()
-        if not text:
-            continue
-        item = _neutralise(text)
-        if item in seen:
-            # Users restate a standing rule, and each copy used to take a slot out of
-            # eight: one rule repeated eight times crowded out the user's other rule.
-            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
-            continue
-        cost = estimate_message_tokens(head)
-        if spent + cost > max_tokens:
-            # Skipped, not truncated, and the loop continues: an older instruction that
-            # still fits beats nothing.
-            continue
-        chosen.append(item)
-        seen.add(item)
-        spent += cost
-    return list(reversed(chosen))
+    items = _select_items(
+        evicted, max_tokens = max_tokens, max_items = max_items,
+        min_chars = INSTRUCTION_MIN_CHARS,
+    )
+    if items:
+        return items
+    return _select_items(
+        evicted, max_tokens = max_tokens, max_items = max_items, min_chars = 0,
+        reserve_oldest = True,
+    )
 
 
 def _resolved(value):

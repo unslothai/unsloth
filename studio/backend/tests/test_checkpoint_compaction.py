@@ -380,13 +380,66 @@ def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatc
     assert seen == {"rolling": True}
 
 
-def test_an_instruction_shorter_than_the_substantive_floor_is_not_carried():
-    """A deliberate bound: the 80-character floor stops "ok, do that" being carried as
-    policy, at the price of dropping a genuinely short instruction ("always answer in
-    French") too. It is still archived and still searchable."""
+def test_a_short_instruction_is_carried_when_it_is_all_there_is():
+    """The 80-character floor used to drop this, on the reasoning that a paragraph is
+    what an instruction looks like. A real session says otherwise, so the floor now only
+    decides which pass finds an item, never whether the block is empty."""
     short = {"role": "user", "content": "Always answer in French."}
 
-    assert carried_forward_items([short], max_tokens = 4096) == []
+    assert carried_forward_items([short], max_tokens = 4096) == ["Always answer in French."]
+
+
+def test_a_long_instruction_still_wins_over_a_short_one():
+    """The floor is a preference, not a filter: the fallback only runs when the first
+    pass came back empty, so a thread that HAS a paragraph is unchanged and a passing
+    remark alongside it is not promoted into the system turn."""
+    messages = [
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "Understood."},
+    ]
+
+    assert carried_forward_items(messages, max_tokens = 4096) == [INSTRUCTION]
+
+
+def test_filler_is_never_carried_even_when_the_block_would_be_empty():
+    """The fallback drops the length floor and nothing else. `_CONTINUATIONS` is what
+    actually keeps a nudge out of the system turn, and it still applies, so a thread of
+    pure filler produces no block rather than one that says "continue"."""
+    messages = []
+    for filler in ("continue", "ok", "yes", "keep going", "thanks", "go on"):
+        messages += [
+            {"role": "user", "content": filler},
+            {"role": "assistant", "content": "..."},
+        ]
+
+    assert carried_forward_items(messages, max_tokens = 4096) == []
+
+
+def test_the_task_statement_of_a_real_coding_session_survives_the_reset():
+    """The session that found this. Every user turn is short, so the first pass finds
+    nothing and the reset used to carry an empty block: three compactions in six turns,
+    `carried_forward_chars: 0` on all three, and the statement of what was being built
+    evicted with everything else. Budget was never the constraint (473 tokens free)."""
+    messages = []
+    for turn in ("Create a Flappy Bird game in HTML", "Add music to the game", "Continue work"):
+        messages += [
+            {"role": "user", "content": turn},
+            {"role": "assistant", "content": "<code>" * 200},
+        ]
+
+    items = carried_forward_items(messages, max_tokens = 473)
+
+    assert "Create a Flappy Bird game in HTML" in items
+    assert "Add music to the game" in items
+    # Oldest first, so the model reads the task before the amendment to it.
+    assert items.index("Create a Flappy Bird game in HTML") < items.index("Add music to the game")
+    # "Continue work" rides along, and is left alone deliberately. `_CONTINUATIONS` holds
+    # the bare "continue"; the two-word forms are not in it and `is_thin_query` does not
+    # call them thin either. Teaching either helper to recognise them means guessing at
+    # phrasing, and the same guess would have to reject "fix it" and "keep the tests
+    # green" to be worth anything. One wasted slot out of eight is the cheaper error.
 
 
 def test_at_most_max_items_instructions_are_carried():
