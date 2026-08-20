@@ -11778,6 +11778,27 @@ def _dense_prefix_chars(text: str, token_budget: float) -> int:
     return length
 
 
+# `count_chat_tokens` prices a chunk by rendering it through the model's chat template
+# (/apply-template) and tokenizing the result, so the probe can only measure text the
+# template actually RENDERS. A standalone tool message is not that text: the Gemma-4
+# templates shipped in `assets/chat_templates` skip it outright -- `gemma-4.jinja:232` is
+# `{%- if message['role'] != 'tool' -%}`, and a tool result is only emitted while scanning
+# forward from an assistant tool call -- so a 600-character payload rendered to 46
+# characters with the payload absent, and 7,168 characters of base64 priced as ~12 tokens
+# of framing sailed under any budget on the first pass. A user turn is rendered by every
+# template checked: both bundled Gemma-4 templates, Qwen3, Llama-3.2, Mistral and
+# Hermes-3. The assistant-tool-call pair is not a safe alternative -- Mistral's template
+# raises on any tool call id that is not nine alphanumeric characters.
+_PROBE_ROLE = "user"
+
+# The guard below: how few tokens a rendered chunk may cost before the count is treated as
+# not having measured it. Deliberately far past anything real text reaches -- the densest
+# packing measured with Qwen3 is 128 characters per token, for a chunk of nothing but
+# spaces, and ordinary output runs 1-8. A template that drops the content lands at
+# hundreds, or at infinity as the chunk grows, because its count does not move at all.
+_MAX_PROBE_CHARS_PER_TOKEN = 256
+
+
 def _loaded_token_counter(ctx: int):
     """The tokenizer of the model serving this request, or None when there is not one.
 
@@ -11801,13 +11822,37 @@ def _loaded_token_counter(ctx: int):
     except Exception:  # noqa: BLE001 -- no tokenizer is "unknown", never an error
         return None
 
-    def _count(chunk: str):
+    def _rendered(chunk: str):
         try:
-            spent = counter([{"role": "tool", "content": chunk}], None, None, strict = False)
+            spent = counter([{"role": _PROBE_ROLE, "content": chunk}], None, None, strict = False)
         except Exception:  # noqa: BLE001 -- same rule: fall back to the estimate
             logger.debug("result budget: exact count failed", exc_info = True)
             return None
         return int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
+
+    # What the turn costs with nothing in it, priced once. Two jobs: it is the baseline the
+    # guard measures growth against, so a template that renders no content is caught by its
+    # count not moving rather than by a guess about density; and it is the only part of the
+    # count that is not the chunk. Left IN the total rather than subtracted -- 8 tokens on
+    # Qwen3 and 11 on the Gemma-4 templates, under 1% of a 1,792-token share, and the real
+    # tool turn pays its own framing anyway, so counting it errs toward a smaller result.
+    framing = _rendered("") or 0
+
+    def _count(chunk: str):
+        spent = _rendered(chunk)
+        if spent is None:
+            return None
+        # A count that barely moves off the framing measured nothing, whatever it reports.
+        if spent - framing < len(chunk) / _MAX_PROBE_CHARS_PER_TOKEN:
+            logger.debug(
+                "result budget: template priced %d chars at %d tokens over %d of framing; "
+                "not a measurement, keeping the estimate",
+                len(chunk),
+                spent,
+                framing,
+            )
+            return None
+        return spent
 
     return _count
 

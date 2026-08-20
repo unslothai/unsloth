@@ -484,6 +484,62 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         # And not by collapsing to the floor: the fit is still worth reading.
         assert kept > tools._MIN_PAGE_CHARS
 
+    def test_a_template_that_drops_tool_messages_is_still_measured(self, monkeypatch):
+        """The probe has to price a prompt that CONTAINS the chunk.
+
+        `count_chat_tokens` renders through the model's chat template, so a role the
+        template skips is priced as framing and nothing else. Both bundled Gemma-4
+        templates do exactly that -- `gemma-4.jinja:232` is
+        `{%- if message['role'] != 'tool' -%}`, and a tool result is only emitted while
+        scanning forward from an assistant tool call. Rendered directly, a 600-character
+        payload came back as 46 characters with the payload absent, so the count was a
+        small positive constant, the first pass saw it fit, and the whole estimated prefix
+        was returned unmeasured on a whole model family.
+        """
+        _window(monkeypatch, 5120)
+        seen = []
+
+        def _count_chat_tokens(messages, *a, **k):
+            # A template with the Gemma-4 convention: user turns render, a standalone
+            # tool message does not.
+            seen.append([m["role"] for m in messages])
+            body = "".join(m["content"] for m in messages if m["role"] == "user")
+            return 11 + int(len(body) / 1.33)
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True, context_length = 5120, count_chat_tokens = _count_chat_tokens
+            ),
+        )
+        text = "0123456789abcdef" * 2000
+        share = 5120 * tools._PAGE_CONTEXT_SHARE
+
+        kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
+
+        assert kept / 1.33 <= share, "a skipped role priced framing, not the result"
+        assert kept >= tools._MIN_PAGE_CHARS
+        assert seen and all(roles == ["user"] for roles in seen)
+
+    def test_a_template_that_renders_no_content_falls_back_to_the_estimate(self, monkeypatch):
+        """The guard. If some future template drops the probe role too, the count is a
+        small constant regardless of chunk size -- which is not a measurement and must not
+        be accepted as one. Keeping the estimate is the pre-existing behaviour; reporting
+        the constant is the silent no-op this exists to prevent."""
+        _window(monkeypatch, 5120)
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = lambda messages, *a, **k: 11,  # framing, whatever is sent
+            ),
+        )
+
+        assert tools._loaded_token_counter(5120)("0123456789abcdef" * 250) is None
+        # And the caller keeps the estimate rather than a prefix nothing priced.
+        assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
+
     def test_the_readable_floor_still_holds_under_an_exact_count(self, monkeypatch):
         _window(monkeypatch, 1024)
         self._serving(monkeypatch, 1024)
