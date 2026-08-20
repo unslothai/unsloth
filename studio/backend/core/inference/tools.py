@@ -11812,10 +11812,10 @@ def _loaded_token_counter(ctx: int):
     return _count
 
 
-# Measured: English costs one pass (it fits on the first count), base64 two, and the
-# third is slack for text whose density changes along its length. Bounded rather than a
-# binary search because each pass is a llama-server round trip.
-_EXACT_FIT_PASSES = 3
+# Measured: English costs one pass (it fits on the first count), base64 two, and a mixed
+# result -- dense output followed by prose -- three, with the last as slack. Bounded
+# rather than a binary search because each pass is a llama-server round trip.
+_EXACT_FIT_PASSES = 5
 
 
 def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) -> int:
@@ -11836,17 +11836,40 @@ def _exact_prefix_chars(text: str, chars: int, token_budget: float, ctx: int) ->
     counter = _loaded_token_counter(ctx)
     if counter is None:
         return chars
+    # Every value this returns is either a MEASURED fit, the caller's own estimate (when
+    # nothing could be measured), or the floor. A proportional shrink assumes the retained
+    # prefix keeps the average density of the whole, which is false for the shape the code
+    # tools produce most: dense output followed by prose. Cutting prose off a
+    # base64-then-English result raises the density of what is left, so each pass gains
+    # less than it asked for and a fixed pass count used to hand back the last shrink
+    # unmeasured -- 3,497 characters costing 1,978 tokens against a 1,792-token share
+    # (110%), measured with Qwen3-4B, which is the irreducible overflow this budget exists
+    # to prevent.
+    previous = None  # the last (chars, tokens) pair, for the secant step below
     for _ in range(_EXACT_FIT_PASSES):
         spent = counter(text[:chars])
-        if spent is None or spent <= token_budget:
-            return chars
+        if spent is None:
+            return chars  # nothing to measure with; the estimate stands, as before
+        if spent <= token_budget:
+            return chars  # measured, not assumed
         fitted = int(chars * token_budget / spent)
+        if previous is not None:
+            # Two measurements price the TAIL that was cut rather than the whole prefix,
+            # which is what the proportional step gets wrong. Take whichever is smaller:
+            # this only ever shrinks faster, never grows.
+            prior_chars, prior_spent = previous
+            per_char = (prior_spent - spent) / (prior_chars - chars)
+            if per_char > 0:
+                fitted = min(fitted, chars - int((spent - token_budget) / per_char))
+        previous = (chars, spent)
         # The floor still applies, and stopping here saves a round trip that cannot
         # change the answer.
         if fitted <= _MIN_PAGE_CHARS:
             return _MIN_PAGE_CHARS
-        chars = fitted
-    return chars
+        chars = min(fitted, chars - 1)  # always progress, so the loop cannot stall
+    # Out of passes with the last shrink still unmeasured. Returning it would be the
+    # unchecked prefix above, so fall back to the floor the caller guarantees anyway.
+    return _MIN_PAGE_CHARS
 
 
 def _dense_char_limit(text: str, max_chars: int) -> int:

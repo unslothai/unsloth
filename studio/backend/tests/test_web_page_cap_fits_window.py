@@ -444,6 +444,46 @@ class TestDenseAsciiIsMeasuredNotEstimated:
 
         assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
 
+    def test_a_dense_prefix_with_a_prose_tail_is_measured_not_assumed(self, monkeypatch):
+        """The shape a proportional shrink gets wrong, and the one the code tools emit
+        most: `base64 payload.bin` followed by the shell's ordinary English report.
+
+        Cutting the prose off raises the average density of what is left, so each pass
+        gains less than it asked for. Measured with Qwen3-4B on a real 2,500-character
+        base64 prefix (1.38 chars/token) followed by English (4.2-6.2), the fixed pass
+        count returned 3,497 characters costing 1,978 tokens against the 1,792-token
+        share: 110%, unmeasured, which is the irreducible overflow this budget prevents.
+        Whatever comes back now has been counted.
+        """
+        _window(monkeypatch, 5120)
+        dense_chars = 2500
+        # The measured Qwen3-4B rates, priced per character so the count is exact at
+        # every prefix length rather than only at the two the test happens to check.
+        def _price(chunk):
+            dense = min(len(chunk), dense_chars)
+            return int(dense / 1.376 + (len(chunk) - dense) / 4.2)
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                context_length = 5120,
+                count_chat_tokens = lambda messages, *a, **k: sum(
+                    _price(m["content"]) for m in messages
+                ),
+            ),
+        )
+        text = "ABCDefgh0123+/9z" * 157 + (
+            "The build finished and the archive was uploaded to the release bucket. "
+        ) * 400
+        share = 5120 * tools._PAGE_CONTEXT_SHARE
+
+        kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
+
+        assert _price(text[:kept]) <= share, "the retained prefix must be counted, not assumed"
+        # And not by collapsing to the floor: the fit is still worth reading.
+        assert kept > tools._MIN_PAGE_CHARS
+
     def test_the_readable_floor_still_holds_under_an_exact_count(self, monkeypatch):
         _window(monkeypatch, 1024)
         self._serving(monkeypatch, 1024)
