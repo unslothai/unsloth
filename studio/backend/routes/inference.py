@@ -6513,6 +6513,7 @@ def _estimate_gguf_kv_gb(
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    model_identifier: Optional[str] = None,
 ) -> float:
     """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -6525,6 +6526,7 @@ def _estimate_gguf_kv_gb(
         from core.inference.llama_server_args import parse_ctx_override
 
         probe = LlamaCppBackend()
+        probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
         if not probe._can_estimate_kv():
             return 0.0
@@ -6982,6 +6984,7 @@ def _estimate_gguf_required_gb(
                 n_ubatch,
                 n_devices,
                 is_diffusion,
+                model_identifier = getattr(config, "identifier", None),
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -7107,15 +7110,18 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
 def _is_embedding_gguf(config: ModelConfig) -> bool:
     """Whether this GGUF's pooling type makes llama-server launch with --embedding.
 
-    False whenever the header cannot be read, which keeps every caller doing what it
-    did before the check existed: this only ever relaxes a refusal, and relaxing one
-    on a guess is how a load reaches the abort the refusal exists to prevent.
+    Before an uncached remote GGUF has a readable header, use the same local identifier
+    basename hints as the eventual loader. Generic names remain unclassified, so this
+    only relaxes the batch refusal for models the loader will launch in embedding mode.
     """
     try:
         main = _local_gguf_main_path(config)
         if not main:
-            return False
+            from utils.models.gguf_metadata import is_gguf_embedding_model
+            return is_gguf_embedding_model("", model_identifier = getattr(config, "identifier", None))
         probe = LlamaCppBackend()
+        probe._model_identifier = config.identifier
+        probe._gguf_path = main
         probe._read_gguf_metadata(main)
         return bool(probe.is_embedding_gguf)
     except Exception as exc:
