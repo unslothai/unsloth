@@ -231,6 +231,61 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
+# ── Parallel background jobs (issue #8818) ──
+_SETUP_PARALLEL_PIDS=()
+_SETUP_PARALLEL_LABELS=()
+
+_setup_parallel_reset() {
+    _SETUP_PARALLEL_PIDS=()
+    _SETUP_PARALLEL_LABELS=()
+}
+
+_setup_parallel_run() {
+    local label="$1"
+    shift
+    (
+        set -euo pipefail
+        "$@"
+    ) &
+    _SETUP_PARALLEL_PIDS+=("$!")
+    _SETUP_PARALLEL_LABELS+=("$label")
+}
+
+_setup_parallel_wait() {
+    local fail=0 i pid label wait_status=0
+    [ "${#_SETUP_PARALLEL_PIDS[@]}" -gt 0 ] || return 0
+    for i in "${!_SETUP_PARALLEL_PIDS[@]}"; do
+        pid="${_SETUP_PARALLEL_PIDS[$i]}"
+        label="${_SETUP_PARALLEL_LABELS[$i]}"
+        # Capture status before testing: `if ! wait` clobbers $? under bash.
+        wait "$pid"
+        wait_status=$?
+        if [ "$wait_status" -ne 0 ]; then
+            step "error" "$label failed (exit code $wait_status)" "$C_ERR" >&2
+            fail=1
+        fi
+    done
+    _setup_parallel_reset
+    if [ "$fail" -ne 0 ]; then
+        setup_fail 1 "One or more parallel setup tasks failed"
+    fi
+}
+
+_setup_parallel_wait_fail_open() {
+    local i pid label wait_status=0
+    [ "${#_SETUP_PARALLEL_PIDS[@]}" -gt 0 ] || return 0
+    for i in "${!_SETUP_PARALLEL_PIDS[@]}"; do
+        pid="${_SETUP_PARALLEL_PIDS[$i]}"
+        label="${_SETUP_PARALLEL_LABELS[$i]}"
+        wait "$pid"
+        wait_status=$?
+        if [ "$wait_status" -ne 0 ]; then
+            verbose_substep "$label failed (exit code $wait_status); continuing"
+        fi
+    done
+    _setup_parallel_reset
+}
+
 _nvcc_meets_llama_minimum() {
     # Echo "ok|too_old|unknown" then the parsed "X.Y" version, one per line.
     # llama.cpp needs CUDA toolkit >= 12.4 (#4437; setup.ps1 aborts via #4517).
@@ -1235,52 +1290,6 @@ else
 fi
 verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
 
-if [ "$_FRONTEND_SKIP" = true ]; then
-    : # no suitable Node (skip source): message already shown above; nothing to build
-elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
-    # Node was provisioned only for the OXC runtime; the dist is already current.
-    step "frontend" "up to date"
-    verbose_substep "frontend dist is newer than source inputs"
-else
-
-# ── Install bun (optional, faster package installs) ──
-# Install bun via npm only when we manage the isolated Node (npm -g lands in the
-# isolated prefix); on a system Node we install nothing global. Build falls back to npm.
-if command -v bun &>/dev/null; then
-    substep "bun already installed ($(bun --version))"
-elif [ "$NODE_SOURCE" = bundled ]; then
-    substep "installing bun..."
-    # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
-    # postinstall fetches its binary; without it the install is a broken stub.
-    if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
-        substep "bun installed ($(bun --version))"
-    else
-        substep "bun install skipped (npm will be used instead)"
-    fi
-else
-    verbose_substep "skipping global bun install on system Node (npm will be used)"
-fi
-
-# ── Build frontend ──
-substep "building frontend..."
-cd "$SCRIPT_DIR/frontend"
-_HIDDEN_GITIGNORES=()
-_dir="$(pwd)"
-while [ "$_dir" != "/" ]; do
-    _dir="$(dirname "$_dir")"
-    if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
-        mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
-        _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
-    fi
-done
-
-_restore_gitignores() {
-    for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
-        mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
-    done
-}
-trap _restore_gitignores EXIT
-
 # Use bun for install if available (faster), fall back to npm.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
@@ -1318,86 +1327,148 @@ _try_bun_install() {
     return 1
 }
 
-# Capture install output (bun + npm fallback) so we can detect a registry block.
-_FRONTEND_INSTALL_LOG=$(mktemp)
-_CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
-_bun_install_ok=false
-if command -v bun &>/dev/null; then
-    substep "using bun for package install (faster)"
-    if _try_bun_install; then
-        _bun_install_ok=true
-    else
-        # First attempt failed, likely due to corrupt cache entries.
-        # Clear the cache and retry once.
-        echo "   Clearing bun cache and retrying..."
-        run_maybe_quiet bun pm cache rm || true
-        if _try_bun_install; then
-            _bun_install_ok=true
+
+_setup_frontend_build_and_oxc() {
+    local _need_build="${_NEED_FRONTEND_BUILD:-false}"
+
+    if [ "$_need_build" = true ]; then
+        # ── Install bun (optional, faster package installs) ──
+        # Install bun via npm only when we manage the isolated Node (npm -g lands in the
+        # isolated prefix); on a system Node we install nothing global. Build falls back to npm.
+        if command -v bun &>/dev/null; then
+            substep "bun already installed ($(bun --version))"
+        elif [ "$NODE_SOURCE" = bundled ]; then
+            substep "installing bun..."
+            # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
+            # postinstall fetches its binary; without it the install is a broken stub.
+            if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
+                substep "bun installed ($(bun --version))"
+            else
+                substep "bun install skipped (npm will be used instead)"
+            fi
+        else
+            verbose_substep "skipping global bun install on system Node (npm will be used)"
         fi
-    fi
-fi
-if [ "$_bun_install_ok" = false ]; then
-    # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
-    # returns non-zero on failure) so the hint branch is reachable; it also captures
-    # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
-    _npm_install_rc=0
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
-    if [ "$_npm_install_rc" -ne 0 ]; then
-        _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+
+        # ── Build frontend ──
+        substep "building frontend..."
+        cd "$SCRIPT_DIR/frontend"
+        _HIDDEN_GITIGNORES=()
+        _dir="$(pwd)"
+        while [ "$_dir" != "/" ]; do
+            _dir="$(dirname "$_dir")"
+            if [ -f "$_dir/.gitignore" ] && grep -qx '\*' "$_dir/.gitignore" 2>/dev/null; then
+                mv "$_dir/.gitignore" "$_dir/.gitignore._twbuild"
+                _HIDDEN_GITIGNORES+=("$_dir/.gitignore")
+            fi
+        done
+
+        _restore_gitignores() {
+            for _gi in "${_HIDDEN_GITIGNORES[@]+"${_HIDDEN_GITIGNORES[@]}"}"; do
+                mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
+            done
+        }
+        trap _restore_gitignores EXIT
+
+        # Capture install output (bun + npm fallback) so we can detect a registry block.
+        _FRONTEND_INSTALL_LOG=$(mktemp)
+        _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
+        _bun_install_ok=false
+        if command -v bun &>/dev/null; then
+            substep "using bun for package install (faster)"
+            if _try_bun_install; then
+                _bun_install_ok=true
+            else
+                # First attempt failed, likely due to corrupt cache entries.
+                # Clear the cache and retry once.
+                echo "   Clearing bun cache and retrying..."
+                run_maybe_quiet bun pm cache rm || true
+                if _try_bun_install; then
+                    _bun_install_ok=true
+                fi
+            fi
+        fi
+        if [ "$_bun_install_ok" = false ]; then
+            # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
+            # returns non-zero on failure) so the hint branch is reachable; it also captures
+            # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
+            _npm_install_rc=0
+            run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+            if [ "$_npm_install_rc" -ne 0 ]; then
+                _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+                rm -f "$_FRONTEND_INSTALL_LOG"
+                setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
+            fi
+        fi
+        _CAPTURE_LOG=""
         rm -f "$_FRONTEND_INSTALL_LOG"
-        setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
+        run_quiet "npm run build" npm run build
+
+        _restore_gitignores
+        trap - EXIT
+
+        _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
+        if [ -z "$_MAX_CSS" ]; then
+            step "frontend" "built (warning: no CSS emitted)" "$C_WARN"
+        elif [ "$_MAX_CSS" -lt 100000 ]; then
+            step "frontend" "built (warning: CSS may be truncated)" "$C_WARN"
+        else
+            step "frontend" "built"
+        fi
+
+        cd "$SCRIPT_DIR"
     fi
-fi
-_CAPTURE_LOG=""
-rm -f "$_FRONTEND_INSTALL_LOG"
-run_quiet "npm run build" npm run build
 
-_restore_gitignores
-trap - EXIT
+    # ── oxc-validator runtime ──
+    # Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+    # Node, so do not run npm install against an unsuitable/absent system Node.
+    if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+        cd "$_OXC_DIR"
+        _OXC_INSTALL_LOG=$(mktemp)
+        _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+        # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+        # below is reachable; it also captures the exact exit code.
+        _oxc_install_rc=0
+        run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+        _CAPTURE_LOG=""
+        if [ "$_oxc_install_rc" -ne 0 ]; then
+            _suggest_npm_registry "$_OXC_INSTALL_LOG"
+            rm -f "$_OXC_INSTALL_LOG"
+            setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
+        fi
+        rm -f "$_OXC_INSTALL_LOG"
+        cd "$SCRIPT_DIR"
+    elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+        # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+        # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+        substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+    fi
 
-_MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
-if [ -z "$_MAX_CSS" ]; then
-    step "frontend" "built (warning: no CSS emitted)" "$C_WARN"
-elif [ "$_MAX_CSS" -lt 100000 ]; then
-    step "frontend" "built (warning: CSS may be truncated)" "$C_WARN"
+    _remove_agent_instruction_files \
+        "$SCRIPT_DIR/frontend/node_modules" \
+        "$_OXC_DIR/node_modules"
+}
+
+_SETUP_FRONTEND_BG_PID=""
+_setup_launch_frontend_build_and_oxc() {
+    _setup_frontend_build_and_oxc &
+    _SETUP_FRONTEND_BG_PID=$!
+}
+
+if [ "$_FRONTEND_SKIP" = true ]; then
+    : # no suitable Node (skip source): message already shown above; nothing to build
+elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    # Node was provisioned only for the OXC runtime; the dist is already current.
+    step "frontend" "up to date"
+    verbose_substep "frontend dist is newer than source inputs"
+    if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+        _setup_launch_frontend_build_and_oxc
+    fi
 else
-    step "frontend" "built"
+    _setup_launch_frontend_build_and_oxc
 fi
-
-cd "$SCRIPT_DIR"
-
-fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 
 fi  # end frontend build check
-
-# ── oxc-validator runtime ──
-# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
-# Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
-    cd "$_OXC_DIR"
-    _OXC_INSTALL_LOG=$(mktemp)
-    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
-    # below is reachable; it also captures the exact exit code.
-    _oxc_install_rc=0
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    _CAPTURE_LOG=""
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        _suggest_npm_registry "$_OXC_INSTALL_LOG"
-        rm -f "$_OXC_INSTALL_LOG"
-        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
-    fi
-    rm -f "$_OXC_INSTALL_LOG"
-    cd "$SCRIPT_DIR"
-elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
-    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
-    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
-fi
-
-_remove_agent_instruction_files \
-    "$SCRIPT_DIR/frontend/node_modules" \
-    "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
@@ -1773,6 +1844,22 @@ fast_install_sidecar() (
     fast_install "$@"
 )
 
+_setup_install_t5_sidecar() {
+    local _t5_version="$1"
+    local _t5_target="$2"
+    local _t5_label="$3"
+    local _t5_slug="$4"
+    _assert_studio_owned_or_absent "$_t5_target" "$_t5_label"
+    [ -d "$_t5_target" ] && rm -rf "$_t5_target"
+    mkdir -p "$_t5_target"
+    : > "$_t5_target/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers $_t5_version" fast_install_sidecar --target "$_t5_target" --no-deps "transformers==$_t5_version"
+    run_quiet "install huggingface_hub for $_t5_slug" fast_install_sidecar --target "$_t5_target" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for $_t5_slug" fast_install_sidecar --target "$_t5_target" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for $_t5_slug" fast_install_sidecar --target "$_t5_target" --no-deps "tiktoken"
+    step "transformers" "$_t5_version pre-installed"
+}
+
 cd "$SCRIPT_DIR"
 
 # On Colab without a venv, skip venv-dependent Python deps sections but
@@ -1996,35 +2083,11 @@ _target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_I
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
 if [ "$_NEED_T5_INSTALL" = true ]; then
-    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
-    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
-    mkdir -p "$VENV_T5_530_DIR"
-    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.3.0" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "tiktoken"
-    step "transformers" "5.3.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
-    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
-    mkdir -p "$VENV_T5_550_DIR"
-    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.5.0" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
-    run_quiet "install huggingface_hub for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "tiktoken"
-    step "transformers" "5.5.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
-    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
-    mkdir -p "$VENV_T5_510_DIR"
-    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.10.2" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
-    run_quiet "install huggingface_hub for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "tiktoken"
-    step "transformers" "5.10.2 pre-installed"
+    _setup_parallel_reset
+    _setup_parallel_run "T5 5.3.0" _setup_install_t5_sidecar "5.3.0" "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv" "t5_530"
+    _setup_parallel_run "T5 5.5.0" _setup_install_t5_sidecar "5.5.0" "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv" "t5_550"
+    _setup_parallel_run "T5 5.10.2" _setup_install_t5_sidecar "5.10.2" "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv" "t5_510"
+    _setup_parallel_wait
 fi
 fi
 
@@ -3330,6 +3393,13 @@ PY
 fi
 
 # ── Footer ──
+if [ -n "${_SETUP_FRONTEND_BG_PID:-}" ]; then
+    if ! wait "$_SETUP_FRONTEND_BG_PID"; then
+        setup_fail 1 "frontend build failed"
+    fi
+    _SETUP_FRONTEND_BG_PID=""
+fi
+
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
