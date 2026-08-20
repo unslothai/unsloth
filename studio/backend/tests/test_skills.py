@@ -55,9 +55,7 @@ def _bundle(
     return path
 
 
-def test_bundled_skill_creator_is_discoverable_and_read_only(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_bundled_skill_creator_is_discoverable_and_read_only(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(skills, "_builtin_skills_root", lambda: BUILTIN_SKILLS_ROOT)
 
     bundled = skills.list_skills()
@@ -70,10 +68,7 @@ def test_bundled_skill_creator_is_discoverable_and_read_only(
         skills.delete_skill("skill-creator")
 
 
-def test_existing_skill_creator_keeps_precedence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_existing_skill_creator_keeps_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(skills, "_builtin_skills_root", lambda: BUILTIN_SKILLS_ROOT)
     custom = SKILL_MD.replace("name: unsloth", "name: skill-creator").replace(
         "Train and run models with Unsloth. Use for Unsloth workflows.",
