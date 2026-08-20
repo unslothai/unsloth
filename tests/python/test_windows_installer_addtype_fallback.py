@@ -913,8 +913,16 @@ def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
     stale.write_text("left by a run that could not delete it", encoding = "utf-8")
     fresh = good / "unsloth-probe-cafebabe.tmp"
     fresh.write_text("another process is using this right now", encoding = "utf-8")
+    # Same prefix, same suffix, not the shape the probe writes. This sweep runs in
+    # the HOST's temp directory, so a name that merely starts the same way is
+    # somebody else's file however old it is.
+    theirs = good / "unsloth-probe-report.tmp"
+    theirs.write_text("not ours", encoding = "utf-8")
+    theirs_long = good / "unsloth-probe-deadbeefcafe.tmp"
+    theirs_long.write_text("not ours either", encoding = "utf-8")
     aged = time.time() - 3 * 24 * 3600
-    os.utime(stale, (aged, aged))
+    for path in (stale, theirs, theirs_long):
+        os.utime(path, (aged, aged))
 
     result = _run_powershell(
         _script(
@@ -927,6 +935,8 @@ def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
     assert _lines(result, "USABLE:") == ["USABLE:True"]
     assert not stale.exists()
     assert fresh.exists()
+    assert theirs.exists(), "the sweep took a file that only shares the prefix"
+    assert theirs_long.exists(), "the sweep took a file that only shares the prefix"
 
 
 @requires_pwsh

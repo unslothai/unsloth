@@ -358,6 +358,11 @@ function Install-UnslothStudio {
             try {
                 $cutoff = (Get-Date).AddDays(-1)
                 foreach ($old in @(Get-ChildItem -LiteralPath $Path -File -Filter "unsloth-probe-*.tmp" -ErrorAction Stop)) {
+                    # Shape, not prefix. This runs in the HOST's temp directory,
+                    # where a name that merely starts the same way belongs to
+                    # somebody else; the probe below only ever writes eight hex
+                    # characters, so anything else is not ours to delete.
+                    if ($old.Name -notmatch '^unsloth-probe-[0-9a-f]{8}\.tmp$') { continue }
                     if ($old.LastWriteTime -lt $cutoff) {
                         Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
                     }
