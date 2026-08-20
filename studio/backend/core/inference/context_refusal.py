@@ -12,7 +12,8 @@ ContextVar: per-task, and asyncio copies the context per request, so one request
 refusal cannot describe another's.
 """
 
-from contextvars import ContextVar
+import asyncio
+from contextvars import ContextVar, copy_context
 from typing import Optional
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "clear",
     "latest_refusal",
     "describe_oversize",
+    "run_in_thread",
 ]
 
 
@@ -29,6 +31,12 @@ _LATEST_REFUSAL: ContextVar[Optional[dict]] = ContextVar("unsloth_context_refusa
 # conversation, is named as the problem. Never all of it: the system prompt and template
 # wrapper are in the floor too. Two thirds sits above a normal turn's share of a long
 # thread and below a thread whose single turn IS the thread.
+#
+# Dominating is NOT the same as not fitting. A 3400-token turn under a 4096-token prompt
+# budget is two thirds of the floor and still fits on its own; what pushed the request
+# over was the system prompt beside it. So dominance only earns the softer "most of this
+# prompt is ..." wording, and the flat claim that the turn does not fit is made only when
+# the turn alone exceeds the budget.
 _TURN_DOMINATES = 0.66
 
 
@@ -55,6 +63,25 @@ def latest_refusal() -> Optional[dict]:
     return _LATEST_REFUSAL.get()
 
 
+async def run_in_thread(func):
+    """`asyncio.to_thread`, but a refusal recorded in the worker reaches this request.
+
+    `to_thread` runs `func` in a COPY of the context, so a `record_fit` inside it is
+    invisible to the caller -- including on the one path that matters, where `func` goes
+    on to raise the oversize error the copy just diagnosed. Run in a context this side
+    owns, and carry the value back whether `func` returned or raised.
+    """
+    ctx = copy_context()
+    try:
+        return await asyncio.to_thread(ctx.run, func)
+    finally:
+        try:
+            _LATEST_REFUSAL.set(ctx[_LATEST_REFUSAL])
+        except KeyError:
+            # The worker never recorded a fit, so this request's own value stands.
+            pass
+
+
 def _int(value) -> int:
     try:
         return int(value or 0)
@@ -62,11 +89,14 @@ def _int(value) -> int:
         return 0
 
 
-def _oversized_turn_role(context_tokens: int) -> Optional[str]:
-    """Role of the turn that is too big on its own, or None if the history is.
+def _blame_latest_turn(context_tokens: int):
+    """`(role, fits_alone)` for the turn worth naming, or None if the history is to blame.
 
     None also covers no diagnosis recorded, and a diagnosis describing a different
     window than the one just refused: both fall back to generic advice rather than guess.
+
+    `fits_alone` is False only when the turn's own rendered size is over the budget the
+    prompt had to fit in, which is the only evidence that it cannot be sent at all.
     """
     refusal = latest_refusal()
     if not refusal:
@@ -81,37 +111,48 @@ def _oversized_turn_role(context_tokens: int) -> Optional[str]:
         return None
     if latest_turn < _TURN_DOMINATES * irreducible:
         return None
-    return str(refusal.get("latest_turn_role") or "") or "user"
+    # The prompt's real budget is the window minus the reply reserved out of it. Fall
+    # back to the window itself, which is the same test one reservation looser.
+    budget = _int(refusal.get("prompt_target")) or recorded_context or context_tokens
+    role = str(refusal.get("latest_turn_role") or "") or "user"
+    return role, not (budget and latest_turn > budget)
 
 
 def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     """The user-facing message for a prompt that exceeds the loaded context window.
 
-    Three shapes, because there are three different things the user can do:
-
-    * long conversation -- shorten it, or raise the window.
-    * the message just sent is too big alone -- shortening the chat does nothing.
-    * a tool returned more than the window holds -- the user did not write it, so the
-      only lever is the window (or a narrower tool call).
+    The advice splits on the only two things that change what the user can do: whose
+    turn is the bulk of the prompt (the user can rewrite their own message; a tool
+    result they cannot), and whether that turn is merely most of the prompt or actually
+    too big to send at all.
     """
     head = (
         f"Message too long: {request_tokens} tokens exceeds the "
         f"{context_tokens}-token context window. "
     )
-    role = _oversized_turn_role(context_tokens)
+    blamed = _blame_latest_turn(context_tokens)
+    if blamed is None:
+        return (
+            head + "Try increasing the Context Length in Model settings, or shorten the "
+            "conversation."
+        )
+    role, fits_alone = blamed
     if role in ("tool", "function"):
-        return (
-            head + "A tool returned more than this context window can hold, so shortening "
-            "the conversation will not help. Increase the Context Length in Model "
-            "settings, or ask for a smaller slice of the file or page."
+        cause = (
+            "Most of this prompt is a single tool result"
+            if fits_alone
+            else "A tool returned more than this context window can hold"
         )
-    if role is not None:
-        return (
-            head + "The message just sent does not fit on its own, so shortening the "
-            "conversation will not help. Increase the Context Length in Model settings, "
-            "or send it in smaller pieces."
+        lever = "ask for a smaller slice of the file or page"
+    else:
+        cause = (
+            "Most of this prompt is the message just sent"
+            if fits_alone
+            else "The message just sent does not fit on its own"
         )
+        lever = "send it in smaller pieces"
+    hedge = "will not help much" if fits_alone else "will not help"
     return (
-        head + "Try increasing the Context Length in Model settings, or shorten the "
-        "conversation."
+        f"{head}{cause}, so shortening the conversation {hedge}. Increase the Context "
+        f"Length in Model settings, or {lever}."
     )

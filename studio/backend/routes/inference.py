@@ -16165,7 +16165,12 @@ async def openai_chat_completions(
                     request = request,
                     cancel_event = cancel_event,
                 )
-                drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
+                # Not bare `asyncio.to_thread`: the drain records the fit that refused,
+                # and a plain worker context copy would drop it before the oversize
+                # error it explains reaches `_friendly_error`.
+                drain_task = asyncio.create_task(
+                    context_refusal.run_in_thread(_drain_gguf_tool_loop)
+                )
                 (
                     full_text,
                     completion_usage,
@@ -16864,7 +16869,10 @@ async def openai_chat_completions(
                         _context_truncation,
                     )
 
-                drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
+                # See the tool-loop drain: the refusal has to survive the worker context.
+                drain_task = asyncio.create_task(
+                    context_refusal.run_in_thread(_drain_gguf_choices)
+                )
                 (
                     _n,
                     _choices,
