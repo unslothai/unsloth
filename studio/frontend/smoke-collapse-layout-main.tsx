@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness page for scripts/probe-collapse-layout.py.
+// Harness page for tests/studio/playwright_collapse_layout.py.
 //
 // It answers one question: when a collapsible toggles, does the browser lay out the WHOLE document,
 // and does that cost scale with how big the document is?
