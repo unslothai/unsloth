@@ -4383,6 +4383,48 @@ def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
         raise RuntimeError("activated install was missing expected files: " + ", ".join(missing))
 
 
+def _install_tree_is_usable(path: Path, host: HostInfo) -> bool:
+    """Whether ``path`` holds a tree ``confirm_install_tree`` would accept.
+
+    Structural only (a handful of ``exists`` checks), so it is cheap enough to
+    run on the failure path where the alternative is guessing.
+    """
+    try:
+        confirm_install_tree(path, host)
+    except Exception:
+        return False
+    return True
+
+
+def newest_usable_install_side_path(
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    exclude: Path | None = None,
+) -> Path | None:
+    """The most recent retained rollback tree that is still a usable install.
+
+    Candidates sort by the timestamp ``unique_install_side_path`` embeds, so the
+    last usable one is the newest. ``failed`` trees are never considered: they
+    are the trees that failed confirmation in the first place.
+    """
+    skip: set[Path] = set()
+    if exclude:
+        try:
+            skip.add(exclude.resolve())
+        except OSError:
+            pass
+    for candidate in reversed(_install_side_path_candidates(install_dir, "rollback")):
+        try:
+            if candidate.resolve() in skip:
+                continue
+        except OSError:
+            continue
+        if _install_tree_is_usable(candidate, host):
+            return candidate
+    return None
+
+
 def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     """Move a freshly extracted ``staging_dir`` onto ``dst``.
 
@@ -4544,13 +4586,31 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         # left, so it is kept: cleaning it up would leave no llama.cpp at all
         # on the in-app update path, which has no source build behind it.
         keep_rollback = not restored and rollback_dir is not None and rollback_dir.exists()
+        retained_dir = rollback_dir
         if keep_rollback:
-            log(f"previous install kept at rollback path {rollback_dir}")
-            # Cap retention at one: anything an earlier failed update left is
-            # an older revision superseded by the tree kept here, and keeping
-            # them all turns repeated failure into an unbounded pile.
+            # The tree kept here is whatever sat at install_dir, and after an
+            # earlier failed update that can be a partial tree the cleanup below
+            # could not remove. Pruning on the strength of an unconfirmed tree
+            # would trade the last known-good install for a broken one, so an
+            # older rollback that still passes confirm_install_tree wins over a
+            # newer one that does not.
+            if not _install_tree_is_usable(rollback_dir, host):
+                known_good = newest_usable_install_side_path(
+                    install_dir, host, exclude = rollback_dir
+                )
+                if known_good is not None:
+                    log(
+                        f"rollback path {rollback_dir.name} is not a usable install; keeping the "
+                        f"known-good {known_good.name} from an earlier failed update instead"
+                    )
+                    retained_dir = known_good
+            log(f"previous install kept at rollback path {retained_dir}")
+            # Cap retention at one: every other tree an earlier failed update
+            # left is superseded by the one kept here, and keeping them all
+            # turns repeated failure into an unbounded pile. Exactly one tree is
+            # ever exempt, so switching which one it is does not grow the cap.
             superseded = prune_stale_install_side_paths(
-                install_dir, keep = (rollback_dir, failed_dir)
+                install_dir, keep = (retained_dir, failed_dir)
             )
             if superseded:
                 log(f"removed {superseded} superseded install tree(s) from earlier failed updates")
@@ -4574,7 +4634,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             cleanup_error = cleanup_exc
             log(f"cleanup after rollback failure also failed: {cleanup_exc}")
         details = textwrap.shorten(str(exc), width = 200, placeholder = "...")
-        kept = f"; previous install kept at {rollback_dir}" if keep_rollback else ""
+        kept = f"; previous install kept at {retained_dir}" if keep_rollback else ""
         # The recovery is the first step here that needs free space -- everything
         # before it renames or deletes -- so a disk-full it hits is not implied by
         # the activation error and is often the only place the full disk shows up.

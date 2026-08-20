@@ -1236,6 +1236,105 @@ def test_repeated_retention_keeps_exactly_one_previous_install(
     assert sorted(staging_root.glob("llama.cpp.failed-*")) == []
 
 
+def _write_usable_install(root: Path, marker: bytes) -> None:
+    """A tree confirm_install_tree accepts, tagged with recognisable bytes."""
+    (root / "build" / "bin").mkdir(parents = True, exist_ok = True)
+    for name in ("llama-server", "llama-quantize"):
+        (root / name).write_bytes(marker)
+        (root / "build" / "bin" / name).write_bytes(marker)
+    (root / "convert_hf_to_gguf.py").write_bytes(marker)
+    (root / "gguf-py").mkdir(exist_ok = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
+
+
+def test_retention_keeps_a_known_good_install_over_an_unvalidated_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two failed updates in a row must not trade the last good install for a stub.
+
+    Attempt 1 leaves a tree at install_dir that is not a usable install and that
+    cleanup cannot remove, so attempt 2 moves exactly that tree into the new
+    rollback path. Capping retention on the newer path alone would then delete
+    the only llama.cpp the user still has.
+    """
+    good = b"GOOD-LLAMA-CPP\n"
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    _write_usable_install(install_dir, good)
+    staging_root = tmp_path / ".staging"
+    host = linux_host()
+
+    real_confirm = INSTALL_LLAMA_PREBUILT.confirm_install_tree
+    real_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    real_rmtree = INSTALL_LLAMA_PREBUILT.shutil.rmtree
+
+    def confirm_bad_prebuilt(path, host_info, *args, **kwargs):
+        # The staged prebuilt is the broken thing, not the check itself, so a
+        # check of any other tree still reports the truth about that tree.
+        if Path(path) == install_dir:
+            raise RuntimeError("activation confirm failed")
+        return real_confirm(Path(path), host_info, *args, **kwargs)
+
+    def deny_failed_move(src, dst):
+        if "failed-" in Path(dst).name:
+            raise OSError(errno.EACCES, "Access is denied")
+        return real_replace(src, dst)
+
+    def deny_install_dir_rmtree(path, *args, **kwargs):
+        if Path(path) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    # Attempt 1: the failed active install can be neither renamed aside nor
+    # removed, so install_dir is left holding the unusable staged tree while
+    # the working install waits in the rollback path.
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", confirm_bad_prebuilt)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", deny_failed_move)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "rmtree", deny_install_dir_rmtree)
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, host)
+    monkeypatch.undo()
+
+    rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    real_confirm(rollbacks[0], host)
+    with pytest.raises(RuntimeError):
+        real_confirm(install_dir, host)
+
+    # Attempt 2: that unusable tree becomes the new rollback path, and the
+    # restore fails, which is where retention decides what to drop.
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", confirm_bad_prebuilt)
+
+    def deny_restore(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError("restore failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", deny_restore)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ENOSPC, "No space left on device")
+        ),
+    )
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, host)
+    monkeypatch.undo()
+
+    survivors = [path for path in staging_root.rglob("llama-server") if path.read_bytes() == good]
+    assert survivors, "the last known-good llama.cpp was deleted as superseded"
+    # Still capped at one tree: which one is kept changed, not how many.
+    rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    real_confirm(rollbacks[0], host)
+    assert (rollbacks[0] / "llama-server").read_bytes() == good
+
+
 def test_retention_does_not_copy_a_linked_previous_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
