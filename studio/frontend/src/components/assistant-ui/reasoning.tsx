@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/collapsible";
 import { GRID_COLLAPSE_REASONING_ENABLED } from "@/components/assistant-ui/thread-feature-flags";
 import {
+  CLOSE_FALLBACK_MARGIN_MS,
   UnmeasuredCollapsible,
   UnmeasuredCollapsibleContent,
   UnmeasuredCollapsibleTrigger,
@@ -431,10 +432,21 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   // Keep the streaming height cap until the automatic close finishes. Removing
   // it on the completion frame expands long reasoning to its full height before
   // the collapsible can close, which makes the entire chat jump.
+  //
+  // The grid path needs the same margin the collapsible's own backstop uses. The
+  // height keyframes animate from a height captured at toggle time, so releasing
+  // the cap mid-animation cannot change what they animate; `1fr` instead resolves
+  // against the live content every frame, so an early release grows the row in the
+  // middle of the collapse and produces exactly the jump this timer prevents. The
+  // transition also starts a render after this timer is armed, so an exact
+  // ANIMATION_DURATION lands inside it.
   useEffect(() => {
+    const closeDelay = GRID_COLLAPSE_REASONING_ENABLED
+      ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS
+      : ANIMATION_DURATION;
     const timeout = window.setTimeout(
       () => setRetainStreamingHeight(isReasoningStreaming),
-      isReasoningStreaming ? 0 : ANIMATION_DURATION,
+      isReasoningStreaming ? 0 : closeDelay,
     );
     return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);

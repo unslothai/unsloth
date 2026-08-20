@@ -178,7 +178,7 @@ const DEFAULT_CLOSE_DURATION_MS = 200;
 // transition. Armed at exactly `closeDurationMs` it would therefore always win the race it is
 // supposed to lose, unmounting the children a few milliseconds early -- and more than that when a
 // busy main thread delays the commit. The margin puts it back behind `transitionend`.
-const CLOSE_FALLBACK_MARGIN_MS = 50;
+export const CLOSE_FALLBACK_MARGIN_MS = 50;
 
 const UnmeasuredCollapsibleContent = React.forwardRef<
   HTMLDivElement,

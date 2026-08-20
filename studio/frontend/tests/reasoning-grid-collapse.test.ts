@@ -128,11 +128,24 @@ test("the flag is off by default", () => {
 
 test("the reasoning pane picks its primitive from the flag on all three slots", () => {
   const code = codeOf(REASONING);
-  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 4);
+  // Three primitive slots plus the streaming-height release below, which needs the same margin.
+  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 5);
   assert.ok(code.includes("<UnmeasuredCollapsible {...rootProps}>"));
   assert.ok(code.includes("<Collapsible {...rootProps}>"));
   assert.ok(code.includes("UnmeasuredCollapsibleTrigger"));
   assert.ok(code.includes("<UnmeasuredCollapsibleContent"));
+});
+
+test("the streaming height cap outlives the grid collapse, but only on the grid path", () => {
+  const code = codeOf(REASONING);
+  // `1fr` resolves against live content every frame, so releasing `max-h-64` before the row has
+  // finished shrinking grows it mid-collapse -- the jump the retention timer exists to prevent.
+  // The height keyframes animate a height captured at toggle time, so the default path is immune
+  // and must keep its exact ANIMATION_DURATION.
+  assert.ok(
+    code.includes("ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS"),
+  );
+  assert.ok(code.includes("const closeDelay = GRID_COLLAPSE_REASONING_ENABLED"));
 });
 
 test("the flag-on reasoning content runs no height keyframes", () => {
