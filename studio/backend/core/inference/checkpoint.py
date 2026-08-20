@@ -121,13 +121,16 @@ def _select_items(
 ) -> list[str]:
     """The instruction turns out of `evicted`, oldest first, under both caps.
 
-    `reserve_oldest` takes the oldest qualifying turn before the newest-first walk. It is
-    for the thread of short prompts, where the FIRST turn is
-    the one that says what is being built: newest-first alone would spend all eight slots
-    on the increments nearest the end ("add music", "now the score", "fix the pipes") and
-    evict the statement of the task itself, which is the loss this pass exists to stop.
-    The walk still runs newest-first afterwards, so a later change of direction is kept
-    too, and rendering is oldest-first either way.
+    `reserve_oldest` takes the opening turn before the newest-first walk. It is for the
+    thread of short prompts, where the FIRST turn is the one that says what is being
+    built: newest-first alone would spend all eight slots on the increments nearest the
+    end ("add music", "now the score", "fix the pipes") and evict the statement of the
+    task itself, which is the loss this pass exists to stop. The walk still runs
+    newest-first afterwards, so a later change of direction is kept too, and rendering is
+    oldest-first either way.
+
+    The opening turn is reserved TOGETHER WITH the next evicted instruction turn, both or
+    neither. See `_reserved_order` for why.
     """
     groups = list(group_turns(evicted))
 
@@ -141,76 +144,110 @@ def _select_items(
             return None
         return _neutralise(text), estimate_message_tokens(head)
 
-    order = list(reversed(range(len(groups))))
-    if reserve_oldest:
-        oldest = next((i for i in range(len(groups)) if _item(i)), None)
-        if oldest is not None:
-            # The opening task is reserved, but it must never DISPLACE the newest
-            # instruction. Placing it first exhausted a tight cap before the
-            # newest-first walk began: at MAX_ITEMS=1, "Build a Flappy Bird game"
-            # then "Actually build Tetris instead" carried only the abandoned
-            # request, so the block stated the opposite of the user's latest
-            # direction. Slotting it in behind the newest qualifying turn keeps
-            # both whenever there is room for two, and keeps the correction when
-            # there is room for only one.
-            #
-            # The slot goes behind the newest turn that CAN BE TAKEN, not merely the
-            # newest one that qualifies. A turn costing more than the whole cap is
-            # skipped by the walk below without spending anything, so reserving behind
-            # it puts the opening task ahead of every usable recent turn and restores
-            # the bug this slotting exists to fix: "Build Flappy Bird", "Actually build
-            # Tetris", then an oversized pasted request carried only Flappy Bird at a
-            # 153-token cap.
-            def _takeable(index: int) -> bool:
-                found = _item(index)
-                return found is not None and found[1] <= max_tokens
+    def _walk(order: list[int]) -> list[str]:
+        # Kept as (position, text) so the render can sort by position: with a reserved
+        # item the selection order is no longer simply the reverse of the transcript
+        # order, and `reversed(chosen)` put the oldest turn LAST, inverting the
+        # supersession the header promises.
+        picked: list[tuple[int, str]] = []
+        seen: dict[str, int] = {}
+        spent = 0
+        for index in order:
+            if len(picked) >= max_items:
+                break
+            found = _item(index)
+            if found is None:
+                continue
+            item, cost = found
+            if item in seen:
+                # Users restate a standing rule, and each copy used to take a slot out of
+                # eight: one rule repeated eight times crowded out the user's other rule.
+                # Checked before the cost is charged, so a repeat cannot exhaust the
+                # budget.
+                #
+                # The surviving copy keeps the NEWEST position. `reserve_oldest` walks the
+                # opening turn early, so without this a restatement was dropped in favour
+                # of its own older copy: "metric", "imperial", "metric" rendered as metric
+                # then imperial, and the header's later-wins rule then told the model
+                # imperial was current when the user had just restored metric. In the
+                # plain newest-first walk the first sighting is already the newest, so
+                # nothing moves there.
+                slot = seen[item]
+                if index > picked[slot][0]:
+                    picked[slot] = (index, item)
+                continue
+            if spent + cost > max_tokens:
+                # Skipped, not truncated, and the loop continues: an older instruction
+                # that still fits beats nothing.
+                continue
+            picked.append((index, item))
+            seen[item] = len(picked) - 1
+            spent += cost
+        return [item for _, item in sorted(picked)]
 
-            rest = [index for index in order if index != oldest]
-            newest = next((index for index in rest if _takeable(index)), None)
-            if newest is None:
-                order = [oldest] + rest
-            else:
-                at = rest.index(newest) + 1
-                order = rest[:at] + [oldest] + rest[at:]
+    plain = list(reversed(range(len(groups))))
+    if not reserve_oldest:
+        return _walk(plain)
 
-    # Kept as (position, text) so the render can sort by position: with a reserved item
-    # the selection order is no longer simply the reverse of the transcript order, and
-    # `reversed(chosen)` put the oldest turn LAST, inverting the supersession the header
-    # promises.
-    picked: list[tuple[int, str]] = []
-    seen: dict[str, int] = {}
-    spent = 0
-    for index in order:
-        if len(picked) >= max_items:
-            break
+    oldest = next((i for i in range(len(groups)) if _item(i)), None)
+    if oldest is None:
+        return _walk(plain)
+    # The turn the user sent RIGHT AFTER the opening one. It is reserved with the opening
+    # turn, because it is the turn that can contradict it without any newer turn showing
+    # that it did.
+    successor = next((i for i in range(oldest + 1, len(groups)) if _item(i)), None)
+
+    def _takeable(index: int) -> bool:
         found = _item(index)
-        if found is None:
-            continue
-        item, cost = found
-        if item in seen:
-            # Users restate a standing rule, and each copy used to take a slot out of
-            # eight: one rule repeated eight times crowded out the user's other rule.
-            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
-            #
-            # The surviving copy keeps the NEWEST position. `reserve_oldest` walks the
-            # oldest qualifying turn first, so without this a restatement was dropped in
-            # favour of its own older copy: "metric", "imperial", "metric" rendered as
-            # metric then imperial, and the header's later-wins rule then told the model
-            # imperial was current when the user had just restored metric. In the plain
-            # newest-first walk the first sighting is already the newest, so nothing
-            # moves there.
-            slot = seen[item]
-            if index > picked[slot][0]:
-                picked[slot] = (index, item)
-            continue
-        if spent + cost > max_tokens:
-            # Skipped, not truncated, and the loop continues: an older instruction that
-            # still fits beats nothing.
-            continue
-        picked.append((index, item))
-        seen[item] = len(picked) - 1
-        spent += cost
-    return [item for _, item in sorted(picked)]
+        return found is not None and found[1] <= max_tokens
+
+    def _reserved_order() -> list[int]:
+        """The walk order with the opening PAIR slotted in behind the newest usable turn.
+
+        The opening turn is reserved because it is where the task is stated, but on its
+        own that reservation states the task WRONG whenever the user changed direction
+        early: the reserved turn was carried and the turn immediately after it was the
+        one the slot cap dropped, so "Build Flappy Bird", "Actually build Tetris instead",
+        "Add music" carried Flappy Bird and the music at max_items 2, and the same three
+        with seven increments carried Flappy Bird and all seven at max_items 8. Both
+        blocks tell the model to build the game the user abandoned and then apply every
+        later increment to it.
+
+        Reserving the opening turn together with its successor is the fix that needs no
+        reading of the English: whatever the user said next about the opening request is
+        carried alongside it, so a correction cannot be hidden behind the request it
+        corrects. The pair costs one more slot than the single reservation, paid by the
+        oldest turn the newest-first walk would have taken.
+
+        Placed behind the newest turn that CAN BE TAKEN, not merely the newest one that
+        qualifies, exactly as the single reservation was. A turn costing more than the
+        whole cap is skipped by the walk without spending anything, so reserving behind it
+        puts the opening pair ahead of every usable recent turn: "Build Flappy Bird",
+        "Actually build Tetris", then an oversized pasted request carried only Flappy Bird
+        at a 153-token cap.
+        """
+        pair = [oldest] if successor is None else [oldest, successor]
+        rest = [index for index in plain if index not in pair]
+        newest = next((index for index in rest if _takeable(index)), None)
+        if newest is None:
+            return pair + rest
+        at = rest.index(newest) + 1
+        return rest[:at] + pair + rest[at:]
+
+    chosen = _walk(_reserved_order())
+    if successor is None:
+        # Nothing followed the opening turn, so nothing can be hidden behind it.
+        return chosen
+    opening_text = _item(oldest)[0]
+    successor_text = _item(successor)[0]
+    if opening_text not in chosen or successor_text in chosen:
+        return chosen
+    # Both or neither. The pair did not fit whole (a cap of one or two slots, or a
+    # successor costing more than the budget left), and half a pair is the bug itself:
+    # the abandoned request carried with the correction to it dropped. So the
+    # reservation is abandoned and the plain newest-first walk decides, which keeps the
+    # newest direction the user gave.
+    return _walk(plain)
 
 
 def carried_forward_items(

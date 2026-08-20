@@ -1981,6 +1981,135 @@ def test_a_short_correction_survives_a_long_earlier_instruction():
     assert items[-1] == "Actually make it Tetris", "the correction must read as current"
 
 
+def _user_turns(*texts):
+    """One user turn per text, each answered, as a real thread arrives."""
+    messages = []
+    for text in texts:
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "ok"},
+        ]
+    return messages
+
+
+def test_the_opening_request_is_never_carried_without_the_turn_that_follows_it():
+    """The reservation used to spend its slot on the abandoned request and let the slot
+    cap drop the correction to it, which is the exact statement of the task the
+    reservation exists to prevent.
+
+    "Build Flappy Bird", "Actually build Tetris instead", "Add music" at max_items 2
+    carried ["Build Flappy Bird", "Add music"]: the model is told to build the game the
+    user walked away from, and to add music to it.
+    """
+    messages = _user_turns("Build Flappy Bird", "Actually build Tetris instead", "Add music")
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+
+    assert "Build Flappy Bird" not in items, "the abandoned request must not be carried alone"
+    assert items == ["Actually build Tetris instead", "Add music"]
+
+
+def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
+    """The same bug with room to spare: nine turns into eight slots dropped the ONE turn
+    that changed direction, since the reservation is spent before the walk reaches it.
+
+    The measured output was ["Build Flappy Bird", "Add feature 1" ... "Add feature 7"].
+    """
+    messages = _user_turns(
+        "Build Flappy Bird",
+        "Actually build Tetris instead",
+        *[f"Add feature {index}" for index in range(1, 8)],
+    )
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+
+    assert "Actually build Tetris instead" in items, "the correction must survive"
+    assert items.index("Build Flappy Bird") < items.index("Actually build Tetris instead")
+    # The pair is paid for by the OLDEST turn the newest-first walk would have taken, so
+    # the newest increments are all still there.
+    assert items[-1] == "Add feature 7"
+
+
+def test_the_opening_task_survives_a_long_run_of_increments_with_no_correction():
+    """The case the reservation was added for, which the pair must not regress: a real
+    session states the task once at the front and then says nothing but increments, so a
+    plain newest-first walk carries eight ways to change a game it never names."""
+    messages = _user_turns(
+        "Build a Flappy Bird game",
+        *[f"increment {index}" for index in range(1, 20)],
+    )
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+
+    assert items[0] == "Build a Flappy Bird game", "the statement of the task must survive"
+    assert items[-1] == "increment 19", "and so must the newest increment"
+
+
+def test_the_opening_pair_is_taken_whole_or_not_at_all():
+    """The boundary of the rule. The pair needs two slots behind the newest usable turn,
+    so three slots is where it starts fitting. At two it is abandoned rather than
+    half-taken, because half of it is the abandoned request without its correction.
+    """
+    messages = _user_turns(
+        "Build Flappy Bird",
+        "Actually build Tetris instead",
+        "Add feature 1",
+        "Add feature 2",
+    )
+
+    two = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+    three = carried_forward_items(messages, max_tokens = 4096, max_items = 3)
+
+    # Two slots: the plain newest-first walk decides, and it never states a task it was
+    # not told. Nothing here is wrong, only missing.
+    assert two == ["Add feature 1", "Add feature 2"]
+    # Three: the opening request and the correction to it, plus the newest turn.
+    assert three == ["Build Flappy Bird", "Actually build Tetris instead", "Add feature 2"]
+
+
+def test_a_token_budget_too_small_for_the_pair_keeps_the_correction():
+    """The same both-or-neither rule against the token cap rather than the slot cap.
+
+    A budget with room for the newest turn and ONE of the two opening turns used to buy
+    the abandoned request, because the reservation was charged first.
+    """
+    opening = (
+        "Build a Flappy Bird game in a single HTML file with canvas rendering, gravity, "
+        "pipes and a score counter."
+    )
+    correction = (
+        "Actually scrap that and build Tetris instead, same single HTML file, no "
+        "libraries at all."
+    )
+    messages = _user_turns(opening, correction, "add music")
+
+    # 45 tokens: the newest turn (10) plus either opening turn (34 or 30), never both.
+    items = carried_forward_items(messages, max_tokens = 45)
+
+    assert items == [correction, "add music"]
+
+
+def test_an_opening_turn_with_nothing_after_it_is_still_reserved():
+    """Nothing can be hidden behind a turn that nothing followed, so the pair rule costs
+    the single-turn thread nothing: the reservation still applies at a cap of one."""
+    messages = [
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "sure"},
+    ]
+
+    items = _select_items(
+        messages,
+        max_tokens = 4096,
+        max_items = 1,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
+
+    assert items == [INSTRUCTION]
+
+
 def test_a_nudge_is_still_excluded_without_the_length_floor():
     """`_CONTINUATIONS`, not the character count, is what keeps filler out."""
     messages = [
