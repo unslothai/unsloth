@@ -2129,12 +2129,18 @@ class InferenceOrchestrator:
 
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
 
+        # The worker's usage for the LATEST turn only. Hoisted out of the turn so the
+        # loop can size a conversation search against a real prompt count, and cleared
+        # on the way in rather than on each way out, so a turn that failed or was
+        # cancelled leaves it empty instead of handing the loop an earlier turn's number.
+        turn_stats: dict = {}
+
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # ``conv`` already carries any system message. ``active_tools`` lets
             # run_safetensors_tool_loop drop one-shot tools (e.g. render_html) from
             # later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
-            turn_stats: dict = {}
+            turn_stats.clear()
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -2238,6 +2244,7 @@ class InferenceOrchestrator:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            generation_stats_holder = turn_stats,
         )
 
     def generate_with_adapter_control(

@@ -470,6 +470,51 @@ def _call_single_turn(single_turn, conversation: list, active_tools: list[dict])
         return single_turn(conversation)
 
 
+def _dense_message_tokens(messages: list[dict]) -> int:
+    """`estimate_messages_tokens_dense`, imported where it is used like the rest here."""
+    from core.inference.context_window import estimate_messages_tokens_dense
+    return estimate_messages_tokens_dense(messages)
+
+
+def _spent_prompt_tokens(
+    conversation: list[dict],
+    tools: Optional[list[dict]],
+    generation_stats_holder: Optional[dict],
+    prompt_dense_tokens: int,
+) -> int:
+    """Tokens the next prompt already owes, from the count the last turn reported.
+
+    The backend tokenises the turn's prompt to run it and ships that count on gen_done,
+    tool catalogue included, so the only part left to estimate is what the loop appended
+    afterwards: this turn's assistant text and the results of any tool already run in the
+    same batch. Estimating that tail alone is what stops a long English preamble being
+    charged several times what it costs.
+
+    An exact recount here is not available. This loop runs in the PARENT process and
+    `InferenceOrchestrator.models` mirrors the worker's model_info, which carries no
+    tokenizer, so counting the conversation again would mean a round trip into the worker
+    between every tool call.
+
+    Without a report the estimate covers the whole thread, as it did before. Dense
+    because four characters per token undercounts CJK and emoji by about half: measured
+    on an 81-message CJK chat, 1295 estimated against 2737 real, reporting 1777 tokens of
+    room where 335 remained. Never floored to zero, which reaches the tool as "there is
+    no room left in this context to search earlier conversation" and switches recall off
+    on exactly the tight windows that need it.
+    """
+    stats = (generation_stats_holder or {}).get("stats")
+    usage = stats.get("usage") if isinstance(stats, dict) else None
+    prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+    if (
+        isinstance(prompt_tokens, int)
+        and not isinstance(prompt_tokens, bool)
+        and prompt_tokens > 0
+    ):
+        added = _dense_message_tokens(conversation) - prompt_dense_tokens
+        return prompt_tokens + max(0, added)
+    return _dense_message_tokens(conversation) + _dense_message_tokens(tools or [])
+
+
 def run_safetensors_tool_loop(
     *,
     single_turn: Callable[[list], Generator[str, None, None]],
@@ -493,6 +538,7 @@ def run_safetensors_tool_loop(
     renderable_tools = None,
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
+    generation_stats_holder: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -698,6 +744,9 @@ def run_safetensors_tool_loop(
                 return False
             return _first_detected_tool_name(content) == "render_html"
 
+        # The conversation as this turn's prompt renders it, so what the loop appends
+        # afterwards can be charged on its own against the count the turn reports.
+        prompt_dense_tokens = _dense_message_tokens(conversation)
         gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
 
@@ -1325,26 +1374,27 @@ def run_safetensors_tool_loop(
                     if context_length and _accepts_kwarg(
                         execute_tool, "conversation_budget_tokens"
                     ):
-                        from core.inference.context_window import (
-                            estimate_messages_tokens_dense,
-                            retrieval_budget,
-                        )
+                        from core.inference.context_window import retrieval_budget
 
-                        # Dense, unlike the eviction estimator: four characters per token
-                        # undercounts CJK and emoji by about half, and this path has no
-                        # rolling fit to recover if the tool exchange it sizes then puts
-                        # the next prompt over the window. Measured on an 81-message CJK
-                        # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
-                        # room where 335 remained.
+                        # From the tokenizer count the last turn reported rather than
+                        # from characters alone: `conversation` already carries this
+                        # turn's assistant preamble and its tool call, and pricing the
+                        # whole thread by characters is what hands a retrieval room the
+                        # next prompt does not have.
                         #
                         # `reply_returns`, as the GGUF loop does: result and reply are
                         # both protected on the next fit, so one retrieval cannot spend
                         # the budget they share.
+                        spent = _spent_prompt_tokens(
+                            conversation,
+                            tools,
+                            generation_stats_holder,
+                            prompt_dense_tokens,
+                        )
                         kwargs["conversation_budget_tokens"] = retrieval_budget(
                             int(context_length),
                             max_tokens,
-                            estimate_messages_tokens_dense(conversation)
-                            + estimate_messages_tokens_dense(tools or []),
+                            spent,
                             reply_returns = True,
                         )
                     # And what a RESULT may add, which is the same question asked of
