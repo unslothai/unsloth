@@ -1364,7 +1364,9 @@ def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
-    preamble = '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
 
     mine = tmp_path / "mine" / "Unsloth Studio" / "temp"
     theirs = tmp_path / "theirs" / "Unsloth Studio" / "temp"
@@ -1373,17 +1375,21 @@ def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_
         (root / "ust-1234-abcdef01").mkdir()
 
     result = _run_powershell(
-        "\n".join([
-            preamble,
-            block,
-            f"_RemoveStudioPrivateTempTrees -Paths @('{mine}','{theirs}') -PrimaryPath '{mine}'",
-            'Write-Output "DONE:1"',
-        ])
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{mine}','{theirs}') -PrimaryPath '{mine}'",
+                'Write-Output "DONE:1"',
+            ]
+        )
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "DONE:") == ["DONE:1"]
     assert not (mine / "ust-1234-abcdef01").exists(), "our own profile should be reclaimed"
-    assert (theirs / "ust-1234-abcdef01").is_dir(), "another profile was swept without a recorded owner"
+    assert (
+        theirs / "ust-1234-abcdef01"
+    ).is_dir(), "another profile was swept without a recorded owner"
 
 
 @requires_pwsh
