@@ -334,3 +334,103 @@ class TestTheOutputAllowanceIsCounted:
             )
             == 512
         )
+
+
+
+class TestTheWholeRenderedPromptIsCounted:
+    """Two more ways the reservation undercounted, both from review.
+
+    An uncapped request reserved no output allowance even though
+    `_build_passthrough_payload` then sends `max_tokens = backend_ctx`, so short
+    prompts held tiny commitments while each generation could fill the cache. And
+    the estimate covered only `messages`, while OpenAI tool definitions are
+    rendered into the prompt and Anthropic keeps `system` and `tools` separate
+    until they are translated.
+    """
+
+    @staticmethod
+    def _cost(payload, budget = 8192, capacity = 4):
+        import routes.inference as routes_inference
+
+        return routes_inference._openai_llama_admission_tokens(
+            payload, budget = budget, capacity = capacity,
+        )
+
+    def test_an_uncapped_request_reserves_the_rest_of_the_window(self):
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = None,
+            max_completion_tokens = None,
+        )
+        # Generation may run until the window is full, so the reservation says so.
+        assert self._cost(payload, budget = 2048) == 2048
+
+    def test_two_uncapped_short_prompts_do_not_both_run(self):
+        """The collision this closes: tiny commitments, cache-filling generations."""
+        from types import SimpleNamespace
+
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            payload = SimpleNamespace(
+                messages = [{"role": "user", "content": "hi"}],
+                max_tokens = None,
+                max_completion_tokens = None,
+            )
+            cost = self._cost(payload, budget = 2048)
+            first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+            assert first.lease_nowait() is not None
+            second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+            return second.lease_nowait()
+
+        assert _run(scenario()) is None
+
+    def test_a_capped_request_is_unaffected(self):
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = 128,
+            max_completion_tokens = None,
+        )
+        assert self._cost(payload, budget = 2048) < 2048
+
+    def test_tool_schemas_are_counted(self):
+        from types import SimpleNamespace
+
+        messages = [{"role": "user", "content": "hi"}]
+        bare = self._cost(SimpleNamespace(messages = messages, max_tokens = 16))
+        with_tools = self._cost(SimpleNamespace(
+            messages = messages,
+            max_tokens = 16,
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "d" * 2000,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
+        ))
+        assert with_tools > bare
+
+    def test_an_anthropic_system_block_is_counted(self):
+        from types import SimpleNamespace
+
+        messages = [{"role": "user", "content": "hi"}]
+        bare = self._cost(SimpleNamespace(messages = messages, max_tokens = 16))
+        with_system = self._cost(SimpleNamespace(
+            messages = messages, max_tokens = 16, system = "s" * 4000,
+        ))
+        assert with_system > bare
+
+    def test_an_unserialisable_extra_does_not_break_admission(self):
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = 16,
+            tools = object(),
+        )
+        assert self._cost(payload) is not None

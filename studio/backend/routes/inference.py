@@ -1486,6 +1486,31 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     return _positive_int_or_none(getattr(llama_backend, "context_length", None))
 
 
+def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
+    """Prompt the request carries OUTSIDE ``messages``, in tokens.
+
+    OpenAI tool definitions are rendered into the llama-server prompt, and Anthropic
+    keeps ``system`` and ``tools`` separate until they are translated. Sizing only the
+    message list let two requests with small messages but large system instructions or
+    JSON tool schemas both be admitted on a severe undercount.
+
+    Serialised and charged at the dense rate, since a JSON schema is punctuation-heavy
+    and the four-chars-per-token rule flatters it.
+    """
+    extra = 0
+    for attribute in ("system", "tools", "tool_choice", "instructions"):
+        value = getattr(payload, attribute, None)
+        if value is None or isinstance(value, (bool, int, float)):
+            continue
+        try:
+            text = value if isinstance(value, str) else json.dumps(value, default = str)
+        except Exception:
+            continue
+        if text:
+            extra += estimate_messages_tokens_dense([{"role": "system", "content": text}])
+    return extra
+
+
 def _openai_llama_admission_tokens(
     payload, *, budget: Optional[int], capacity: int
 ) -> Optional[int]:
@@ -1507,6 +1532,7 @@ def _openai_llama_admission_tokens(
             prompt_tokens = estimate_messages_tokens_dense(
                 [m if isinstance(m, dict) else m.model_dump() for m in messages]
             )
+            prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
         except Exception:
             prompt_tokens = None
     else:
@@ -1516,15 +1542,22 @@ def _openai_llama_admission_tokens(
     # The same helper generation honours, not the raw field. A request that sets only
     # the supported max_completion_tokens and leaves the deprecated max_tokens unset
     # would otherwise reserve its prompt and none of its output allowance.
-    output_tokens = (
-        _positive_int_or_none(
-            _effective_openai_max_tokens_from_values(
-                getattr(payload, "max_tokens", None),
-                getattr(payload, "max_completion_tokens", None),
-            )
+    cap = _positive_int_or_none(
+        _effective_openai_max_tokens_from_values(
+            getattr(payload, "max_tokens", None),
+            getattr(payload, "max_completion_tokens", None),
         )
-        or 0
     )
+    if cap is None:
+        # No cap at all. _build_passthrough_payload then sends max_tokens = backend_ctx,
+        # so generation may run until the window is full, and reserving nothing let short
+        # uncapped prompts hold tiny commitments while each consumed most of the cache.
+        # The honest reservation is the rest of the budget, which does serialise
+        # concurrent uncapped requests. That is the true cost of not naming a cap: the
+        # alternative is admitting two runs that llama.cpp will then kill.
+        output_tokens = max(0, budget - prompt_tokens)
+    else:
+        output_tokens = cap
     # Clamped to the budget so an oversized request stays schedulable: the queue
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.
