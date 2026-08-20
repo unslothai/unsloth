@@ -511,6 +511,7 @@ class CellRunner:
 
         Each is preceded by a blur and a settle so no repetition inherits the previous one's state.
         """
+
         def blur() -> None:
             page.evaluate("() => document.activeElement && document.activeElement.blur()")
             page.wait_for_timeout(250)
@@ -524,7 +525,9 @@ class CellRunner:
         x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
         out: dict[str, float] = {}
         blur()
-        out["click_ms"] = timed(lambda: page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000))
+        out["click_ms"] = timed(
+            lambda: page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
+        )
         blur()
         out["mouse_ms"] = timed(lambda: page.mouse.click(x, y))
         blur()
