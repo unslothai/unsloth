@@ -1038,9 +1038,7 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
     async def _guard_busy(_provider_id, _account_id):
         raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
 
-    monkeypatch.setattr(
-        providers_route.openai_codex_auth, "remember_catalog_account", _guard_busy
-    )
+    monkeypatch.setattr(providers_route.openai_codex_auth, "remember_catalog_account", _guard_busy)
 
     try:
         with pytest.raises(codex_auth.CodexAuthError):
