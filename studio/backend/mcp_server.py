@@ -139,9 +139,7 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        # Pass via_api_key explicitly (a direct call leaves it a Depends object).
-        # MCP drives Unsloth like the UI session, so it coexists and frees VRAM.
-        return _dump(await start(request, current_subject = "mcp", via_api_key = False))
+        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
 
     @mcp.tool
     async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
