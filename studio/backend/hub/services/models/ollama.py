@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+
+import threading
 import uuid
 from pathlib import Path
 from typing import List, Optional
@@ -51,6 +53,26 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
         "application/vnd.ollama.image.license",
     }
 )
+
+_OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}
+_OLLAMA_MATERIALIZE_LOCKS_GUARD = threading.Lock()
+
+
+class OllamaModelLease:
+    def __init__(self, path: str, lock: threading.Lock):
+        self.path = path
+        self._lock = lock
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._lock.release()
+
+
+def _materialization_lock(ref: str) -> threading.Lock:
+    with _OLLAMA_MATERIALIZE_LOCKS_GUARD:
+        return _OLLAMA_MATERIALIZE_LOCKS.setdefault(ref, threading.Lock())
 
 
 def _ollama_manifest_ref(tag_file: Path) -> str:
@@ -330,20 +352,44 @@ def _ollama_model_info_from_manifest(
             return invalid_manifest("link directory is unavailable")
         link_name = f"{safe_name}-{tag}.gguf"
         mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
+        projector_link = _contained_link_path(model_link_dir, mmproj_name)
+        if projector_link is None:
+            return invalid_manifest("projector link name is unsafe")
+        previous_projector: Optional[Path] = None
+        try:
+            if projector_link.is_symlink() or projector_link.exists():
+                previous_projector = projector_link.resolve(strict = True)
+        except (OSError, RuntimeError) as e:
+            return invalid_manifest(f"existing projector link could not be read: {e}")
+
         if projector_blob is not None:
             if not _make_ollama_blob_link(model_link_dir, mmproj_name, projector_blob):
                 return invalid_manifest("could not materialize projector blob")
         else:
-            stale_projector = _contained_link_path(model_link_dir, mmproj_name)
-            if stale_projector is None:
-                return invalid_manifest("projector link name is unsafe")
             try:
-                if stale_projector.is_symlink() or stale_projector.exists():
-                    stale_projector.unlink()
+                if projector_link.is_symlink() or projector_link.exists():
+                    projector_link.unlink()
             except OSError as e:
                 return invalid_manifest(f"stale projector link could not be removed: {e}")
+
         gguf_link_path = _make_ollama_blob_link(model_link_dir, link_name, model_blob)
         if not gguf_link_path:
+            restored = False
+            if previous_projector is not None:
+                restored = bool(
+                    _make_ollama_blob_link(model_link_dir, mmproj_name, previous_projector)
+                )
+            else:
+                try:
+                    if projector_link.is_symlink() or projector_link.exists():
+                        projector_link.unlink()
+                    restored = True
+                except OSError:
+                    pass
+            if not restored:
+                return invalid_manifest(
+                    "could not materialize model blob or restore the previous projector"
+                )
             return invalid_manifest("could not materialize model blob")
 
     suffix = ""
@@ -446,18 +492,11 @@ def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
     return None
 
 
-def materialize_ollama_model_ref(ref: str) -> str:
-    """Resolve an ``ollama-manifest:`` reference to a loadable ``.gguf`` path,
-    creating the writable symlink/hardlink on demand.
-
-    Raises ``ValueError`` if the reference is malformed, points outside a
-    discovered Ollama models directory, or cannot be materialized.
-    """
+def _materialize_ollama_model_ref_unlocked(ref: str) -> str:
     if not ref.startswith(_OLLAMA_MANIFEST_REF_PREFIX):
         raise ValueError("Not an Ollama manifest reference")
 
     tag_file = Path(unquote(ref[len(_OLLAMA_MANIFEST_REF_PREFIX) :]))
-
     ollama_dir = _ollama_dir_for_manifest(tag_file)
     if ollama_dir is None:
         raise ValueError("Reference is outside any known Ollama models directory")
@@ -476,3 +515,20 @@ def materialize_ollama_model_ref(ref: str) -> str:
     if info is None or not info.path:
         raise ValueError("Could not materialize Ollama model from manifest")
     return info.path
+
+
+def materialize_ollama_model_ref(ref: str) -> str:
+    """Resolve an Ollama ref while serializing updates to its model/projector pair."""
+    with _materialization_lock(ref):
+        return _materialize_ollama_model_ref_unlocked(ref)
+
+
+def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
+    """Materialize and keep the pair stable until the caller releases the lease."""
+    lock = _materialization_lock(ref)
+    lock.acquire()
+    try:
+        return OllamaModelLease(_materialize_ollama_model_ref_unlocked(ref), lock)
+    except BaseException:
+        lock.release()
+        raise

@@ -217,6 +217,81 @@ def test_missing_projector_retag_is_rejected_before_main_link_changes(tmp_path, 
     assert projector_path.read_bytes() == b"{}"
 
 
+def test_failed_main_retag_restores_the_previous_projector(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-pair-rollback"
+    tag_file = _write_ollama_store(
+        root,
+        extra_layers = ("application/vnd.ollama.image.projector",),
+    )
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+    model_path = ollama.materialize_ollama_model_ref(ref)
+    projector_path = next(Path(model_path).parent.glob("*-mmproj.gguf"))
+
+    model_digest = "b" * 64
+    projector_digest = "c" * 64
+    model_blob = root / "blobs" / f"sha256-{model_digest}"
+    projector_blob = root / "blobs" / f"sha256-{projector_digest}"
+    model_blob.write_bytes(b"GGUF-replacement")
+    projector_blob.write_bytes(b"GGUF-projector-replacement")
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["layers"][0]["digest"] = f"sha256:{model_digest}"
+    manifest["layers"][1]["digest"] = f"sha256:{projector_digest}"
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    make_link = ollama._make_ollama_blob_link
+
+    def fail_replacement_model(link_dir, link_name, target):
+        if target == model_blob:
+            return None
+        return make_link(link_dir, link_name, target)
+
+    monkeypatch.setattr(ollama, "_make_ollama_blob_link", fail_replacement_model)
+    with pytest.raises(ValueError, match = "model blob"):
+        ollama.materialize_ollama_model_ref(ref)
+
+    assert Path(model_path).read_bytes() == b"GGUF-not-really"
+    assert projector_path.read_bytes() == b"{}"
+
+
+def test_materialization_lease_blocks_a_concurrent_retag(tmp_path, monkeypatch):
+    import threading
+
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-materialization-lease"
+    tag_file = _write_ollama_store(root)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+    lease = ollama.acquire_ollama_model_ref(ref)
+
+    replacement_digest = "b" * 64
+    (root / "blobs" / f"sha256-{replacement_digest}").write_bytes(b"GGUF-replacement")
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["layers"][0]["digest"] = f"sha256:{replacement_digest}"
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def retag():
+        started.set()
+        ollama.materialize_ollama_model_ref(ref)
+        finished.set()
+
+    worker = threading.Thread(target = retag)
+    worker.start()
+    assert started.wait(1)
+    assert not finished.wait(0.1)
+    lease.release()
+    worker.join(timeout = 1)
+
+    assert finished.is_set()
+    assert Path(lease.path).read_bytes() == b"GGUF-replacement"
+
+
 def test_projector_removal_deletes_the_stale_link(tmp_path, monkeypatch):
     from hub.services.models import ollama
 
