@@ -680,7 +680,6 @@ def _sweep_surfaces(sides: list, ctx, paths) -> None:
         ctx.recorder.gate(f"surface_sweep:{label}", passed, manifest)
 
 
-
 def _isolated_probe(path: str, source: str) -> str:
     """The external script, ordered with the scene scripts but PARSED ON ITS OWN.
 
@@ -713,6 +712,7 @@ def _isolated_probe(path: str, source: str) -> str:
         "  }\n"
         "})();\n"
     )
+
 
 def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
     """Render the A/B table from the payload the run just wrote.
