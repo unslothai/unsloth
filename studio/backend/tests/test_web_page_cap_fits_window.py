@@ -330,3 +330,157 @@ class TestADenseResultIsSizedByWhatItCosts:
         _window(monkeypatch, 4864)
 
         assert tools._dense_char_limit(self._CJK_PAGE, 200) == 200
+
+
+class TestDenseAsciiIsMeasuredNotEstimated:
+    """`base64`, `hexdump -C` and `sha256sum` are ordinary terminal output, and the flat
+    0.25 tokens per ASCII character the estimate charges them is off by a factor of four.
+
+    Measured with Qwen3-4B and Llama-3.2 on the 5,120-token window this PR was built
+    against, where the character cap admits 7,168 characters against a 1,792-token share:
+
+        base64 payload.bin    7,168 chars -> 5,361 tokens   105% of the whole window
+        hexdump -C            7,168 chars -> 5,540 tokens   108%
+        sha256sum *           7,168 chars -> 5,109 tokens   100%
+        English prose         7,168 chars -> 1,230 tokens    24%   (the estimate is right)
+
+    A four-message thread -- system turn, an 8-token question, one tool call and one such
+    result -- was then refused by `fit_rolling_context` as irreducible at 5,475 tokens
+    against a 3,840-token prompt budget, with `dropped_messages: 0`. That is the exact
+    refusal this budget exists to prevent, so where a tokenizer is serving the request the
+    prefix is measured with it instead of estimated.
+    """
+
+    # 1.33 characters per token: the Qwen3-4B rate measured on `base64` output above.
+    _RATE = 1.33
+
+    def _serving(self, monkeypatch, ctx, rate = None):
+        """A loaded llama.cpp backend that prices text at a real dense-ASCII rate."""
+        rate = self._RATE if rate is None else rate
+        backend = SimpleNamespace(
+            is_loaded = True,
+            context_length = ctx,
+            count_chat_tokens = lambda messages, *a, **k: int(
+                sum(len(m["content"]) for m in messages) / rate
+            ),
+        )
+        monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
+        return backend
+
+    def test_a_base64_result_is_cut_to_what_it_really_costs(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        text = "aGVsbG8gd29ybGQgdGhpcyBpcyBiaW5hcnkgcGF5bG9hZA" * 600
+
+        kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
+
+        # The share it was promised, not the whole window.
+        assert kept / self._RATE <= 5120 * tools._PAGE_CONTEXT_SHARE
+        # And this is not vacuous: the estimate alone would have kept the full cap.
+        assert tools._dense_prefix_chars(text, 5120 * tools._PAGE_CONTEXT_SHARE) > kept
+
+    def test_a_dense_result_no_longer_outweighs_the_window(self, monkeypatch):
+        """The refusal itself: 7,168 characters of base64 is 105% of a 5,120-token
+        window, so the request cannot be made to fit by dropping anything."""
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120)
+        text = "0123456789abcdef" * 2000
+
+        out = tools._truncate(text)
+
+        assert len(out) / self._RATE < 5120
+
+    def test_english_keeps_every_character_the_cap_gave_it(self, monkeypatch):
+        """The blast radius: at a real English rate the exact count agrees with the
+        estimate, so nothing that already fitted is shrunk."""
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 5120, rate = 4.2)
+        text = ("Artificial intelligence is the study of machines that perceive their "
+                "environment and take actions that maximise the chance of a goal. ") * 200
+        budget = tools._tool_result_char_budget()
+
+        assert tools._dense_char_limit(text, budget) == budget
+
+    def test_a_resident_gguf_does_not_price_another_model_s_request(self, monkeypatch):
+        """A 262k GGUF sitting in memory must not tokenize for the 5,120-token native
+        model actually answering: different tokenizer, different text."""
+        _window(monkeypatch, 5120)
+        self._serving(monkeypatch, 262_144)
+
+        assert tools._loaded_token_counter(5120) is None
+
+    def test_a_tokenizer_that_raises_falls_back_to_the_estimate(self, monkeypatch):
+        _window(monkeypatch, 5120)
+
+        def _boom(*a, **k):
+            raise RuntimeError("llama-server is busy")
+
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = True, context_length = 5120,
+                                    count_chat_tokens = _boom),
+        )
+        text = "0123456789abcdef" * 2000
+
+        assert tools._dense_char_limit(text, 7168) == 7168
+
+    def test_no_backend_at_all_leaves_the_estimate_alone(self, monkeypatch):
+        _window(monkeypatch, 5120)
+        monkeypatch.setattr(
+            "routes.inference.get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = False),
+        )
+
+        assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
+
+    def test_the_readable_floor_still_holds_under_an_exact_count(self, monkeypatch):
+        _window(monkeypatch, 1024)
+        self._serving(monkeypatch, 1024)
+
+        kept = tools._dense_char_limit("0123456789abcdef" * 2000, tools._MAX_PAGE_CHARS)
+
+        assert kept == tools._MIN_PAGE_CHARS
+
+
+class TestAConfiguredCapIsNeverRaised:
+    """`UNSLOTH_TOOL_RESULT_MAX_CHARS` is a ceiling the install set, and the readability
+    floor is not a reason to exceed it.
+
+    Before this, an install running a 500-character cap got 500 characters from the
+    hosted path (`studio_tool_loop._truncate_for_model`) and 2,000 from the local one the
+    moment a window became readable, so the one function whose job is to LOWER the cap
+    raised it fourfold instead -- and did so hardest on the smallest windows, which is
+    where the operator asked for the small cap.
+    """
+
+    def test_a_configured_cap_below_the_floor_survives_a_known_window(self, monkeypatch):
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
+        _window(monkeypatch, 8192)
+
+        assert tools._tool_result_char_budget() == 500
+
+    def test_it_survives_a_tiny_window_too(self, monkeypatch):
+        """The window-derived share is 1,433 characters here, so the floor is the only
+        thing that could have raised 500."""
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
+        _window(monkeypatch, 1024)
+
+        assert tools._tool_result_char_budget() == 500
+
+    def test_the_local_result_matches_the_hosted_one(self, monkeypatch):
+        from core.inference import studio_tool_loop
+
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
+        _window(monkeypatch, 8192)
+        text = "x" * 5000
+
+        assert len(tools._truncate(text)) - len(text[:500]) < 400  # notice only
+        assert tools._truncate(text).startswith(text[:500])
+        assert studio_tool_loop._truncate_for_model(text).startswith(text[:500])
+
+    def test_an_unconfigured_install_still_gets_the_floor(self, monkeypatch):
+        """The floor is untouched wherever the cap is above it, which is the default."""
+        _window(monkeypatch, 512)
+
+        assert tools._tool_result_char_budget() == tools._MIN_PAGE_CHARS
+        assert tools._page_char_budget() == tools._MIN_PAGE_CHARS
