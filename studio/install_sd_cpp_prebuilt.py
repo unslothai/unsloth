@@ -518,19 +518,21 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     archives ship the ggml/webp shared-library links that way, and flattening them
     leaves sd-cli unable to start, so they are recreated here from the member list."""
     base = target.resolve()
+    destinations: list[Path] = []
     links: list[tuple[Path, str, str]] = []
     for member in zf.infolist():
         dest = base / member.filename
         resolved = dest.resolve()
         if resolved != base and base not in resolved.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+        destinations.append(dest)
         if stat.S_ISLNK(member.external_attr >> 16):
             links.append(
                 (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
             )
-    # ``extractall`` follows links restored by an earlier install, so remove archive
-    # symlink paths before writing their flattened replacements.
-    for dest, _, _ in links:
+    # ``extractall`` follows links restored by an earlier install, including paths
+    # that become regular files in a newer archive.
+    for dest in destinations:
         if dest.is_symlink():
             dest.unlink()
     zf.extractall(target)
