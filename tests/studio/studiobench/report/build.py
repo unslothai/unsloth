@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..scoring.from_payload import measures_from_records
+from ..scoring.from_payload import measures_from_records, refuse_if_probed
 from ..scoring.score import LadderScore, RungScore, score_ladder, score_rung
 from .payload import assemble_rows
 from .render import render_summary
@@ -68,6 +68,10 @@ def score_payload(path: str | Path, declared_rungs: Sequence[int] | None = None)
     """Score one run. `declared_rungs` is the ladder the tier promised, in tokens."""
 
     records = _records(path)
+    # BEFORE anything is scored. `--report` reads the same file the run wrote, so a probe run
+    # that was allowed to print its own A/B table would be scorable a second time here, hours
+    # later, by somebody who was not the one who set the variable.
+    refuse_if_probed(records, str(path))
     measures = measures_from_records(records)
     completion = _completion_by_rung(records)
 

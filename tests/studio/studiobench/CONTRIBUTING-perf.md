@@ -257,9 +257,12 @@ has nothing to do with rendering.
 default, so a scored run is unaffected.
 
 A run carrying a probe is **not scorable**, because the probe samples the DOM and forces layout on
-its own schedule. That is a gate, not a convention: the init script's path is written into
-`run_meta.probe_init_script`, the run records a `probe_free` gate, and `floor_table` refuses the
-payload outright. There is no flag to override it. Re-run with the variable unset.
+its own schedule. That is a gate, not a convention. The init script's path is written into
+`run_meta.probe_init_script`, the run records a `probe_free` gate, and **all three scoring entry
+points refuse the payload on that evidence**: the session prints no `ab.md` at the end, `--report`
+refuses, and `floor_table` refuses. There is no flag to override any of them. The payload is still
+kept, because `--assert-liveness` and the probe's own output are exactly what you wanted from that
+run. Re-run with the variable unset to get a number.
 
 Attach your listeners at **insertion**, from a `MutationObserver` installed before the app boots,
 not on your sampling tick. `contentvisibilityautostatechange` fires on a *change* of state, and a

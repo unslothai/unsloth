@@ -663,6 +663,20 @@ def _render_ab(paths, sides, session_id: str, corpus_hash: str) -> None:
         else f"{sides[0]['ref']} -> {sides[1]['ref']}"
     )
 
+    # NO TABLE AT ALL for a probe run, rather than a table with a warning printed above it. The
+    # warning scrolls off; `ab.md` sits in the output directory and gets pasted into a pull
+    # request. This is the same refusal `--report` and `floor_table` make, on the same evidence,
+    # and it is the entry point that actually runs at the end of every session.
+    from .scoring.from_payload import probe_scripts
+    probes = probe_scripts(records)
+    if probes:
+        _log("")
+        _log(f"NO A/B TABLE: this run carried an external init script ({', '.join(probes)}), so "
+             f"its timings measure the page and the instrument together. The payload is kept "
+             f"for the probe's own output and for --assert-liveness; it is not scorable.")
+        _log("")
+        return
+
     try:
         result = compare_arms(
             records,

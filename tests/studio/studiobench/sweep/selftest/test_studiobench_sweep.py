@@ -425,6 +425,53 @@ def test_a_payload_recorded_with_a_probe_installed_is_refused(tmp_path):
     assert "content_visibility_probe.js" in str(excinfo.value)
 
 
+def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
+    """`--resume` APPENDS a second run_meta and the remaining cells to the existing file.
+
+    So a payload can carry a clean header above cells that were re-recorded under a probe.
+    Reading only the first run_meta scores those cells.
+    """
+    path = probe_payload(tmp_path, "resumed", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(json.dumps({"row_type": "run_meta", "tier": "standard",
+                             "corpus_hash": "corpus0000",
+                             "probe_init_script": "late_probe.js"}) + "\n")
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "late_probe.js" in str(excinfo.value)
+
+
+def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
+    # Two independent records of one fact, so a payload from a version that emits only the gate
+    # is still refused.
+    path = probe_payload(tmp_path, "gated", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(json.dumps({"row_type": "gate", "name": "probe_free", "passed": False,
+                             "detail": {"probe_init_script": "gate_only.js"}}) + "\n")
+    with pytest.raises(SystemExit) as excinfo:
+        F.load([path])
+    assert "gate_only.js" in str(excinfo.value)
+
+
+def test_a_passing_probe_free_gate_scores_normally(tmp_path):
+    path = probe_payload(tmp_path, "clean_gate", None)
+    with path.open("a", encoding = "utf-8") as fh:
+        fh.write(json.dumps({"row_type": "gate", "name": "probe_free", "passed": True,
+                             "detail": {"probe_init_script": None}}) + "\n")
+    pooled, _ = F.load([path])
+    assert pooled["message_menu.open_close_ms"]
+
+
+def test_the_report_path_refuses_a_probed_payload_too(tmp_path):
+    """floor_table is not the only reader. `--report` scores the same file afterwards."""
+    from tests.studio.studiobench.report.build import score_payload
+
+    path = probe_payload(tmp_path, "probed_report", "arms/content_visibility_probe.js")
+    with pytest.raises(SystemExit) as excinfo:
+        score_payload(path)
+    assert "external init script" in str(excinfo.value)
+
+
 def test_a_null_probe_field_is_the_ordinary_scorable_case(tmp_path):
     # Explicit null and absent must both score, or every payload written before the field
     # existed becomes unreadable.
