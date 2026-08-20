@@ -408,6 +408,35 @@ def test_context_free_nvidia_smi_resolves_a_uuid_mask(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, 96 * gib) == 94 * gib
 
 
+def test_nvidia_uuid_mask_keeps_public_indices_relative(monkeypatch):
+    from utils.hardware import nvidia
+
+    def _run(_command, **_kwargs):
+        return types.SimpleNamespace(
+            returncode = 0,
+            stdout = "\n".join(
+                [
+                    "0, GPU-aaaaaaaa-1111-2222-3333-444444444444, 5, 30, 15360, 16384, 100, 300",
+                    "1, GPU-bbbbbbbb-1111-2222-3333-444444444444, 7, 31, 2048, 98304, 120, 350",
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _run)
+
+    result = nvidia.get_visible_gpu_utilization(
+        None,
+        "GPU-bbbbbbbb,GPU-aaaaaaaa",
+    )
+
+    assert result["index_kind"] == "relative"
+    assert result["parent_visible_gpu_ids"] == []
+    assert {device["visible_ordinal"]: device["index"] for device in result["devices"]} == {
+        0: 0,
+        1: 1,
+    }
+
+
 def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch):
     gib = 1 << 30
     monkeypatch.setattr(hw, "IS_ROCM", False)
@@ -428,6 +457,37 @@ def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch)
     # torch reports the 10 GiB MIG allocation, while --query-gpu reports its
     # 80 GiB parent. Capping the parent's 10 GiB free would falsely report the
     # instance as completely empty even when its own allocation is full.
+    assert hw._context_free_cuda_memory_info(0, 10 * gib) is None
+
+
+def test_context_free_rocm_smi_declines_whole_gpu_metrics_for_a_partition(monkeypatch):
+    from utils.hardware import amd
+
+    gib = 1 << 30
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    for name in (
+        "GPU_DEVICE_ORDINAL",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 0})
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: {
+            "available": True,
+            "devices": [{"visible_ordinal": 0, "vram_used_gb": 70.0, "vram_total_gb": 80.0}],
+        },
+    )
+
     assert hw._context_free_cuda_memory_info(0, 10 * gib) is None
 
 

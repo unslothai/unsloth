@@ -208,33 +208,27 @@ def get_visible_gpu_utilization(
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
 
+        visible_ordinal = visible_ordinals[idx] if visible_ordinals is not None else len(devices)
         devices.append(
             _build_gpu_metrics(
                 vram_used_mb = _parse_smi_value(parts[3 + field_offset]),
                 vram_total_mb = _parse_smi_value(parts[4 + field_offset]),
                 power_draw = _parse_smi_value(parts[5 + field_offset]),
                 power_limit = _parse_smi_value(parts[6 + field_offset]),
-                index = idx,
-                index_kind = "physical",
-                visible_ordinal = (
-                    visible_ordinals[idx] if visible_ordinals is not None else len(devices)
-                ),
+                index = visible_ordinal if includes_uuid else idx,
+                index_kind = "relative" if includes_uuid else "physical",
+                visible_ordinal = visible_ordinal,
                 gpu_utilization_pct = _parse_smi_value(parts[1 + field_offset]),
                 temperature_c = _parse_smi_value(parts[2 + field_offset]),
             )
         )
 
-    resolved_parent_ids = parent_visible_ids
-    if resolved_parent_ids is None and visible_ordinals is not None:
-        resolved_parent_ids = [
-            idx for idx, _ordinal in sorted(visible_ordinals.items(), key = lambda item: item[1])
-        ]
     return {
         "available": len(devices) > 0,
         "backend_cuda_visible_devices": parent_cuda_visible_devices,
-        "parent_visible_gpu_ids": resolved_parent_ids or [],
+        "parent_visible_gpu_ids": parent_visible_ids or [],
         "devices": devices,
-        "index_kind": "physical",
+        "index_kind": "relative" if includes_uuid else "physical",
     }
 
 

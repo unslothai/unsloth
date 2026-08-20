@@ -928,13 +928,10 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
             if used_gb is None or driver_total_gb is None:
                 break
             driver_total_bytes = round(driver_total_gb * (1024**3))
-            if not IS_ROCM:
-                total_tolerance = max(total_bytes // 100, 16 * 1024**2)
-                if abs(driver_total_bytes - total_bytes) > total_tolerance:
-                    logger.debug(
-                        "Skipping whole-GPU VRAM telemetry for a partitioned NVIDIA device"
-                    )
-                    break
+            total_tolerance = max(total_bytes // 100, 16 * 1024**2)
+            if abs(driver_total_bytes - total_bytes) > total_tolerance:
+                logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
+                break
             free_bytes = round(max(0.0, driver_total_gb - used_gb) * (1024**3))
             return min(total_bytes, free_bytes)
 
