@@ -64,7 +64,15 @@ done
 
 # Wipe rather than reset: the boot below re-seeds .bootstrap_password only when
 # the directory is gone. See the header.
-rm -rf ~/.unsloth/studio/auth
+#
+# Through $UNSLOTH_STUDIO_HOME, matching run-studio-permission-browser.sh and
+# run-studio-indicator-browser.sh, which have read it since #9158. This script was
+# the odd one out, hardcoding the legacy path, and that is what forced every
+# Playwright step sharing this boot to run one after another: two concurrent lanes
+# on one home race destructively, one wiping the .bootstrap_password the other just
+# minted and is about to log in with. Unset, this is byte-for-byte the old path.
+studio_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+rm -rf "$studio_home/auth"
 mkdir -p "$(dirname "$LOG")"
 
 # shellcheck disable=SC2086  # $API_ONLY is one flag or empty, and must not become ''
