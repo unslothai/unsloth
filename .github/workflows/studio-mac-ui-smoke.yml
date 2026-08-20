@@ -1543,8 +1543,9 @@ jobs:
               a_msg = anthropic.messages.create(
                   model       = "default",
                   max_tokens  = 80,
-                  temperature = TEMP,
-                  extra_body  = {"seed": SEED},
+                  # anthropic 1.0.0 dropped the sampling parameters from the
+                  # messages.create() signature. extra_body still reaches the wire.
+                  extra_body  = {"temperature": TEMP, "seed": SEED},
                   messages    = [{
                       "role": "user",
                       "content": [
