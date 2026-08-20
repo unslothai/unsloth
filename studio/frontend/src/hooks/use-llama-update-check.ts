@@ -83,8 +83,7 @@ function parseJob(value: unknown): LlamaUpdateJob {
 }
 
 function llamaJobMarker(job: LlamaUpdateJob): string {
-  // Current backends provide an opaque id. The composite only keeps this
-  // frontend compatible with older backends that predate that field.
+  // Fall back for backends predating job_id.
   return (
     job.job_id ??
     JSON.stringify([
@@ -212,9 +211,7 @@ export function useLlamaUpdateCheck({
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Serializes /update-job-status fetches so a poll that left while the job was
-  // still running cannot land after a later poll already observed success and
-  // re-pin the applying toast with the timer already cleared.
+  // Serialize job polls within the active generation.
   const pollInFlightGeneration = useRef<number | null>(null);
   const pollGeneration = useRef(0);
   const terminalRecheckJob = useRef<string | null>(null);
@@ -243,10 +240,7 @@ export function useLlamaUpdateCheck({
     }
   }, []);
 
-  // Every status source shares one sequence, so a response from an older
-  // request cannot overwrite a newer observation even when they resolve out
-  // of order. Full discovery retains the backend's probe budget; serialized
-  // active polling reads only the lightweight job snapshot and stays bounded.
+  // Sequence all reads so older responses cannot overwrite newer ones.
   const requestStatus = useCallback(
     async (forceRefresh = false): Promise<SequencedLlamaUpdateStatus> => {
       const requestId = ++statusRequestSequence.current;
@@ -328,11 +322,7 @@ export function useLlamaUpdateCheck({
           terminalRecheckJob.current = terminalJob;
           if (!terminalAlreadyHandled && job.state === "success") {
             void refreshHardwareInfo();
-            // The update unloads the running model server-side, so the chat
-            // runtime still points at a model that now 400s on send. Let the
-            // consumer drop the selector to "select model" instead of waiting for
-            // a page reload. Fires here (not just from apply's onDone) so a
-            // cross-tab update mirrored through this poll is covered too.
+            // Resync chat after this or another tab unloads the active model.
             notifyReloadIfNeeded(job);
             onDone?.({
               ok: true,
@@ -340,17 +330,13 @@ export function useLlamaUpdateCheck({
               reloadRequired: job.reload_required,
             });
           } else if (!terminalAlreadyHandled && job.state === "error") {
-            // Keep the banner visible so retry is available. A partial chained
-            // update can still have unloaded the llama server before failing.
+            // Keep retry visible if a partial update unloaded the server.
             notifyReloadIfNeeded(job);
             onDone?.({ ok: false, error: job.error });
           } else if (!terminalAlreadyHandled) {
             onDone?.({ ok: false, error: "update did not complete" });
           }
-          // Availability is computed before the backend copies the job. A
-          // request can therefore carry the pre-install offer alongside a
-          // terminal job. Keep this poll alive if the immediate reconciliation
-          // fails, so a later interval retries instead of waiting an hour.
+          // Recompute availability; keep polling if reconciliation fails.
           const reconciled = await requestStatus();
           const surfaceReconciled = surfaceIfAvailableRef.current;
           if (
@@ -377,8 +363,7 @@ export function useLlamaUpdateCheck({
           if (
             llamaJobMarker(reconciled.status.job) !== terminalRecheckJob.current
           ) {
-            // A distinct job finished during reconciliation. Leave the timer
-            // alive so its completion effects run through the normal path.
+            // Let the next tick process a different terminal job.
             return;
           }
           pollGeneration.current += 1;

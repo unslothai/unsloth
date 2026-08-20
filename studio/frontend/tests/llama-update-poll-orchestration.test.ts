@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Execute the job interval from the hook with deterministic status responses.
-// Importing the hook pulls in the React shell and auth runtime, so this follows
-// the same source-lifting pattern as verdict-poll-stall-guard.test.ts.
-
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

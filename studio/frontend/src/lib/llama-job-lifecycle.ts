@@ -68,10 +68,8 @@ export function llamaUpdatePresentation(
   };
 }
 
-/** A status read may probe the host or wait on a local backend request. */
 export const LLAMA_JOB_STATUS_TIMEOUT_MS = 15_000;
 
-/** Older requests must not overwrite a status read that started later. */
 export function llamaStatusRequestIsStale(
   latestAppliedRequest: number,
   incomingRequest: number,
@@ -79,7 +77,6 @@ export function llamaStatusRequestIsStale(
   return incomingRequest < latestAppliedRequest;
 }
 
-/** Bound one status read so a serialized poll can always hand its guard back. */
 export async function boundedLlamaStatusRequest<T>(
   request: (signal: AbortSignal) => Promise<T>,
   timeoutMs = LLAMA_JOB_STATUS_TIMEOUT_MS,

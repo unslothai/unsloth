@@ -162,7 +162,6 @@ def test_job_status_handler_uses_lightweight_snapshot(monkeypatch):
     out = asyncio.run(rl.llama_update_job_status(current_subject = "t"))
     assert out.job_id == "c" * 32
     assert out.progress == 0.5
-    # This snapshot only takes the updater lock; it performs no blocking probe.
     assert seen["thread"] is threading.main_thread()
 
 
