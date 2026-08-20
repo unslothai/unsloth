@@ -9,6 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  AUTO_CONTINUE_LIMIT,
+  autoContinueCount,
   budgetImpliesTruncation,
   incompleteLabel,
   isContinuableContent,
@@ -18,7 +20,10 @@ const {
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
+  recordAutoContinue,
   rejectsAssistantPrefill,
+  resetAutoContinue,
+  shouldAutoContinue,
   resumesExactly,
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
@@ -313,4 +318,60 @@ test("citations appended for display do not block Continue", () => {
     ]),
     true,
   );
+});
+
+test("a Max Tokens cut resumes on its own", () => {
+  resetAutoContinue();
+  // Not a decision the user made: the reply ran out of room mid-sentence, and asking
+  // whether to finish it is asking a question with one sensible answer.
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+});
+
+test("pressing Stop is never undone by an automatic resume", () => {
+  resetAutoContinue();
+  // The one case where the user HAS decided. Resuming would restart what they stopped.
+  assert.equal(shouldAutoContinue("cancelled", "parent-1"), false);
+});
+
+test("a dropped connection still asks, rather than retrying silently", () => {
+  resetAutoContinue();
+  // A silent retry here hides a broken link behind what looks like a slow answer.
+  assert.equal(shouldAutoContinue("interrupted", "parent-1"), false);
+});
+
+test("automatic resumes are bounded, then the bar comes back", () => {
+  resetAutoContinue();
+  // A model that will not stop would otherwise loop forever, and every round grows the
+  // transcript and drives compaction harder.
+  for (let round = 0; round < AUTO_CONTINUE_LIMIT; round += 1) {
+    assert.equal(shouldAutoContinue("length", "parent-1"), true);
+    recordAutoContinue("parent-1");
+  }
+  assert.equal(autoContinueCount("parent-1"), AUTO_CONTINUE_LIMIT);
+  assert.equal(shouldAutoContinue("length", "parent-1"), false);
+});
+
+test("the budget is per turn, so a later turn is not punished for an earlier one", () => {
+  resetAutoContinue();
+  for (let round = 0; round < AUTO_CONTINUE_LIMIT; round += 1) {
+    recordAutoContinue("parent-1");
+  }
+  assert.equal(shouldAutoContinue("length", "parent-1"), false);
+  assert.equal(shouldAutoContinue("length", "parent-2"), true);
+});
+
+test("the count is keyed on the parent, which every round of one turn shares", () => {
+  resetAutoContinue();
+  // A continuation runs as a SIBLING, so each round has a new message id. Keying on that
+  // would reset the counter every round and the limit would never be reached.
+  recordAutoContinue("parent-1");
+  recordAutoContinue("parent-1");
+  assert.equal(autoContinueCount("parent-1"), 2);
+});
+
+test("a turn with no parent is never resumed automatically", () => {
+  resetAutoContinue();
+  // The very first message has nothing to hang a sibling off, so there is no stable key
+  // to count against and an unbounded loop is the failure mode.
+  assert.equal(shouldAutoContinue("length", null), false);
 });

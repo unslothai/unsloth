@@ -282,3 +282,60 @@ export function readContinuationRequest(
   }
   return null;
 }
+
+/**
+ * Resuming a Max Tokens cut WITHOUT asking.
+ *
+ * Hitting the cap is not a decision the user made; it is the reply running out of room
+ * mid-sentence, and the only sensible answer to "the answer is not finished" is to finish
+ * it. Every other reason is left alone: `cancelled` is the user pressing Stop, so
+ * resuming would restart the thing they just stopped, and `interrupted` means the
+ * connection dropped, where a silent retry can hide a broken link.
+ *
+ * Bounded, because a model that will not stop would otherwise loop forever, and each
+ * round grows the transcript and drives compaction harder. After the budget is spent the
+ * bar comes back and the user decides.
+ */
+export const AUTO_CONTINUE_LIMIT = 3;
+
+/**
+ * Rounds already spent per logical turn, keyed by the parent the continuation hangs off.
+ *
+ * Keyed on the PARENT, not the message: a continuation runs as a sibling of the turn it
+ * resumes, so each round produces a new message id and a per-message counter would reset
+ * every time and never reach its limit. The parent is the one id every round of the same
+ * turn shares. In memory only; a reload is a fresh decision by a present user.
+ */
+const spent = new Map<string, number>();
+
+/** Whether this cut should resume on its own. */
+export function shouldAutoContinue(
+  reason: IncompleteReason | null | undefined,
+  key: string | null | undefined,
+  { limit = AUTO_CONTINUE_LIMIT }: { limit?: number } = {},
+): boolean {
+  if (reason !== "length" || !key) {
+    return false;
+  }
+  return (spent.get(key) ?? 0) < limit;
+}
+
+/** Record a round against `key`. Called before the run starts, so a run that fails to
+ * produce anything still consumes its budget rather than retrying forever. */
+export function recordAutoContinue(key: string): void {
+  spent.set(key, (spent.get(key) ?? 0) + 1);
+}
+
+/** Rounds spent so far, for the indicator and for tests. */
+export function autoContinueCount(key: string | null | undefined): number {
+  return key ? (spent.get(key) ?? 0) : 0;
+}
+
+/** Test seam; also lets a new thread start from zero. */
+export function resetAutoContinue(key?: string): void {
+  if (key === undefined) {
+    spent.clear();
+  } else {
+    spent.delete(key);
+  }
+}
