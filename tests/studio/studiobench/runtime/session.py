@@ -68,6 +68,15 @@ IDLE_CALIBRATION_MS = 1500
 EQUIVALENCE_RUNG = "10K"
 MOUNT_TIMEOUT_S = 180
 
+# How long the composer may take to accept the click that starts the film. Not a performance
+# budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
+# 90s because it has to be well clear of the worst real reading and still bounded, since a click
+# that never lands is a different fact from a slow one.
+COMPOSER_CLICK_TIMEOUT_S = 90
+# Above this the log says so out loud, because a multi-second click is the user complaint itself
+# and it should not be something you only find by reading the payload afterwards.
+SLOW_COMPOSER_CLICK_MS = 1_000
+
 
 class WindowInUse(RuntimeError):
     pass
@@ -285,7 +294,12 @@ class CellRunner:
         )
 
         before_metrics = cdp_metrics(s.ctx.cdp)
+        self._composer_click_ms = None
         t0 = self._press_send(page)
+        # On the cell rather than in `actions`, because it happens before the first slot opens and
+        # filing it as an action would put a reading outside the film into a list the scoring layer
+        # pairs by slot. It is still a per-cell timing and grows with the rung like any other.
+        row["composer_click_ms"] = self._composer_click_ms
 
         scene = scene_schedule.SCENES.get(self.tier, scene_schedule.QUICK)
         runner = SceneRunner(
@@ -463,10 +477,36 @@ class CellRunner:
         )
 
     def _press_send(self, page) -> float:
-        """Type a prompt and press send. Returns the driver monotonic time the film starts."""
+        """Type a prompt and press send. Returns the driver monotonic time the film starts.
+
+        THE COMPOSER CLICK IS A READING, NOT PLUMBING, and it took losing a whole rung to see it.
+
+        This runs before the film starts, so it was written as setup and inherited the default
+        8s action timeout. At 500K the click times out: the textarea resolves, Playwright reports
+        it visible, enabled and stable, it scrolls into view, and then dispatching the click does
+        not complete inside eight seconds because the main thread is not free to run the handler.
+        The exception killed the cell before a single slot opened, three times out of three across
+        two runs, so the ladder had NO data at 500K at all.
+
+        That is not a harness inconvenience. "How long does it take to click into the composer on
+        a long thread" is the complaint this tool exists to measure, and it was being thrown away
+        as an error. So the timeout is `COMPOSER_CLICK_TIMEOUT_S`, generous enough that the cell
+        survives and the film runs, and the cost is recorded as `composer_click_ms` whatever it
+        comes to. A click that takes 12 seconds is a result. An exception is not.
+
+        Note it is still bounded. A click that never lands is a different fact from a slow one,
+        and the cell must not hang forever waiting to find out which.
+        """
         selector = 'textarea[aria-label="Message input"]'
         page.wait_for_selector(selector, timeout = 60_000)
-        page.click(selector)
+        clicked_at = time.monotonic()
+        page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
+        self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
+        if self._composer_click_ms > SLOW_COMPOSER_CLICK_MS:
+            self.log(
+                f"  the composer took {self._composer_click_ms / 1000:.1f}s to accept a click. "
+                f"That is the thread being unresponsive, not the harness being slow."
+            )
         page.fill(selector, "continue")
         page.wait_for_timeout(150)
         send = page.query_selector('button[aria-label="Send message"]')
