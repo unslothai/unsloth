@@ -383,40 +383,73 @@ async def update_provider_config(
         if not replacement_api_key:
             raise HTTPException(status_code = 400, detail = "API key cannot be empty")
 
+    metadata_updates: dict = {}
+    if metadata_requested:
+        metadata_updates = dict(
+            id = provider_id,
+            display_name = payload.display_name,
+            base_url = base_url,
+            is_enabled = payload.is_enabled,
+            models = payload.models,
+            available_models = payload.available_models,
+        )
+        if max_output_tokens_requested:
+            metadata_updates["max_output_tokens"] = payload.max_output_tokens
+
+    # The row snapshot this request found, keyed the way update_provider takes it.
+    _restorable = dict(
+        display_name = existing["display_name"],
+        base_url = existing["base_url"],
+        is_enabled = bool(existing["is_enabled"]),
+        models = existing.get("models") or [],
+        available_models = existing.get("available_models") or [],
+        max_output_tokens = existing.get("max_output_tokens"),
+    )
+
+    def _current_matches(current: dict, field: str, written) -> bool:
+        """Does the row still hold what this request wrote into that column?"""
+        if field == "is_enabled":
+            return bool(current.get("is_enabled")) == bool(written)
+        return current.get(field) == written
+
     def _restore_metadata() -> None:
-        """Put the row back the way it was found.
+        """Undo this request's own metadata write, while it is still the row.
 
         update_provider commits and closes its own connection, so the row is already
         durable by the time any later step fails; a compensating write is the only undo
-        there is.
+        there is. This handler suspends between that commit and the proof write, though
+        (remember_catalog_account awaits a 30s file lock, and the failure worth undoing is
+        exactly the one where that lock was contended), so a second save can land in
+        between. Restoring the whole pre-request snapshot would silently erase it. Put
+        back only the columns this request set, and only those the row still holds this
+        request's value for: a column a later save has since claimed belongs to that save.
         """
         if not metadata_requested:
             return
+        current = providers_db.get_provider(provider_id)
+        if current is None:
+            return
+        undo = {}
+        for field, written in metadata_updates.items():
+            if field == "id":
+                continue
+            # None means "not sent" for every column but max_output_tokens, which is only
+            # present here when it was explicitly requested. update_provider left the
+            # unsent ones alone, so there is nothing of this request's to take back.
+            if written is None and field != "max_output_tokens":
+                continue
+            if not _current_matches(current, field, written):
+                continue
+            undo[field] = _restorable[field]
+        if not undo:
+            return
         try:
-            providers_db.update_provider(
-                id = provider_id,
-                display_name = existing["display_name"],
-                base_url = existing["base_url"],
-                is_enabled = bool(existing["is_enabled"]),
-                models = existing.get("models") or [],
-                available_models = existing.get("available_models") or [],
-                max_output_tokens = existing.get("max_output_tokens"),
-            )
+            providers_db.update_provider(id = provider_id, **undo)
         except Exception:
             logger.exception("provider.update_metadata_rollback_failed", provider_id = provider_id)
 
     with current_credential_write(credential):
         if metadata_requested:
-            metadata_updates = dict(
-                id = provider_id,
-                display_name = payload.display_name,
-                base_url = base_url,
-                is_enabled = payload.is_enabled,
-                models = payload.models,
-                available_models = payload.available_models,
-            )
-            if max_output_tokens_requested:
-                metadata_updates["max_output_tokens"] = payload.max_output_tokens
             providers_db.update_provider(**metadata_updates)
         try:
             if replacement_api_key is not None:

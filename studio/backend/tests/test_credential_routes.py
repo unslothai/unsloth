@@ -1212,3 +1212,106 @@ def test_a_released_connection_leaves_no_ticket_but_still_retires_its_read():
     assert codex_client._begin_catalog_request("released-connection") != ticket
     codex_client.forget_subscription_models("released-connection")
     codex_client.forget_subscription_models("another-connection")
+
+
+def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
+    """The undo takes back this request's write, not whatever the row says by then.
+
+    update_provider_config suspends between committing the row and recording the proof:
+    remember_catalog_account awaits a 30s file lock, and the failure the rollback exists
+    for is exactly the one where that lock was contended. A save the user makes during
+    those seconds commits in between. Restoring the whole pre-request snapshot would put
+    the row back to before *both* requests and erase the second one's successful edit.
+    """
+    import json
+
+    from core.inference import openai_codex_auth as codex_auth
+    from core.inference import openai_codex_client as codex_client
+
+    listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "Original name",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    provider_id = created.id
+
+    credential_secrets.get_or_create_credential_encryption_key()
+    credential_secrets.upsert_secret(
+        credential_secrets.OPENAI_CODEX_OAUTH_KIND,
+        provider_id,
+        json.dumps(
+            {
+                "access_token": "at",
+                "refresh_token": "rt",
+                "expires_at": int(time.time()) + 3600,
+                "account_id": "acct-1",
+            }
+        ),
+    )
+    codex_client._offered_models[provider_id] = {
+        "gpt-5.4": {"id": "gpt-5.4", "listed": True},
+        listed: {"id": listed, "listed": True},
+    }
+    codex_client._catalog_accounts[provider_id] = "acct-1"
+
+    gate = asyncio.Event()
+
+    async def _blocked_then_busy(_provider_id, _account_id):
+        # Stands in for provider_oauth_write_guard's flock acquire: a real suspension
+        # point, then the timeout it raises.
+        await gate.wait()
+        raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
+
+    monkeypatch.setattr(
+        providers_route.openai_codex_auth, "remember_catalog_account", _blocked_then_busy
+    )
+
+    async def _overlapping_saves():
+        adds_a_model = asyncio.ensure_future(
+            providers_route.update_provider_config(
+                provider_id,
+                ProviderUpdate(models = ["gpt-5.4", listed]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if gate._waiters:
+                break
+        # Its row is committed and it is now parked in remember_catalog_account.
+        assert providers_db.get_provider(provider_id)["models"] == ["gpt-5.4", listed]
+
+        # The user saves again while that one hangs. This one has no selection of its
+        # own, so it records no proof and completes.
+        await providers_route.update_provider_config(
+            provider_id,
+            ProviderUpdate(display_name = "Renamed while the first save hung"),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+
+        gate.set()
+        with pytest.raises(codex_auth.CodexAuthError):
+            await adds_a_model
+
+    try:
+        asyncio.run(_overlapping_saves())
+
+        row = providers_db.get_provider(provider_id)
+        # The rename was never in doubt, and nothing it did needs undoing.
+        assert row["display_name"] == "Renamed while the first save hung"
+        # The unproven model still goes back: that half of the failed save is this
+        # request's own, and no one else claimed the column.
+        assert row["models"] == ["gpt-5.4"]
+        bundle = codex_auth.load_oauth_bundle(provider_id)
+        assert bundle is not None and bundle.get("catalog_account_id") is None
+    finally:
+        codex_client.forget_subscription_models(provider_id)
