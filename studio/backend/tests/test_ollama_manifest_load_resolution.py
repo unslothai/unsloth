@@ -71,6 +71,35 @@ def _manifest_ref(tmp_path: Path, monkeypatch) -> str:
     return ref
 
 
+def test_custom_folder_scan_preserves_ollama_rows(tmp_path):
+    from hub.services.models import local_inventory
+
+    root = tmp_path / "custom-ollama"
+    _write_ollama_store(root)
+
+    rows = [
+        local_inventory._promote_to_custom_source(row)
+        for row in local_inventory._scan_custom_folder(root)
+    ]
+
+    assert len(rows) == 1
+    assert rows[0].source == "ollama"
+    assert rows[0].load_id.startswith("ollama-manifest:")
+
+
+def test_registered_custom_ollama_ref_can_be_materialized(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+    from hub.storage import scan_folders
+
+    root = tmp_path / "registered-ollama"
+    _write_ollama_store(root)
+    ref = ollama.scan_ollama_dir(root)[0].load_id
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [])
+    monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [{"path": str(root)}])
+
+    assert Path(ollama.materialize_ollama_model_ref(ref)).is_file()
+
+
 def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     from models.inference import LoadRequest
     from routes.inference import _resolve_model_identifier_for_request

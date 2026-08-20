@@ -429,8 +429,18 @@ def scan_ollama_dir(
 
 
 def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
-    """Discovered Ollama root whose ``manifests/`` contains *tag_file*, or ``None``. Validating against known roots keeps a crafted reference from driving materialization to an arbitrary path."""
-    for ollama_dir in ollama_model_dirs():
+    """Return a discovered or registered Ollama root containing *tag_file*."""
+    known_dirs = list(ollama_model_dirs())
+    try:
+        from hub.storage.scan_folders import list_scan_folders
+        known_dirs.extend(
+            Path(folder["path"]).expanduser()
+            for folder in list_scan_folders()
+            if folder.get("path")
+        )
+    except Exception as e:
+        logger.debug("Could not load registered Ollama roots: %s", e)
+    for ollama_dir in known_dirs:
         if path_is_same_or_child(tag_file, ollama_dir / "manifests"):
             return ollama_dir
     return None
