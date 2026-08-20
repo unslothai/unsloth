@@ -2840,6 +2840,30 @@ html[data-chat-font] .aui-root {
 	scrollbar-gutter: stable;
 }
 
+/* An unregistered custom property always inherits, so writing
+   --aui-scroll-stabilizer on the scroll container dirties inherited style for
+   every descendant and the next scrollHeight read restyles the whole thread.
+   inherits:false confines that to the viewport element: over a 51,608-element
+   thread, 20 writes restyle 51,601 elements each (3,466 ms) without this rule
+   and 1 element each (2.1 ms) with it.
+
+   Safe because the only consumer is the padding-bottom declaration below, on
+   the same element, and initial-value 0px reproduces the `var(..., 0px)`
+   fallback, so an unset property still computes to 0px and removeProperty()
+   still releases the padding.
+
+   The stabilizer writes rarely (content shrinking inside the follow window,
+   mostly at stream finalisation), but those writes are most of the cost of
+   ending a stream in a long thread.
+
+   Engines without @property (Firefox below 128) ignore this block and keep the
+   inherited behaviour: slower, still correct. */
+@property --aui-scroll-stabilizer {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
+}
+
 /* Marker class applied only to actual streaming-thread viewports
    (see ThreadPrimitive.Viewport in components/assistant-ui/thread.tsx).
    Scoped separately from `.aui-thread-viewport` because that class is

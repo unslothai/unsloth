@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+# Aliased: this module already has its own `run_pwsh` fragment helper, which now calls the
+# shared runner rather than subprocess.run.
+from unsloth_pwsh_runner import run_pwsh as run_pwsh_retrying
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -48,7 +52,11 @@ def run_pwsh(
     run_env["NO_COLOR"] = "1"
     if env:
         run_env.update(env)
-    return subprocess.run(
+    # The shared runner, not subprocess.run: the PR_FORCE cases below read stdout for the
+    # promoted ref and the fixed ggml-org source, and a pwsh killed at startup yields empty
+    # stdout that looks like setup.ps1 promoting nothing.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    return run_pwsh_retrying(
         [PWSH, "-NoProfile", "-Command", script],
         capture_output = True,
         text = True,

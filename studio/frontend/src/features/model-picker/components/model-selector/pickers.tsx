@@ -142,6 +142,7 @@ import {
   groupForRepoId,
 } from "./model-catalog";
 import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -2696,8 +2697,14 @@ export function HubModelPicker({
     () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
     [pickerInventory.localModels],
   );
+  // Ollama rows list alongside custom folders: both are user-managed stores
+  // outside ./models, and an Ollama root added as a custom folder is where
+  // the missing rows were expected (#9226).
   const customFolderModels = useMemo(
-    () => pickerInventory.localModels.filter((m) => m.source === "custom"),
+    () =>
+      pickerInventory.localModels.filter(
+        (m) => m.source === "custom" || m.source === "ollama",
+      ),
     [pickerInventory.localModels],
   );
   useEffect(() => {
@@ -5721,9 +5728,12 @@ export function HubModelPicker({
                         // folders) in addition to name/path so the row classifies
                         // and loads through the same GGUF path as the filter.
                         const isGguf = localModelIsGguf(m);
-                        // Single .gguf files (e.g. Ollama blobs) load directly;
-                        // GGUF repos/directories expand to pick a variant.
-                        const isDirectGguf = isGgufFile;
+                        // Single .gguf files load directly; GGUF repos and
+                        // directories expand to pick a variant. An Ollama
+                        // manifest reference names one blob, so it is direct
+                        // too: POST /load materializes its .gguf link.
+                        const isDirectGguf =
+                          isGgufFile || m.source === "ollama";
                         const optionKey = makeModelOptionKey(
                           "custom-folder",
                           m.id,
@@ -5744,7 +5754,9 @@ export function HubModelPicker({
                                     loadedModelId,
                                     activeGgufVariant,
                                     m.id,
-                                    isGgufFile
+                                    // Direct loads set no active variant, so
+                                    // requiring one never reads as loaded.
+                                    isDirectGguf
                                       ? "ignore"
                                       : isGguf
                                         ? "required"
@@ -6548,8 +6560,12 @@ function FineTunedRows({
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
-        const isLocalGgufDir =
-          isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+        const localGgufKind = localGgufKindFor(
+          adapter,
+          isGgufRepo(adapter.id) || isGgufRepo(adapter.name),
+        );
+        const isLocalGgufDir = localGgufKind === "variants";
+        const isLocalDirectGguf = localGgufKind === "direct";
         // A checkpoint that fine-tunes a TTS/STT model has to reach the Audio page:
         // chat/completions cannot serve it and reports the adapter as "not downloaded".
         // The pipeline tag is what onSelect routes on, so carry the detected codec as one.
@@ -6557,13 +6573,13 @@ function FineTunedRows({
           source: isLocal ? "local" : isExported ? "exported" : "lora",
           isLora: !isLocal && !isMerged && !isGguf,
           isDownloaded: true,
-          isGguf: false,
+          isGguf: isLocalDirectGguf,
           pipelineTag: audioPipelineTagFor(adapter.audioType, true),
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);
         const tag = isLocal
-          ? isLocalGgufDir
+          ? isLocalGgufDir || isLocalDirectGguf
             ? "GGUF"
             : "Local"
           : isGguf
@@ -6576,7 +6592,7 @@ function FineTunedRows({
                   : "LoRA"
                 : "LoRA";
         const meta = isLocal
-          ? isLocalGgufDir
+          ? isLocalGgufDir || isLocalDirectGguf
             ? "GGUF"
             : "Local"
           : isTrainingFull
@@ -6596,7 +6612,11 @@ function FineTunedRows({
                     loadedModelId,
                     activeGgufVariant,
                     adapter.id,
-                    isLocalGgufDir || isExportedGguf ? "required" : "none",
+                    isLocalDirectGguf
+                      ? "ignore"
+                      : isLocalGgufDir || isExportedGguf
+                        ? "required"
+                        : "none",
                   )}
                   optionProps={loraModelList.getOptionProps(
                     optionKey,

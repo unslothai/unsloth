@@ -193,6 +193,7 @@ export const ar = {
       chat: "المحادثة",
       connections: "الاتصالات",
       apiKeys: "API",
+      remoteLan: "الوصول عن بُعد والشبكة المحلية",
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
@@ -1226,6 +1227,11 @@ export const ar = {
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
+    },
+    remoteLan: {
+      title: "الوصول عن بُعد والشبكة المحلية",
+      description:
+        "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     apiKeys: {
       title: "API",

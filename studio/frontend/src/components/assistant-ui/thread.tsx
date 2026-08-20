@@ -9,6 +9,11 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import {
+  compactionBoundary,
+  type ContextTruncation,
+} from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -129,6 +134,9 @@ import {
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
+  claimAutoContinue,
+  recordAutoContinue,
+  shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -269,6 +277,7 @@ import {
   FastForwardIcon,
   GlobeIcon,
   HeadphonesIcon,
+  Loader2Icon,
   MoreHorizontalIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -6488,23 +6497,110 @@ const ContinueMessageBarForLastMessage: FC = () => {
     status?.type === "incomplete" && status?.reason === "cancelled";
   const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
 
-  // Newest turn only: appending to an older one would strand the replies after it.
-  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
-  if (
-    !reason ||
-    !isLast ||
-    isRunning ||
-    researchRunId ||
-    researchActive ||
-    !continuable ||
-    !modeAllowsContinuation({
+  // Every gate the bar itself answers to. Resuming without asking has to clear the same
+  // ones, or it would resume a turn the bar would have refused to offer.
+  const resumable =
+    Boolean(reason) &&
+    isLast &&
+    !isRunning &&
+    !researchRunId &&
+    !researchActive &&
+    continuable &&
+    modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
       deepResearchArmed,
-    }) ||
-    !partial.trim()
-  ) {
+    }) &&
+    Boolean(partial.trim());
+
+  // The parent is what every round of one logical turn shares; the message id changes
+  // each round, because a continuation runs as a sibling.
+  const parentId = useAuiState(({ thread, message }) => {
+    const index = thread.messages.findIndex((m) => m.id === message.id);
+    return index > 0 ? thread.messages[index - 1].id : null;
+  });
+
+  const startContinuation = useCallback(() => {
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return;
+    }
+    // Sibling of the truncated turn, so the branch picker can still reach the partial.
+    const parent = index > 0 ? messages[index - 1].id : null;
+    aui.thread().startRun({
+      parentId: parent,
+      runConfig: {
+        custom: {
+          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
+        },
+      },
+    });
+  }, [aui, messageId, partial, thoughtSignature]);
+
+  // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
+  // which the fit protects, so a partial too big to sit beside the system turn makes the
+  // request irreducible and every further round fails identically.
+  const truncation = useAuiState(({ message }) => {
+    const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)
+      ?.custom;
+    return (custom?.contextTruncation ?? null) as
+      | { fits?: boolean; prompt_target?: number }
+      | null;
+  });
+
+  // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
+  // user made, so it resumes on its own and the bar never appears. Bounded, and only for
+  // `length`: see `shouldAutoContinue`. Asked per MESSAGE, not just per turn: the round
+  // budget belongs to the turn and one spent round out of three still says yes, so
+  // arriving at a message the claim below has already taken -- the branch picker back to
+  // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
+  // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
+  const autoContinuing =
+    resumable &&
+    shouldAutoContinueMessage(messageId, reason, parentId, {
+      fits: truncation?.fits,
+      // The same cheap estimator the backend fit uses, which is all that is needed to
+      // spot a partial that has already eaten the whole budget.
+      partialTokens: Math.ceil(partial.length / 4),
+      promptTarget: truncation?.prompt_target,
+    });
+  useEffect(() => {
+    if (!autoContinuing || !parentId) {
+      return;
+    }
+    // Claimed in module scope, not a ref. `<StrictMode>` in src/main.tsx replays this
+    // effect on the same fiber with the same `autoContinuing`, so nothing inside would
+    // have differed, and rechecking the round budget would not help either: one recorded
+    // round still leaves the limit unspent. A ref fixed the replay but not a real
+    // remount, so leaving the chat with a truncated branch selected and returning fired
+    // it again, creating another sibling and another paid request. The claim survives
+    // both, and is the same seam `resetAutoContinue()` clears.
+    if (!claimAutoContinue(messageId)) {
+      return;
+    }
+    // Recorded BEFORE the run, so a round that produces nothing still spends its budget
+    // instead of re-firing this effect forever.
+    recordAutoContinue(parentId);
+    startContinuation();
+  }, [autoContinuing, parentId, messageId, startContinuation]);
+
+  // Newest turn only: appending to an older one would strand the replies after it.
+  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
+  // `reason` is repeated rather than left to `resumable`, which is a boolean and so
+  // narrows nothing: the label below needs it proven non-undefined.
+  if (!resumable || !reason) {
     return null;
+  }
+  if (autoContinuing) {
+    // The run is starting this tick; showing the bar first would flash a question that is
+    // already being answered.
+    return (
+      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
+        <Loader2Icon className="size-3.5 animate-spin" strokeWidth={1.75} />
+        Continuing automatically.
+      </div>
+    );
   }
 
   const handleContinue = () => {
@@ -6792,6 +6888,42 @@ const AssistantMessage: FC = () => {
       ? custom.researchRunId
       : null;
   });
+  // Persisted on the assistant turn that compacted, so the notice survives a reload.
+  const contextTruncation = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { contextTruncation?: unknown } }
+        | undefined
+    )?.custom;
+    const value = custom?.contextTruncation;
+    return value && typeof value === "object"
+      ? (value as ContextTruncation)
+      : null;
+  });
+  // Once a thread outgrows the window every request runs the fit, so "this turn
+  // compacted" is true of every later reply and would put a notice on all of them. What
+  // matters is when MORE of the conversation fell out of view: the eviction boundary
+  // rising above the last turn that reported one. Between moves the model sees the same
+  // history, so there is nothing new to say.
+  const showsNotice = useAuiState(({ thread }) => {
+    let previousDropped = 0;
+    for (const message of thread.messages) {
+      if (message.role !== "assistant") continue;
+      const value = (
+        message.metadata as
+          | { custom?: { contextTruncation?: unknown } }
+          | undefined
+      )?.custom?.contextTruncation as ContextTruncation | undefined;
+      const dropped = compactionBoundary(value);
+      if (dropped > previousDropped) {
+        if (message.id === messageId) return true;
+        previousDropped = dropped;
+      } else if (message.id === messageId) {
+        return false;
+      }
+    }
+    return false;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -6866,6 +6998,9 @@ const AssistantMessage: FC = () => {
       onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+        {contextTruncation && showsNotice && !isEditing && (
+          <CompactionNotice truncation={contextTruncation} />
+        )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             <textarea
