@@ -125,9 +125,9 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     # Lower-cased substring checks, so formatting jitter is not a failure.
     joined = " ".join(first).lower()
     assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-    assert (
-        "paris" in joined
-    ), f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
+    assert "paris" in joined, (
+        f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
+    )
     print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
 
 
