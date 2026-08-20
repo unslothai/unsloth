@@ -47,6 +47,11 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_class_mismatch_reason,
+    planner_model_class,
+    planner_quantization_kwargs,
+    requested_device_map,
+    resolve_unsloth_device_map,
 )
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
@@ -891,6 +896,8 @@ class FastBaseModel:
         full_finetuning = False,
         token = None,
         device_map = "sequential",
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
         tokenizer_name = None,
@@ -912,6 +919,10 @@ class FastBaseModel:
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         text_only = False,
+        # True when the caller already swapped a multimodal config for its text sub-config,
+        # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
+        # below on the direct-call path.
+        text_only_decoder = False,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -971,6 +982,7 @@ class FastBaseModel:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
@@ -1158,6 +1170,64 @@ class FastBaseModel:
             load_in_8bit = False
             load_in_16bit = False
 
+        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        # Resolved here rather than at the load, because the planner below has to size the
+        # same dtype the load will really use.
+        torch_dtype = dtype
+        if do_forced_float32:
+            torch_dtype = torch.bfloat16
+
+        # text_only loads the decoder alone, but the planner only gets `model_name` and
+        # rebuilds the repo's own config, the whole VLM: it budgets a vision tower this
+        # load never creates and names `model.language_model.layers.0` where the standalone
+        # decoder has `model.layers.0`, so transformers raises "doesn't have any device
+        # set" on the first decoder weight. Plan nothing over the wrong module tree.
+        _planner_skip_reason = (
+            "text_only loads a decoder the repo config does not describe"
+            if text_only_decoder
+            else None
+        )
+        # Same failure from the other direction: `num_labels` (or an explicit `auto_model`)
+        # loads a task head, whose `score` replaces the `lm_head` the planner named off the
+        # repo's config, and accelerate's dispatch refuses a map with no `score.weight`.
+        if _planner_skip_reason is None:
+            _planner_skip_reason = planner_class_mismatch_reason(
+                model_class,
+                planner_model_class(auto_config, trust_remote_code = trust_remote_code),
+            )
+
+        # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP).
+        # An already-planned map comes back unchanged, so calling FastBaseModel directly
+        # behaves the same as going through FastModel.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            fast_inference = fast_inference,
+            full_finetuning = full_finetuning,
+            planner_kwargs = device_map_planner_kwargs,
+            skip_reason = _planner_skip_reason,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            # The pin the config and weights below use; the default branch would size a
+            # different checkpoint than the one being loaded.
+            revision = _revision,
+            # The dtype the load below is given. `from_pretrained`'s dtype overrides the
+            # one config.json declares, so planning against the checkpoint's own mis-sizes
+            # every load that changed it, by 2x between float32 and bfloat16.
+            **add_dtype_kwargs(torch_dtype),
+            # A caller-supplied config overrides the flags: loader.py clears them whenever
+            # it forwards one, so the flags alone would size a 4bit load at full precision.
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = user_quantization_config,
+                # The same extra _skip_modules below adds.
+                extra_skip_modules = ["out_proj"]
+                if any(mt == "nemotron_h" for mt in (model_types or []))
+                else None,
+            ),
+        )
+
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
@@ -1317,11 +1387,7 @@ class FastBaseModel:
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
 
-        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
-        torch_dtype = dtype
-        if do_forced_float32:
-            torch_dtype = torch.bfloat16
-
+        # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)

@@ -106,6 +106,152 @@ def prepare_device_map():
     return device_map, True
 
 
+UNSLOTH_DEVICE_MAP = "unsloth"
+
+
+def requested_device_map(device_map):
+    """`UNSLOTH_AUTO_DEVICE_MAP=1` opts in without touching any call site. Only
+    "sequential" is upgraded: a dict, "auto" or "balanced" is a placement the caller chose.
+    """
+    if device_map == "sequential" and os.environ.get("UNSLOTH_AUTO_DEVICE_MAP", "0") == "1":
+        return UNSLOTH_DEVICE_MAP
+    return device_map
+
+
+def planner_quantization_kwargs(
+    load_in_4bit = False,
+    load_in_8bit = False,
+    quantization_config = None,
+    extra_skip_modules = None,
+):
+    """The quantization the planner must size for, as the load will really apply it.
+
+    The config or the flags, never both: transformers refuses both at once, so loader.py
+    clears `load_in_4bit` / `load_in_8bit` whenever it forwards a `quantization_config`.
+    The bare flags would then describe a full-precision load, and the planner sizes a 4bit
+    model at bf16 and raises `DeviceMapInfeasible` on a load that would have fit.
+
+    The skip list travels with the flags. On-the-fly quantization keeps
+    SKIP_QUANTIZATION_MODULES (`lm_head`, the towers, projectors and MoE routers) in
+    compute dtype, and transformers reads that as `modules_to_not_convert`; sizing them at
+    4bit understates the head device by GiBs on a large-vocab VLM, the one number this
+    plan exists to get right. A pre-quantized checkpoint needs none of it: its own
+    config.json carries the list.
+    """
+    if quantization_config is not None:
+        return {"quantization_config": quantization_config}
+    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
+    if load_in_4bit or load_in_8bit:
+        from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+        kwargs["llm_int8_skip_modules"] = SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
+    return kwargs
+
+
+def planner_model_class(config, trust_remote_code = False):
+    """The model class the planner's own rules pick for `config`, or None if unknown.
+
+    The planner never sees the auto class the load chose; it picks its own off a config.
+    Note `config` is whatever the caller passed, so when a user supplied `config = ...`
+    this answers for that one, while the planner rebuilds the repo's config from
+    `model_name` -- the two can disagree, and only the caller can tell.
+    """
+    try:
+        from unsloth_zoo.device_map_planner import _auto_class_for
+        from ._utils import resolve_model_class
+
+        auto_class = _auto_class_for(config, trust_remote_code = trust_remote_code)
+        return resolve_model_class(auto_class, config)
+    except Exception:
+        # Unknown, not mismatched: an unsloth_zoo without this has no planner to feed.
+        return None
+
+
+def planner_class_mismatch_reason(loaded_class, planned_class):
+    """Why the planner's model differs from the one being loaded, else None.
+
+    A load that overrides the config's own choice gets a map for a module tree it does not
+    have: `num_labels` swaps in AutoModelForSequenceClassification, whose `score` replaces
+    the planned `lm_head`, and accelerate's dispatch refuses the map with "does not give
+    any device for the following parameters: score.weight". Compared as model classes, not
+    auto classes -- AutoModelForVision2Seq and AutoModelForImageTextToText are distinct
+    objects that resolve to the same VLM.
+    """
+    if loaded_class is None or planned_class is None or loaded_class is planned_class:
+        return None
+    return f"the load builds {loaded_class.__name__}, not the planned {planned_class.__name__}"
+
+
+def resolve_unsloth_device_map(
+    device_map,
+    model_name,
+    *,
+    fast_inference = False,
+    full_finetuning = False,
+    planner_kwargs = None,
+    skip_reason = None,
+    **config_kwargs,
+):
+    """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is.
+
+    Opt-in only, so nothing an existing caller passes changes meaning. The plan is built
+    on the meta device: no GPU memory, no weight download.
+
+    Falls back to "sequential" wherever a plan cannot apply, since a model that loads the
+    old way beats one that refuses to load at all. `DeviceMapInfeasible` is the exception:
+    the planner raises it rather than spilling a bitsandbytes model to CPU, and swallowing
+    it would hand the user an OOM instead of a diagnosis.
+
+    `skip_reason` is the caller's veto, for when only the caller can tell the planner
+    would describe a different model than the load builds.
+    """
+    if device_map != UNSLOTH_DEVICE_MAP:
+        return device_map
+
+    def _fallback(reason):
+        print(f"Unsloth: Not planning a device map; {reason}. Using `sequential`.")
+        return "sequential"
+
+    if skip_reason is not None:
+        return _fallback(skip_reason)
+    if fast_inference:
+        return _fallback("vLLM places its own weights")
+    if full_finetuning:
+        return _fallback("full finetuning does not use the quantized planner")
+    if is_distributed():
+        # torchrun/DDP/FSDP already give every rank the whole model on its own card;
+        # splitting one across the cards on top puts every rank on every card at once,
+        # which is a different execution model, not a bigger one.
+        return _fallback("each rank of a distributed launch owns its own device")
+    if DEVICE_TYPE_TORCH != "cuda":
+        return _fallback(f"the planner has no memory budgets for {DEVICE_TYPE_TORCH}")
+    if torch.cuda.device_count() < 2:
+        return "sequential"
+
+    try:
+        from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
+    except Exception as error:
+        return _fallback(f"the planner is unavailable ({error})")
+
+    # Free, not total: this process's CUDA context and anything else on the card are
+    # already resident, so planning against total overcommits every device.
+    max_memory = {
+        index: torch.cuda.mem_get_info(index)[0] for index in range(torch.cuda.device_count())
+    }
+    try:
+        plan = plan_device_map_for_pretrained(
+            model_name, max_memory = max_memory, **(planner_kwargs or {}), **config_kwargs
+        )
+    except Exception as error:
+        if type(error).__name__ == "DeviceMapInfeasible":
+            raise
+        return _fallback(f"planning failed ({error})")
+
+    if plan is None:
+        return "sequential"
+    print(plan.describe())
+    return plan.device_map
+
+
 def __get_model_name(
     model_name,
     load_in_4bit = True,

@@ -15,6 +15,7 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
+from .loader_utils import UNSLOTH_DEVICE_MAP, requested_device_map
 from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
@@ -1493,6 +1494,20 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one must
+        # decline. The `st_device` blocks below hand `device_map` to
+        # `SentenceTransformer(device = ...)`, which ends in `self.to(device)`: the sentinel
+        # raises there, and that same `.to()` would pull any split model back onto one card.
+        # Resolve the env-var opt-in too, or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan
+        # without ever naming the sentinel.
+        device_map = requested_device_map(device_map)
+        if device_map == UNSLOTH_DEVICE_MAP:
+            print(
+                "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
+                "model onto a single device. Using `sequential`."
+            )
+            device_map = "sequential"
+
         # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights.
         # Guard on not for_inference: that branch below never used these flags.
         if not for_inference:
@@ -1833,7 +1848,15 @@ class FastSentenceTransformer(FastModel):
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
+        # The decline above only spends the sentinel on our copy: FastModel re-reads
+        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it back to
+        # "unsloth", splitting the model across cards while `st_device` below still says
+        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off.
+        # Set inside the try so the finally always restores it: the patch helpers above
+        # can raise, and a leaked "0" would disable the opt-in for the whole process.
+        old_auto_device_map = os.environ.get("UNSLOTH_AUTO_DEVICE_MAP")
         try:
+            os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = "0"
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -1863,6 +1886,10 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
+            if old_auto_device_map is None:
+                os.environ.pop("UNSLOTH_AUTO_DEVICE_MAP", None)
+            else:
+                os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = old_auto_device_map
 
         from sentence_transformers import SentenceTransformer
 
