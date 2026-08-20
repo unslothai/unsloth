@@ -33,6 +33,7 @@ const runTick = new AsyncFunction(
   "generation",
   "requestStatus",
   "pollGeneration",
+  "terminalRecheckGeneration",
   "llamaStatusRequestIsStale",
   "latestAppliedStatusRequest",
   "setStatus",
@@ -79,6 +80,7 @@ function harness(responses: Snapshot[], latestApplied = 0) {
   };
   const pollInFlightGeneration = { current: null as number | null };
   const pollGeneration = { current: 1 };
+  const terminalRecheckGeneration = { current: null as number | null };
   const latestAppliedStatusRequest = { current: latestApplied };
 
   const adopt = (next: Snapshot) => {
@@ -109,6 +111,7 @@ function harness(responses: Snapshot[], latestApplied = 0) {
       return Promise.resolve(responses[responseIndex++]);
     },
     pollGeneration,
+    terminalRecheckGeneration,
     llamaStatusRequestIsStale,
     latestAppliedStatusRequest,
     (next: ReturnType<typeof status>) => {
@@ -161,6 +164,45 @@ test("a terminal poll rechecks and clears stale pre-install availability", async
     timerActive: false,
     requests: 2,
     latestApplied: 2,
+    done: [
+      {
+        ok: true,
+        tag: "b10472-mix-4b653db",
+        reloadRequired: false,
+      },
+    ],
+  });
+});
+
+test("a failed terminal reconciliation keeps polling until a valid status arrives", async () => {
+  const poll = harness([
+    { requestId: 1, status: status("success", true) },
+    { requestId: 2, status: null },
+    { requestId: 3, status: status("success", false) },
+  ]);
+  await poll.tick();
+  assert.deepEqual(poll.snapshot(), {
+    applying: false,
+    visible: true,
+    timerActive: true,
+    requests: 2,
+    latestApplied: 1,
+    done: [
+      {
+        ok: true,
+        tag: "b10472-mix-4b653db",
+        reloadRequired: false,
+      },
+    ],
+  });
+
+  await poll.tick();
+  assert.deepEqual(poll.snapshot(), {
+    applying: false,
+    visible: false,
+    timerActive: false,
+    requests: 3,
+    latestApplied: 3,
     done: [
       {
         ok: true,

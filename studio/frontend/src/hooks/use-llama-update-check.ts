@@ -185,6 +185,7 @@ export function useLlamaUpdateCheck({
   // re-pin the applying toast with the timer already cleared.
   const pollInFlightGeneration = useRef<number | null>(null);
   const pollGeneration = useRef(0);
+  const terminalRecheckGeneration = useRef<number | null>(null);
   const statusRequestSequence = useRef(0);
   const latestAppliedStatusRequest = useRef(0);
   const surfaceIfAvailableRef = useRef<
@@ -254,6 +255,7 @@ export function useLlamaUpdateCheck({
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
       const generation = ++pollGeneration.current;
+      terminalRecheckGeneration.current = null;
       pollTimer.current = setInterval(async () => {
         if (pollInFlightGeneration.current === generation) return;
         pollInFlightGeneration.current = generation;
@@ -278,9 +280,20 @@ export function useLlamaUpdateCheck({
           );
           setApplying(presentation.applying);
           setVisible(presentation.visible);
-          if (presentation.running) return;
-          pollGeneration.current += 1;
-          clearPollTimer();
+          if (presentation.running) {
+            if (terminalRecheckGeneration.current === generation) {
+              terminalRecheckGeneration.current = null;
+            }
+            return;
+          }
+          // A valid poll after a terminal observation completes a previously
+          // failed reconciliation without repeating completion side effects.
+          if (terminalRecheckGeneration.current === generation) {
+            pollGeneration.current += 1;
+            clearPollTimer();
+            return;
+          }
+          terminalRecheckGeneration.current = generation;
           if (s.job.state === "success") {
             void refreshHardwareInfo();
             // The update unloads the running model server-side, so the chat
@@ -304,10 +317,33 @@ export function useLlamaUpdateCheck({
           }
           // Availability is computed before the backend copies the job. A
           // request can therefore carry the pre-install offer alongside a
-          // terminal job; one newer read reconciles that mixed snapshot.
-          void requestStatus().then((reconciled) =>
-            surfaceIfAvailableRef.current?.(reconciled),
+          // terminal job. Keep this poll alive if the immediate reconciliation
+          // fails, so a later interval retries instead of waiting an hour.
+          const reconciled = await requestStatus();
+          const surfaceReconciled = surfaceIfAvailableRef.current;
+          if (
+            !reconciled.status ||
+            !surfaceReconciled ||
+            generation !== pollGeneration.current ||
+            llamaStatusRequestIsStale(
+              latestAppliedStatusRequest.current,
+              reconciled.requestId,
+            )
+          ) {
+            return;
+          }
+          const reconciledPresentation = llamaUpdatePresentation(
+            reconciled.status.update_available,
+            reconciled.status.job,
           );
+          surfaceReconciled(reconciled);
+          if (generation !== pollGeneration.current) return;
+          if (reconciledPresentation.running) {
+            terminalRecheckGeneration.current = null;
+            return;
+          }
+          pollGeneration.current += 1;
+          clearPollTimer();
         } finally {
           if (pollInFlightGeneration.current === generation) {
             pollInFlightGeneration.current = null;
