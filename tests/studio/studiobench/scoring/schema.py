@@ -85,6 +85,13 @@ ZERO_OK_KEYS = frozenset(
         # single most load-bearing zero in the payload, because it is what licenses every rung
         # above 10K to be seeded rather than streamed.
         "drift",
+        # The two counts `drift` is computed FROM, in that same block. They are censuses of the
+        # DOM in each arm, so a field that is absent from both reads 0/0 and is the passing
+        # result: on a real quick-tier run `reasoning_spans` is 0 streamed and 0 seeded, and the
+        # payload marks the field `gating: false` in the same breath. Exempting the quotient but
+        # not the two numbers under it failed every payload that carried an equivalence block.
+        "streamed",
+        "seeded",
     }
 )
 
@@ -372,6 +379,14 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
         )
 
 
+def _is_number_list(node: Any) -> bool:
+    """A list of plain numbers, i.e. an instrument's raw samples rather than a structure."""
+
+    if not isinstance(node, (list, tuple)) or not node:
+        return False
+    return all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in node)
+
+
 def _walk_for_bare_zeros(node: Any, path: str, problems: list[str]) -> None:
     if _is_measure(node):
         # A measure object is self-describing; its own zero is fine because `attempted` sits
@@ -394,12 +409,22 @@ def _walk_for_bare_zeros(node: Any, path: str, problems: list[str]) -> None:
         for key, child in node.items():
             if key in EXEMPT_SUBTREE_KEYS:
                 continue
+            covered = attested or f"{key}_attempted" in node
             if (
                 isinstance(child, (int, float))
                 and not isinstance(child, bool)
                 and float(child) == 0.0
-                and (attested or f"{key}_attempted" in node)
+                and covered
             ):
+                continue
+            # The same attestation, for a plain numeric ARRAY directly inside the block. An
+            # instrument that attests reports samples as well as counters: `frames` writes
+            # `frames_attempted: true` next to `frame_gaps_ms`, whose entries are inter-frame
+            # gaps in whole milliseconds, so two frames in the same millisecond record a
+            # legitimate 0. Walking into the list dropped the attestation on the floor and every
+            # such run failed validation, which is the scalar case one line above with an extra
+            # pair of brackets around it.
+            if covered and _is_number_list(child):
                 continue
             _walk_for_bare_zeros(child, f"{path}.{key}", problems)
         return
