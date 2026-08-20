@@ -27,3 +27,10 @@ def test_powershell_setup_distinguishes_release_skew_from_install_failure():
     assert "retry setup or inspect verbose output" in script
     assert "curated whisper.cpp dictation is unavailable" in script
     assert "browser and Transformers dictation remain available" in script
+
+
+def test_setup_sh_exports_ggml_sycl_on_intel_xpu():
+    script = (ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    assert 'if [ "$_setup_xpu_ready" = true ] || _has_intel_xpu_gpu; then' in script
+    assert 'export GGML_SYCL=1' in script
+

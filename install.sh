@@ -3122,6 +3122,21 @@ _has_amd_rocm_gpu() {
 # Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
 # (e.g. a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected"
 # hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
+_amd_gpu_present_via_pci() {
+    [ -d /sys/bus/pci/devices ] || return 1
+    for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
+        [ -r "$_pci_vendor" ] || continue
+        read -r _v < "$_pci_vendor" 2>/dev/null || continue
+        [ "$_v" = "0x1002" ] || continue
+        _cls="${_pci_vendor%vendor}class"
+        [ -r "$_cls" ] || continue
+        read -r _c < "$_cls" 2>/dev/null || continue
+        case "$_c" in 0x03*) return 0 ;; esac
+    done
+    return 1
+}
+
+# Returns 0 if an Intel XPU GPU is on the PCI bus via sycl-ls or xpu-smi.
 _has_intel_xpu_gpu() {
     if _has_usable_nvidia_gpu; then
         return 1
@@ -3170,20 +3185,6 @@ _xpu_python_supported() {
         3.9|3.10|3.11|3.12|3.13) return 0 ;;
         *) return 1 ;;
     esac
-}
-
-_amd_gpu_present_via_pci() {
-    [ -d /sys/bus/pci/devices ] || return 1
-    for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
-        [ -r "$_pci_vendor" ] || continue
-        read -r _v < "$_pci_vendor" 2>/dev/null || continue
-        [ "$_v" = "0x1002" ] || continue
-        _cls="${_pci_vendor%vendor}class"
-        [ -r "$_cls" ] || continue
-        read -r _c < "$_cls" 2>/dev/null || continue
-        case "$_c" in 0x03*) return 0 ;; esac
-    done
-    return 1
 }
 
 # Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
