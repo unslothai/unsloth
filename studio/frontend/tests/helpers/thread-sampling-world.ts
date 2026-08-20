@@ -136,9 +136,24 @@ interface StoreModule {
   beginThreadScopedPairing: (threadId: string) => void;
 }
 
-/** Let the debounced writers and their promise chains finish. */
+/** Let the debounced writers and their promise chains finish.
+ *
+ * Three rounds was enough on the node 24 a dev box happens to have and was not
+ * enough on the node 22 CI pins, where the same chain drains far fewer
+ * continuations per round. The simulations below then reported the shortfall as
+ * an ORDERING violation ("chat A temperature: owed 0.6, shows 1.37") rather than
+ * as a missing write, because a scenario whose write has not landed yet looks
+ * exactly like one that wrote the wrong value.
+ *
+ * Measured on v22.23.2, the version `setup-node: 22` resolved to, in the
+ * sibling compat suite: 3 rounds -> 7 failures, 10 -> 5, 30 -> 1, 60 -> 0. The
+ * bound here is generous rather than tuned to that, since a scenario runs many
+ * more steps than one compat test does.
+ */
+const DRAIN_ROUNDS = 200;
+
 async function drain(tick: (ms: number) => void): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
+  for (let round = 0; round < DRAIN_ROUNDS; round += 1) {
     tick(1000);
     for (let i = 0; i < 6; i += 1) {
       await new Promise((resolve) => setImmediate(resolve));

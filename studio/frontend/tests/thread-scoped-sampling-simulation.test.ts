@@ -375,12 +375,42 @@ async function raceWorld() {
   };
 }
 
-async function settle(tick: (ms: number) => void): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
+// Advance the mock clock, then let the promise continuations that firing released
+// run, and repeat -- the write these tests assert on sits behind a debounce whose
+// callback then awaits, so one tick is never enough.
+//
+// The round count is not cosmetic and three was not enough. Three passed on the
+// node 24 a dev box happens to have and failed on the node 22 CI pins, where the
+// same chain drains far fewer continuations per round. That combination is the
+// worst kind: green locally, red on every CI run. Measured on v22.23.2, the
+// version `setup-node: 22` resolved to:
+//
+//   rounds   3    10    30    60
+//   failing  7     5     1     0
+//
+// So the bound is generous rather than tuned to the observed 60, and it stops as
+// soon as the caller can see the work it was waiting for. `until` is what makes
+// this a wait rather than a guess: without it a slower runtime silently returns
+// early again and the assertion reports a missing value instead of a slow one.
+const SETTLE_ROUNDS = 200;
+
+async function settle(
+  tick: (ms: number) => void,
+  until?: () => boolean,
+): Promise<void> {
+  for (let round = 0; round < SETTLE_ROUNDS; round += 1) {
     tick(1000);
     for (let i = 0; i < 6; i += 1) {
       await new Promise((resolve) => setImmediate(resolve));
     }
+    if (until?.()) return;
+  }
+  if (until && !until()) {
+    throw new Error(
+      `settle: the condition never held after ${SETTLE_ROUNDS} rounds. The work ` +
+        "is either much slower than this runtime's debounce or it never ran; " +
+        "either way this is not the assertion below failing on a wrong value.",
+    );
   }
 }
 
