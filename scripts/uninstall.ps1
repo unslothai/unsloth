@@ -158,15 +158,42 @@ Environment:
         foreach ($temp in @($Paths)) {
             if ([string]::IsNullOrWhiteSpace($temp)) { continue }
             if (-not (Test-Path -LiteralPath $temp -PathType Container)) { continue }
+            $isPrimary = (-not [string]::IsNullOrWhiteSpace($PrimaryPath)) -and
+                [string]::Equals($temp.TrimEnd('\','/'), $PrimaryPath.TrimEnd('\','/'), [System.StringComparison]::OrdinalIgnoreCase)
             # Never descend through a link. Get-ChildItem on a reparse point
             # enumerates the TARGET, and the target's ordinary children do not
             # carry the ReparsePoint attribute, so the recursive delete below
             # would take somebody else's tree by way of a redirected temp dir.
-            # Checked on the temp directory and on its parent, which is the
-            # "Unsloth Studio" directory the second LocalAppData spelling may
-            # not even own.
+            #
+            # How far up to look differs by spelling. For the profile this
+            # uninstall is FOR, the temp directory and the "Unsloth Studio"
+            # directory above it are the two this script created and the two
+            # that decide whose tree the enumeration lands in; a redirected
+            # LocalAppData higher up is still that same user's own storage, and
+            # refusing there would leave the installer's own temp tree behind on
+            # every host that uses folder redirection.
+            # Any OTHER spelling may be another profile entirely, and a junction
+            # anywhere along it -- LocalAppData, Users, the drive root -- is
+            # enough to make an ordinary-looking "Unsloth Studio\temp" resolve
+            # into a directory this uninstall has no claim on. There, every
+            # ancestor up to the root has to be ordinary.
+            $ancestors = @()
+            if ($isPrimary) {
+                $ancestors = @($temp, [System.IO.Path]::GetDirectoryName($temp))
+            } else {
+                $walk = $temp
+                # Bounded: GetDirectoryName returns $null at the root, and the
+                # cap keeps a pathological spelling from spinning.
+                for ($depth = 0; $depth -lt 64; $depth++) {
+                    if ([string]::IsNullOrWhiteSpace($walk)) { break }
+                    $ancestors += $walk
+                    $next = [System.IO.Path]::GetDirectoryName($walk)
+                    if ($next -eq $walk) { break }
+                    $walk = $next
+                }
+            }
             $linked = $false
-            foreach ($ancestor in @($temp, [System.IO.Path]::GetDirectoryName($temp))) {
+            foreach ($ancestor in $ancestors) {
                 try {
                     if ([string]::IsNullOrWhiteSpace($ancestor)) { continue }
                     $info = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
@@ -177,8 +204,6 @@ Environment:
                 _Substep "skipped (reparse point): $temp" "Yellow"
                 continue
             }
-            $isPrimary = (-not [string]::IsNullOrWhiteSpace($PrimaryPath)) -and
-                [string]::Equals($temp.TrimEnd('\','/'), $PrimaryPath.TrimEnd('\','/'), [System.StringComparison]::OrdinalIgnoreCase)
             $entries = @()
             try { $entries = @(Get-ChildItem -LiteralPath $temp -Force -ErrorAction Stop) } catch { continue }
             foreach ($entry in $entries) {

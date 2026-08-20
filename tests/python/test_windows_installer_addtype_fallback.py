@@ -1306,6 +1306,79 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
 
 
 @requires_pwsh
+def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
+    r"""A junction does not have to sit next to the temp directory to redirect it.
+
+    LocalAppData itself, the profile, or the drive root can be the reparse
+    point, and then "<root>\Unsloth Studio\temp" and its parent both look like
+    perfectly ordinary directories while the enumeration lands somewhere else
+    entirely. For a spelling that is not the profile being uninstalled, that
+    somewhere else can be another user, so every ancestor has to be ordinary.
+
+    The profile this uninstall IS for is deliberately not held to that: a
+    redirected LocalAppData there is the same user's own storage, and refusing
+    would leave the installer's own temp tree behind on every host that uses
+    folder redirection.
+    """
+    if os.path.realpath(tmp_path) != str(tmp_path):
+        pytest.skip("the temp root itself is a link, which is what this test plants")
+
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
+
+    # The real profile, with a Studio temp tree in it that belongs to a dead
+    # owner: nothing about the entries themselves protects them.
+    real = tmp_path / "real profile"
+    real_temp = real / "localappdata" / "Unsloth Studio" / "temp"
+    real_temp.mkdir(parents = True)
+    stale = real_temp / "ust-1234-abcdef04"
+    stale.mkdir()
+    (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    (stale / "precious.txt").write_text("another profile", encoding = "utf-8")
+
+    # Three levels above the temp directory, so neither it nor its parent is a
+    # link. Only a full walk sees this.
+    redirected = tmp_path / "redirected profile"
+    redirected.symlink_to(real, target_is_directory = True)
+    aliased = redirected / "localappdata" / "Unsloth Studio" / "temp"
+
+    other = tmp_path / "mine" / "Unsloth Studio" / "temp"
+    other.mkdir(parents = True)
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{aliased}') -PrimaryPath '{other}'",
+                'Write-Output "DONE:1"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert (stale / "precious.txt").exists(), "the sweep walked through a link high above the root"
+
+    # Same shape, but now it is this uninstall's own profile: the tree goes.
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{aliased}') -PrimaryPath '{aliased}'",
+                'Write-Output "DONE:2"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:2"]
+    assert not stale.exists(), "a redirected profile cannot clean its own temp tree"
+
+
+@requires_pwsh
 def test_a_pre_existing_fallback_parent_is_not_unwound(tmp_path: Path):
     """Only what the probe created may be taken back.
 
