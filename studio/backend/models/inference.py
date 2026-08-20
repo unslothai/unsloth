@@ -188,6 +188,16 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    disable_vision: bool = Field(
+        False,
+        description = (
+            "Load a vision-capable GGUF without its multimodal projector, as a "
+            "text-only model. Frees the VRAM the projector would hold, at the cost "
+            "of image input, which is off for the session; text generation is "
+            "unaffected. Ignored for models with no vision projector, and for "
+            "non-GGUF models."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -357,6 +367,10 @@ class ValidateModelRequest(BaseModel):
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
+    # Sized with, like the other intended load settings above: the follow-up /load
+    # opens no projector when this is set, so a preflight that charges for one would
+    # refuse a load that then fits.
+    disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
@@ -807,6 +821,23 @@ class _InferenceRuntimeFields(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    disable_vision: bool = Field(
+        False,
+        description = (
+            "Whether the load ran with the vision projector deliberately left "
+            "unloaded. Echoes the request, so the Advanced Settings switch can "
+            "reseed from it even on a GGUF that never had a projector."
+        ),
+    )
+    vision_disabled_by_user: bool = Field(
+        False,
+        description = (
+            "Whether image input is off because the user asked, rather than because "
+            "the model has no usable mmproj. The two look identical to a client "
+            "otherwise and need different guidance, so this stays False for a model "
+            "that never had a projector to switch off."
+        ),
     )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",

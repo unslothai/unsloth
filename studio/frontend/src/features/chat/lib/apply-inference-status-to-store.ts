@@ -32,6 +32,7 @@ import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
+import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -402,6 +403,38 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
+      }),
+    // A load knob like tensorParallel above. Without a reseed a tab that never
+    // performed the load shows Vision ON over a model running with its projector
+    // off, and the next Reload silently puts the projector back. Seeded from
+    // disable_vision -- the request the load ran with -- not
+    // vision_disabled_by_user, which is also gated on the model HAVING a projector
+    // and so cannot round-trip a text-only GGUF.
+    //
+    // Unlike tensorParallel the guard is not just "unseeded": the baseline below is
+    // unguarded, so an external reload of the same model would move it and the image
+    // gate while leaving this control behind. See shouldSeedVisionSwitch.
+    ...(seedLoadParams &&
+      status.disable_vision !== undefined &&
+      shouldSeedVisionSwitch({
+        incoming: status.disable_vision,
+        previous: prevState,
+        hydratingExistingModel,
+      }) && {
+        disableVision: status.disable_vision,
+      }),
+    // The rollback baseline, and unguarded like the mirror below rather than
+    // seeded once: it has to track the RUNNING server, or a switch that fails
+    // after a poll restores whatever the last seed happened to see.
+    ...(seedLoadParams &&
+      status.disable_vision !== undefined && {
+        loadedDisableVision: status.disable_vision,
+      }),
+    // Unguarded, unlike the seed above: this mirrors the live load for the
+    // composer's image gate, not a user setting, so every poll must land.
+    ...(seedLoadParams &&
+      status.vision_disabled_by_user !== undefined && {
+        loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
     // Hydration only, so a steady poll never rewrites settings the store owns.
     // Width, verdict and request move together; a late reply can overwrite a newer one.

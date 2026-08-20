@@ -391,6 +391,10 @@ class GgufLoadIntent:
     hf_variant: Optional[str] = None
     hf_token: Optional[str] = None
     is_vision: bool = False
+    # Load a vision GGUF as text-only: no projector on the GPU and none on the CPU
+    # either. The projector's VRAM is left for the model, and image input is off
+    # for the session.
+    disable_vision: bool = False
     n_ctx: int = 4096
     chat_template_override: Optional[str] = None
     cache_type_kv: Optional[str] = None
@@ -3514,6 +3518,25 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     )
 
 
+def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
+    """True only when *path* names a readable projector with no vision tower.
+
+    Anything else -- unset, absent from disk, unreadable, or declaring images -- is
+    False, so the caller clears it. Deliberately asymmetric: keeping a projector the
+    user switched off is the worse mistake of the two, and an unknown declaration
+    reads image-capable upstream.
+    """
+    if not path:
+        return False
+    try:
+        from utils.models.gguf_metadata import mmproj_capabilities
+        has_audio, accepts_image = mmproj_capabilities(str(path))
+    except Exception as e:
+        logger.debug(f"inherited mmproj capability read failed: {e}")
+        return False
+    return has_audio and not accepts_image
+
+
 # Both spellings of the projector-placement boolean. llama.cpp pairs them as one
 # option and takes the last occurrence, so naming either one in the pass-through
 # extras is the user taking ownership of the placement.
@@ -4583,6 +4606,15 @@ class LlamaCppBackend:
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         # Vision deliberately left unloaded by the caller. Tracked so a reload that
+        # flips the toggle cannot be satisfied by the live server, which opened a
+        # different set of files, and echoed to the client so the switch can reseed
+        # from the load it actually ran.
+        self._disable_vision: bool = False
+        # Narrower than the raw request: image input is off because the user asked,
+        # not because the model has no usable projector. Only a model that HAS one
+        # can have had it switched off, and the client needs the distinction to point
+        # at the switch rather than at a missing file.
+        self._vision_disabled_by_user: bool = False
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
@@ -5405,6 +5437,12 @@ class LlamaCppBackend:
 
         # Toggling vision changes which files the child opens, so it cannot be
         # satisfied by a live server that was launched the other way. Not on the
+        # diffusion path: _start_diffusion_server ignores the switch and records it
+        # False, so comparing it there makes every identical repeat request a
+        # mismatch and tears down a runtime that was already the one asked for.
+        if not self._is_diffusion and bool(self._disable_vision) != bool(intent.disable_vision):
+            return False
+
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
         # A request omitting the extras field inherits the LAUNCHED list; anything else is
         # the caller's own. A launch-time rewrite (drafter drop, MTP crash replay) makes
@@ -10813,6 +10851,10 @@ class LlamaCppBackend:
         self._gguf_load_identity = self._gguf_load_source_identity(model_path)
         self._hf_repo = hf_repo
         self._is_vision = False
+        # Clear the prior GGUF's toggle too: a diffusion model must not report the
+        # last model's vision state.
+        self._disable_vision = False
+        self._vision_disabled_by_user = False
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
@@ -14260,7 +14302,13 @@ class LlamaCppBackend:
         return self._as_cpu_fallback_intent(intent)
 
     def _apply_cpu_fallback_state(
-        self, intent: GgufLoadIntent, *, is_vision: bool, mmproj_has_audio: bool
+        self,
+        intent: GgufLoadIntent,
+        *,
+        is_vision: bool,
+        mmproj_has_audio: bool,
+        disable_vision: bool,
+        vision_disabled_by_user: bool,
     ) -> GgufLoadIntent:
         intent = self._as_cpu_fallback_intent(intent)
         self._gpu_memory_mode = intent.gpu_memory_mode
@@ -14273,6 +14321,12 @@ class LlamaCppBackend:
         self._layer_preserves_tensor_intent = False
         self._is_vision = is_vision
         self._mmproj_has_audio = mmproj_has_audio
+        # The caller returns straight after this, before the load's own assignment of
+        # these two, so a recovery that skipped them left the response describing the
+        # PREVIOUS load's Vision state: the control flips back on, and an unchanged
+        # disable_vision request then fails runtime matching and reloads the model.
+        self._disable_vision = bool(disable_vision)
+        self._vision_disabled_by_user = bool(vision_disabled_by_user)
         self._cpu_fallback_reason = "vulkan_startup_crash"
         return intent
 
@@ -14625,6 +14679,7 @@ class LlamaCppBackend:
         hf_token = intent.hf_token
         model_identifier = intent.model_identifier
         is_vision = intent.is_vision
+        disable_vision = intent.disable_vision
         n_ctx = intent.n_ctx
         chat_template_override = intent.chat_template_override
         cache_type_kv = intent.cache_type_kv
@@ -15489,11 +15544,54 @@ class LlamaCppBackend:
                 gpus: list[tuple[int, int]] = []
                 # Keep fit-budget and launch-flag mmproj resolution in sync.
                 launch_mmproj_path = None
+                # Set only where the SWITCH is what dropped a usable image projector.
+                # A None launch path does not mean that on its own: the resolve also
+                # returns None for a missing file or a family mismatch, and reporting
+                # the switch there tells the user to turn Vision back on when the same
+                # projector will just be rejected again.
+                _dv_dropped_image_projector = False
                 if not extra_args_disable_mmproj(extra_args):
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     )
+                    # The switch turns VISION off, and a projector is not always a
+                    # vision tower: ultravox, Voxtral and Qwen3-ASR declare an audio
+                    # encoder and no vision at all, so suppressing one takes the
+                    # model's audio input away and gives no image VRAM back. Nothing
+                    # there for the switch to turn off, so keep it. Resolution is a
+                    # disk and family check with no download, so asking first is free.
+                    if disable_vision and launch_mmproj_path:
+                        _dv_has_audio, _dv_accepts_image = False, True
+                        try:
+                            from utils.models.gguf_metadata import mmproj_capabilities
+                            _dv_has_audio, _dv_accepts_image = mmproj_capabilities(
+                                launch_mmproj_path
+                            )
+                        except Exception as e:
+                            # Unknown reads image-capable upstream, so honor the switch
+                            # rather than quietly keep a projector the user turned off.
+                            logger.debug(f"mmproj capability read failed: {e}")
+                        if _dv_accepts_image:
+                            if _dv_has_audio:
+                                # One projector serves both modalities (Qwen2.5-Omni)
+                                # and llama.cpp cannot load half of it, so audio input
+                                # goes with vision. Say so: the switch only named images.
+                                logger.warning(
+                                    "Vision is off for this load, so this model's audio "
+                                    "input goes too: its projector serves both and "
+                                    "llama.cpp cannot load one modality without the "
+                                    "other. Turn Vision back on to send audio."
+                                )
+                            launch_mmproj_path = None
+                            _dv_dropped_image_projector = True
+                        else:
+                            logger.info(
+                                "Vision is off for this load, but this model's projector "
+                                "is audio-only (no vision tower), so it stays loaded: "
+                                "dropping it would remove audio input and free no image "
+                                "VRAM."
+                            )
                 # A virtualised Metal device corrupts the vision encoder too, and
                 # --no-mmproj-offload is the only way to keep it off there (clip.cpp
                 # never reads --gpu-layers). Without that flag the choice is a projector
@@ -17435,8 +17533,25 @@ class LlamaCppBackend:
                 # the launched server does not have, and _apply_detected_audio turns
                 # that into has_audio_input, so the composer would offer attachments
                 # the server cannot process.
+                #
+                # Unless the switch is going to keep it: an inherited audio-only
+                # encoder survives the scrub below, so the server really does have it
+                # and the same reasoning says to record it. One predicate for both, off
+                # the same inherited value, so the probe cannot describe a child the
+                # scrub did not build.
+                # ...and not on a virtualised Metal device, whose own scrub below
+                # takes BOTH projector vars unconditionally. It runs after the switch's
+                # block, so a file kept there is gone by launch, and a probe that still
+                # described it would report an audio encoder the child does not have.
+                _dv_env_mmproj_kept = (
+                    disable_vision
+                    and not _paravirtual_cpu_forced
+                    and _mmproj_env_is_audio_only(os.environ.get("LLAMA_ARG_MMPROJ"))
+                )
                 _mmproj_probe = launch_mmproj_path or (
-                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
+                    ""
+                    if (_pv_mmproj_unpinnable or (disable_vision and not _dv_env_mmproj_kept))
+                    else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
@@ -18263,6 +18378,19 @@ class LlamaCppBackend:
                 # --mmproj and scrubbing the env vars still leaves a remembered
                 # --mmproj-auto in the extras above, and that flag asks llama-server to
                 # rediscover the adjacent projector by itself. Vision would come back on
+                # a load that reports it off and whose fit budget never charged the
+                # projector's VRAM. Only when the projector really was suppressed. Both
+                # ways of keeping an audio-only one are excluded: the resolved path keeps
+                # launch_mmproj_path set, and an inherited LLAMA_ARG_MMPROJ keeps neither
+                # that nor anything else this gate can see, so it needs the same predicate
+                # the env scrub used. --no-mmproj-auto does not actually unload either of
+                # them -- server-context.cpp gates the load on a non-empty mmproj.path and
+                # never reads no_mmproj, which only suppresses the HF auto-download and
+                # the router's capability report -- but advertising a model as text-only
+                # while loading its encoder is its own bug, and one flag away from a real
+                # one if that gate ever starts reading no_mmproj.
+                if disable_vision and not launch_mmproj_path and not _dv_env_mmproj_kept:
+                    cmd.append("--no-mmproj-auto")
                 # Also last: _zero_offload_keeps_gpu_visible reads the finished cmd, so
                 # the override must be in it before the env block below judges this a
                 # zero-VRAM server.
@@ -18460,6 +18588,29 @@ class LlamaCppBackend:
                 # straight from those vars). The load would then report text-only over a
                 # server that is still multimodal, and the fit budget that gave the
                 # projector's bytes to context is short by exactly those bytes.
+                if disable_vision:
+                    # With the same audio-only exception the resolved path gets, and for
+                    # the same reason: a projector is not always a vision tower, so
+                    # clearing an inherited ultravox / Voxtral / Qwen3-ASR encoder takes
+                    # the model's audio input away and gives no image VRAM back. Asked of
+                    # the file rather than assumed, and unknown still reads image-capable,
+                    # so the switch is honored wherever it might mean anything.
+                    _dv_env_mmproj = (env.get("LLAMA_ARG_MMPROJ") or "").strip()
+                    if not _mmproj_env_is_audio_only(_dv_env_mmproj):
+                        # Same signal the resolved path records, for the same reason:
+                        # this one IS restored by turning Vision back on, so the composer
+                        # must point at the switch rather than at a missing mmproj. Only
+                        # for a file that exists -- a stale path drops nothing, and
+                        # blaming the switch there sends the user to a control that
+                        # cannot help. Unknown-but-present reads image-capable, matching
+                        # the rule the scrub itself just used.
+                        if _dv_env_mmproj and Path(_dv_env_mmproj).is_file():
+                            _dv_dropped_image_projector = True
+                        env.pop("LLAMA_ARG_MMPROJ", None)
+                    # No such reprieve for the URL: it names a download that has not
+                    # happened, so there is no file to classify and nothing to do but
+                    # honor the switch.
+                    env.pop("LLAMA_ARG_MMPROJ_URL", None)
                 if _paravirtual_cpu_forced:
                     for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
                         env.pop(_pv_mmproj_var, None)
@@ -19006,6 +19157,12 @@ class LlamaCppBackend:
                         mmproj_has_audio = (
                             _launched_mmproj_has_audio if fallback_has_mmproj else False
                         ),
+                        disable_vision = disable_vision,
+                        # The same expression the load's own assignment uses, since the
+                        # replay carries the same switch and the same dropped projector.
+                        vision_disabled_by_user = bool(
+                            is_vision and disable_vision and _dv_dropped_image_projector
+                        ),
                     )
                     gpu_memory_mode = intent.gpu_memory_mode
                     gpu_layers = intent.gpu_layers
@@ -19043,6 +19200,26 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
+                self._disable_vision = bool(disable_vision)
+                # is_vision, NOT effective_is_vision: the latter means "a projector is
+                # attached", which this load deliberately made false, so it would report
+                # False for the one case this field exists to describe. The intent flag
+                # is the model's own capability.
+                #
+                # Three cases must NOT blame the switch, because turning it back on
+                # would not restore images: a text-only GGUF with a stale toggle, an
+                # audio-only projector (kept on purpose, no image encoder), and an
+                # advanced argument that drops the projector (nothing reads the file, so
+                # the capability default stays True). All three fall through to the
+                # generic "cannot accept images".
+                #
+                # So this is one signal recorded where the decision was made rather than
+                # re-derived from state that cannot tell the cases apart: True only where
+                # a usable image projector was resolved and the switch dropped it. None
+                # of the three reaches that assignment.
+                self._vision_disabled_by_user = bool(
+                    is_vision and disable_vision and _dv_dropped_image_projector
+                )
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -19082,6 +19259,10 @@ class LlamaCppBackend:
                             intent,
                             is_vision = self._is_vision,
                             mmproj_has_audio = self._mmproj_has_audio,
+                            disable_vision = disable_vision,
+                            vision_disabled_by_user = bool(
+                                is_vision and disable_vision and _dv_dropped_image_projector
+                            ),
                         )
                         gpu_memory_mode = intent.gpu_memory_mode
                         gpu_layers = intent.gpu_layers
@@ -20669,6 +20850,8 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
+            self._disable_vision = False
+            self._vision_disabled_by_user = False
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False

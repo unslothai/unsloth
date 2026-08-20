@@ -43,6 +43,9 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.tensor_parallel) {
     parts.push("tensor parallel");
   }
+  if (override.disable_vision) {
+    parts.push("vision off");
+  }
   if (override.gpu_memory_mode === "manual") {
     parts.push("manual GPU memory");
   }

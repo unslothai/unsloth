@@ -204,6 +204,22 @@ def test_user_owns_the_placement_when_they_name_either_spelling(tmp_path):
     assert cmd.count("--no-mmproj-offload") == 0
 
 
+def test_vision_switched_off_loads_no_projector_anywhere(tmp_path, monkeypatch):
+    """Not on the GPU, not on the CPU, and not through an inherited env var:
+    common/arg.cpp reads LLAMA_ARG_MMPROJ straight into params.mmproj.path."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", "/ambient/mmproj.gguf")
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    result = _launch(backend, gguf, disable_vision = True)
+
+    assert "--mmproj" not in result["cmd"]
+    assert "--no-mmproj-offload" not in result["cmd"]
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+    assert "LLAMA_ARG_MMPROJ_URL" not in result["env"]
+    assert backend.is_vision is False
+
+
 @pytest.mark.parametrize(
     "memory,label",
     [
@@ -300,6 +316,159 @@ def test_the_drafters_vram_is_part_of_the_pin_decision(tmp_path):
     assert "--no-mmproj-offload" not in unpinned
 
 
+@pytest.mark.parametrize(
+    "is_vision,disable_vision,expect_disabled,expect_by_user",
+    [
+        # A vision GGUF with the switch on: the projector exists and the user
+        # turned it off, so both are true.
+        (True, True, True, True),
+        # A GGUF that never had a projector, switch on. The request still has to
+        # round-trip or the toggle reseeds itself to off after every load, but
+        # nothing was taken away from the user, so the narrow field stays false.
+        (False, True, True, False),
+        (True, False, False, False),
+        (False, False, False, False),
+    ],
+)
+def test_load_and_status_both_report_the_vision_toggle(
+    tmp_path, is_vision, disable_vision, expect_disabled, expect_by_user
+):
+    """Both fields must reach the client on both responses.
+
+    The frontend coalesces each with ``?? false``, so a field the backend omits
+    reads as "vision is on" instead of raising: the switch silently reseeds to
+    off after every load. Presence is therefore asserted on its own, not just
+    the value.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    _launch(backend, gguf, is_vision = is_vision, disable_vision = disable_vision)
+
+    # The shared resolver both responses are built from, drift guard included.
+    fields = _llama_runtime_fields(backend)
+    load = LoadResponse(
+        status = "loaded", model = "test", display_name = "test", inference = {}, **fields
+    ).model_dump()
+    status = InferenceStatusResponse(active_model = "test", **fields).model_dump()
+
+    for payload, where in ((load, "load"), (status, "status")):
+        assert "disable_vision" in payload, where
+        assert "vision_disabled_by_user" in payload, where
+        assert payload["disable_vision"] is expect_disabled, where
+        assert payload["vision_disabled_by_user"] is expect_by_user, where
+
+
+def test_the_training_guard_does_not_charge_a_projector_the_load_will_not_open(tmp_path):
+    """The switch is used on constrained machines, which is exactly where this
+    guard bites: charging VRAM the load provably never takes would refuse a chat
+    load for the memory the user just freed."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    mmproj.write_bytes(b"\x00" * (1 * MIB))
+    config = SimpleNamespace(
+        gguf_file = str(model),
+        gguf_mmproj_file = str(mmproj),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = True,
+    )
+
+    charged = _estimate_gguf_required_gb(config)
+    freed = _estimate_gguf_required_gb(config, disable_vision = True)
+
+    assert charged is not None and freed is not None
+    # Exactly the projector, and nothing else moved.
+    assert round((charged - freed) * 1024) == 1
+    assert freed < charged
+
+
+def test_the_training_guard_forwards_the_switch_to_its_estimator(tmp_path):
+    """The gate above is only worth having if the request reaches it.
+
+    Asserts on the keyword the guard hands the estimator, not on the verdict, so
+    the test stays about the wiring and not about the rest of the guard.
+    """
+    seen = {}
+
+    def capture(_config, **kwargs):
+        seen.update(kwargs)
+        return 0.0
+
+    training = SimpleNamespace(is_training_active = lambda: True)
+    request = SimpleNamespace(
+        hf_token = None,
+        max_seq_length = 0,
+        speculative_type = None,
+        cache_type_kv = None,
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+        tensor_parallel = False,
+        n_parallel = 1,
+        disable_vision = True,
+    )
+    config = SimpleNamespace(is_gguf = True, gguf_file = None, gguf_hf_repo = None)
+    placement = _LoadPlacement(
+        requested_gpu_ids = None,
+        resolved_gpu_ids = None,
+        gpu_ids_are_vulkan_ordinals = False,
+        diffusion_kind = False,
+    )
+
+    with (
+        patch("core.training.get_training_backend", lambda: training),
+        patch("routes.inference._estimate_gguf_required_gb", side_effect = capture),
+        patch.object(LlamaCppBackend, "_find_llama_server_binary", lambda *_a, **_k: None),
+        patch.object(LlamaCppBackend, "_effective_gpu_count", lambda *_a, **_k: 1),
+    ):
+        try:
+            _guard_chat_load_against_training(
+                config, request, load_in_4bit = False, placement = placement
+            )
+        except Exception:
+            # The verdict is not what this test is about; the forwarded keyword is,
+            # and it is already captured by the time anything downstream can fail.
+            pass
+
+    assert seen.get("disable_vision") is True
+
+
+@pytest.mark.parametrize(
+    "has_audio,accepts_image,projector_expected,label",
+    [
+        (True, False, True, "audio_only_keeps_the_projector"),
+        (True, True, False, "omni_honors_the_switch"),
+        (False, True, False, "vision_only_honors_the_switch"),
+    ],
+)
+def test_the_vision_switch_does_not_take_audio_only_projectors_away(
+    tmp_path, has_audio, accepts_image, projector_expected, label
+):
+    """A projector is not always a vision tower. ultravox, Voxtral and Qwen3-ASR
+    declare an audio encoder and no vision, so suppressing one would remove the
+    model's audio input and free no image VRAM: the switch has nothing to turn
+    off there and must leave it alone. A projector serving both modalities is
+    still suppressed, because llama.cpp cannot load one modality without the
+    other, and the switch is the user asking for the VRAM back."""
+    import utils.models.gguf_metadata as _meta
+
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (has_audio, accepts_image)):
+        cmd = _launch(backend, gguf, disable_vision = True)["cmd"]
+
+    assert ("--mmproj" in cmd) is projector_expected, label
+
+
+# The pin reads no platform flag. It sees the GPU probe's output, the Metal
+# budget, the paravirtual capability answer, tensor_parallel and the memory
+# mode, and nothing else, so an OS reaches it only through what its probe
+# reports. These are the probe signatures the supported pairs produce: what
+# varies between a Windows and a WSL RTX 4090 is nothing the decision reads.
+# Free VRAM is 7600 MiB against a footprint that needs more, i.e. the case that
+# pins on a discrete card, so any cell reporting "no pin" is doing so because
+# its memory is shared, not because it had room.
 _TOPOLOGIES = [
     ([(0, 7_600, 8_192)], True, "linux_nvidia_discrete"),
     ([(0, 7_600, 8_192)], True, "windows_nvidia_discrete"),
@@ -351,6 +520,132 @@ def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(tmp_path
 
     assert "--mmproj" in cmd, label
     assert ("--no-mmproj-offload" in cmd) is False, label
+
+
+def test_a_remembered_mmproj_auto_does_not_survive_the_vision_switch(tmp_path):
+    """--mmproj-auto asks llama-server to find the adjacent projector on its own, so
+    suppressing Studio's --mmproj and the env vars is not enough: vision would come
+    back on a load that reports it off and never charged the projector's VRAM.
+    llama.cpp is last-wins on the pair, so the disable form has to follow the extras."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
+
+    assert "--no-mmproj-auto" in cmd
+    assert cmd.index("--no-mmproj-auto") > cmd.index("--mmproj-auto")
+
+
+def test_an_audio_only_projector_is_not_taken_away_by_the_auto_override(tmp_path):
+    """The override exists to stop a projector coming back. An audio-only one is kept
+    on purpose, so --no-mmproj-auto must not follow it out the door."""
+    import utils.models.gguf_metadata as _meta
+
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        cmd = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-auto" not in cmd
+
+
+def test_an_audio_only_projector_does_not_blame_the_switch_for_images(tmp_path):
+    """vision_disabled_by_user drives the composer's "you turned it off" message, so
+    on a model with no image encoder it would promise a capability that turning the
+    switch back on cannot deliver."""
+    import utils.models.gguf_metadata as _meta
+
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        _launch(backend, gguf, disable_vision = True)
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is False
+
+
+def test_the_training_guard_still_charges_an_audio_only_projector(tmp_path):
+    """The switch turns vision off, and the loader keeps an audio-only projector
+    anyway because there is no image tower to drop. Dropping its bytes here would
+    let the guard admit a chat load the running training job cannot afford, which
+    is the direction that costs someone else's job rather than merely annoying
+    this user."""
+    import utils.models.gguf_metadata as _meta
+
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    mmproj.write_bytes(b"\x00" * (1 * MIB))
+    config = SimpleNamespace(
+        gguf_file = str(model),
+        gguf_mmproj_file = str(mmproj),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = True,
+    )
+
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: False):
+        audio_only = _estimate_gguf_required_gb(config, disable_vision = True)
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: True):
+        vision = _estimate_gguf_required_gb(config, disable_vision = True)
+    charged = _estimate_gguf_required_gb(config)
+
+    assert audio_only is not None and vision is not None and charged is not None
+    # Kept for audio, so it is charged exactly as an enabled projector would be.
+    assert audio_only == charged
+    # An image projector really is dropped, so the switch still frees its bytes.
+    assert vision < charged
+
+
+def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
+    """The load fetches a remote projector whenever the repo ships one and the extras
+    have not opted out, switch or no switch, because only the file's metadata says
+    whether it is an image tower or an audio encoder. So the interlock has to hold
+    for it: relaxing it let a vision-off load skip the 409 and then write into the
+    shared Hub cache beside a running download job, which is the race the check
+    exists to stop. The predicate must mirror the download gate, not the switch."""
+    from core.inference.llama_cpp import GgufLoadIntent, _with_gguf_load_marker
+
+    seen = {}
+
+    def fake_blocks(
+        repo,
+        variant,
+        *,
+        require_mmproj,
+        hf_token = None,
+    ):
+        seen["require_mmproj"] = require_mmproj
+        return False
+
+    def inner(
+        self,
+        intent,
+        load_cancel_event = None,
+    ):
+        return True
+
+    def _run(**intent_kwargs):
+        seen.clear()
+        _with_gguf_load_marker(inner)(
+            object(),
+            GgufLoadIntent(
+                gguf_path = str(tmp_path / "model.gguf"),
+                model_identifier = "test",
+                hf_repo = "unsloth/some-vl-GGUF",
+                is_vision = True,
+                **intent_kwargs,
+            ),
+        )
+        return seen["require_mmproj"]
+
+    with patch("core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks):
+        # Vision off still downloads, so the interlock still applies.
+        assert _run(disable_vision = True) is True
+        assert _run(disable_vision = False) is True
+        # The extras opting out is the one case that downloads nothing.
+        assert _run(disable_vision = True, extra_args = ["--no-mmproj"]) is False
 
 
 def test_a_user_pinned_projector_is_not_charged_against_vram(tmp_path):
@@ -413,6 +708,168 @@ def test_the_projector_probe_agrees_with_the_layer_loop_it_gates(tmp_path):
         "the probe left the projector on the GPU and the fit then could not place "
         f"the model: {[c for c in cmd if 'fit' in str(c) or 'mmproj' in str(c)]}"
     )
+
+
+def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
+    """Remote, so nothing here has the file to ask whether it is an image tower the
+    switch drops or an audio encoder the loader keeps. Under-charging is the
+    direction that admits a chat load over VRAM a running training job needs, so
+    the unknown one is charged."""
+    seen = {}
+
+    def fake_companions(repo, *, hf_token, include_mmproj, **kw):
+        seen["include_mmproj"] = include_mmproj
+        return 0
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], True),
+        ),
+    ):
+        _estimate_gguf_required_gb(config, disable_vision = True)
+
+    assert seen.get("include_mmproj") is True
+
+
+def _ambient_mmproj(tmp_path, monkeypatch):
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+    return backend, gguf
+
+
+def test_the_vision_switch_does_not_record_an_inherited_audio_encoder(tmp_path, monkeypatch):
+    """The capability probe falls back to the ambient LLAMA_ARG_MMPROJ, which the
+    switch then scrubs out of the child. Reading it anyway recorded an audio encoder
+    the launched server does not have, and that becomes has_audio_input, so the
+    composer would offer attachments the server cannot process.
+
+    A projector serving both modalities is the case that still scrubs: llama.cpp
+    cannot load half of it, so switching vision off takes the audio with it."""
+    backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, True)):
+        result = _launch(backend, gguf, disable_vision = True)
+
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+    assert backend._mmproj_has_audio is False
+
+
+def test_the_vision_switch_keeps_an_inherited_audio_only_encoder(tmp_path, monkeypatch):
+    """The other half of the same rule, which the resolved path already had: an
+    ultravox / Voxtral / Qwen3-ASR projector declares audio and no vision, so there is
+    no image tower for the switch to turn off. Scrubbing it took the model's audio
+    input away and handed back no image VRAM, and the probe agreed with the scrub, so
+    the loss was silent on both sides.
+    """
+    backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        result = _launch(backend, gguf, disable_vision = True)
+
+    assert result["env"].get("LLAMA_ARG_MMPROJ")
+    # And the probe follows the scrub, so the composer is told what the child has.
+    assert backend._mmproj_has_audio is True
+    assert backend._mmproj_accepts_image is False
+    # --no-mmproj-auto does not unload it (server-context.cpp gates the load on a
+    # non-empty mmproj.path and never reads no_mmproj), but it does make the router
+    # advertise the model text-only, so a projector kept on purpose must not get it.
+    assert "--no-mmproj-auto" not in result["cmd"]
+
+
+def test_an_inherited_projector_that_reads_images_still_goes(tmp_path, monkeypatch):
+    """The asymmetry is deliberate: only a readable audio-only declaration is kept.
+    An image-capable one is exactly what the switch is for."""
+    backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
+        result = _launch(backend, gguf, disable_vision = True)
+
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+
+
+def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
+    """_start_diffusion_server ignores the switch and records it False, so comparing
+    it on that path makes every identical repeat request a mismatch and reloads a
+    runtime that was already the one asked for. The switch must not be what decides,
+    so both spellings of the request have to reach the same verdict."""
+    from core.inference.llama_cpp import (
+        GgufLoadIntent,
+        LlamaCppBackend,
+        _resolved_mmproj_offload,
+    )
+
+    backend = LlamaCppBackend()
+    backend._is_diffusion = True
+    backend._disable_vision = False
+    backend._gguf_path = str(tmp_path / "diffusion.gguf")
+    # Enough state for the comparison under test to be REACHED: the checks above it
+    # return early on their own, and a test where both calls fail for an unrelated
+    # reason passes whatever this line does (it did, until the mutant survived).
+    backend._requested_n_ctx = 4096
+    backend._cache_type_kv = None
+
+    def _intent(disable_vision: bool):
+        return GgufLoadIntent(
+            gguf_path = str(tmp_path / "diffusion.gguf"),
+            model_identifier = "test",
+            disable_vision = disable_vision,
+        )
+
+    assert backend._runtime_matches_intent(_intent(True), None) == (
+        backend._runtime_matches_intent(_intent(False), None)
+    )
+
+
+def test_an_advanced_argument_that_drops_the_projector_is_not_blamed_on_the_switch(tmp_path):
+    """vision_disabled_by_user drives the composer's "you turned it off" message. With
+    --no-mmproj in the extras the projector is suppressed by the ARGUMENT, resolution
+    is skipped so nothing reads the file and the capability default stays True, and
+    the switch would take the blame for images that turning it back on cannot
+    restore while the argument still applies."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    _launch(backend, gguf, disable_vision = True, extra_args = ["--no-mmproj"])
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is False
+
+
+def test_a_projector_the_resolve_rejected_is_not_blamed_on_the_switch(tmp_path):
+    """A None launch path does not mean the switch dropped it. The resolve also
+    returns None for a missing file or a family mismatch, and reporting the switch
+    there tells the user to turn Vision back on when the same projector will just be
+    rejected again. Only a usable image projector the switch itself dropped counts."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    # What a family-check failure looks like from here.
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    _launch(backend, gguf, disable_vision = True)
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is False
 
 
 def test_an_explicit_context_is_priced_at_the_length_it_asked_for(tmp_path):
@@ -828,3 +1285,272 @@ def test_a_pinned_projector_costs_the_shared_pool_beside_a_discrete_card(tmp_pat
     ref_cmd = _launch(reference, ref_gguf)["cmd"]
 
     assert pinned_ctx == int(ref_cmd[ref_cmd.index("-c") + 1])
+
+
+def _estimator_config(model_path, mmproj_path = None):
+    return SimpleNamespace(
+        gguf_file = str(model_path),
+        gguf_mmproj_file = str(mmproj_path) if mmproj_path else None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = True,
+    )
+
+
+def test_the_guard_charges_a_projector_only_the_environment_names(tmp_path, monkeypatch):
+    """The loader keeps an inherited audio-only LLAMA_ARG_MMPROJ when Vision is off.
+
+    It is GPU-resident like any other projector, and this config never names it, so
+    charging nothing let the coexistence guard admit a chat load the running
+    training job cannot afford -- the direction that costs someone else's job.
+    """
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    config = _estimator_config(model)
+
+    bare = _estimate_gguf_required_gb(config, disable_vision = True)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        charged = _estimate_gguf_required_gb(config, disable_vision = True)
+    # An image-capable one is scrubbed out of the child, so it must stay uncharged.
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
+        dropped = _estimate_gguf_required_gb(config, disable_vision = True)
+
+    assert bare is not None and charged is not None and dropped is not None
+    assert round((charged - bare) * 1024) == 1
+    assert dropped == bare
+
+
+def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(tmp_path, monkeypatch):
+    """argv beats the environment (arg.cpp applies set_env first), so exactly one
+    projector loads. Charging both billed a single file twice and refused loads
+    that fit."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    resolved = tmp_path / "mmproj-F16.gguf"
+    resolved.write_bytes(b"\x00" * (1 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (2 * MIB))
+
+    # What the launch really costs: weights plus the one projector argv names.
+    expected = _estimate_gguf_required_gb(_estimator_config(model, resolved))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    charged = _estimate_gguf_required_gb(_estimator_config(model, resolved))
+
+    assert expected is not None and charged is not None
+    # The 2 MiB ambient file is not in it, so the env changed nothing.
+    assert charged == expected
+
+
+def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_path, monkeypatch):
+    """The combination that slipped through: the CONFIGURED projector is
+    image-capable, so the switch drops it and Studio emits no --mmproj at all, while
+    the inherited one is audio-only and is kept. argv only beats the environment when
+    there IS argv, so the inherited projector is what loads, and it is what has to be
+    charged."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    configured = tmp_path / "mmproj-F16.gguf"
+    configured.write_bytes(b"\x00" * (1 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (2 * MIB))
+
+    import utils.models.gguf_metadata as _meta
+
+    def _caps(path):
+        # Configured: images, so the switch drops it. Inherited: audio only, so it stays.
+        return (False, True) if str(path) == str(configured) else (True, False)
+
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
+    with (
+        patch.object(_meta, "mmproj_capabilities", _caps),
+        patch.object(_meta, "mmproj_accepts_image", lambda p: _caps(p)[1]),
+    ):
+        # Weights alone: the switch drops the image projector and no env one exists.
+        weights_only = _estimate_gguf_required_gb(
+            _estimator_config(model, configured), disable_vision = True
+        )
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+        charged = _estimate_gguf_required_gb(
+            _estimator_config(model, configured), disable_vision = True
+        )
+
+    assert charged is not None and weights_only is not None
+    # The 2 MiB inherited projector, not the 1 MiB configured one that never loads.
+    assert round((charged - weights_only) * 1024) == 2
+
+
+def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, monkeypatch):
+    """--no-mmproj sets params.no_mmproj, which stops Studio resolving one of its own
+    and stops the HF download, but server-context.cpp gates the load on a non-empty
+    mmproj.path and never reads that field. The inherited projector loads straight
+    through the opt-out, so the guard has to keep charging it."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    config = _estimator_config(model)
+
+    bare = _estimate_gguf_required_gb(config)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    charged = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
+
+    assert bare is not None and charged is not None
+    assert round((charged - bare) * 1024) == 1
+
+
+def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path, monkeypatch):
+    """--no-mmproj makes llama_cpp.py skip the resolve, so Studio emits no --mmproj
+    and the configured projector never loads. It does not unset an inherited path,
+    which then loads unopposed. The estimate has to move with the launch: drop the
+    configured file, charge the inherited one.
+    """
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    configured = tmp_path / "mmproj-F16.gguf"
+    configured.write_bytes(b"\x00" * (1 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (2 * MIB))
+    config = _estimator_config(model, configured)
+
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
+    # The configured projector, charged, with no opt-out in play.
+    normal = _estimate_gguf_required_gb(config)
+    weights_only = _estimate_gguf_required_gb(_estimator_config(model))
+    opted_out = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
+
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    inherited = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
+
+    for value in (normal, weights_only, opted_out, inherited):
+        assert value is not None
+    assert round((normal - weights_only) * 1024) == 1
+    # The opt-out drops the configured projector, because it never loads.
+    assert opted_out == weights_only
+    # And the inherited one takes its place at its own size.
+    assert round((inherited - weights_only) * 1024) == 2
+
+
+def _paravirtual(monkeypatch):
+    import core.inference.llama_cpp as _llama_cpp
+
+    monkeypatch.setattr(_llama_cpp, "_metal_device_is_paravirtual", lambda: True)
+
+
+def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(
+    tmp_path, monkeypatch
+):
+    """The paravirtual scrub runs after the switch's and takes BOTH projector vars
+    unconditionally, so a file the switch kept is gone by launch.
+
+    Two things went wrong when the "kept" answer did not know that: the capability
+    probe described an audio encoder the child does not have, and the --no-mmproj-auto
+    override was skipped, leaving a remembered --mmproj-auto free to rediscover an
+    adjacent image projector on a load the user asked to be text-only.
+    """
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    _paravirtual(monkeypatch)
+    backend, gguf = _backend(tmp_path, memory = [])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        result = _launch(
+            backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
+        )
+
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+    # Nothing survives to rediscover a projector with.
+    assert "--no-mmproj-auto" in result["cmd"]
+    # And the probe describes the child that actually launched.
+    assert backend._mmproj_has_audio is False
+
+
+def test_dropping_an_inherited_image_projector_points_at_the_switch(
+    tmp_path, monkeypatch
+):
+    """Turning Vision back on restores an inherited image projector, so the composer
+    must name the switch rather than send the user hunting for a valid mmproj."""
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
+        _launch(backend, gguf, disable_vision = True)
+
+    assert backend._vision_disabled_by_user is True
+
+
+def test_a_stale_inherited_path_does_not_blame_the_switch(tmp_path, monkeypatch):
+    """A path that names no file drops nothing, so turning Vision back on changes
+    nothing either. Blaming the switch there points at a control that cannot help."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "not-on-disk.gguf"))
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    _launch(backend, gguf, disable_vision = True)
+
+    assert backend._vision_disabled_by_user is False
+
+
+def test_a_cpu_recovery_records_the_vision_state_it_launched_with(tmp_path):
+    """_apply_cpu_fallback_state is the last thing a Vulkan-crash recovery runs: its
+    caller returns immediately after, before the load's own assignment of these two.
+
+    Leaving them behind meant the response described the PREVIOUS load's Vision state,
+    so the control flipped back on and an unchanged disable_vision request then failed
+    runtime matching and reloaded the model.
+    """
+    backend = LlamaCppBackend()
+    backend._disable_vision = False
+    backend._vision_disabled_by_user = False
+    intent = GgufLoadIntent(
+        gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
+        model_identifier = "test",
+        is_vision = True,
+        disable_vision = True,
+    )
+
+    backend._apply_cpu_fallback_state(
+        intent,
+        is_vision = False,
+        mmproj_has_audio = False,
+        disable_vision = True,
+        vision_disabled_by_user = True,
+    )
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is True
+    # The rest of the recovery state still lands, so this is additive.
+    assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+
+
+def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
+    """Two call sites reach that helper and only one is on the common path, so a
+    keyword added to one and not the other is a silent half-fix. Checked at the source
+    because the second site needs a crash inside a replay this harness cannot stage."""
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    calls = source.count("self._apply_cpu_fallback_state(")
+    assert calls == 2, f"expected 2 recovery call sites, found {calls}"
+    # The load's own `self._vision_disabled_by_user = ...` uses the same words, so
+    # subtract it rather than matching loosely and passing on the wrong occurrence.
+    keyword_uses = source.count("vision_disabled_by_user = bool(") - source.count(
+        "self._vision_disabled_by_user = bool("
+    )
+    assert keyword_uses == calls
+    assert source.count("disable_vision = disable_vision,") == calls

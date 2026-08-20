@@ -42,6 +42,7 @@ export type PresetLoadConfig = Pick<
   | "nBatch"
   | "nUbatch"
   | "tensorParallel"
+  | "disableVision"
   | "gpuMemoryMode"
   | "gpuLayers"
   | "nCpuMoe"
@@ -61,6 +62,7 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   nBatch: null,
   nUbatch: null,
   tensorParallel: false,
+  disableVision: false,
 };
 
 function toComparablePerModelConfig(
@@ -147,6 +149,10 @@ export function normalizePresetLoadConfig(
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
         : false,
+    disableVision:
+      typeof partial.disableVision === "boolean"
+        ? partial.disableVision
+        : false,
     ...(gpuMemoryMode ? { gpuMemoryMode } : {}),
     ...(gpuLayers !== undefined ? { gpuLayers } : {}),
     ...(nCpuMoe !== undefined ? { nCpuMoe } : {}),
@@ -193,6 +199,7 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     nBatch: snapshot.nBatch ?? null,
     nUbatch: snapshot.nUbatch ?? null,
     tensorParallel: snapshot.tensorParallel ?? false,
+    disableVision: snapshot.disableVision ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
       : {}),
@@ -251,6 +258,7 @@ export function applyPresetLoadConfig(
     nBatch: config.nBatch ?? null,
     nUbatch: config.nUbatch ?? null,
     tensorParallel: config.tensorParallel ?? false,
+    disableVision: config.disableVision ?? false,
     chatTemplateOverride: null,
     gpuMemoryMode: config.gpuMemoryMode,
     gpuLayers: config.gpuLayers,
@@ -296,6 +304,9 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.tensorParallel) {
     parts.push("TP");
+  }
+  if (config.disableVision) {
+    parts.push("No vision");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }
