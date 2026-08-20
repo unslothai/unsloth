@@ -109,7 +109,6 @@ def _rich_manifest_ref(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
 
 def test_rich_manifest_is_withheld_from_inventory(tmp_path, monkeypatch):
     from hub.services.models import ollama
-
     root, _ = _rich_manifest_ref(tmp_path, monkeypatch)
 
     assert ollama.scan_ollama_dir(root) == []
