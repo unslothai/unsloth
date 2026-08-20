@@ -264,9 +264,9 @@ def _friendly_error(exc: Exception) -> str:
         msg,
     )
     if m:
-        # llama-server reports one number, the whole prompt, and advises shortening the
-        # conversation. That is wrong advice for a two-message thread whose single turn
-        # does not fit, so the fit's own diagnosis picks the wording where it has one.
+        # llama-server reports only the prompt total and advises shortening the
+        # conversation, which is wrong for a thread whose single turn does not fit, so
+        # the fit's own diagnosis picks the wording where it has one.
         return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
     if "Lost connection to llama-server" in msg:
         return _LOST_CONNECTION_MSG
@@ -686,8 +686,8 @@ def _overflow_truncation_requested(payload) -> bool:
 
 
 def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation: dict) -> str:
-    # Every streaming route reaches the client through here, so this is also where the
-    # refusal shape is picked up for `_friendly_error`. See `context_refusal`.
+    # Every streaming route reaches the client through here, so this is where
+    # `_friendly_error` picks up the refusal shape. See `context_refusal`.
     context_refusal.record_fit(truncation)
     data = {
         "id": completion_id,
@@ -702,9 +702,9 @@ def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation
 
 def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
     incoming = {key: value for key, value in event.items() if key != "type"}
-    # The drains accumulate rather than forward one event at a time, so they never reach
-    # `_context_truncated_sse_chunk` per fit. Record here too, on the per-fit event: the
-    # combined dict sums counters across a tool loop and would misreport a single turn.
+    # The drains accumulate instead of forwarding per event, so they never reach
+    # `_context_truncated_sse_chunk` per fit. Record the per-fit event, not `combined`,
+    # which sums counters across a tool loop and would misreport a single turn.
     context_refusal.record_fit(incoming)
     if current is None:
         return incoming
