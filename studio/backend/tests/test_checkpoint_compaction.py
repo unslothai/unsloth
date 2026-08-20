@@ -408,6 +408,36 @@ def test_at_most_max_items_instructions_are_carried():
     assert "number 19" in items[-1]
 
 
+def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
+    """Users restate a standing rule; each copy used to take a slot and its tokens.
+
+    Eight slots and a budget a tenth of the prompt is not much to spend on one rule
+    repeated, and what it costs is the OTHER rules: with the repeats counted, the second
+    instruction here fell off the end of the list entirely. `_recap` already collapsed
+    duplicates when it merged a block on the second reset, so this was the one path where
+    a duplicate survived, and the two disagreed about the same thread.
+    """
+    rule = (
+        "Standing instruction: always end every reply with STATUS::ZQXVARA123-ALPHA "
+        "and report any results as a markdown table."
+    )
+    other = (
+        "Second standing rule: cite the section number in every answer, spelled out in "
+        "words rather than digits, and never abbreviate it."
+    )
+    evicted = [{"role": "user", "content": other}, {"role": "assistant", "content": "ok"}]
+    for _ in range(8):
+        evicted += [
+            {"role": "user", "content": rule},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    items = carried_forward_items(evicted, max_tokens = 1024)
+
+    assert sum(1 for item in items if item.startswith("Standing instruction")) == 1
+    assert any(item.startswith("Second standing rule") for item in items)
+
+
 def test_a_process_with_tools_disabled_never_resets(monkeypatch):
     """`supports_tools` is the TEMPLATE's capability, not "this request gets the tool".
 
