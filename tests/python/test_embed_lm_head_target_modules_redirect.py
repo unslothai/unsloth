@@ -33,10 +33,7 @@ def _run_redirect_check(new_model_path: bool, target_modules):
     import torch
     from unsloth import FastLanguageModel
 
-    if new_model_path:
-        os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
-    else:
-        os.environ.pop("UNSLOTH_USE_NEW_MODEL", None)
+    previous_new_model = os.environ.pop("UNSLOTH_USE_NEW_MODEL", None)
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = MODEL_NAME,
@@ -44,6 +41,8 @@ def _run_redirect_check(new_model_path: bool, target_modules):
         max_seq_length = 512,
     )
     try:
+        if new_model_path:
+            os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         model = FastLanguageModel.get_peft_model(
             model,
             r = 8,
@@ -84,6 +83,10 @@ def _run_redirect_check(new_model_path: bool, target_modules):
     finally:
         del model
         torch.cuda.empty_cache()
+        if previous_new_model is None:
+            os.environ.pop("UNSLOTH_USE_NEW_MODEL", None)
+        else:
+            os.environ["UNSLOTH_USE_NEW_MODEL"] = previous_new_model
 
 
 @pytest.mark.slow

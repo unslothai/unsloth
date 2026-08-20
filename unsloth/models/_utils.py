@@ -4452,9 +4452,10 @@ def _redirect_embedding_targets(
     *,
     allow_redirect = True,
     preserve_lm_head_target = False,
+    preserve_embedding_target = False,
     redirect_lm_head = True,
 ):
-    """Move embedding targets to modules_to_save without emptying legacy LoRA targets."""
+    """Move embedding targets to modules_to_save while retaining a required LoRA target."""
     if type(target_modules) not in (list, tuple) or not allow_redirect:
         return target_modules, modules_to_save, (), False
 
@@ -4463,19 +4464,23 @@ def _redirect_embedding_targets(
         embedding_modules.add("lm_head")
     moved = [module for module in target_modules if module in embedding_modules]
     remaining = [module for module in target_modules if module not in embedding_modules]
-    preserved_lm_head = False
+    preserved_direct_target = False
     if preserve_lm_head_target and not remaining and "lm_head" in moved:
         moved.remove("lm_head")
         remaining = [module for module in target_modules if module not in moved]
-        preserved_lm_head = True
+        preserved_direct_target = True
+    elif preserve_embedding_target and not remaining and moved:
+        moved.pop()
+        remaining = [module for module in target_modules if module not in moved]
+        preserved_direct_target = True
 
     if not moved:
-        adjusted = remaining if preserved_lm_head else target_modules
-        return adjusted, modules_to_save, (), preserved_lm_head
+        adjusted = remaining if preserved_direct_target else target_modules
+        return adjusted, modules_to_save, (), preserved_direct_target
 
     saved = [] if modules_to_save is None else list(modules_to_save)
     saved.extend(module for module in moved if module not in saved)
-    return remaining, saved, tuple(moved), preserved_lm_head
+    return remaining, saved, tuple(moved), preserved_direct_target
 
 
 def _select_moe_detection_targets(

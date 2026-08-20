@@ -1938,6 +1938,8 @@ class FastBaseModel:
                 modules_to_save,
                 allow_redirect = finetune_language_layers,
                 preserve_lm_head_target = True,
+                preserve_embedding_target = True,
+                redirect_lm_head = not hasattr(model, "vllm_engine"),
             )
         )
         for m in _moved:
