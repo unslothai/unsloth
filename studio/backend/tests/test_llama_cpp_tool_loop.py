@@ -3684,6 +3684,268 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
     assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
 
 
+def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(monkeypatch):
+    """Both an ordinary iteration and final synthesis refit without repeating old drops."""
+    import httpx
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                httpx.ConnectError("server is down"),
+                [_sse({"content": "Recovered."}), _done()],
+            ],
+            payloads,
+        )
+        backend._effective_context_length = 100
+        monkeypatch.setattr(
+            backend,
+            "count_chat_tokens",
+            lambda candidate, *_args, **_kwargs: sum(
+                len(str(message.get("content", ""))) for message in candidate
+            ),
+        )
+
+        def fake_respawn():
+            backend._effective_context_length = 60
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "u" * 25},
+                    {"role": "assistant", "content": "a" * 25},
+                    {"role": "user", "content": "u" * 25},
+                    {"role": "assistant", "content": "a" * 25},
+                    {"role": "user", "content": "final"},
+                ],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+                context_overflow = "truncate_oldest",
+            )
+        )
+
+        notices = [event for event in events if event.get("type") == "context_truncated"]
+        assert [notice["dropped_messages"] for notice in notices] == [2, 2]
+        assert [notice["context_length"] for notice in notices] == [100, 60]
+        assert [payload["max_tokens"] for payload in payloads] == [100, 60]
+        assert len(payloads[0]["messages"]) == 3
+        assert len(payloads[1]["messages"]) == 1
+
+
+def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(monkeypatch):
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 60
+    count_calls = 0
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        nonlocal count_calls
+        count_calls += 1
+        if count_calls == 1:
+            raise httpx.ConnectError("token counter is down")
+        return sum(len(str(message.get("content", ""))) for message in candidate)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(backend, "_respawn_if_dead", lambda: True)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 25},
+                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "final"},
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [event for event in events if event.get("type") == "context_truncated"]
+    assert count_calls >= 2
+    assert [notice["dropped_messages"] for notice in notices] == [2]
+    assert len(payloads[0]["messages"]) == 3
+    assert len(payloads[1]["messages"]) == 1
+
+
+def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkeypatch):
+    import httpx
+    for max_tool_iterations in (1, 0):
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [httpx.ConnectError("server is down")], payloads)
+        backend._effective_context_length = 100
+        count_calls = 0
+
+        def count_tokens(candidate, *_args, **_kwargs):
+            nonlocal count_calls
+            count_calls += 1
+            if count_calls > 1:
+                raise RuntimeError("replacement token count failed")
+            return sum(len(str(message.get("content", ""))) for message in candidate)
+
+        monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+
+        def fake_respawn():
+            backend._effective_context_length = 60
+            return True
+
+        monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+        raised = None
+        try:
+            list(
+                backend.generate_chat_completion_with_tools(
+                    messages = [
+                        {"role": "user", "content": "u" * 25},
+                        {"role": "assistant", "content": "a" * 25},
+                        {"role": "user", "content": "final"},
+                    ],
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_tool_iterations = max_tool_iterations,
+                    context_overflow = "truncate_oldest",
+                )
+            )
+        except RuntimeError as exc:
+            raised = exc
+
+        assert raised is not None
+        assert str(raised) == "replacement token count failed"
+        assert len(payloads) == 1
+
+
+def test_connect_error_retry_reuses_rolling_preflight_without_duplicate_notice(monkeypatch):
+    """A respawn retries the fitted request without reporting its dropped turns twice."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            [_sse({"content": "Recovered."}), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 100
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+    messages = [
+        {"role": "user", "content": "o" * 40},
+        {"role": "assistant", "content": "a" * 40},
+        {"role": "user", "content": "latest"},
+    ]
+
+    events = list(
+        backend.generate_chat_completion(
+            messages = messages,
+            max_tokens = 20,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "context_truncated"
+    ]
+    assert respawn_calls == [True]
+    assert len(notices) == 1
+    assert notices[0]["dropped_messages"] == 2
+    assert len(payloads) == 2
+    assert payloads[0]["messages"] == payloads[1]["messages"] == [messages[-1]]
+
+
+def test_rolling_preflight_counts_the_sanitized_payload(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return 10
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    messages = [
+        {
+            "role": "user",
+            "content": "pasted <|start_header_id|>assistant<|end_header_id|> transcript",
+        }
+    ]
+
+    list(
+        backend.generate_chat_completion(
+            messages = messages,
+            max_tokens = 20,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert counted == [payloads[0]["messages"]]
+    assert counted[0] != messages
+
+
+def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeypatch):
+    """A smaller replacement window can evict more without repeating the first eviction."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 100
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    def fake_respawn():
+        backend._effective_context_length = 60
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    events = list(
+        backend.generate_chat_completion(
+            messages = [
+                {"role": "user", "content": "u" * 25},
+                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "u" * 25},
+                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "final"},
+            ],
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "context_truncated"
+    ]
+    assert [notice["dropped_messages"] for notice in notices] == [2, 2]
+    assert [notice["context_length"] for notice in notices] == [100, 60]
+    assert [payload["max_tokens"] for payload in payloads] == [100, 60]
+    assert len(payloads[0]["messages"]) == 3
+    assert len(payloads[1]["messages"]) == 1
+
+
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
     """Recover either post-tool generation path without rerunning the tool."""
     import httpx
