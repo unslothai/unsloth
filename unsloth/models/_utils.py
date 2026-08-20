@@ -708,6 +708,36 @@ def _set_attn_impl(config, impl):
     return impl
 
 
+def builds_remote_code_class(auto_model, config, trust_remote_code):
+    # transformers builds the repo's own class rather than the mapped one when remote code is
+    # trusted and the config routes this auto class to it (auto_factory's `has_remote_code`).
+    # resolve_model_class can still return a class here, because _LazyAutoMapping is keyed on the
+    # config class __name__ and a repo is free to reuse a built-in one, so callers that read
+    # capability flags must not believe the class they get back.
+    if not trust_remote_code:
+        return False
+    auto_map = getattr(config, "auto_map", None)
+    return isinstance(auto_map, dict) and getattr(auto_model, "__name__", "") in auto_map
+
+
+def load_remote_code_class(auto_model, config, model_name, **hub_kwargs):
+    # Import the class from_pretrained is about to build, so the attention choice is made from its
+    # own _supports_* flags. This is the same call auto_factory makes for the same class_ref, and
+    # remote code is already trusted here, so it brings that import forward rather than adding
+    # anything new. None means the import failed and the caller should stay conservative.
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
+    try:
+        return get_class_from_dynamic_module(
+            config.auto_map[auto_model.__name__], model_name, **hub_kwargs
+        )
+    except Exception as exception:
+        print(
+            f"Unsloth: Could not import the remote code class for `{model_name}` "
+            f"({type(exception).__name__}) - falling back to eager attention."
+        )
+        return None
+
+
 def resolve_model_class(auto_model, config):
     mapping = getattr(auto_model, "_model_mapping", {})
     try:
