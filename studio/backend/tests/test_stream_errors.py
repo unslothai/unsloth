@@ -135,9 +135,10 @@ class TestSurvivesTheRouteLayer:
         # True here would set the client compacting. The message says "context
         # window", so only the typed flag can tell these apart.
         routes = self._routes()
-        assert routes._classify_llama_generation_error(
-            self._error("Context size has been exceeded.")
-        ) is False
+        assert (
+            routes._classify_llama_generation_error(self._error("Context size has been exceeded."))
+            is False
+        )
 
     def test_an_oversize_refusal_keeps_the_established_wording_and_triggers_compaction(self):
         routes = self._routes()
