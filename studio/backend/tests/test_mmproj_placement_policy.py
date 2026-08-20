@@ -248,16 +248,13 @@ def _launch_with_drafter(backend, gguf, tmp_path):
 def test_the_projector_is_pinned_before_the_drafter_is_dropped(tmp_path):
     """The projector is the first thing given up, not the last.
 
-    A bounded per-image cost is cheaper to concede than speculative decoding's
-    per-token speedup, so the order is pin the projector, then drop the drafter
-    only if that was not enough. Here it is enough: an unsized draft KV costs
-    five points of fraction, so the budget is 12470 - 8% of 24000 = 10550 MiB,
-    model + drafter + projector needs about 10682, and the pin gives back the
-    projector's 1434 so the drafter survives.
+    A bounded per-image cost is cheaper to concede than a per-token speedup, so pin
+    the projector and drop the drafter only if that was not enough. Here it is enough:
+    budget 12470 - 8% of 24000 = 10550 MiB, model + drafter + projector needs ~10682,
+    and the pin hands back the projector's 1434 so the drafter survives.
 
-    Deliberately tight. Every term of the drafter's charge is decisive at this
-    budget, including its 224 MiB decode graph, so dropping any one of them from
-    the predicate shows up here rather than passing on slack.
+    Deliberately tight: every term of the drafter's charge is decisive at this budget,
+    its 224 MiB decode graph included, so dropping one shows up here.
     """
     backend, gguf = _drafter_backend(tmp_path, [(0, 12_470, 24_000)])
 
@@ -421,17 +418,14 @@ def test_the_projector_probe_agrees_with_the_layer_loop_it_gates(tmp_path):
 def test_an_explicit_context_is_priced_at_the_length_it_asked_for(tmp_path):
     """The same card the auto test above leaves alone, with the context pinned.
 
-    Auto and explicit sizing give way differently, so the probe cannot ask the same
-    question of both. Auto shrinks the CONTEXT and never spills a layer, which is
-    why it is asked at the 4096 floor. An explicit context is honored verbatim by
-    every branch of the placement loop, so the only give left is ``--fit on``, which
-    offloads MODEL LAYERS. Priced at the floor this load answers "the projector
-    fits" and then pays for it in the one currency the policy refuses to spend.
+    Auto shrinks the CONTEXT and never spills a layer, which is why it is asked at the
+    4096 floor. An explicit context is honored verbatim, so the only give left is
+    ``--fit on``, which offloads MODEL LAYERS: priced at the floor this load answers
+    "the projector fits" and pays in the one currency the policy refuses to spend.
 
-    Budget 12000 free - 3% of 24000 = 11280 MiB. At the requested 65536: 6144 model
-    + 4096 KV + 256 compute + 320 CUDA context = 10816 resident, and the 1433 MiB
-    the projector really costs puts it at 12249, over. So the projector goes to host
-    RAM and every layer stays on the card.
+    Budget 12000 - 3% of 24000 = 11280 MiB. At 65536: 6144 model + 4096 KV + 256
+    compute + 320 CUDA context = 10816, and the projector's real 1433 puts it at
+    12249, over. So the projector goes to host RAM and every layer stays resident.
     """
     backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
 
@@ -618,15 +612,14 @@ def test_a_single_card_explicit_load_is_untouched_by_the_split_rate(tmp_path):
 def test_auto_is_priced_at_the_split_rate_too_but_still_at_the_floor(tmp_path):
     """The split rate and the floor are separate questions and only the floor is Auto's.
 
-    Auto's own loop charges `_cc_bytes(ctx, n_gpus)` and then makes every card hold its
-    copy, so it is already stricter than plain `_select_gpus`; pricing this probe plainly
-    leaves it more optimistic than the loop it gates. What keeps the pin honest under
-    Auto is the FLOOR, not loose accounting: a subset that cannot hold the projector at
-    4096 is one Auto cannot rescue by shrinking further, so `--fit on` was coming either
-    way and giving the projector up is the cheaper half of it.
+    Auto's loop charges `_cc_bytes(ctx, n_gpus)` per card, so it is already stricter
+    than plain `_select_gpus` and a plainly priced probe is more optimistic than the
+    loop it gates. What keeps the pin honest under Auto is the FLOOR: a subset that
+    cannot hold the projector at 4096 is one Auto cannot rescue by shrinking, so
+    `--fit on` was coming either way.
 
-    Two cards where plain accounting says the projector fits at 4096 and the split rate
-    says it does not.
+    Two cards where plain accounting says the projector fits at 4096 and the split
+    rate says it does not.
     """
     backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 4_900, 5_900), (1, 4_900, 5_900)])
 
@@ -739,18 +732,15 @@ def test_the_speculative_reserve_is_normalized_before_anything_prices_it(tmp_pat
     """Ordering invariant: `_mtp_bytes` reads `mtp_overhead_fn` at call time, so the
     CPU-drafter normalization has to run before the first thing that prices it.
 
-    It used to run after the projector probe. That is the wrong order on its face --
-    a drafter pinned to the CPU allocates no VRAM, so charging the probe its full
-    GPU footprint could pin the projector and cost ~8.8x per image encode for memory
-    nothing was holding.
+    It used to run after the projector probe, which is wrong on its face: a CPU-pinned
+    drafter allocates no VRAM, so charging the probe its full GPU footprint could pin
+    the projector and cost ~8.8x per image encode for memory nothing holds.
 
-    Asserted on the source rather than on a launch deliberately. I could not construct
-    a configuration where the two orders actually decide differently: on every route I
-    could build, a separate CPU-pinned drafter is already excluded from the budget
-    upstream, so `mtp_overhead_fn` is None at the probe either way and the block is a
-    no-op. Reaching it needs a target that keeps its own reserve while a sidecar
-    displaces an embedded head. So this locks the ordering, which is what was fixed,
-    and does not claim a behavioural difference I could not demonstrate.
+    Asserted on the source rather than a launch, deliberately. No configuration I could
+    build makes the two orders decide differently -- a separate CPU-pinned drafter is
+    already excluded upstream, so `mtp_overhead_fn` is None at the probe either way.
+    Reaching it needs a target keeping its own reserve while a sidecar displaces an
+    embedded head. This locks the ordering that was fixed and claims no more.
     """
     source = Path(inspect.getsourcefile(LlamaCppBackend)).read_text()
     normalize_at = source.index("if _draft_cpu_no_embedded and mtp_overhead_fn is not None:")
@@ -763,15 +753,14 @@ def test_the_speculative_reserve_is_normalized_before_anything_prices_it(tmp_pat
 def test_a_shared_device_beside_a_discrete_one_does_not_veto_the_pin(tmp_path):
     """A laptop pairing a discrete card with an APU enumerates both.
 
-    Requiring EVERY enumerated device to have its own budget refused the pin outright
-    on that machine, so a model that would have fitted the discrete card once the
-    projector moved kept it resident instead and either pulled the shared device into
-    the split or went to `--fit on`. The shared device is dropped from the question
-    rather than answering no for the whole host: bytes handed back land on a card that
-    has its own pool.
+    Requiring EVERY enumerated device to have its own budget refused the pin there, so
+    a model that would have fitted the discrete card once the projector moved kept it
+    resident and either pulled the shared device into the split or went to `--fit on`.
+    The shared device is dropped from the question instead: bytes handed back land on a
+    card with its own pool.
 
-    The discrete card here is the one the single-GPU pin test uses, with a shared
-    device (total 0) alongside it.
+    The discrete card is the one the single-GPU pin test uses, with a shared device
+    (total 0) alongside it.
     """
     backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384), (1, 7_600, 0)])
 
