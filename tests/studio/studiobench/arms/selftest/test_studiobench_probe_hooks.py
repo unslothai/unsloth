@@ -180,7 +180,7 @@ def test_a_refused_report_does_not_leave_a_stale_summary(main_src: str):
 
     assert "except SystemExit as exc:" in main_src
     assert 'out = path.parent / "summary.md"' in main_src
-    assert '# No summary' in main_src
+    assert "# No summary" in main_src
 
 
 def test_the_report_refuses_before_it_assembles(build_src: str):
