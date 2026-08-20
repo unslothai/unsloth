@@ -167,15 +167,15 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
 @pytest.mark.parametrize(
     ("platform", "desktop_kind", "expected"),
     [
-        ("linux", "tauri", True),   # .deb/AppImage desktop: icon launch, no shell profile
-        ("linux", "", False),       # headless `unsloth studio`: opt-in stays
+        ("linux", "tauri", True),  # .deb/AppImage desktop: icon launch, no shell profile
+        ("linux", "", False),  # headless `unsloth studio`: opt-in stays
         ("linux", "other", False),  # unknown owner kind: not the Tauri handshake
     ],
 )
 def test_linux_desktop_owner_flips_native_tls_default(
     monkeypatch, platform, desktop_kind, expected
 ):
-    monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising = False)
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", desktop_kind)
     assert native_tls.native_tls_enabled() is expected
@@ -218,7 +218,12 @@ def test_disabled_activation_leaves_the_flag_env_absent(monkeypatch):
     assert "UNSLOTH_STUDIO_NATIVE_TLS" not in os.environ
 
 
-def _run_inline_gate(monkeypatch, platform, owner_kind = None, flag = None):
+def _run_inline_gate(
+    monkeypatch,
+    platform,
+    owner_kind = None,
+    flag = None,
+):
     import os
 
     calls = _fake_truststore(monkeypatch)
