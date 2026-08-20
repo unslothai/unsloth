@@ -145,13 +145,32 @@ def test_a_failed_call_renders_no_widget():
 
 
 def test_oversized_seed_data_is_dropped_but_the_widget_stays():
+    # Only the structured payload goes: keeping the text is what stops the view
+    # falling back to the flattened body and its host notes.
     huge = {"blob": "x" * (MAX_UI_STRUCTURED_CHARS + 10)}
     payload = _envelope(_flatten_result(_result(_text("ok"), structured = huge), UI))
-    assert payload == {"resourceUri": UI, "structuredContentOmitted": True}
+    assert payload == {"resourceUri": UI, "structuredContentOmitted": True, "text": "ok"}
 
 
 def test_unserialisable_seed_data_does_not_cost_the_widget():
     payload = _envelope(_flatten_result(_result(_text("ok"), structured = {"fn": object()}), UI))
+    assert payload == {"resourceUri": UI, "structuredContentOmitted": True, "text": "ok"}
+
+
+def test_result_meta_survives_an_oversized_structured_payload():
+    huge = {"blob": "x" * (MAX_UI_STRUCTURED_CHARS + 10)}
+    payload = _envelope(
+        _flatten_result(_result(_text("ok"), structured = huge, meta = {"source": "live"}), UI)
+    )
+    assert payload["_meta"] == {"source": "live"}
+    assert payload["text"] == "ok"
+    assert payload["structuredContentOmitted"] is True
+
+
+def test_text_too_large_to_carry_is_itself_dropped():
+    """The cap is the point: a text block over the limit cannot ride along either."""
+    giant = "y" * (MAX_UI_STRUCTURED_CHARS + 10)
+    payload = _envelope(_flatten_result(_result(_text(giant)), UI))
     assert payload == {"resourceUri": UI, "structuredContentOmitted": True}
 
 

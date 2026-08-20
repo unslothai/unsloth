@@ -973,12 +973,25 @@ def _ui_envelope(result: Any, ui_resource_uri: str) -> str:
     try:
         line = json.dumps(payload)
     except (TypeError, ValueError):
-        # Unserialisable seed data must not cost the user the widget itself.
-        payload = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
-        line = json.dumps(payload)
-    if len(line) > MAX_UI_STRUCTURED_CHARS:
-        payload = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
-        line = json.dumps(payload)
+        line = None
+    if line is None or len(line) > MAX_UI_STRUCTURED_CHARS:
+        # Unserialisable or oversized seed data must not cost the user the widget,
+        # but dropping the text sends it back to the flattened body and its host
+        # notes, so shed only the structured payload unless the rest is oversized too.
+        reduced = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
+        for key in ("text", "_meta"):
+            value = payload.get(key)
+            if value is None:
+                continue
+            candidate = dict(reduced)
+            candidate[key] = value
+            try:
+                probe = json.dumps(candidate)
+            except (TypeError, ValueError):
+                continue
+            if len(probe) <= MAX_UI_STRUCTURED_CHARS:
+                reduced = candidate
+        line = json.dumps(reduced)
     return "\n" + MCP_UI_SENTINEL + line
 
 
