@@ -258,16 +258,19 @@ class TestADenseResultIsSizedByWhatItCosts:
     """
 
     # One paragraph of CJK prose with the wiki-style escaped links that come with it.
-    _CJK_PAGE = ("人工智能是一门研究如何使机器具备智能行为的学科，"
-                 "涵盖[机器学习](/wiki/%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0)、"
-                 "[语言处理](/wiki/%E8%87%AA%E7%84%B6%E8%AF%AD%E8%A8%80%E5%A4%84%E7%90%86)"
-                 "和[电脑视觉](/wiki/%E8%AE%A1%E7%AE%97%E6%9C%BA%E8%A7%86%E8%A7%89)。") * 200
-    _EN_PAGE = ("Artificial intelligence is the study of machines that perceive their "
-                "environment and take actions that maximise the chance of a goal. ") * 200
+    _CJK_PAGE = (
+        "人工智能是一门研究如何使机器具备智能行为的学科，"
+        "涵盖[机器学习](/wiki/%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0)、"
+        "[语言处理](/wiki/%E8%87%AA%E7%84%B6%E8%AF%AD%E8%A8%80%E5%A4%84%E7%90%86)"
+        "和[电脑视觉](/wiki/%E8%AE%A1%E7%AE%97%E6%9C%BA%E8%A7%86%E8%A7%89)。"
+    ) * 200
+    _EN_PAGE = (
+        "Artificial intelligence is the study of machines that perceive their "
+        "environment and take actions that maximise the chance of a goal. "
+    ) * 200
 
     def _dense_tokens(self, text):
         from core.inference.context_window import estimate_messages_tokens_dense
-
         return estimate_messages_tokens_dense([{"role": "tool", "content": text}])
 
     def test_a_cjk_page_is_cut_to_the_share_it_was_promised(self, monkeypatch):
@@ -314,7 +317,9 @@ class TestADenseResultIsSizedByWhatItCosts:
 
     def test_an_unknown_window_leaves_a_dense_page_alone(self):
         """Same rule as the char budget: not knowing must never shrink a fetch."""
-        assert tools._dense_char_limit(self._CJK_PAGE, tools._MAX_PAGE_CHARS) == tools._MAX_PAGE_CHARS
+        assert (
+            tools._dense_char_limit(self._CJK_PAGE, tools._MAX_PAGE_CHARS) == tools._MAX_PAGE_CHARS
+        )
 
     def test_a_dense_terminal_result_is_sized_too(self, monkeypatch):
         """The code tools print CJK and escaped URLs as readily as a page carries them."""
