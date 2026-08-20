@@ -11789,6 +11789,7 @@ def _loaded_token_counter(ctx: int):
     """
     try:
         from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
+
         llama = get_llama_cpp_backend()
         if not getattr(llama, "is_loaded", False):
             return None
