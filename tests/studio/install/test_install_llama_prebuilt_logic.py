@@ -1215,6 +1215,51 @@ def test_prune_stale_install_side_paths_ignores_another_installs_side_paths(tmp_
     assert victim.exists()
 
 
+def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path(tmp_path: Path):
+    # Two installs in one parent share a .staging root but hold *different*
+    # locks, because install_lock_path keys on the directory name. glob.escape
+    # only neutralises * ? and [, so it cannot stop "<name>.rollback-*" from
+    # running past the end of <name> into a sibling called
+    # "<name>.rollback-special": a successful update of the first install would
+    # delete that install's retained rollback tree, possibly the only copy of it
+    # left, along with its live staging dir.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    sibling = tmp_path / "llama.cpp.rollback-special"
+    sibling.mkdir()
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    assert staging_root == INSTALL_LLAMA_PREBUILT.install_staging_root(sibling)
+
+    own_stale = staging_root / "llama.cpp.rollback-20240101000000-1"
+    own_stale.mkdir()
+    own_stale_with_counter = staging_root / "llama.cpp.failed-20240101000000-1-2"
+    own_stale_with_counter.mkdir()
+
+    sibling_sole_copy = staging_root / "llama.cpp.rollback-special.rollback-20240102000000-2"
+    sibling_sole_copy.mkdir()
+    (sibling_sole_copy / "llama-server").write_text("the sibling's only llama.cpp\n")
+    sibling_failed = staging_root / "llama.cpp.rollback-special.failed-20240102000000-2"
+    sibling_failed.mkdir()
+    sibling_live_staging = staging_root / "llama.cpp.rollback-special.staging-abcd1234"
+    sibling_live_staging.mkdir()
+
+    # The install still reclaims its own retained copies, counter form included.
+    assert prune_stale_install_side_paths(install_dir) == 2
+    assert not own_stale.exists()
+    assert not own_stale_with_counter.exists()
+
+    assert sibling_sole_copy.exists()
+    assert (sibling_sole_copy / "llama-server").read_text() == "the sibling's only llama.cpp\n"
+    assert sibling_failed.exists()
+    assert sibling_live_staging.exists()
+
+    # And the sibling can still reclaim its own, without touching its staging dir.
+    assert prune_stale_install_side_paths(sibling) == 2
+    assert not sibling_sole_copy.exists()
+    assert not sibling_failed.exists()
+    assert sibling_live_staging.exists()
+
+
 def test_replace_with_busy_retry_rejects_a_zero_attempt_budget(tmp_path: Path):
     # Falling off the loop would report a move that never happened, which on
     # the aside-move is the exact failure this installer must never fake.

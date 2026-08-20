@@ -4304,6 +4304,11 @@ def cleanup_install_side_paths(
         raise RuntimeError("cleanup failed for " + "; ".join(cleanup_failures))
 
 
+# The tail ``unique_install_side_path`` appends after ``<name>.<label>-``:
+# a 14 digit UTC timestamp, the pid, and an optional collision counter.
+_INSTALL_SIDE_PATH_TAIL = re.compile(r"\d{14}-\d+(?:-\d+)?")
+
+
 def _install_side_path_candidates(install_dir: Path, label: str) -> list[Path]:
     root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
     if not root.is_dir():
@@ -4312,11 +4317,25 @@ def _install_side_path_candidates(install_dir: Path, label: str) -> list[Path]:
     # UNSLOTH_LLAMA_CPP_PATH, and an unescaped bracket in it would match the
     # side paths of a *different* install living in the same parent, which
     # holds a different install lock.
+    prefix = f"{install_dir.name}.{label}-"
     pattern = f"{glob.escape(install_dir.name)}.{label}-*"
+    # glob.escape only neutralises ``*``, ``?`` and ``[``; it cannot stop the
+    # trailing ``*`` from running past the end of this install's own name. A
+    # second install called ``<name>.rollback-<suffix>`` parks its side paths in
+    # the same staging root, and ``<name>.rollback-*`` matches those too, so a
+    # successful update here would delete a tree belonging to an install whose
+    # lock this process does not hold, possibly its last retained copy. Only
+    # names whose remaining tail is the exact shape unique_install_side_path
+    # emits are ours: a sibling's tail always carries its own ``.<label>-``
+    # separator, which never matches.
     # Link roots are excluded: rmtree refuses them anyway, and a linked side
     # path points at a tree this installer did not create.
     return sorted(
-        path for path in root.glob(pattern) if path.is_dir() and not _is_link_or_junction(path)
+        path
+        for path in root.glob(pattern)
+        if _INSTALL_SIDE_PATH_TAIL.fullmatch(path.name[len(prefix) :])
+        and path.is_dir()
+        and not _is_link_or_junction(path)
     )
 
 
