@@ -295,6 +295,18 @@ jobs:
             --allow-not-run image_upload \
             --allow-slot-misses 2
 
+      # The step the documentation tells a reader to run, which until now CI never ran. That is
+      # exactly why the payload validator could reject the first parity message row, an ordinal
+      # that is legitimately 0, and go unnoticed: the session ran green while --report failed on
+      # every payload it produced. --report exits non-zero when it cannot score a payload, so
+      # running it here keeps the documented path honest.
+      - name: The payload renders as a report
+        run: |
+          python -m tests.studio.studiobench \
+            --report outputs/studiobench-ci/payload.jsonl \
+            --tier fast --rungs 100K
+          test -s outputs/studiobench-ci/summary.md
+
       - name: Stop Studio
         if: always()
         run: kill "${STUDIO_PID:-0}" 2>/dev/null || true
