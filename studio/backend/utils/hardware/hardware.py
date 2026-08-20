@@ -911,9 +911,7 @@ def _context_free_cuda_memory_info(idx: int, total_bytes: int) -> Optional[int]:
     if platform.system() == "Windows":
         numeric_ids = parent_visible_spec.get("numeric_ids")
         device_ids = (
-            numeric_ids
-            if numeric_ids
-            else list(range(_torch_get_physical_gpu_count() or 0))
+            numeric_ids if numeric_ids else list(range(_torch_get_physical_gpu_count() or 0))
         )
         devices, _aggregate = _rocm_windows_per_device_vram(device_ids)
         for device in devices:

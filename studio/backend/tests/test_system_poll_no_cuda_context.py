@@ -204,9 +204,7 @@ def test_gpu_summary_prefers_context_free_driver_memory(monkeypatch):
         "_smi_query",
         lambda *a, **k: {
             "available": True,
-            "devices": [
-                {"visible_ordinal": 0, "vram_used_gb": 7.0, "vram_total_gb": 16.0}
-            ],
+            "devices": [{"visible_ordinal": 0, "vram_used_gb": 7.0, "vram_total_gb": 16.0}],
         },
     )
 
@@ -234,11 +232,7 @@ def test_gpu_summary_pairs_rocm_apu_free_with_driver_total(monkeypatch):
 
     summary = hw.get_gpu_summary()
 
-    assert summary == {
-        "gpu_name": "Test GPU",
-        "vram_total_gb": 100.0,
-        "vram_free_gb": 98.0,
-    }
+    assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
 
 
 # ========== Inventory parity ==========
