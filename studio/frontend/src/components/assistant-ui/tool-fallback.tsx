@@ -16,6 +16,7 @@ import {
 } from "@/features/chat/utils/mcp-tool-name";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
+import { readSkillToolDisplay } from "./read-skill-tool-display";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
@@ -119,6 +120,7 @@ function ToolFallbackTrigger({
   mcpServer,
   status,
   icon: ToolIcon,
+  actionLabel,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
@@ -126,6 +128,7 @@ function ToolFallbackTrigger({
   mcpServer?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
+  actionLabel?: string;
 }) {
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
@@ -133,7 +136,7 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const StatusIcon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const label = isCancelled ? "Cancelled tool" : actionLabel ?? "Used tool";
   const displayName = formatMcpToolName(toolName, mcpServer) ?? toolName;
 
   return (
@@ -376,6 +379,7 @@ function ToolFallbackError({
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   toolName,
+  args,
   argsText,
   result,
   status,
@@ -387,15 +391,20 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const mcpServer = mcpServerFromProvenance(
     (rest as { provenance?: unknown }).provenance,
   );
+  const readSkillDisplay =
+    toolName === "read_skill" && !mcpServer
+      ? readSkillToolDisplay(args)
+      : undefined;
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 
   return (
     <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>
       <ToolFallbackTrigger
-        toolName={toolName}
+        toolName={readSkillDisplay?.toolName ?? toolName}
         mcpServer={mcpServer}
         status={status}
+        actionLabel={readSkillDisplay?.actionLabel}
       />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />

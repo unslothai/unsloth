@@ -8,7 +8,26 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { readSkillToolDisplay } from "../src/components/assistant-ui/read-skill-tool-display.ts";
+
 const WHITESPACE = /\s+/g;
+
+test("read_skill calls explain progressive skill loading", () => {
+  assert.deepEqual(readSkillToolDisplay({ name: "pr-9355-smoke" }), {
+    actionLabel: "Read skill instructions",
+    toolName: "pr-9355-smoke",
+  });
+  assert.deepEqual(
+    readSkillToolDisplay({
+      name: "pr-9355-smoke",
+      resource: "references/phrase.txt",
+    }),
+    {
+      actionLabel: "Read skill resource",
+      toolName: "pr-9355-smoke · references/phrase.txt",
+    },
+  );
+});
 
 function parse(relativePath: string, kind: ts.ScriptKind): ts.SourceFile {
   const path = fileURLToPath(new URL(relativePath, import.meta.url));
@@ -120,6 +139,51 @@ const DIALOG_SOURCE = parse(
   "../src/features/chat/chat-skills-dialog.tsx",
   ts.ScriptKind.TSX,
 );
+const THREAD_SOURCE = parse(
+  "../src/components/assistant-ui/thread.tsx",
+  ts.ScriptKind.TSX,
+);
+const SHARED_COMPOSER_SOURCE = parse(
+  "../src/features/chat/shared-composer.tsx",
+  ts.ScriptKind.TSX,
+);
+
+function agentSkillsLivesInMore(
+  source: ts.SourceFile,
+  functionName: string,
+): boolean {
+  const declaration = findFunction(source, functionName);
+  const label = findDescendant(
+    declaration,
+    (node): node is ts.JsxText =>
+      ts.isJsxText(node) && node.text.trim() === "Agent Skills",
+    `Agent Skills menu item not found in ${functionName}`,
+  );
+  let ancestor: ts.Node | undefined = label.parent;
+  while (ancestor && ancestor !== declaration) {
+    if (
+      ts.isJsxElement(ancestor) &&
+      ancestor.openingElement.tagName.getText(source) === "DropdownMenuSub"
+    ) {
+      return compact(ancestor, source).includes(
+        "More</DropdownMenuSubTrigger>",
+      );
+    }
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
+
+test("Agent Skills is available under More in both chat composers", () => {
+  assert.equal(
+    agentSkillsLivesInMore(THREAD_SOURCE, "ComposerToolsMenu"),
+    true,
+  );
+  assert.equal(
+    agentSkillsLivesInMore(SHARED_COMPOSER_SOURCE, "SharedComposer"),
+    true,
+  );
+});
 
 test("skill mutations and cross-tab events invalidate cached availability", () => {
   const reset = findFunction(API_SOURCE, "resetSkillCatalogCache");

@@ -2281,27 +2281,25 @@ export function SharedComposer({
                   ) : null}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-                <BookOpenIcon />
-                Agent Skills
-              </DropdownMenuItem>
               <DropdownMenuSeparator />
               {pinnedPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
-              {overflowPlusItems.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <MoreHorizontalIcon className="size-4" />
-                    More
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
-                    {overflowPlusItems.map((id) => (
-                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                  <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+                    <BookOpenIcon />
+                    Agent Skills
+                  </DropdownMenuItem>
+                  {overflowPlusItems.map((id) => (
+                    <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
