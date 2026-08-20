@@ -43,6 +43,40 @@ def _split_args(captured: str) -> list[str]:
     return args
 
 
+def _code_only(source: str) -> str:
+    """``source`` with comments removed and whitespace collapsed.
+
+    A name discussed in prose is not a call. This file's own comments name the
+    functions they explain, so a scan that skipped this would match the sentence.
+    """
+    source = re.sub(r"/\*.*?\*/", " ", source, flags = re.S)
+    source = re.sub(r"//[^\n]*", " ", source)
+    return " ".join(source.split())
+
+
+def _call_arguments(text: str, callee: str) -> list[str]:
+    """The argument text of each ``callee(...)`` call in ``text``, parens balanced.
+
+    Per call, so a contract about what every call passes cannot be satisfied by a
+    matching property somewhere else in the file, nor broken by one. An optional
+    generic parameter list is skipped, since ``f<string>(...)`` is the same call.
+    """
+    calls = []
+    for match in re.finditer(rf"\b{re.escape(callee)}\s*(?:<[^>]*>)?\s*\(", text):
+        depth, start = 0, match.end() - 1
+        for index in range(start, len(text)):
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    calls.append(text[start + 1 : index])
+                    break
+        else:
+            raise AssertionError(f"unbalanced parentheses after {callee} at {start}")
+    return calls
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -2219,13 +2253,20 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     # null after it: the batch echo is the REQUESTED size, so clearing it here would also
     # discard the value just adopted from the new model and revert it on the next Reload.
     # EVERY seed is told the same thing from the same local, so none of them can drift
-    # apart. Counted against the number of resolveBatchSizeSeed call sites rather than
-    # hardcoded: the llama-server tuning knobs deliberately reuse this seed, so a fixed
-    # number here fails the next time the group grows while saying nothing about drift,
-    # which is the property actually under test.
-    seed_calls = len(re.findall(r"resolveBatchSizeSeed(?:<[^>]*>)?\(\{", status))
-    assert seed_calls >= 2, "the batch pair alone should be two seeds"
-    assert re.findall(r"modelChanged: (\w+)", status) == ["slotsModelChanged"] * seed_calls
+    # apart. Checked per call site rather than as a count: the llama-server tuning knobs
+    # deliberately reuse this seed, so a hardcoded number fails the next time the group
+    # grows while saying nothing about drift, and a whole-file count of `modelChanged`
+    # would both break on an unrelated one elsewhere and let an unrelated one stand in
+    # for a seed that omitted the property.
+    # Comments stripped first: this file discusses `resolveBatchSizeSeed (modelChanged)`
+    # in prose, and a scan that counted that sentence as a call site would fail on a
+    # wording change.
+    seed_args = _call_arguments(_code_only(src), "resolveBatchSizeSeed")
+    assert len(seed_args) >= 2, "the batch pair alone should be two seeds"
+    for args in seed_args:
+        assert "modelChanged: slotsModelChanged," in args, (
+            f"a resolveBatchSizeSeed call is not told modelChanged from slotsModelChanged: {args}"
+        )
     assert "{ nBatch: null, nUbatch: null }" not in status
     # The remembered override is re-adopted only when the echo proves it.
     assert (
