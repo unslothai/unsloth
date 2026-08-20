@@ -1558,6 +1558,16 @@ def _openai_llama_admission_tokens(
         output_tokens = max(0, budget - prompt_tokens)
     else:
         output_tokens = cap
+    # A tool loop reserves the whole cache. One lease covers up to 25 rounds, and each
+    # round appends its tool results and re-sends the conversation, so a request that
+    # starts small can approach the full window while its commitment stays at the
+    # opening estimate. Re-costing per round would mean threading a callback through the
+    # generator; reserving the upper bound is the same guarantee without that surface,
+    # at the price of serialising concurrent tool requests. That price is real, and it
+    # is the one this accounting exists to charge: the alternative is admitting rounds
+    # the cache cannot hold and letting llama.cpp kill both.
+    if getattr(payload, "tools", None):
+        return budget
     # Clamped to the budget so an oversized request stays schedulable: the queue
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.

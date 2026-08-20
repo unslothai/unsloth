@@ -443,3 +443,66 @@ class TestTheWholeRenderedPromptIsCounted:
             tools = object(),
         )
         assert self._cost(payload) is not None
+
+
+class TestToolLoopsReserveTheirUpperBound:
+    """One lease covers up to 25 rounds, each larger than the last.
+
+    `generate_chat_completion_with_tools` appends every tool result and re-sends the
+    conversation, so a request that starts small can approach the full window while its
+    commitment stays at the opening estimate. Another request is then admitted against a
+    cache the active rounds have already grown into.
+    """
+
+    @staticmethod
+    def _cost(payload, budget = 2048, capacity = 4):
+        import routes.inference as routes_inference
+
+        return routes_inference._openai_llama_admission_tokens(
+            payload, budget = budget, capacity = capacity,
+        )
+
+    def test_a_tool_request_reserves_the_whole_cache(self):
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = 16,
+            tools = [{"type": "function", "function": {"name": "lookup"}}],
+        )
+        assert self._cost(payload) == 2048
+
+    def test_two_tool_requests_do_not_run_together(self):
+        from types import SimpleNamespace
+
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            payload = SimpleNamespace(
+                messages = [{"role": "user", "content": "hi"}],
+                max_tokens = 16,
+                tools = [{"type": "function", "function": {"name": "lookup"}}],
+            )
+            cost = self._cost(payload)
+            first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+            assert first.lease_nowait() is not None
+            second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+            return second.lease_nowait()
+
+        assert _run(scenario()) is None
+
+    def test_a_request_without_tools_is_unaffected(self):
+        """The serialisation is the price of a tool loop, not of every request."""
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}], max_tokens = 16, tools = None,
+        )
+        assert self._cost(payload) < 2048
+
+    def test_an_empty_tool_list_is_not_a_tool_loop(self):
+        from types import SimpleNamespace
+
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}], max_tokens = 16, tools = [],
+        )
+        assert self._cost(payload) < 2048
