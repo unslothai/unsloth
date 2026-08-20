@@ -10831,6 +10831,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+# Share of the loaded window one fetched page may claim. The same window also has to hold
+# the system prompt, the carried-forward block, the user's turn, the call itself and room
+# to answer, so a third is already generous.
+_PAGE_CONTEXT_SHARE = 0.35
+# Below this a page is too clipped to answer from, so the fetch is not worth making small.
+_MIN_PAGE_CHARS = 2000
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
@@ -11615,6 +11621,47 @@ def _looks_like_html_document(body: str) -> bool:
     return bool(_HTML_DOCUMENT_RE.match(probe))
 
 
+def _loaded_context_tokens() -> int | None:
+    """The active model's context window, or None when it cannot be read.
+
+    Mirrors `research_runs._loaded_context_length`: the ML backends live in a worker
+    subprocess, so the in-process singleton is unpopulated here and importing it pulls in
+    the ML stack. Read the orchestrator the routes use instead, and treat every failure as
+    "unknown" so a fetch is never blocked by not knowing.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
+
+        llama = get_llama_cpp_backend()
+        if getattr(llama, "is_loaded", False):
+            ctx = getattr(llama, "context_length", None)
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+    except Exception:  # noqa: BLE001 -- an unreadable window is "unknown", never an error
+        return None
+    return None
+
+
+def _page_char_budget() -> int:
+    """`_MAX_PAGE_CHARS`, lowered to what the loaded window can actually hold.
+
+    16,000 characters is roughly 4,000 tokens: fine on a 128k model, nonsensical on a
+    4,864-token one. Measured there, a single fetched page came back at 12,295 characters,
+    the request went irreducible at 8,995 tokens against a 3,648-token budget with
+    `latest_turn_role: "tool"`, and the user was advised to shorten a conversation
+    consisting of one 11-token question. Nothing downstream can recover from it either:
+    the fit protects the newest turn, so compaction may not drop the very result that does
+    not fit.
+
+    Above roughly an 11k window this returns the old constant unchanged, so only the models
+    that cannot afford a whole page are affected.
+    """
+    ctx = _loaded_context_tokens()
+    if not ctx:
+        return _MAX_PAGE_CHARS
+    return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+
+
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
         return "(page returned no readable text)"
@@ -11625,7 +11672,9 @@ def _truncate_page_text(text: str, max_chars: int) -> str:
 
 def _fetch_page_text(
     url: str,
-    max_chars: int = _MAX_PAGE_CHARS,
+    # Resolved per call rather than bound at import: the default would freeze the constant
+    # before any model is loaded, which is exactly when the window is still unknown.
+    max_chars: int | None = None,
     timeout: int = 30,
     cancel_event = None,
     website_policy: dict | None = None,
@@ -11639,6 +11688,8 @@ def _fetch_page_text(
     instead of the repo page's UI chrome. Blocks private/loopback/link-local
     targets (SSRF protection) and caps the download size.
     """
+    if max_chars is None:
+        max_chars = _page_char_budget()
     # One wall-clock budget for the whole fetch. The README API attempt and its
     # HTML fallback both draw from it, so a slow/failed API call cannot hand the
     # fallback a fresh full timeout and double the worst case.
