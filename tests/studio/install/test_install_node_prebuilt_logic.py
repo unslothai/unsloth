@@ -31,7 +31,12 @@ def _assume_complete_layout(monkeypatch):
     monkeypatch.setattr(M, "isolated_node_layout_complete", lambda *a, **k: True)
 
 
-def _write(path: Path, text: str, *, executable: bool = False) -> None:
+def _write(
+    path: Path,
+    text: str,
+    *,
+    executable: bool = False,
+) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_text(text, encoding = "utf-8")
     if executable:
@@ -132,14 +137,18 @@ def test_isolated_node_layout_leftover_npm_shim(tmp_path: Path):
 
 def test_isolated_node_layout_official_unix(tmp_path: Path):
     _write(tmp_path / "bin" / "node", "#!/bin/sh\necho v24.0.0\n", executable = True)
-    _write(tmp_path / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js", "console.log('11.0.0')\n")
+    _write(
+        tmp_path / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js", "console.log('11.0.0')\n"
+    )
     (tmp_path / "bin" / "npm").symlink_to("../lib/node_modules/npm/bin/npm-cli.js")
     assert M.isolated_node_layout_complete(tmp_path, _host("linux", "x64")) is True
 
 
 def test_isolated_node_layout_unix_cli_plus_broken_shim(tmp_path: Path):
     _write(tmp_path / "bin" / "node", "#!/bin/sh\necho v24.0.0\n", executable = True)
-    _write(tmp_path / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js", "console.log('11.0.0')\n")
+    _write(
+        tmp_path / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js", "console.log('11.0.0')\n"
+    )
     _write(
         tmp_path / "bin" / "npm",
         "#!/usr/bin/env node\nrequire('../lib/cli.js')\n",
