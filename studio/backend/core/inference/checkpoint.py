@@ -143,9 +143,23 @@ def _select_items(
 
     order = list(reversed(range(len(groups))))
     if reserve_oldest:
-        first = next((i for i in range(len(groups)) if _item(i)), None)
-        if first is not None:
-            order = [first] + [i for i in order if i != first]
+        oldest = next((i for i in range(len(groups)) if _item(i)), None)
+        if oldest is not None:
+            # The opening task is reserved, but it must never DISPLACE the newest
+            # instruction. Placing it first exhausted a tight cap before the
+            # newest-first walk began: at MAX_ITEMS=1, "Build a Flappy Bird game"
+            # then "Actually build Tetris instead" carried only the abandoned
+            # request, so the block stated the opposite of the user's latest
+            # direction. Slotting it in behind the newest qualifying turn keeps
+            # both whenever there is room for two, and keeps the correction when
+            # there is room for only one.
+            rest = [index for index in order if index != oldest]
+            newest = next((index for index in rest if _item(index)), None)
+            if newest is None:
+                order = [oldest] + rest
+            else:
+                at = rest.index(newest) + 1
+                order = rest[:at] + [oldest] + rest[at:]
 
     # Kept as (position, text) so the render can sort by position: with a reserved item
     # the selection order is no longer simply the reverse of the transcript order, and
