@@ -18,6 +18,7 @@ from storage import rag_db
 from . import config, retrieval
 from .store import (
     all_chunks_for_scope,
+    conversation_archive_scope,
     kb_scope,
     project_scope,
     scope_token_estimate,
@@ -53,9 +54,16 @@ def _resolve_scope(
     scope_kb_id: str | None,
     scope_thread_id: str | None,
     scope_project_id: str | None = None,
+    scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
     """KB (an explicit pick) is exclusive; project and thread scopes combine so a
-    project chat also retrieves from its own attached documents."""
+    project chat also retrieves from its own attached documents.
+
+    The conversation archive is exclusive too, and takes precedence: it is a different
+    corpus (this chat's evicted turns), so sharing a top-K would have old turns and
+    document passages crowd each other out."""
+    if scope_conversation_id:
+        return conversation_archive_scope(scope_conversation_id)
     if scope_kb_id:
         return kb_scope(scope_kb_id)
     scopes = []
@@ -126,6 +134,7 @@ def search_knowledge_base_with_sources(
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
     scope_project_id: str | None = None,
+    scope_conversation_id: str | None = None,
     top_k: int | None = None,
     min_score: float = 0.0,
     model_name: str | None = None,
@@ -135,7 +144,7 @@ def search_knowledge_base_with_sources(
     rendered ``<chunk>`` block's ``id``."""
     if not query or not query.strip():
         return "Error: query is empty.", []
-    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id)
+    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id, scope_conversation_id)
     if scope is None:
         return "No documents are attached to this chat.", []
 

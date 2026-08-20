@@ -698,5 +698,29 @@ export interface OpenAIChatChunk {
     prompt_tokens_after?: number;
     context_length?: number;
     fits: boolean;
+    // Present when the evicted turns were archived and searched. Counts only, never
+    // message text: this rides an SSE chunk that reaches the client.
+    archived_messages?: number;
+    recalled_chunks?: number;
+    // Present only when `fits` is false: the floor the conversation cannot go below, and
+    // how much of it is the message just sent. Together they say whether the history or
+    // that one message is the problem, i.e. whether "shorten the conversation" helps.
+    irreducible_tokens?: number;
+    latest_turn_tokens?: number;
+    // Where the compaction boundary sits in the messages THIS request was sent with.
+    // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
+    // times cannot advance the boundary past the turns actually evicted.
+    boundary_messages?: number;
+    // The text the boundary landed ON, so the count can be re-derived by position. A count
+    // is only valid against the transcript it was counted on, and deleting an already
+    // evicted prompt shortens that transcript; without the anchor the replayed count then
+    // evicts live turns instead. Carried through untouched, like boundary_messages.
+    boundary_anchor?: string;
+    // Whose message that is: in a tool loop the last one is often a tool result rather
+    // than anything the user typed.
+    latest_turn_role?: string;
+    // The prompt's share of the window (context_length minus the reply reserve), which is
+    // what one turn must fit inside. Not re-derived here: the formula lives in the fit.
+    prompt_target?: number;
   };
 }

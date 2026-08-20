@@ -682,9 +682,9 @@ def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict
     if current is None:
         return incoming
     combined = {**current, **incoming}
-    combined["dropped_messages"] = int(current.get("dropped_messages") or 0) + int(
-        incoming.get("dropped_messages") or 0
-    )
+    for counter in ("dropped_messages", "archived_messages", "recalled_chunks"):
+        if counter in current or counter in incoming:
+            combined[counter] = int(current.get(counter) or 0) + int(incoming.get(counter) or 0)
     if current.get("prompt_tokens_before") is not None:
         combined["prompt_tokens_before"] = current["prompt_tokens_before"]
     return combined
@@ -3426,6 +3426,17 @@ _RAG_GROUNDING_NUDGE = (
 )
 
 
+def _thread_has_conversation_archive(thread_id) -> bool:
+    """Whether the rolling window has archived anything for this thread yet."""
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive.has_archive(str(thread_id))
+    except Exception:
+        return False
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
 ) -> list[dict]:
@@ -3455,6 +3466,20 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Same rule for the conversation archive: offered only once this thread has had turns
+    # evicted, so a short chat never sees the extra schema. On the first compaction the
+    # tool is still absent (the archive is written mid-request) and the forced recall
+    # covers that turn. getattr, because this helper also serves the token-count request
+    # model, which carries no thread_id.
+    # Follows the ARCHIVE, not the caller's allowlist: Studio always sends an explicit
+    # enabled_tools array and has no reason to name an internal tool it shows no pill for,
+    # so the filter above removed search_conversation and neither it nor the compaction
+    # nudge gated on it ever reached a Studio chat. It is read-only and always-safe, so it
+    # is added on that condition rather than requested.
+    has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+    tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
+    if has_archive and tools_on:
+        tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3463,6 +3488,28 @@ async def _select_request_tools(
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
+
+
+_COMPACTED_SESSION_NUDGE = (
+    "This conversation is long, so older turns have been removed from your context. "
+    "The relevant ones are retrieved and shown to you automatically when that happens. "
+    "If the user refers to something you cannot see, call search_conversation before "
+    "answering. Never tell the user you have no record of an earlier turn, and never "
+    "assume the conversation began where your visible context begins."
+)
+
+
+def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
+    """Append the compacted-session nudge when the conversation-archive tool is active.
+
+    Gated on the tool rather than separate state, so it appears exactly when there is an
+    archive to search and stays a no-op for chats that never compacted."""
+    tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
+    if "search_conversation" not in tool_names:
+        return nudge
+    if not nudge:
+        return _COMPACTED_SESSION_NUDGE
+    return nudge + " " + _COMPACTED_SESSION_NUDGE
 
 
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
@@ -14219,6 +14266,7 @@ async def openai_chat_completions(
 
             # Nudge the model to ground in attached documents instead of memory.
             _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
+            _nudge = _apply_compaction_nudge(_nudge, tools_to_use)
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -14982,6 +15030,7 @@ async def openai_chat_completions(
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
+                thread_id = payload.thread_id,
             )
 
         _gguf_sentinel = object()
@@ -15483,8 +15532,8 @@ async def openai_chat_completions(
                             or int(_choice_context_truncation.get("dropped_messages") or 0)
                             >= int(_context_truncation.get("dropped_messages") or 0)
                         ):
-                            # Choices share the original prompt. Keep the shortest
-                            # choice's cumulative fit instead of summing choices.
+                            # Choices share one prompt: report the choice that dropped
+                            # the most, rather than summing across choices.
                             _context_truncation = _choice_context_truncation
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
@@ -15778,6 +15827,7 @@ async def openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -19650,7 +19700,9 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # this channel has no way to present, so an omitted permission_mode ("ask") only
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
-_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation"}
+)
 
 
 def _anthropic_selects_server_tools(
