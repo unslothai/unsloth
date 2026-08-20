@@ -4,17 +4,99 @@
 export const TRANSPORT = {
   HTTP: "http",
   XET: "xet",
+  AUTO: "auto",
 } as const;
 
-export const TRANSPORT_MODES = [TRANSPORT.HTTP, TRANSPORT.XET] as const;
+// The two transports a download can run on. "auto" is a preference, resolved to one of these
+// before a download starts; only these reach a `.transport` marker on disk, which records the
+// writer so a resume picks the right strategy.
+export const RESOLVED_TRANSPORTS = [TRANSPORT.HTTP, TRANSPORT.XET] as const;
+export type ResolvedTransport = (typeof RESOLVED_TRANSPORTS)[number];
+
+export const TRANSPORT_MODES = [
+  TRANSPORT.AUTO,
+  TRANSPORT.HTTP,
+  TRANSPORT.XET,
+] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-// Xet by default; effectiveTransportMode() downgrades to HTTP if hf_xet is missing.
-export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.XET;
+// Auto by default: the backend picks per machine (RAM, hf_xet build, recent Xet failures), and
+// effectiveTransportMode() resolves that to a concrete transport before any download starts.
+export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
 
 export function isTransportMode(value: unknown): value is TransportMode {
   return (
     typeof value === "string" &&
     (TRANSPORT_MODES as readonly string[]).includes(value)
+  );
+}
+
+/** The transport a started job is really running on.
+ *
+ * An accepted start can mean the backend attached this client to a job another
+ * one had already begun, which keeps the transport it started on. Trusting the
+ * locally requested value there offers Pause for a Xet run, or Cancel for a
+ * resumable HTTP one. */
+export function transportAfterStart(
+  requested: ResolvedTransport,
+  reported: unknown,
+): ResolvedTransport {
+  return isResolvedTransport(reported) ? reported : requested;
+}
+
+/** Whether a probe response describes the run a job is currently on.
+ *
+ * A cancel and restart between the request and its reply makes the answer
+ * about a different job, possibly on the other transport. A job with no
+ * generation recorded yet has nothing better to go on, so any generation the
+ * probe reports is taken (along with the generation itself). */
+export function probeDescribesCurrentRun(
+  known: unknown,
+  reported: unknown,
+): boolean {
+  return Number.isSafeInteger(known)
+    ? reported === known
+    : Number.isSafeInteger(reported);
+}
+
+export type AdoptedTransports = {
+  transport?: ResolvedTransport;
+  cancelTransport?: ResolvedTransport;
+};
+
+/** What a probe says about the pair. `cancelTransport: null` is the backend
+ * reporting no marker, which is not the same as a source that cannot report one
+ * at all (undefined). */
+export type ReportedTransports = {
+  transport?: ResolvedTransport;
+  cancelTransport?: ResolvedTransport | null;
+};
+
+/** What an adopted job records for its transport pair: what the backend just
+ * reported, else what was restored from storage.
+ *
+ * Both fields together, so a probe carrying only one cannot erase the other.
+ * `/download-status` has no cancel marker at all, and it can win the hydration
+ * race against `/active-downloads`, which does. A reported null still clears a
+ * stored marker: the run being adopted is the one the backend just described. */
+export function adoptedTransports(
+  reported: ReportedTransports,
+  existing: AdoptedTransports | undefined,
+): AdoptedTransports {
+  return {
+    transport: reported.transport ?? existing?.transport,
+    cancelTransport:
+      reported.cancelTransport === undefined
+        ? existing?.cancelTransport
+        : (reported.cancelTransport ?? undefined),
+  };
+}
+
+export function isResolvedTransport(
+  value: unknown,
+): value is ResolvedTransport {
+  return (
+    typeof value === "string" &&
+    (RESOLVED_TRANSPORTS as readonly string[]).includes(value)
   );
 }
 

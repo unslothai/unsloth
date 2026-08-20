@@ -7,13 +7,12 @@
 # npm or cargo lockfile, on push to main, and on a daily schedule so
 # newly-published IOCs surface even when no PR opens.
 #
-# Default behavior is "advisory": only public indicator-of-compromise
-# strings, known-malicious pinned versions, and structurally broken
-# lockfiles fail the build. Structural anomalies (missing integrity,
-# non-default registry, etc.) are emitted as GitHub Actions warnings
-# but do not block merges. This deliberately keeps the noise floor
-# low while still failing the moment a checked-in lockfile starts
-# pointing at known-bad bytes.
+# Default behavior blocks public indicator-of-compromise strings,
+# known-malicious pinned versions, structurally broken lockfiles, and
+# provenance/integrity failures (non-registry resolved URL or cargo
+# source, missing integrity hash or cargo checksum) -- the pre-install
+# fetches this gate stops before `npm ci` runs lifecycle scripts.
+# Lesser anomalies warn; --strict escalates them to blocking.
 #
 # This workflow is intentionally separate from security-audit.yml:
 #   - security-audit.yml is the umbrella job (pip-audit + npm audit +
@@ -25,31 +24,30 @@
 
 name: Lockfile supply-chain audit
 
+# Per-commit runs are gone: this audit now runs as a background lane inside Lint CI,
+# which already occupies a runner on every commit, so it costs a slot there instead of
+# holding one of its own for ~6s of work. Both call
+# .github/scripts/lane-lockfile-audit.sh, so there is one definition.
+#
+# The nightly schedule is deliberately KEPT. It is not the same check: it re-audits the
+# lockfiles as they stand against advisories published since the last commit, which no
+# commit-triggered run can do.
 on:
-  pull_request:
-    paths:
-      - 'studio/frontend/package-lock.json'
-      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
-      - 'studio/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'scripts/lockfile_supply_chain_audit.py'
-      - '.github/workflows/lockfile-audit.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'studio/frontend/package-lock.json'
-      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
-      - 'studio/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'scripts/lockfile_supply_chain_audit.py'
-      - '.github/workflows/lockfile-audit.yml'
   schedule:
     - cron: '37 5 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # The event is part of the group so a scheduled run and a push to main cannot
+  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
+  # only one pending run, so without this a merge burst silently drops the nightly:
+  # cancel-in-progress protects the running run, never the pending one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -60,20 +58,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
-      - name: Verify audit script parses
-        run: python3 -c "import ast; ast.parse(open('scripts/lockfile_supply_chain_audit.py').read())"
-
+      # One definition, shared with the Lint CI lane that runs this on every commit.
       - name: Run lockfile supply-chain audit
-        # Default mode: only known-malicious pinned versions, known IOC
-        # strings, and structurally broken lockfiles fail the build.
-        # Missing-integrity and other structural anomalies are emitted
-        # as ::warning:: annotations and do not gate merges.
-        run: python3 scripts/lockfile_supply_chain_audit.py
+        run: bash .github/scripts/lane-lockfile-audit.sh

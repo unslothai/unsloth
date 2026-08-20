@@ -3,7 +3,7 @@
   Source: google/gemma-4-31B-it HF discussion/PR #118 (adds the preserve_thinking
   flag plus null-rendering, string-arguments validation, balanced turn tags, empty
   messages handling, and OpenAI image_url/input_audio aliases).
-  Studio-local changes vs PR #118:
+  Unsloth-local changes vs PR #118:
     1. preserve_thinking defaults to false (see SETUP block below).
     2. The empty "<|channel>thought\n<channel|>" block on enable_thinking=false is
        NOT emitted. Google ships a distinct template for E2B/E4B (google/gemma-4-E2B-it,

@@ -106,7 +106,7 @@ def _compute_loss_and_grad_norm(model, tokenizer, text: str) -> tuple[float, flo
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
-    # Match Studio's text dataset path: no EOS appended behind the user's back.
+    # Match Unsloth's text dataset path: no EOS appended behind the user's back.
     ids = list(tokenizer.encode(text))
     if len(ids) < 2:
         raise RuntimeError(f"text too short to compute loss: {len(ids)} tokens")

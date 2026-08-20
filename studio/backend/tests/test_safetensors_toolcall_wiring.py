@@ -91,6 +91,7 @@ class StubExecutor:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):

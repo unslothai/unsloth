@@ -7,12 +7,8 @@ set -euo pipefail
 # Qwen3.6 MLX — One-command setup + inference
 #
 # Supply-chain hardening:
-#   - All third-party downloads (uv installer, mlx_vlm qwen3_5
-#     patches) are pinned to an immutable git commit SHA and verified
-#     against a hardcoded SHA-256. Any mismatch aborts the install
-#     before the bytes are copied into site-packages.
-#   - To rotate any pin, fetch the new file with `curl`, run
-#     `shasum -a 256`, and update the corresponding constant below.
+#   - The uv installer is verified against a hardcoded SHA-256 before
+#     execution. Rotate the digest only after verifying the new payload.
 # ============================================================
 #
 # Usage:
@@ -144,8 +140,23 @@ fi
 _VENV_PY="$VENV_DIR/bin/python"
 
 # ── Install dependencies ──────────────────────────────────────
-step "install" "installing mlx-vlm..."
-uv pip install --python "$_VENV_PY" -q mlx-vlm
+step "install" "installing current mlx-vlm..."
+# Reinstall even when the existing version satisfies the request. Older copies of
+# this installer modified mlx-vlm in place, so version metadata alone is not proof
+# that a reused environment still contains the resolver-selected distribution.
+uv pip install --python "$_VENV_PY" -q \
+    --upgrade-package mlx-vlm --reinstall-package mlx-vlm mlx-vlm
+# The old installer also added a legacy module that current mlx-vlm wheels do
+# not own. Remove it only when it is absent from the selected distribution.
+"$_VENV_PY" - <<'PY'
+from importlib.metadata import distribution
+
+dist = distribution("mlx-vlm")
+legacy_module = dist.locate_file("mlx_vlm/generate.py")
+owned_files = {str(path) for path in (dist.files or ())}
+if legacy_module.is_file() and "mlx_vlm/generate.py" not in owned_files:
+    legacy_module.unlink()
+PY
 substep "done"
 
 step "install" "installing transformers>=5.2.0..."
@@ -171,61 +182,28 @@ else
     fail "Installation verification failed. Please ensure Python >=3.10 and try again."
 fi
 
-# ── Apply patches for multi-turn image chat ──────────────────
-#
-# Pin every patch to an immutable commit SHA and verify the body
-# against a hardcoded SHA-256. The mlx_vlm_qwen3_5 patch tree
-# currently only exists on the upstream `fix/ui-fix` branch; we pin
-# to the branch HEAD commit, NOT the floating ref, so a forced push
-# on `fix/ui-fix` cannot swap the bytes under us.
-#
-# Rotate by:
-#   _PATCH_COMMIT=<new SHA>
-#   curl -sSLf "https://raw.githubusercontent.com/unslothai/unsloth/$_PATCH_COMMIT/unsloth/models/patches/mlx_vlm_qwen3_5/qwen3_5.py" | shasum -a 256
-#   curl -sSLf "https://raw.githubusercontent.com/unslothai/unsloth/$_PATCH_COMMIT/unsloth/models/patches/mlx_vlm_qwen3_5/generate.py" | shasum -a 256
-_PATCH_COMMIT="013c99e51bbb8c4b83d88f3b150a1e53251a19d2"
-_PATCH_BASE="https://raw.githubusercontent.com/unslothai/unsloth/${_PATCH_COMMIT}/unsloth/models/patches/mlx_vlm_qwen3_5"
-_PATCH_SHA_QWEN35="4b6fbbcc59b1d6b935e7204351aae1476836d25542a11c7885402b672d2efa64"
-_PATCH_SHA_GENERATE="50c4cbb8c3d94c0c74a4d209db6d2b23b102944c147c6421f2eded427b8edaf7"
+# Verify the active Qwen runtime rather than overwriting the package selected
+# by the resolver with an older copy of its internal modules.
+if "$_VENV_PY" - <<'PY'
+from mlx_vlm.generate import stream_generate
+from mlx_vlm.models.base import InputEmbeddingsFeatures
+from mlx_vlm.models.qwen3_5.config import ModelConfig
+from mlx_vlm.models.qwen3_5.qwen3_5 import Model, ModelConfig as RuntimeModelConfig, sanitize_key
 
-_SITE_PKGS=$("$_VENV_PY" -c "import site; print(site.getsitepackages()[0])")
-
-step "patch" "fixing multi-turn image chat..."
-
-# Stage all downloads in an isolated tmpdir; we only copy into
-# site-packages after every checksum has matched.
-_PATCH_TMP=$(mktemp -d)
-trap 'rm -rf "$_PATCH_TMP"' EXIT
-
-apply_pinned_patch() {
-    # apply_pinned_patch <remote_basename> <expected_sha256> <dest_abspath>
-    _name="$1"; _expected="$2"; _dest="$3"
-    _staged="$_PATCH_TMP/$_name"
-    if ! curl -sSLf "${_PATCH_BASE}/${_name}" -o "$_staged"; then
-        step "warning" "failed to download ${_name} patch — multi-turn image chat may not work" "$C_WARN"
-        return 1
-    fi
-    _actual=$(shasum -a 256 "$_staged" | awk '{print $1}')
-    if [ "$_actual" != "$_expected" ]; then
-        step "warning" "${_name} SHA-256 mismatch (got $_actual expected $_expected) — refusing to install patch" "$C_WARN"
-        return 1
-    fi
-    mkdir -p "$(dirname "$_dest")"
-    cp "$_staged" "$_dest"
-    return 0
-}
-
-if apply_pinned_patch "qwen3_5.py" "$_PATCH_SHA_QWEN35" "${_SITE_PKGS}/mlx_vlm/models/qwen3_5/qwen3_5.py"; then
-    substep "patched qwen3_5.py (MRoPE position reset)"
+required_fields = {"position_ids", "rope_deltas"}
+available_fields = set(getattr(InputEmbeddingsFeatures, "__dataclass_fields__", ()))
+if ModelConfig is not RuntimeModelConfig:
+    raise RuntimeError("Qwen3.5 model and config modules are inconsistent")
+if not callable(Model) or not callable(sanitize_key) or not callable(stream_generate):
+    raise RuntimeError("Qwen3.5 model, sanitizer, or generation entry point is unavailable")
+if not required_fields.issubset(available_fields):
+    raise RuntimeError("mlx-vlm lacks the Qwen3.5 request-owned position interface")
+PY
+then
+    substep "Qwen3.5 model + generation runtime verified"
+else
+    fail "Installed mlx-vlm does not provide a coherent Qwen3.5/3.6 runtime. Please retry with a current mlx-vlm release."
 fi
-
-if apply_pinned_patch "generate.py" "$_PATCH_SHA_GENERATE" "${_SITE_PKGS}/mlx_vlm/generate.py"; then
-    substep "patched generate.py (mask trim on cache reuse)"
-fi
-
-# Clear pycache so patches take effect
-find "${_SITE_PKGS}/mlx_vlm" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-substep "cleared bytecode cache"
 
 # ── Done ──────────────────────────────────────────────────────
 echo ""

@@ -13,11 +13,25 @@ import {
 type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZES: Record<AvatarSize, string> = {
-  xs: "size-5 rounded-[8px] text-[9px]",
-  sm: "size-7 rounded-[10px] text-[11px]",
-  md: "size-9 rounded-[12px] text-[13px]",
-  lg: "size-12 rounded-[15px] text-[16px]",
+  xs: "size-5 rounded-[8px] text-ui-9",
+  sm: "size-7 rounded-[10px] text-ui-11",
+  md: "size-9 rounded-[12px] text-ui-13",
+  lg: "size-12 rounded-[15px] text-ui-16",
 };
+
+const UNSLOTH_OWNER_LOGO: ProviderLogo = {
+  id: "unsloth",
+  name: "Unsloth",
+  logoPath: "/rounded.png",
+  treatment: "original",
+  background: "transparent",
+  fit: "cover",
+  prefixes: [],
+};
+
+function isUnslothOwner(owner: string): boolean {
+  return owner.trim().toLowerCase() === "unsloth";
+}
 
 const AVATAR_IMAGE_RETRY_BASE_MS = 60_000;
 const AVATAR_IMAGE_RETRY_MAX_MS = 30 * 60_000;
@@ -68,6 +82,16 @@ export function OwnerAvatar({
       />
     );
   }
+
+  if (isUnslothOwner(owner) && !remote) {
+    return (
+      <ProviderLogoTile
+        provider={UNSLOTH_OWNER_LOGO}
+        size={size}
+        className={className}
+      />
+    );
+  }
   return (
     <DefaultAvatar
       owner={owner}
@@ -83,11 +107,15 @@ export function useAvatarImageUrl(
   repoName?: string,
 ): string | null {
   const provider = resolveOwnerProviderLogo(owner, repoName);
-  const remoteUrl = useHfOwnerAvatar(owner.trim() || "?");
+  const isUnsloth = isUnslothOwner(owner);
+  const remoteUrl = useHfOwnerAvatar(
+    owner.trim() || "?",
+    provider == null && !isUnsloth,
+  );
   if (provider) {
     return provider.treatment === "original" ? provider.logoPath : null;
   }
-  return remoteUrl;
+  return isUnsloth ? UNSLOTH_OWNER_LOGO.logoPath : remoteUrl;
 }
 
 function ProviderLogoTile({

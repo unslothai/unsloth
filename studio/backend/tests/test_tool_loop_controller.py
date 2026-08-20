@@ -7,18 +7,37 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     canonical_tool_call_key,
     coerce_tool_arguments,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
 )
+
+
+def test_append_deferred_nudges_merges_deduped_into_one_message():
+    conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
+    nudges = [
+        {"role": "user", "content": "duplicate"},
+        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "disabled foo"},
+    ]
+    append_deferred_nudges(conversation, nudges)
+    # One user message, after the results, with distinct contents joined.
+    assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
+    # Empty is a no-op.
+    before = list(conversation)
+    append_deferred_nudges(conversation, [])
+    assert conversation == before
 
 
 def _tool(name: str) -> dict:
@@ -76,6 +95,29 @@ def test_status_and_provenance_match_local_event_conventions():
     }
 
 
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        # bare hosts are fetched, so the badge must name them
+        ("google.com", "Reading: google.com"),
+        ("www.google.com/x", "Reading: google.com"),
+        ("//google.com", "Reading: google.com"),
+        ("example.com:8443/path", "Reading: example.com"),
+        ("github.com/unslothai/unsloth", "Reading: github.com"),
+        # still generic for what the fetch layer refuses
+        ("/login", "Reading page..."),
+        ("javascript:alert(1)", "Reading page..."),
+        # urlparse raises on these, outside the fetch's handler: degrade, not raise
+        ("https://[::1", "Reading page..."),
+        ("https://::1]", "Reading page..."),
+        ("//exam／ple.com", "Reading page..."),
+        ("//example.com＠", "Reading page..."),
+    ],
+)
+def test_status_names_the_host_for_schemeless_urls(url, expected):
+    assert status_for_tool("web_search", {"url": url}) == expected
+
+
 def test_prepare_execute_builds_visible_events_and_model_tool_message():
     controller = ToolLoopController(tools = [_tool("web_search")])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
@@ -111,6 +153,10 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert not duplicate.should_execute
     assert not duplicate.emit_visible_events
     duplicate_nudge = completion.model_message()["content"]
+    assert duplicate_nudge.startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
@@ -165,7 +211,12 @@ def test_empty_enabled_tool_list_blocks_all_tool_calls():
     assert decision.action == "disabled"
     assert not decision.emit_visible_events
     assert completion.model_message()["role"] == "user"
-    assert "not enabled" in completion.model_message()["content"]
+    disabled_nudge = completion.model_message()["content"]
+    assert disabled_nudge.startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in disabled_nudge.lower()
+    assert "not enabled" in disabled_nudge
     assert controller.force_final_answer
     assert controller.active_tools() == []
 

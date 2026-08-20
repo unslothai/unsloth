@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import re
 import socket
@@ -49,7 +50,16 @@ import logging as _logging  # noqa: E402
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+# structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would
+# shadow the real package. Stub only a genuinely absent one (check sys.modules first: find_spec()
+# raises ValueError on another module's bare stub), then backfill get_logger.
+_structlog = sys.modules.get("structlog")
+if _structlog is None and importlib.util.find_spec("structlog") is None:
+    _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+if _structlog is not None and not hasattr(_structlog, "get_logger"):
+    _structlog.get_logger = lambda *args, **kwargs: _logging.getLogger(
+        args[0] if args else "structlog"
+    )
 
 import httpx  # noqa: E402
 
@@ -183,6 +193,24 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
+# The bound stays where it was. What changes is that a stall has to REPRODUCE.
+#
+# Measured, with the shim's 0.6 + 0.6 second delays: the blocking route holds /health
+# for 1.72s and does it every time (1.719, 1.729, 1.721, 1.719, 1.727 over five runs),
+# while the to_thread route answers in 2 to 10 ms. A blocked loop is not a coin flip.
+# What IS a coin flip is the runner descheduling a thread for a couple of hundred
+# milliseconds, which is what failed this test on a single 0.261s sample among eleven
+# 0.0013s ones.
+#
+# So the measurement is repeated and one clean run is enough. Widening the bound
+# instead would have opened a blind range between the old limit and the new one, and
+# the obvious alternatives do not work here: only ONE sample is slow even when the loop
+# is fully blocked, because the health probes share a connection and serialise behind
+# the stall, so neither a median nor a count of slow samples can tell the two apart.
+_MAX_HEALTH_LATENCY_SEC = 0.25
+_STALL_ATTEMPTS = 3
+
+
 # (1) Behavioural canary
 def test_buggy_route_blocks_event_loop():
     """Sync detect_audio_type call inside async route stalls /health."""
@@ -193,21 +221,30 @@ def test_buggy_route_blocks_event_loop():
         with _UvicornServerThread(app, port = port) as uv:
             max_lat, probe_t, _ = _drive_concurrent_probe_and_health(f"http://127.0.0.1:{uv.port}")
     assert probe_t >= 0.5
-    assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
+    assert max_lat >= _MAX_HEALTH_LATENCY_SEC, f"expected a stalled loop, got {max_lat:.3f}s"
 
 
 def test_fixed_route_keeps_event_loop_responsive():
     """to_thread-wrapped call leaves the event loop free."""
-    with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
-        backend = _make_backend(shim.port)
-        app = _build_app(backend, wrap_in_thread = True)
-        port = _free_port()
-        with _UvicornServerThread(app, port = port) as uv:
-            max_lat, probe_t, lats = _drive_concurrent_probe_and_health(
-                f"http://127.0.0.1:{uv.port}"
-            )
-    assert probe_t >= 0.5
-    assert max_lat < 0.25, f"expected <0.25s; got {max_lat:.3f}s (all: {lats})"
+    attempts = []
+    for _ in range(_STALL_ATTEMPTS):
+        with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
+            backend = _make_backend(shim.port)
+            app = _build_app(backend, wrap_in_thread = True)
+            port = _free_port()
+            with _UvicornServerThread(app, port = port) as uv:
+                max_lat, probe_t, lats = _drive_concurrent_probe_and_health(
+                    f"http://127.0.0.1:{uv.port}"
+                )
+        assert probe_t >= 0.5
+        attempts.append((max_lat, lats))
+        if max_lat < _MAX_HEALTH_LATENCY_SEC:
+            return
+    assert False, (
+        f"/health stalled past {_MAX_HEALTH_LATENCY_SEC}s on every one of "
+        f"{_STALL_ATTEMPTS} runs, so it is the route and not the runner: "
+        f"{[round(worst, 3) for worst, _ in attempts]} (last run: {attempts[-1][1]})"
+    )
 
 
 # (2) Functional equivalence -- sync == to_thread for each codec branch
@@ -441,7 +478,7 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
     """Audio-type detection must run inside load_model under _serial_load_lock,
     else a concurrent /load can replace the backend mid-probe (review on #5669)."""
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-    text = f.read_text()
+    text = f.read_text(encoding = "utf-8")
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
@@ -462,7 +499,7 @@ def test_routes_inference_reads_cached_audio_type_not_calls_detect():
     """routes/inference.py must read cached _audio_type/_is_audio, not call
     detect_audio_type / init_audio_codec directly (both moved into load_model)."""
     f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
-    text = f.read_text()
+    text = f.read_text(encoding = "utf-8")
     assert "llama_backend.detect_audio_type(" not in text, (
         "routes/inference.py should not call detect_audio_type directly; "
         "load_model already cached it under the lock."
@@ -485,7 +522,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     # function helper is excluded below.
     pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
-        for i, line in enumerate(path.read_text().splitlines(), start = 1):
+        for i, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1):
             m = pattern.search(line)
             if not m:
                 continue

@@ -11,10 +11,12 @@ from .path_utils import (
     resolve_cached_repo_id_case,
     get_cache_case_resolution_stats,
     reset_cache_case_resolution_state,
+    reveal_in_file_manager,
 )
 from .storage_roots import (
     studio_root,
     assets_root,
+    dataset_files_in_dir,
     datasets_root,
     dataset_uploads_root,
     recipe_datasets_root,
@@ -61,8 +63,10 @@ __all__ = [
     "resolve_cached_repo_id_case",
     "get_cache_case_resolution_stats",
     "reset_cache_case_resolution_state",
+    "reveal_in_file_manager",
     "studio_root",
     "assets_root",
+    "dataset_files_in_dir",
     "datasets_root",
     "dataset_uploads_root",
     "recipe_datasets_root",

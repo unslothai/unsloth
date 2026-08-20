@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from unsloth_cli._inference import (
+    SpeculativeType,
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
@@ -181,6 +182,18 @@ def chat(
             "parallel mode instead of pipeline mode."
         ),
     ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        help = "Speculative decoding mode for GGUF models, including DSpark sidecar discovery.",
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
+    ),
     llama_extra_args: Optional[List[str]] = typer.Option(
         None,
         "--llama-extra-arg",
@@ -206,7 +219,7 @@ def chat(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Studio server is running.",
+        help = "Load the model in-process even if an Unsloth server is running.",
     ),
 ):
     """Start an interactive chat with a model (loads once, stays warm)."""
@@ -261,15 +274,19 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if speculative_type is not None:
+        load_opts["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        load_opts["spec_draft_n_max"] = spec_draft_n_max
 
-    # Prefer a running Studio server: instant starts, model shared with the UI.
+    # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
         None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:
         console.print(
-            "(Studio server connected — model stays warm after /exit)",
+            "(Unsloth server connected — model stays warm after /exit)",
             style = "bright_black",
         )
     else:
@@ -331,7 +348,7 @@ def chat(
             enable_thinking = show_thinking,
             use_adapter = use_adapter,
         )
-        return raise_on_streamed_error(stream) if is_mlx_distributed else stream
+        return raise_on_streamed_error(stream)
 
     if should_print:
         console.print()

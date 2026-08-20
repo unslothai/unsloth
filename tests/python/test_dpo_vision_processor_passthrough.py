@@ -11,7 +11,7 @@ RL_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _load_helpers():
-    src = open(RL_PATH).read()
+    src = open(RL_PATH, encoding = "utf-8").read()
     tree = ast.parse(src)
     import torch as _torch
 

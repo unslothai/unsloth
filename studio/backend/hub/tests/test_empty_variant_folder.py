@@ -63,6 +63,36 @@ def test_remove_empty_variant_dirs_never_touches_populated_folder(tmp_path):
     assert len(list((snap / "UD-IQ1_M").iterdir())) == 2
 
 
+def test_remove_empty_variant_dirs_does_not_fold_an_h3_stem_to_its_quant(tmp_path):
+    snap = tmp_path / "snapshots" / "rev0"
+    sibling_dir = snap / "UD-Q2_K_XL"
+    sibling_dir.mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs(
+        [repo],
+        "minimax_h3_fl2va_pruned-UD-Q2_K_XL",
+    )
+
+    assert removed == 0
+    assert failures == []
+    assert sibling_dir.is_dir()
+
+
+def test_remove_empty_variant_dirs_reads_a_windows_spelled_key_as_qualified(tmp_path):
+    """A backslash key is the same qualified key; folding it to its quant took a sibling's dir."""
+    snap = tmp_path / "snapshots" / "rev0"
+    sibling_dir = snap / "UD-IQ1_S"
+    sibling_dir.mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs([repo], r"distilled\model-UD-IQ1_S")
+
+    assert removed == 0
+    assert failures == []
+    assert sibling_dir.is_dir()
+
+
 def test_remove_empty_variant_dirs_surfaces_real_failure(tmp_path, monkeypatch):
     _make_snapshot(tmp_path)
     repo = SimpleNamespace(repo_path = str(tmp_path))
@@ -120,10 +150,16 @@ def _force_compute_to_raise(monkeypatch):
 
     monkeypatch.setattr(gguf_variants, "list_gguf_variants", _boom, raising = False)
     monkeypatch.setattr(
-        gguf_variants, "list_gguf_variants_from_hf_cache", lambda repo_id: None, raising = False
+        gguf_variants,
+        "select_gguf_cache_snapshot",
+        lambda repo_id, root = None: None,
+        raising = False,
     )
     monkeypatch.setattr(
-        gguf_variants, "list_partial_gguf_variants_from_state", lambda repo_id: None, raising = False
+        gguf_variants,
+        "list_partial_gguf_variants_from_state",
+        lambda repo_id, hub_cache = None: None,
+        raising = False,
     )
 
 
@@ -133,7 +169,11 @@ def test_get_variants_surfaces_cleanable_when_metadata_fails(monkeypatch):
     import asyncio
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_empty_gguf_variant_dirs",
+        lambda repo_id, root = None: {"UD-IQ1_S"},
+    )
 
     resp = asyncio.run(
         gguf_variants.get_gguf_variants_response(
@@ -152,7 +192,11 @@ def test_get_variants_reraises_when_no_cleanable(monkeypatch):
     from fastapi import HTTPException
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: set())
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_empty_gguf_variant_dirs",
+        lambda repo_id, root = None: set(),
+    )
 
     try:
         asyncio.run(

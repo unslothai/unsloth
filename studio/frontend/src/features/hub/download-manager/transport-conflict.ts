@@ -9,7 +9,10 @@ import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
 } from "./download-api-adapter";
-import type { DownloadRequest } from "./download-manager-types";
+import type {
+  DownloadRequest,
+  ManagedDownload,
+} from "./download-manager-types";
 import {
   findActiveJobForRepo,
   getState,
@@ -96,7 +99,24 @@ export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
 // callers never claim a download began when it did not.
 function isJobActiveFor(req: DownloadRequest): boolean {
   const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
-  return Boolean(job && ACTIVE_STATES.has(job.state));
+  if (!job || !ACTIVE_STATES.has(job.state)) return false;
+  return !scopedFileSetDiffers(job, req);
+}
+
+// Every file set of one repo rides the same scope slot, so a live job on this key counts as this request's transfer only when it is fetching the
+// same files: adopting a sibling quant's job would report ready for files nobody fetched. A job with no recorded list is adoptable only when the
+// request is unscoped; the old permissive answer let a second browser profile report "started" for a checkpoint nobody was fetching.
+function scopedFileSetDiffers(
+  job: ManagedDownload,
+  req: DownloadRequest,
+): boolean {
+  if (!req.files || req.files.length === 0) return false;
+  if (!job.scopedFiles) return true;
+  const live = [...new Set(job.scopedFiles)].sort();
+  const wanted = [...new Set(req.files)].sort();
+  return (
+    live.length !== wanted.length || live.some((f, i) => f !== wanted[i])
+  );
 }
 
 async function runWithPendingStartGuard(

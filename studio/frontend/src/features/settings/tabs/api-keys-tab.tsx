@@ -14,11 +14,13 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
-import { ApiMonitorConsole } from "../components/api-monitor-console";
+import { MonitorLink } from "../components/monitor-link";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { LanAccessSection } from "../components/lan-access-section";
+import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
@@ -160,19 +162,26 @@ export function ApiKeysTab() {
             {t("settings.apiKeys.noAccess")}
           </p>
         ) : (
-          <div className="flex min-w-0 flex-col">
-            {keys.map((k) => (
-              <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
-            ))}
+          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+            <div className="overlay-scrollbar-gutter">
+              {keys.map((k) => (
+                <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
+              ))}
+            </div>
           </div>
         )}
       </section>
 
-      <ApiMonitorConsole />
+      <MonitorLink />
 
-      <UsageExamples apiKey={revealed} />
+      {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
+      <RemoteAccessSection />
+
+      <LanAccessSection />
 
       <ModelAutoSwitchSection />
+
+      <UsageExamples apiKey={revealed} />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

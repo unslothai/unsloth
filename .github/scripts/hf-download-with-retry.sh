@@ -3,7 +3,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
 # Download a single file from a Hugging Face repo with a stall-retry
-# watchdog. Used by the Studio CI workflows so a hung hf-xet transfer
+# watchdog. Used by the Unsloth CI workflows so a hung hf-xet transfer
 # kills + retries instead of silently consuming the job's timeout.
 #
 # Usage: hf-download-with-retry.sh REPO FILE LOCAL_DIR
@@ -23,7 +23,8 @@
 # whole job: if the hf process has not exited after STALL_S
 # seconds (default 180 = 3 min), we SIGTERM, then SIGKILL, then
 # start a fresh attempt. Retries are unbounded -- the enclosing
-# GitHub Actions job's `timeout-minutes` is the real bound.
+# GitHub Actions step's (or, absent one, job's) `timeout-minutes` is
+# the real bound, so give every step that calls this script one.
 #
 # See https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables
 # for the HF_XET_* documentation, and npm/cli#7308's pattern (silent
@@ -35,7 +36,7 @@ REPO="${1:?usage: hf-download-with-retry.sh REPO FILE [LOCAL_DIR]}"
 FILE="${2:?usage: hf-download-with-retry.sh REPO FILE [LOCAL_DIR]}"
 # LOCAL_DIR is optional. If empty, hf falls back to HF_HUB_CACHE
 # (~/.cache/huggingface/hub) which is the desired path for callers
-# that populate HF_HOME for a downstream Studio model load.
+# that populate HF_HOME for a downstream Unsloth model load.
 LOCAL_DIR="${3:-}"
 
 # Stall threshold per attempt, in seconds. Override with

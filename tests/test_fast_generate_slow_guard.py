@@ -13,7 +13,7 @@ UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
 
 
 def _load_factory():
-    src = open(UTILS).read()
+    src = open(UTILS, encoding = "utf-8").read()
     for node in ast.parse(src).body:
         if isinstance(node, ast.FunctionDef) and node.name == "make_fast_generate_wrapper":
             ns = {"functools": functools}

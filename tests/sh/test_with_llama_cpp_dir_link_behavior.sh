@@ -37,6 +37,7 @@ case "$block" in *'_has_local_llama_server'*) : ;;
 PREAMBLE='
 set -u
 step() { :; }; substep() { :; }; verbose_substep() { :; }
+setup_fail() { exit "$1"; }
 _assert_studio_owned_or_absent() { :; }
 C_ERR=""
 _STUDIO_HOME_IS_CUSTOM=false

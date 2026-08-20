@@ -13,6 +13,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import openai_chat_completions
 from core.inference.api_monitor import ApiMonitor
@@ -95,7 +97,7 @@ class _ScriptedBackend:
         for snap in snapshots:
             yield snap
 
-    def reset_generation_state(self):
+    def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
 
 
@@ -175,6 +177,15 @@ def _sse_objects(chunks):
 
 
 # ── Non-streaming ─────────────────────────────────────────────────
+
+
+def test_non_reasoning_backend_keeps_literal_think_tags(monkeypatch):
+    backend = _ScriptedBackend(_fixed("show <think>example</think> tags"))
+    response = _call(_request(stream = False), monkeypatch, backend, supports_tools = False)
+
+    message = _json_body(response)["choices"][0]["message"]
+    assert message["content"] == "show <think>example</think> tags"
+    assert message["reasoning_content"] is None
 
 
 def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
@@ -353,6 +364,58 @@ def test_usage_recorded_when_stats_present(monkeypatch):
     assert entry["completion_tokens"] == 3
 
 
+class _ToolLoopBackend(_ScriptedBackend):
+    """Server-side tool loop: the event stream the GGUF loop also emits."""
+
+    def generate_chat_completion_with_tools(
+        self,
+        *,
+        messages,
+        tools = None,
+        stats_holder = None,
+        **kwargs,
+    ):
+        self.calls.append({"messages": messages, "tools": tools, **kwargs})
+        if stats_holder is not None and self._stats is not None:
+            stats_holder["stats"] = self._stats
+        yield {"type": "content", "text": "done"}
+
+
+@pytest.mark.parametrize(
+    "kind, stream, expected",
+    [
+        ("plain", True, "stop"),
+        ("plain", False, "stop"),
+        ("healed", True, "tool_calls"),
+        ("healed", False, "tool_calls"),
+        ("tool_loop", True, "stop"),
+        ("tool_loop", False, "stop"),
+    ],
+)
+def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, expected):
+    # last_generation_stats is MLX-only, so a transformers generation leaves
+    # stats_holder empty; the stop reason must not ride along with it.
+    if kind == "tool_loop":
+        backend = _ToolLoopBackend(_fixed("done"))
+        payload = _request(stream = stream, enable_tools = True)
+    elif kind == "healed":
+        backend = _ScriptedBackend(_fixed(_CALL_XML))
+        payload = _request(stream = stream, tools = [LOOKUP_TOOL])
+    else:
+        backend = _ScriptedBackend(_fixed("plain answer"))
+        payload = _request(stream = stream)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    response = asyncio.run(_run())
+    if stream:
+        _collect_sse(response)
+    [entry] = monitor.snapshot()
+    assert entry["stop_reason"] == expected
+
+
 # ── Nudge ─────────────────────────────────────────────────────────
 
 
@@ -483,6 +546,52 @@ def test_streaming_no_tools_verbatim(monkeypatch):
         if o["choices"] and o["choices"][0].get("finish_reason")
     ]
     assert finishes == ["stop"]
+
+
+def test_streaming_gen_stream_error_is_not_model_text(monkeypatch):
+    from core.inference.orchestrator import GenStreamError
+
+    class _ErrorAfterPartial(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed())
+
+        def generate_chat_response(self, **_kwargs):
+            yield "<think>partial"
+            yield GenStreamError("Error: /tmp/secret traceback")
+
+    backend = _ErrorAfterPartial()
+    payload = _request(stream = True)
+    response = _call(payload, monkeypatch, backend, supports_tools = False)
+    chunks = _collect_sse(response)
+    objs = _sse_objects(chunks)
+
+    deltas = [o.get("choices", [{}])[0].get("delta", {}) for o in objs if o.get("choices")]
+    assert any("partial" in json.dumps(delta) for delta in deltas)
+    assert not any("/tmp/secret" in json.dumps(delta) for delta in deltas)
+    errors = [o["error"]["message"] for o in objs if "error" in o]
+    assert errors == ["An internal error occurred."]
+    assert any(
+        "data: [DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk)
+        for chunk in chunks
+    )
+
+
+def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
+    class _InvalidEventBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed())
+
+        def generate_chat_completion_with_tools(self, **_kwargs):
+            yield {"type": "content", "text": "partial"}
+            yield "not-an-event"
+
+    backend = _InvalidEventBackend()
+    payload = _request(tools = [LOOKUP_TOOL], enable_tools = True, stream = True)
+    response = _call(payload, monkeypatch, backend)
+    objs = _sse_objects(_collect_sse(response))
+
+    errors = [o["error"]["message"] for o in objs if "error" in o]
+    assert errors == ["An internal error occurred."]
 
 
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):

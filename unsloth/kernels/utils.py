@@ -29,6 +29,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear
 import functools
 
@@ -133,11 +134,35 @@ def calculate_settings(
 
 
 HAS_CUDA_STREAM = False
-import bitsandbytes as bnb
+try:
+    import bitsandbytes as bnb
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+    # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only
+    # the parent from sys.modules and keeps its submodules, so this retry re-executes
+    # __init__ without rebinding `bnb.functional`. `import x.y as z` reads sys.modules
+    # directly and survives that, plain attribute access does not.
+    import bitsandbytes.functional as bnb_functional
+except Exception:
+    # device_type.py already degrades to 16bit/full finetuning when bnb is missing
+    # (e.g. gfx906, whose generic wheel has no kernels). Keep the import working and
+    # fail only if a 4bit path is actually entered.
+    bnb = None
+    bnb_functional = None
+
+
+def _bnb_required(*args, **kwargs):
+    raise RuntimeError(
+        "Unsloth: 4bit QLoRA needs `bitsandbytes`, which is not installed. "
+        "16bit LoRA and full finetuning work without it."
+    )
+
+
+if bnb is not None:
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb_functional.get_ptr
+else:
+    get_ptr = _bnb_required
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
@@ -235,18 +260,28 @@ else:
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
-
-if DEVICE_TYPE == "xpu":
-    # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
-    # for xpu, inference gemv using above link
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+# Same verdict device_type.py used to clear ALLOW_BITSANDBYTES, applied to the binds
+# themselves. 0.45.5 leaves `functional.lib = None` when the native library fails to
+# load, so these lookups would kill `import unsloth` instead of degrading to 16bit.
+if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
+    cdequantize_blockwise_fp32 = _bnb_required
+    cdequantize_blockwise_fp16_nf4 = _bnb_required
+    cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cgemm_4bit_inference_naive_fp16 = _bnb_required
+    cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+    cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4 = bnb_functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4 = bnb_functional.lib.cdequantize_blockwise_bf16_nf4
+
+    if DEVICE_TYPE == "xpu":
+        # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
+        # for xpu, inference gemv using above link
+        cgemm_4bit_inference_naive_fp16 = bnb_functional.lib.cgemv_4bit_inference_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb_functional.lib.cgemv_4bit_inference_bf16
+    else:
+        cgemm_4bit_inference_naive_fp16 = bnb_functional.lib.cgemm_4bit_inference_naive_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb_functional.lib.cgemm_4bit_inference_naive_bf16
 
 
 torch_device_stream = (
@@ -325,7 +360,10 @@ def get_lora_parameters(proj):
     if getattr(base_layer, "quant_method", None) == "fp8":
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, "block_size", [128, 128])
-        W_quant.block_size = W.block_size
+        # A decompressed compressed-tensors layer keeps quant_method == "fp8" while its
+        # weight is back to bf16, so it has no quant state to carry the block size.
+        if W_quant is not None:
+            W_quant.block_size = W.block_size
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
@@ -375,14 +413,17 @@ def get_lora_parameters_bias(proj):
         if W_quant is None:
             W_quant = getattr(base_layer, "weight_scale", None)
 
-    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
-    if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, W_quant, None, None, None, base_layer.bias
-
     if getattr(base_layer, "quant_method", None) == "fp8":
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, "block_size", [128, 128])
-        W_quant.block_size = W.block_size
+        # A decompressed compressed-tensors layer keeps quant_method == "fp8" while its
+        # weight is back to bf16, so it has no quant state to carry the block size.
+        if W_quant is not None:
+            W_quant.block_size = W.block_size
+
+    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    if getattr(proj, "disable_adapters", True) or proj.merged:
+        return W, W_quant, None, None, None, base_layer.bias
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:

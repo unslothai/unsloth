@@ -69,6 +69,7 @@ export function serializeConfigToYaml(
     target_modules: state.targetModules,
     use_rslora: state.loraVariant === "rslora",
     use_loftq: state.loraVariant === "loftq",
+    use_dora: state.loraVariant === "dora",
   };
 
   if (includeVisionFields) {
@@ -82,6 +83,7 @@ export function serializeConfigToYaml(
     max_seq_length: state.contextLength,
     num_epochs: state.epochs,
     learning_rate: state.learningRate,
+    embedding_learning_rate: state.embeddingLearningRate,
     batch_size: state.batchSize,
     gradient_accumulation_steps: state.gradientAccumulation,
     warmup_steps: state.warmupSteps,
@@ -104,6 +106,14 @@ export function serializeConfigToYaml(
   const config = {
     training,
     lora,
+    // Include every non-secret logging field read by parseYamlConfig.
+    logging: {
+      enable_wandb: state.enableWandb,
+      wandb_project: state.wandbProject,
+      enable_tensorboard: state.enableTensorboard,
+      tensorboard_dir: state.tensorboardDir,
+      log_frequency: state.logFrequency,
+    },
   };
 
   return yaml.dump(config, { lineWidth: -1, noRefs: true });

@@ -25,6 +25,79 @@ from routes.inference import (
     _strip_tool_xml_for_display,
 )
 
+import importlib  # noqa: E402
+import types  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper and reason as test_audio_type_inconclusive.py and
+    test_trainer_stdout_quiet.py: ``core.inference.inference`` imports ``unsloth``
+    (and through it ``unsloth_zoo``) at module scope, while the pytest matrix in
+    studio-backend-ci.yml installs studio.txt plus torch and transformers and
+    deliberately stops there. A real install is left alone.
+
+    This file used to have no stub at all. The three tests below reach
+    ``core.inference.inference`` through ``pytest.importorskip`` inside the test
+    body, which is lazy enough that the module-scope guard in
+    test_backend_tests_stub_heavy_imports.py does not look at it, so the omission
+    was invisible. They passed anyway, because some earlier file in the same
+    session had installed this stub and left the imported module in
+    ``sys.modules`` for them. Run this file first, or on its own, and the import
+    raises ``ImportError: Please install unsloth_zoo``, which pytest 8.2+ no
+    longer converts to a skip (only ``ModuleNotFoundError`` does that), so it is
+    a hard failure rather than the intended skip.
+
+    Stubbing here rather than switching to skipif keeps the coverage: the module
+    under test is the real ``core.inference.inference``, and only ``unsloth``
+    itself is faked.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+# Build the module while the stubs are live, then drop them, exactly as
+# test_audio_type_inconclusive.py does. The three tests below reach this through
+# pytest.importorskip and get it from sys.modules, so the stubs only have to exist
+# for this one import.
+#
+# Dropping them is not tidiness. A stub left in sys.modules is a cross-file leak:
+# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
+# nobody does it, and every other file's _stub_if_missing returns early when the name
+# is already present, so its own bookkeeping never runs and its cleanup has nothing to
+# undo. Leaving them installed traded this file's order dependency for a worse one.
+_EAGER_IMPORT_ERROR: str | None = None
+try:
+    import core.inference.inference  # noqa: E402,F401
+except ImportError as _error:  # recorded, not swallowed; see the test at the bottom
+    _EAGER_IMPORT_ERROR = f"{type(_error).__name__}: {_error}"
+
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
 
 _THINK_TPL = "...<think>...</think>..."
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
@@ -215,3 +288,206 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
     swallowed = _replay_sf_reasoning_stream(events, prefilled = True)
     assert swallowed["visible"] == ""
     assert swallowed["reasoning"] == "The capital of France is Paris."
+
+
+def test_native_reasoning_streamer_selected_and_errors_raise():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tok:
+        chat_template = "<|channel>thought\n...<channel|>"
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+        pieces = {10: "<|channel>thought\n", 11: "r", 12: "<channel|>", 13: "a"}
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+        def decode(self, ids, **_kwargs):
+            return "".join(self.pieces.get(int(token_id), "") for token_id in ids)
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def __init__(self, fail = False):
+            self.fail = fail
+            self.kwargs = None
+
+        def generate(self, **kwargs):
+            self.kwargs = kwargs
+            streamer = kwargs["streamer"]
+            streamer.put(torch.zeros((1, 1), dtype = torch.long))
+            for token_id in [10, 11, 12, 13]:
+                streamer.put(torch.tensor([token_id]))
+                if self.fail:
+                    raise RuntimeError("boom")
+
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "gemma-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
+
+    assert list(backend.generate_stream("prompt", max_new_tokens = 4))[-1] == "<think>r</think>a"
+
+    backend.models["gemma-test"]["model"] = Model(fail = True)
+
+    with pytest.raises(inf._GenerationThreadError, match = "boom"):
+        list(backend.generate_stream("prompt", max_new_tokens = 4))
+
+
+def test_native_reasoning_streamer_starts_inside_prompt_opened_channel():
+    """A post-tool prompt opens the channel, so generation emits only its close."""
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tok:
+        chat_template = "<|channel>thought\n...<channel|>"
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+        pieces = {11: "reasoned", 12: "<channel|>", 13: "answer"}
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+        def decode(self, ids, **_kwargs):
+            return "".join(self.pieces.get(int(token_id), "") for token_id in ids)
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def generate(self, **kwargs):
+            streamer = kwargs["streamer"]
+            streamer.put(torch.zeros((1, 1), dtype = torch.long))
+            for token_id in [11, 12, 13]:
+                streamer.put(torch.tensor([token_id]))
+
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "gemma-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
+
+    post_tool_prompt = "<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
+    assert list(backend.generate_stream(post_tool_prompt, max_new_tokens = 4))[-1] == (
+        "<think>reasoned</think>answer"
+    )
+
+
+def test_text_only_vlm_fallback_resolves_native_markers_off():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tokenizer:
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+    class Processor:
+        chat_template = "<|channel>thought\n...<channel|>"
+        tokenizer = Tokenizer()
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def generate(self, **_kwargs):
+            return None
+
+    class EmptyStreamer:
+        def __next__(self):
+            raise StopIteration
+
+        def end(self):
+            return None
+
+    captured = {}
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "vision-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {
+        "vision-test": {
+            "model": Model(),
+            "processor": Processor(),
+            "tokenizer": Processor(),
+        }
+    }
+    backend.format_chat_prompt = lambda *_args, **_kwargs: "manual text-only prompt"
+
+    def make_streamer(*_args, **kwargs):
+        captured.update(kwargs)
+        return EmptyStreamer()
+
+    backend._make_text_streamer = make_streamer
+
+    assert (
+        list(
+            backend._generate_vision_response(
+                messages = [{"role": "user", "content": "hello"}],
+                system_prompt = "",
+                image = None,
+                temperature = 0.7,
+                top_p = 0.9,
+                top_k = 40,
+                min_p = 0.0,
+                max_new_tokens = 1,
+                repetition_penalty = 1.0,
+            )
+        )
+        == []
+    )
+    assert captured["reasoning_channel_markers"] is None
+    assert captured["reasoning_channel_markers_resolved"] is True
+    # No markers on this branch, so this pins forwarding only.
+    assert captured["prompt"] == "manual text-only prompt"
+
+
+def test_the_eager_import_under_the_stubs_actually_succeeded():
+    """A failed eager import turns the three importorskip tests into silent skips.
+
+    They resolve out of ``sys.modules``, so if the import above did not put
+    ``core.inference.inference`` there, ``importorskip`` finds the dependency
+    genuinely missing and skips. The job stays green while a third of this file
+    stops running, which is how the missing ``peft`` stub went unnoticed: 10 passed
+    and 3 skipped on the matrix, reported as success.
+
+    So the swallow records the error instead of dropping it, and this reads it back.
+    A module-scope dependency added to core/inference/inference.py that the backend
+    job does not install fails here by name rather than quietly reducing coverage.
+    """
+    assert _EAGER_IMPORT_ERROR is None, (
+        f"the eager import of core.inference.inference failed ({_EAGER_IMPORT_ERROR}), so the "
+        f"importorskip tests in this file skip instead of running. Install what it names in "
+        f"the backend job's extras, or stub it above the import where a stub is safe (it is "
+        f"not for anything transformers probes with importlib.util.find_spec)."
+    )
+    assert "core.inference.inference" in sys.modules

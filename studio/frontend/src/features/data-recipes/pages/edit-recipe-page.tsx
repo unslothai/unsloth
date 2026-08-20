@@ -29,7 +29,7 @@ function RecipeLoadState({
 }): ReactElement {
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center px-6 py-8">
+      <main className="mx-auto flex min-h-[70dvh] w-full max-w-4xl items-center justify-center px-6 py-8">
         <div className="w-full rounded-2xl border bg-card p-8 text-center">
           <h1 className="text-lg font-semibold">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>

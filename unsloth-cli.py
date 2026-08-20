@@ -12,7 +12,7 @@ Usage (most options have sensible defaults; this is an extended example):
     --random_state 3407 --use_rslora --per_device_train_batch_size 4 --gradient_accumulation_steps 8 \
     --warmup_steps 5 --max_steps 400 --learning_rate 2e-6 --logging_steps 1 --optim "adamw_8bit" \
     --weight_decay 0.005 --lr_scheduler_type "linear" --seed 3407 --output_dir "outputs" \
-    --report_to "tensorboard" --save_model --save_path "model" --quantization_method "f16" \
+    --report_to "tensorboard" --save_model --save_path "model" --quantization "f16" \
     --push_model --hub_path "hf/model" --hub_token "your_hf_token"
 
 Run `python unsloth-cli.py --help` for the full list of options.
@@ -189,6 +189,10 @@ def run(args):
 
     is_mlx = _is_mlx_backend(unsloth)
 
+    # MLX routes get_peft_model to FastMLXModel, which ignores use_dora (plain LoRA).
+    if args.use_dora and is_mlx:
+        raise NotImplementedError("DoRA is not supported for MLX training yet.")
+
     # Load model and tokenizer
     device_map, distributed = _prepare_device_map(is_mlx)
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -219,6 +223,7 @@ def run(args):
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
+        use_dora = args.use_dora,
     )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -373,6 +378,11 @@ if __name__ == "__main__":
         type = str,
         default = None,
         help = "Configuration for LoftQ",
+    )
+    lora_group.add_argument(
+        "--use_dora",
+        action = "store_true",
+        help = "Use DoRA (Weight-Decomposed LoRA)",
     )
 
     training_group = parser.add_argument_group("🎓 Training Options")

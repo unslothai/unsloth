@@ -3,7 +3,7 @@
 
 """Wiring guard for the plan-without-action ``nudge_tool_calls`` policy.
 
-Decided policy: the re-prompt is ALWAYS ON for the Studio inference paths
+Decided policy: the re-prompt is ALWAYS ON for the Unsloth inference paths
 (safetensors, GGUF/llama_cpp, MLX) and OPT-IN for the API (/v1 OpenAI-compat +
 Anthropic-compat, controlled by the request's ``nudge_tool_calls``, default off).
 
@@ -16,7 +16,7 @@ Mechanism (verified here without loading a model):
     opt-in), while the GGUF loop keeps its pre-existing default-on behaviour
     (``None`` keeps nudging) so an omitted flag never disables GGUF;
   * the API request models default the flag to ``None`` (opt-in / off);
-  * the Studio-facing routes forward the request's flag, and the Studio frontend
+  * the Unsloth-facing routes forward the request's flag, and the Unsloth frontend
     sends ``nudge_tool_calls: true`` -- exercised behaviourally in
     ``test_safetensors_tool_loop.py`` and ``test_llama_cpp_tool_loop.py``.
 """
@@ -87,7 +87,7 @@ def test_api_request_models_default_the_flag_off():
 
 
 def test_studio_routes_forward_the_request_flag():
-    # The Studio chat frontend posts to /v1/chat/completions and /v1/messages
+    # The Unsloth chat frontend posts to /v1/chat/completions and /v1/messages
     # with nudge_tool_calls=true; the route handlers forward the request value
     # (external API clients that omit it fall back to the opt-in default).
     from routes import inference as routes_inference

@@ -6,7 +6,7 @@
 
 Downloads an official Node.js archive from nodejs.org into an isolated
 ``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
-LTS clears the Studio frontend build floor (Vite 8: Node ^20.19 || >=22.12,
+LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
 
 Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
@@ -535,7 +535,9 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 break
             except FileExistsError:
                 try:
-                    raw = lock_path.read_text().strip()
+                    # errors="replace" so an undecodable lock reaches the int()
+                    # below and is treated as a stale PID, not retried forever.
+                    raw = lock_path.read_text(encoding = "utf-8", errors = "replace").strip()
                 except FileNotFoundError:
                     continue
                 stale = False
@@ -660,7 +662,7 @@ def write_metadata(install_dir: Path, *, version: str, asset: str, sha256: str) 
         "asset": asset,
         "sha256": sha256,
     }
-    metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n")
+    metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
 
 
 def load_metadata(install_dir: Path) -> dict | None:
@@ -668,8 +670,8 @@ def load_metadata(install_dir: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -705,18 +707,55 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
+def _replace_with_retry(
+    src: Path,
+    dst: Path,
+    *,
+    attempts: int = 8,
+) -> None:
+    """os.replace, retried against transient Windows sharing violations.
+
+    A directory rename fails with WinError 5/32 while any process holds a handle inside
+    it, and Defender or the indexer routinely does right after extraction (seen in CI on
+    a fresh install, with no existing directory to conflict with). Handles clear in a
+    second or two, so a bounded backoff turns the failure into a pause; other errors
+    raise immediately rather than stalling on a real problem.
+    """
+    delay = 0.25
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            if not transient or attempt == attempts - 1:
+                raise
+            log(
+                f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
+                f"-- a scanner is likely still holding the extracted files"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
+
+
 def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     """Atomically replace install_dir with extracted_root (same filesystem)."""
     install_dir.parent.mkdir(parents = True, exist_ok = True)
     backup: Path | None = None
     if install_dir.exists():
         backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
-        os.replace(install_dir, backup)
+        _replace_with_retry(install_dir, backup)
     try:
-        os.replace(extracted_root, install_dir)
+        _replace_with_retry(extracted_root, install_dir)
     except OSError:
+        # The forward rename retries ~16s, ample time for a scanner to grab the backup too.
+        # A plain os.replace would then raise over the original error and leave no
+        # install_dir at all, so the rollback gets the same backoff and never masks it.
         if backup is not None and not install_dir.exists():
-            os.replace(backup, install_dir)
+            try:
+                _replace_with_retry(backup, install_dir)
+            except OSError as rollback_exc:
+                log(f"could not restore the previous Node install from {backup}: {rollback_exc}")
         raise
     if backup is not None:
         shutil.rmtree(backup, ignore_errors = True)
