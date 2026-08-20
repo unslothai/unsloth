@@ -10,13 +10,28 @@ import type {
 } from "@streamdown/code";
 import {
   type BundledLanguage,
+  type GrammarState,
+  type ThemedToken,
   bundledLanguages,
   bundledLanguagesInfo,
   createHighlighter,
-  type GrammarState,
-  type ThemedToken,
 } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import type { CodeHighlightGate } from "./code-highlight-gate";
+
+/**
+ * The attribute the plugin stamps on a gated block's first token span.
+ *
+ * The plugin is handed `{code, language, themes}` and nothing else -- no element, no ref, no key --
+ * so it cannot ask where a block is, and a viewport gate has to be told. Streamdown spreads a
+ * token's `htmlAttrs` onto the span it renders, which is the one channel from this layer into the
+ * DOM, so the block's gate id rides out on its first token and a binder can find the element by
+ * `[data-code-fence="..."]`. Only stamped when a gate is present: with the flag off no attribute
+ * is emitted at all.
+ */
+export const CODE_FENCE_ATTRIBUTE = "data-code-fence";
+
+let nextFenceId = 0;
 
 // Common fence tags shiki doesn't expose as aliases.
 // Keys: lower-cased input; values: canonical shiki language ids.
@@ -92,9 +107,30 @@ type ThemeNames = { light: string; dark: string };
 type HighlightCallback = (result: HighlightResult) => void;
 type Pending = { code: string; callbacks: Set<HighlightCallback> };
 
+type FenceContext = {
+  language: BundledLanguage;
+  themes: ThemeNames;
+};
+
 type Fence = {
   key: string;
   code: string;
+  /** Gate id, assigned on the first gated call. Empty while ungated. */
+  id: string;
+  /**
+   * Callbacks retained past the call that supplied them.
+   *
+   * Streamdown calls `highlight()` from an effect keyed on the code string, so a block that has
+   * stopped streaming calls in exactly ONCE and never again. Its `useState` setter is then the
+   * only way to change what it shows, which is what makes a later downgrade or re-highlight
+   * possible at all. The setter is referentially stable per mounted component, so this holds one
+   * entry per mounted block and is cleared when the fence is dropped.
+   */
+  subscribers: Set<HighlightCallback>;
+  /** The most recent code seen for this fence, which may be ahead of `code` while gated plain. */
+  live: string | null;
+  /** What a later re-highlight needs to call the tokenizer with. */
+  context: FenceContext | null;
   result: HighlightResult | null;
   meta: ResultMeta | null;
   /** Absolute-offset tokens for completed lines. */
@@ -111,6 +147,44 @@ type Fence = {
 // Tokens without colors preserve the previous plain-tail rendering.
 const plainLine = (content: string): TokenLine =>
   [{ content, offset: 0 } as unknown as ThemedToken] as TokenLine;
+
+/** The source text of one tokenized line. Shiki splits a line into runs, it does not alter it. */
+const lineText = (line: TokenLine): string =>
+  line.length === 1
+    ? line[0].content
+    : line.map((token) => token.content).join("");
+
+/**
+ * The same lines, with the colours taken off.
+ *
+ * Derived from the tokenized result rather than re-split from the source, so the plain rendering
+ * has the same NUMBER of lines and the same TEXT on each line as the highlighted one by
+ * construction. That is what makes the swap layout-neutral: `<pre>` does not wrap, so a block's
+ * height is its line count times its line height, and neither changes here.
+ */
+const plainTokens = (tokens: TokenLine[]): TokenLine[] =>
+  tokens.map((line) => plainLine(lineText(line)));
+
+/**
+ * Put `id` on the block's first rendered token.
+ *
+ * Skips lines the renderer turns into a bare newline (empty, or a single empty token), because
+ * those emit no span to carry it. A block with no such line -- an empty fence -- goes unstamped
+ * and is never located, which the gate reads as "not measured" and leaves highlighted.
+ */
+const stampFence = (result: HighlightResult, id: string): HighlightResult => {
+  const index = result.tokens.findIndex(
+    (line) => line.length > 0 && !(line.length === 1 && line[0].content === ""),
+  );
+  if (index < 0) return result;
+  const [first, ...rest] = result.tokens[index];
+  const tokens = [...result.tokens];
+  tokens[index] = [
+    { ...first, htmlAttrs: { ...first.htmlAttrs, [CODE_FENCE_ATTRIBUTE]: id } },
+    ...rest,
+  ] as TokenLine;
+  return { ...result, tokens };
+};
 
 const themeName = (theme: ThemeInput): string =>
   typeof theme === "string" ? theme : (theme.name ?? "custom");
@@ -161,19 +235,37 @@ const shedsClosingRun = (shorter: string, longer: string): boolean =>
   longer.startsWith(shorter) &&
   CLOSING_FENCE.test(longer.slice(shorter.length));
 
+export type StudioCodePluginOptions = CodePluginOptions & {
+  /**
+   * When supplied, blocks the gate reports as far from the viewport render plain.
+   *
+   * Optional on purpose: with no gate the plugin takes the exact path it always has, every return
+   * below is the object it always returned, and no attribute is stamped. That is the flag-off
+   * build.
+   */
+  gate?: CodeHighlightGate;
+};
+
 export function createCodePlugin(
-  options: CodePluginOptions = {},
+  options: StudioCodePluginOptions = {},
 ): CodeHighlighterPlugin {
   const defaultThemes: [ThemeInput, ThemeInput] = options.themes ?? [
     "github-light",
     "github-dark",
   ];
+  const gate = options.gate;
   const engine = createJavaScriptRegexEngine({ forgiving: true });
   const highlighters = new Map<string, { highlighter: Highlighter | null }>();
   // Most recently used first.
   const fences: Fence[] = [];
   // Avoid scanning every fence for exact cache hits.
   const fencesByCode = new Map<string, Fence>();
+  // Gated fences only, so a gate notification can find the block it names.
+  const fencesById = new Map<string, Fence>();
+  // Which fence currently owns each retained callback. A block whose code changes enough to start
+  // a new fence must not be left subscribed to the old one, or a stale result can arrive last and
+  // overwrite a newer one -- streamdown does no cancellation of its own.
+  const subscriberOwners = new Map<HighlightCallback, Fence>();
   let cachedCharacters = 0;
 
   // Avoid hashing the whole source on each update; verify compact-key hits.
@@ -203,11 +295,26 @@ export function createCodePlugin(
     if (callback) fence.pending.callbacks.add(callback);
   };
 
+  // Every result that leaves the plugin has to carry the stamp, not just the ones returned
+  // synchronously: a block whose grammar arrived late is delivered through here, and an unstamped
+  // delivery would erase the attribute that is how it gets located.
+  const deliver = (fence: Fence, result: HighlightResult): HighlightResult =>
+    gate === undefined || fence.id === ""
+      ? result
+      : stampFence(result, fence.id);
+
   const notifyPending = (
+    fence: Fence,
     pending: Pending,
     result: HighlightResult,
   ): void => {
-    for (const callback of pending.callbacks) callback(result);
+    for (const callback of pending.callbacks) callback(deliver(fence, result));
+  };
+
+  /** Push a result to every block that has this fence's content mounted. */
+  const publish = (fence: Fence, result: HighlightResult): void => {
+    for (const subscriber of fence.subscribers)
+      subscriber(deliver(fence, result));
   };
 
   const dropFence = (fence: Fence): void => {
@@ -217,6 +324,14 @@ export function createCodePlugin(
     cachedCharacters -= fence.code.length;
     dropCodeIndex(fence);
     clearTrailing(fence);
+    // Retained callbacks hold their component alive, so a dropped fence must let go of them.
+    for (const subscriber of fence.subscribers)
+      subscriberOwners.delete(subscriber);
+    fence.subscribers.clear();
+    if (fence.id !== "") {
+      fencesById.delete(fence.id);
+      gate?.forget(fence.id);
+    }
   };
 
   const evict = (): void => {
@@ -271,6 +386,10 @@ export function createCodePlugin(
     const fence: Fence = {
       key,
       code: "",
+      id: "",
+      subscribers: new Set(),
+      live: null,
+      context: null,
       result: null,
       meta: null,
       lines: [],
@@ -394,7 +513,7 @@ export function createCodePlugin(
       language,
       themes,
     );
-    if (refreshed) notifyPending(pending, refreshed);
+    if (refreshed) notifyPending(fence, pending, refreshed);
   };
 
   const loadHighlighter = (
@@ -428,31 +547,22 @@ export function createCodePlugin(
     return null;
   };
 
-  return {
-    name: "shiki",
-    type: "code-highlighter",
-    getSupportedLanguages: () => SUPPORTED_LANGUAGE_LIST,
-    getThemes: () => defaultThemes,
-    supportsLanguage: (language) =>
-      SUPPORTED_LANGUAGES.has(normalizeLanguage(language)),
-    highlight: (
-      opts: HighlightOptions,
-      callback?: (result: HighlightResult) => void,
-    ): HighlightResult | null => {
-      const language = normalizeLanguage(opts.language);
-      const themes: ThemeNames = {
-        light: themeName(opts.themes[0]),
-        dark: themeName(opts.themes[1]),
-      };
-      const key = `${language} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
-      const fence = findFence(key, opts.code);
-
+  /**
+   * The plugin's own path, unchanged. Everything the gate does happens around this, never inside
+   * it: with no gate, `highlight()` is this function and nothing else.
+   */
+  const resolve = (
+    fence: Fence,
+    opts: HighlightOptions,
+    callback: HighlightCallback | undefined,
+    key: string,
+    language: BundledLanguage,
+    themes: ThemeNames,
+  ): HighlightResult | null => {
+    {
       if (fence.result && fence.code === opts.code) {
         const pending = fence.pending;
-        if (
-          pending !== null &&
-          shedsClosingRun(opts.code, pending.code)
-        ) {
+        if (pending !== null && shedsClosingRun(opts.code, pending.code)) {
           // This may be one fence shedding its closing run or a shorter sibling
           // reusing the same entry. Settle the queued body before serving the
           // shorter exact hit so neither caller loses its final highlighted state.
@@ -466,16 +576,27 @@ export function createCodePlugin(
         return fence.result;
       }
 
-      const highlighter = loadHighlighter(key, language, opts.themes, (ready) => {
-        // Use a stable, oldest-first snapshot because updates can evict fences.
-        for (const waiting of [...fences].reverse()) {
-          const pending = waiting.pending;
-          if (waiting.key !== key || !pending) continue;
-          clearTrailing(waiting);
-          const resumed = update(waiting, ready, pending.code, language, themes);
-          if (resumed) notifyPending(pending, resumed);
-        }
-      });
+      const highlighter = loadHighlighter(
+        key,
+        language,
+        opts.themes,
+        (ready) => {
+          // Use a stable, oldest-first snapshot because updates can evict fences.
+          for (const waiting of [...fences].reverse()) {
+            const pending = waiting.pending;
+            if (waiting.key !== key || !pending) continue;
+            clearTrailing(waiting);
+            const resumed = update(
+              waiting,
+              ready,
+              pending.code,
+              language,
+              themes,
+            );
+            if (resumed) notifyPending(waiting, pending, resumed);
+          }
+        },
+      );
       if (!highlighter) {
         queuePending(fence, opts.code, callback);
         evict();
@@ -509,13 +630,111 @@ export function createCodePlugin(
               language,
               themes,
             );
-            if (refreshed) notifyPending(pending, refreshed);
+            if (refreshed) notifyPending(fence, pending, refreshed);
           },
           Math.max(0, REFRESH_MS - elapsed),
         );
         return result;
       }
       return update(fence, highlighter, opts.code, language, themes);
+    }
+  };
+
+  // A gate notification names one block. Turn it into that block's new rendering.
+  gate?.subscribe((id) => {
+    const fence = fencesById.get(id);
+    const code = fence?.live;
+    if (!fence || code === null || code === undefined) return;
+    if (fence.subscribers.size === 0) return;
+    if (gate.mode(id) === "plain") {
+      // Downgrade only a block that HAS a highlighted result: `plainTokens` reads its line
+      // structure off that result, which is what guarantees the two renderings are the same
+      // height. Until then the block is highlighted, which is also what the gate reports for a
+      // block it has never located.
+      const exact = fence.result;
+      if (exact === null || fence.code !== code) return;
+      publish(fence, { ...exact, tokens: plainTokens(exact.tokens) });
+      return;
+    }
+    const context = fence.context;
+    const highlighter = highlighters.get(fence.key)?.highlighter;
+    if (!context || !highlighter) return;
+    // Back inside the buffer. `update` tokenizes from `committedLength`, so a block that grew
+    // while it was plain costs only its uncommitted tail, and the incremental caches that the
+    // streaming path depends on are the ones being reused here.
+    const refreshed = update(
+      fence,
+      highlighter,
+      code,
+      context.language,
+      context.themes,
+    );
+    if (refreshed) publish(fence, refreshed);
+  });
+
+  return {
+    name: "shiki",
+    type: "code-highlighter",
+    getSupportedLanguages: () => SUPPORTED_LANGUAGE_LIST,
+    getThemes: () => defaultThemes,
+    supportsLanguage: (language) =>
+      SUPPORTED_LANGUAGES.has(normalizeLanguage(language)),
+    highlight: (
+      opts: HighlightOptions,
+      callback?: (result: HighlightResult) => void,
+    ): HighlightResult | null => {
+      const language = normalizeLanguage(opts.language);
+      const themes: ThemeNames = {
+        light: themeName(opts.themes[0]),
+        dark: themeName(opts.themes[1]),
+      };
+      const key = `${language} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
+      const fence = findFence(key, opts.code);
+      if (gate === undefined)
+        return resolve(fence, opts, callback, key, language, themes);
+
+      if (fence.id === "") {
+        fence.id = `sf${nextFenceId++}`;
+        fencesById.set(fence.id, fence);
+      }
+      if (callback) {
+        const previous = subscriberOwners.get(callback);
+        if (previous !== fence) {
+          previous?.subscribers.delete(callback);
+          subscriberOwners.set(callback, fence);
+          fence.subscribers.add(callback);
+        }
+      }
+      fence.context = { language, themes };
+      // Growth from code this fence has ALREADY seen is the only streaming signal available here,
+      // and it has to be recorded before the mode is read: a block still being streamed into is in
+      // view by definition and must not be handed a plain rendering on the frame its next chunk
+      // lands. A block arriving complete is not a stream -- treating a first sighting as growth
+      // would hold every block in a freshly mounted thread highlighted for the whole grace window,
+      // which is exactly the thread this mechanism is for.
+      const streamed =
+        fence.live !== null && opts.code.length > fence.live.length;
+      fence.live = opts.code;
+      if (streamed) gate.markStreaming(fence.id);
+
+      if (
+        gate.mode(fence.id) === "plain" &&
+        fence.result !== null &&
+        fence.code === opts.code
+      ) {
+        return deliver(fence, {
+          ...fence.result,
+          tokens: plainTokens(fence.result.tokens),
+        });
+      }
+      const result = resolve(fence, opts, callback, key, language, themes);
+      if (result === null) return null;
+      // The element does not exist until this result has been rendered, so this is the earliest
+      // anything can go and measure it. Every block is therefore highlighted once and downgraded
+      // afterwards, never plain on arrival -- which is the right trade here, because the cost
+      // being removed is the standing presence of the spans and not the work of building them.
+      gate.announce(fence.id);
+      return deliver(fence, result);
     },
   };
 }

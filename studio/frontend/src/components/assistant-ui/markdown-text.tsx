@@ -40,7 +40,10 @@ import {
   Streamdown,
   type StreamdownProps,
 } from "streamdown";
+import { createCodeHighlightGate } from "./code-highlight-gate";
+import { bindCodeHighlightViewport } from "./code-highlight-viewport";
 import { createCodePlugin } from "./code-plugin";
+import { VIEWPORT_GATED_CODE_HIGHLIGHTING_ENABLED } from "./thread-feature-flags";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
@@ -51,8 +54,17 @@ import {
 } from "./streaming-render-schedule";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
+// Off by default. With the flag false no gate is built, so `createCodePlugin` takes the exact
+// path it always has and nothing is stamped into the DOM.
+const codeHighlightGate = VIEWPORT_GATED_CODE_HIGHLIGHTING_ENABLED
+  ? createCodeHighlightGate()
+  : undefined;
+if (codeHighlightGate && typeof document !== "undefined") {
+  bindCodeHighlightViewport(codeHighlightGate);
+}
 const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
+  gate: codeHighlightGate,
 });
 const STREAMDOWN_PLUGINS = { code, math, mermaid } satisfies NonNullable<
   StreamdownProps["plugins"]
