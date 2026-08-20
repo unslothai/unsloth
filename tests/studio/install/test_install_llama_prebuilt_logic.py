@@ -821,8 +821,8 @@ def test_activate_install_tree_keeps_rollback_when_restore_fails(
         return original_replace(src, dst)
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
-    # The rename is retried by a copy, so the retention path is only reached
-    # once the copy is out of the running too (no space, no permission).
+    # A failed rename is retried by a copy, so retention is only reached once
+    # the copy is out of the running too (no space, no permission).
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT.shutil,
         "copytree",
@@ -879,8 +879,7 @@ def test_activate_install_tree_copies_previous_install_back_when_restore_rename_
     with pytest.raises(PrebuiltFallback, match = "activation failed; restored previous install"):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
-    # A rollback path nothing can read is not a working llama.cpp, so a copy is
-    # attempted before giving up on the install path itself.
+    # A copy is attempted before giving up on the install path itself.
     assert (install_dir / "old.txt").read_text() == "old install\n"
     assert not (install_dir / "new.txt").exists()
     assert not staging_dir.exists()
@@ -926,8 +925,8 @@ def test_activate_install_tree_does_not_follow_a_symlink_out_of_the_install(
     with pytest.raises(PrebuiltFallback):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
-    # Every removal and the copy fallback have to treat the link as a link; a
-    # single dereference here would wipe a directory outside the install.
+    # Every removal and the copy fallback must treat the link as a link; one
+    # dereference would wipe a directory outside the install.
     assert (outside / "precious.txt").read_text() == "precious\n"
     assert (install_dir / "link-out").is_symlink()
     assert (install_dir / "old.txt").read_text() == "old install\n"
@@ -1039,8 +1038,8 @@ def test_activate_install_tree_leaves_a_symlinked_install_target_intact(
 
     activate_install_tree(staging_dir, install_dir, linux_host())
 
-    # The link is renamed aside as a link, so the tree it pointed at, which
-    # lives outside anything this installer owns, must come through untouched.
+    # The link is renamed aside as a link, so the tree it points at, outside
+    # anything this installer owns, must come through untouched.
     assert (install_dir / "new.txt").read_text() == "new install\n"
     assert (target / "old.txt").read_text() == "old install\n"
     assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
@@ -1068,7 +1067,7 @@ def test_successful_activation_reclaims_side_paths_from_earlier_failed_updates(
     activate_install_tree(staging_dir, install_dir, linux_host())
 
     # A confirmed install is the one moment where a retained copy is provably
-    # not the last one, so this is where the accumulated trees are reclaimed.
+    # not the last one, so that is where accumulated trees are reclaimed.
     assert (install_dir / "new.txt").read_text() == "new install\n"
     assert not stranded.exists()
     assert not stale_failed.exists()
@@ -1142,8 +1141,8 @@ def test_repeated_retention_keeps_exactly_one_previous_install(
             activate_install_tree(staging_dir, install_dir, linux_host())
         monkeypatch.undo()
 
-    # Each retained tree supersedes the last, so a machine that keeps failing
-    # parks one copy rather than one copy per attempt.
+    # Each retained tree supersedes the last, so repeated failure parks one
+    # copy rather than one per attempt.
     rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
     assert len(rollbacks) == 1
     assert (rollbacks[0] / "old.txt").read_text() == "install 2\n"
@@ -1190,9 +1189,9 @@ def test_retention_does_not_copy_a_linked_previous_install(
     with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
-    # copytree follows its source root even with symlinks = True, so a linked
-    # install must never be copied: that would replace the user's own checkout
-    # link with a real duplicate of a tree the installer does not own.
+    # copytree follows its source root even with symlinks = True, so copying a
+    # linked install would replace the user's own checkout link with a real
+    # duplicate of a tree the installer does not own.
     assert copied == []
     assert (target / "old.txt").read_text() == "user build\n"
     assert not (target / "new.txt").exists()
@@ -1200,8 +1199,8 @@ def test_retention_does_not_copy_a_linked_previous_install(
 
 
 def test_prune_stale_install_side_paths_ignores_another_installs_side_paths(tmp_path: Path):
-    # An install directory name reaches this code from UNSLOTH_LLAMA_CPP_PATH,
-    # so a glob metacharacter in it must not reach through to a sibling.
+    # The install directory name comes from UNSLOTH_LLAMA_CPP_PATH, so a glob
+    # metacharacter in it must not reach through to a sibling.
     bracketed = tmp_path / "llama[1].cpp"
     bracketed.mkdir()
     sibling = tmp_path / "llama1.cpp"
@@ -1217,12 +1216,11 @@ def test_prune_stale_install_side_paths_ignores_another_installs_side_paths(tmp_
 
 def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path(tmp_path: Path):
     # Two installs in one parent share a .staging root but hold *different*
-    # locks, because install_lock_path keys on the directory name. glob.escape
-    # only neutralises * ? and [, so it cannot stop "<name>.rollback-*" from
-    # running past the end of <name> into a sibling called
-    # "<name>.rollback-special": a successful update of the first install would
-    # delete that install's retained rollback tree, possibly the only copy of it
-    # left, along with its live staging dir.
+    # locks, since install_lock_path keys on the directory name. glob.escape
+    # only neutralises * ? and [, so "<name>.rollback-*" can still run past the
+    # end of <name> into a sibling called "<name>.rollback-special": updating
+    # the first install would delete that sibling's retained rollback tree,
+    # possibly its last copy, along with its live staging dir.
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     sibling = tmp_path / "llama.cpp.rollback-special"
@@ -1243,7 +1241,7 @@ def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path
     sibling_live_staging = staging_root / "llama.cpp.rollback-special.staging-abcd1234"
     sibling_live_staging.mkdir()
 
-    # The install still reclaims its own retained copies, counter form included.
+    # Its own retained copies are still reclaimed, counter form included.
     assert prune_stale_install_side_paths(install_dir) == 2
     assert not own_stale.exists()
     assert not own_stale_with_counter.exists()
@@ -1253,7 +1251,7 @@ def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path
     assert sibling_failed.exists()
     assert sibling_live_staging.exists()
 
-    # And the sibling can still reclaim its own, without touching its staging dir.
+    # And the sibling reclaims its own, without touching its staging dir.
     assert prune_stale_install_side_paths(sibling) == 2
     assert not sibling_sole_copy.exists()
     assert not sibling_failed.exists()
@@ -1261,8 +1259,8 @@ def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path
 
 
 def test_replace_with_busy_retry_rejects_a_zero_attempt_budget(tmp_path: Path):
-    # Falling off the loop would report a move that never happened, which on
-    # the aside-move is the exact failure this installer must never fake.
+    # Falling off the loop would report a move that never happened, the exact
+    # failure the aside-move must never fake.
     with pytest.raises(ValueError):
         replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts = 0)
 
@@ -1274,7 +1272,7 @@ def test_readonly_rmtree_handler_only_retries_the_removal_calls(tmp_path: Path):
     error = PermissionError(errno.EACCES, "Permission denied")
 
     # rmtree routes lstat/open/scandir/islink/close failures through the same
-    # hook, and none of those can be called with a lone path.
+    # hook, and none of those takes a lone path.
     for rejected in (os.open, os.scandir, os.lstat):
         with pytest.raises(PermissionError):
             handler(rejected, str(victim), error)
@@ -1315,10 +1313,10 @@ def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
     try:
         with pytest.raises(OSError):
             remove_tree_logged(tree, "unreadable tree")
-        # S_IWRITE is an assignment, not a bit clear, so a handler running here
-        # would leave the directory at 0o200 and harder to delete by hand than
-        # it was found. On POSIX the unlink permission lives on the parent, so
-        # there is nothing a chmod of this entry could have fixed anyway.
+        # S_IWRITE is an assignment, not a bit clear, so a handler here would
+        # leave the directory at 0o200 and harder to delete by hand. On POSIX
+        # the unlink permission lives on the parent anyway, so a chmod of this
+        # entry could not have fixed anything.
         assert stat.S_IMODE(os.stat(unreadable).st_mode) == 0o500
     finally:
         if unreadable.exists():
