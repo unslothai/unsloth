@@ -894,12 +894,14 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     # already covered by the https: wildcard above. dict.fromkeys keeps the default
     # order and de-duplicates, so with no mirror configured the output is unchanged.
     hf_connect_src = " ".join(
-        dict.fromkeys((
-            "https://huggingface.co",
-            "https://datasets-server.huggingface.co",
-            get_hf_endpoint(),
-            get_hf_datasets_server(),
-        ))
+        dict.fromkeys(
+            (
+                "https://huggingface.co",
+                "https://datasets-server.huggingface.co",
+                get_hf_endpoint(),
+                get_hf_datasets_server(),
+            )
+        )
     )
 
     # In Colab the kernel scaffolding injects scripts and fetch/WS from *.prod.colab.dev and
