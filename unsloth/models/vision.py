@@ -1927,6 +1927,28 @@ class FastBaseModel:
         # only the auto (None / "all-linear") path relies on the regex, whose mlp
         # block is the sole remaining MLP-intent signal on fused-expert models.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+
+        # Embeddings and the lm_head are not under attention/MLP ancestors, so
+        # get_peft_regex would silently drop them when listed in target_modules.
+        # Move them to modules_to_save before scoping, matching the behavior in
+        # FastLanguageModel.get_peft_model.
+        if type(target_modules) in (list, tuple):
+            _embedding_modules = frozenset(("embed_tokens", "lm_head"))
+            _moved = [m for m in target_modules if m in _embedding_modules]
+            if _moved:
+                for m in _moved:
+                    logger.warning_once(
+                        f"Unsloth: `{m}` should be placed in `modules_to_save`, not "
+                        f"`target_modules`. We will move it for you, but update your code."
+                    )
+                if modules_to_save is None:
+                    modules_to_save = list(_moved)
+                else:
+                    modules_to_save = list(modules_to_save) + [
+                        m for m in _moved if m not in modules_to_save
+                    ]
+                target_modules = [m for m in target_modules if m not in _embedding_modules]
+
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,

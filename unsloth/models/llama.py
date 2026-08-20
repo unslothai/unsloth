@@ -3313,18 +3313,26 @@ class FastLlamaModel:
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
+        # Embeddings and the lm_head are not located under an attention/MLP
+        # ancestor, so Unsloth's fast regex path would silently drop them when
+        # they are listed in `target_modules`. Move them to `modules_to_save`
+        # instead (which is what the official continued-pretraining guide
+        # actually intends) and warn once.
+        _embedding_modules = frozenset(("embed_tokens", "lm_head"))
         for module in target_modules:
-            if module == "embed_tokens":
-                # logger.warning_once(
-                #     "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
-                #     "Luckily, we shall do it for you!"
-                # )
-                train_embed_tokens = True
-                if modules_to_save is None:
-                    modules_to_save = ["embed_tokens"]
+            if module in _embedding_modules:
+                if module == "embed_tokens":
+                    train_embed_tokens = True
                 else:
-                    modules_to_save.append("embed_tokens")
-
+                    train_lm_head = True
+                logger.warning_once(
+                    f"Unsloth: `{module}` should be placed in `modules_to_save`, not "
+                    f"`target_modules`. We will move it for you, but update your code."
+                )
+                if modules_to_save is None:
+                    modules_to_save = [module]
+                elif module not in modules_to_save:
+                    modules_to_save.append(module)
             else:
                 try:
                     assert module in accepted_modules
