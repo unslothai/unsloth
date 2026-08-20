@@ -34,6 +34,8 @@ from ._utils import (
     _prepare_model_for_qat,
     resolve_model_class,
     resolve_attention_implementation,
+    builds_remote_code_class,
+    load_remote_code_class,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -1122,6 +1124,24 @@ class FastBaseModel:
                 revision = _revision,
             )
         model_class = resolve_model_class(auto_model, auto_config)
+        if builds_remote_code_class(auto_model, auto_config, trust_remote_code):
+            # The mapped class can be a same-named built-in that is never instantiated, so read
+            # the flags off the repo's class instead. A repo that declares sdpa or flash keeps it;
+            # one that declares nothing, as NemotronH does, lands on eager, which is the only
+            # implementation transformers will accept for it.
+            model_class = load_remote_code_class(
+                auto_model,
+                auto_config,
+                model_name,
+                token = token,
+                revision = _revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir", None),
+                # the module is fetched at code_revision, so reading the flags from anywhere else
+                # would describe a different revision of the class than the one being built
+                code_revision = kwargs.get("code_revision", None),
+            )
+            supports_sdpa = supports_sdpa and getattr(model_class, "_supports_sdpa", False)
         attn_impl = resolve_attention_implementation(
             model_class,
             auto_config,
