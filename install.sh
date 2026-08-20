@@ -9,10 +9,11 @@
 # and nothing in the script consults it.
 #
 # A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
-# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_SKIP_SYSTEMD, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_PYTHON,
-# UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
+# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_SKIP_SYSTEMD, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST,
+# UNSLOTH_SYSTEMD_PORT, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
 # the pipe would be read as an option to sh itself; a local run takes the equivalent flags
 # (--no-torch, --python, --local).
+# UNSLOTH_SYSTEMD_HOST defaults to 127.0.0.1 (same as `unsloth studio`); set to 0.0.0.0 for LAN.
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -932,7 +933,8 @@ _offer_systemd_user_service() {
     fi
     [ "$_sd_wants" = true ] || return 0
 
-    _sd_host="${UNSLOTH_SYSTEMD_HOST:-0.0.0.0}"
+    # Same default bind as `unsloth studio` (localhost). Set UNSLOTH_SYSTEMD_HOST=0.0.0.0 for LAN.
+    _sd_host="${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}"
     _sd_port="${UNSLOTH_SYSTEMD_PORT:-8888}"
 
     _sd_ok=false

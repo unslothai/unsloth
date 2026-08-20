@@ -12,8 +12,9 @@ UNIT_NAME="unsloth-studio.service"
 
 _UNSLOTH_EXE=""
 _STUDIO_HOME=""
-_HOST="0.0.0.0"
-_PORT="8888"
+# Match `unsloth studio` (127.0.0.1). Opt into LAN with --host / UNSLOTH_SYSTEMD_HOST=0.0.0.0.
+_HOST="${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}"
+_PORT="${UNSLOTH_SYSTEMD_PORT:-8888}"
 _DO_ENABLE=false
 _DO_START=false
 
@@ -24,8 +25,9 @@ Usage: install_user_service.sh --unsloth-exe PATH [options]
 Options:
   --unsloth-exe PATH   Absolute path to the unsloth CLI (required)
   --studio-home PATH   Sets UNSLOTH_STUDIO_HOME in the unit (custom installs)
-  --host HOST          Bind address (default: 0.0.0.0)
-  --port PORT          Listen port (default: 8888)
+  --host HOST          Bind address (default: 127.0.0.1; UNSLOTH_SYSTEMD_HOST overrides;
+                       use 0.0.0.0 for LAN / all-interfaces)
+  --port PORT          Listen port (default: 8888; UNSLOTH_SYSTEMD_PORT overrides)
   --enable             Write unit, daemon-reload, and systemctl --user enable
   --start              Also systemctl --user start (implies --enable)
   -h, --help           Show this help
