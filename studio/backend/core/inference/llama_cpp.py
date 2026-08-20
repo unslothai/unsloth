@@ -16311,11 +16311,24 @@ class LlamaCppBackend:
                     # total of 0, which _get_gpu_memory and _vulkan_auto_gpu_memory set
                     # deliberately for a shared pool; the same 0 also stands for a total
                     # the probe could not read (MIG/vGPU), where "do not hand bytes
-                    # back" is likewise the right answer. Required of EVERY device,
-                    # since a mixed pool splits weights onto the shared one too.
-                    _discrete_vram = bool(gpus) and all(
-                        total_by_idx.get(_idx, 0) > 0 for _idx, _free in gpus
-                    )
+                    # back" is likewise the right answer.
+                    #
+                    # Asked of the devices that HAVE a budget rather than of every
+                    # enumerated one. A laptop pairing a discrete card with an APU
+                    # enumerates both, and demanding all of them be discrete refused the
+                    # pin outright there, so a model that would have fitted the discrete
+                    # card once the projector moved instead kept it resident and either
+                    # pulled the shared device into the split or went to --fit on. The
+                    # shared device is dropped from the question instead of answering
+                    # no: bytes given back land on a card that has its own pool, and if
+                    # the discrete side cannot hold the load even then, the pin is what
+                    # the placement wanted anyway.
+                    _mm_budgeted_gpus = [
+                        (_idx, _free)
+                        for _idx, _free in gpus
+                        if total_by_idx.get(_idx, 0) > 0
+                    ]
+                    _discrete_vram = bool(_mm_budgeted_gpus)
                     if (
                         effective_is_vision
                         and mmproj_size > 0
@@ -16451,7 +16464,7 @@ class LlamaCppBackend:
                         _, _mm_needs_fit = (
                             self._select_gpus_split_aware(
                                 _mm_need,
-                                gpus,
+                                _mm_budgeted_gpus,
                                 usable_fraction = _mm_frac,
                                 total_by_idx = total_by_idx,
                                 per_device_overhead_bytes = _pipeline_overhead_bytes
@@ -16462,7 +16475,7 @@ class LlamaCppBackend:
                             if _mm_split_aware
                             else self._select_gpus(
                                 _mm_need,
-                                gpus,
+                                _mm_budgeted_gpus,
                                 usable_fraction = _mm_frac,
                                 total_by_idx = total_by_idx,
                                 per_device_overhead_bytes = _pipeline_overhead_bytes,
@@ -17116,12 +17129,20 @@ class LlamaCppBackend:
                         _apple_fit_budget_mib = int(
                             _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
                         )
+                        # A CPU-pinned projector left model_size, and on a discrete card
+                        # that is right: --no-mmproj-offload really does move those bytes
+                        # off the device. Unified memory has nowhere to move them TO. The
+                        # projector sits in the same pool this budget is measuring, so
+                        # dropping it here overstates the context that fits and can walk
+                        # past the overcommit refusal below into an OOM. Weighed the same
+                        # way the APU shortfall guard weighs it, and for the same reason.
+                        _apple_model_size_fit = model_size_fit + _mmproj_pinned_bytes
 
                         def _apple_ctx_fit(target: int, min_ctx: int) -> int:
                             return self._fit_context_to_vram(
                                 target,
                                 _apple_fit_budget_mib,
-                                model_size_fit,
+                                _apple_model_size_fit,
                                 cache_type_kv,
                                 min_ctx = min_ctx,
                                 swa_full = swa_full,
@@ -17139,7 +17160,10 @@ class LlamaCppBackend:
 
                         def _apple_footprint_mib(ctx: int) -> float:
                             return (
-                                model_size_fit + _kv_bytes(ctx) + _mtp_bytes(ctx) + _cc_bytes(ctx)
+                                _apple_model_size_fit
+                                + _kv_bytes(ctx)
+                                + _mtp_bytes(ctx)
+                                + _cc_bytes(ctx)
                             ) / (1024 * 1024)
 
                         if self._can_estimate_kv():

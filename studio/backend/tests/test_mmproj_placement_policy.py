@@ -758,3 +758,40 @@ def test_the_speculative_reserve_is_normalized_before_anything_prices_it(tmp_pat
     assert (
         normalize_at < probe_at
     ), "the CPU-drafter reserve must be normalized before the projector probe prices it"
+
+
+def test_a_shared_device_beside_a_discrete_one_does_not_veto_the_pin(tmp_path):
+    """A laptop pairing a discrete card with an APU enumerates both.
+
+    Requiring EVERY enumerated device to have its own budget refused the pin outright
+    on that machine, so a model that would have fitted the discrete card once the
+    projector moved kept it resident instead and either pulled the shared device into
+    the split or went to `--fit on`. The shared device is dropped from the question
+    rather than answering no for the whole host: bytes handed back land on a card that
+    has its own pool.
+
+    The discrete card here is the one the single-GPU pin test uses, with a shared
+    device (total 0) alongside it.
+    """
+    backend, gguf = _backend(
+        tmp_path, memory = [(0, 8_692, 16_384), (1, 7_600, 0)]
+    )
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" in cmd
+
+
+def test_a_host_that_is_only_shared_memory_still_never_pins(tmp_path):
+    """The rule that survives: with no budgeted device anywhere, moving the projector
+    shuffles bytes inside one pool and frees nothing, so the 8.8x image-encode cost
+    buys exactly nothing. Unchanged by the mixed-host relaxation above."""
+    backend, gguf = _backend(
+        tmp_path, memory = [(0, 7_600, 0), (1, 7_600, 0)]
+    )
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
