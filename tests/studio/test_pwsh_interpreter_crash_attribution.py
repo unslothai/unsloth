@@ -99,9 +99,7 @@ def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
 
     # env = None must still mean inherit, or every call site that relies on the ambient
     # PATH silently loses it.
-    inherited = json.loads(
-        run_pwsh(dump, capture_output = True, text = True).stdout
-    )
+    inherited = json.loads(run_pwsh(dump, capture_output = True, text = True).stdout)
     assert inherited["XDG_CACHE_HOME"] == child["XDG_CACHE_HOME"]
     assert inherited.get("PATH") == os.environ.get("PATH")
 
