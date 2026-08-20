@@ -14,17 +14,34 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi import HTTPException
 
 
-def _write_ollama_store(root: Path) -> Path:
-    """A minimal Ollama layout: one manifest whose model layer resolves to a blob."""
+def _write_ollama_store(root: Path, *, extra_layers: tuple[str, ...] = ()) -> Path:
+    """A minimal Ollama layout whose optional extra layers resolve to real blobs."""
     digest_value = "a" * 64
     blob = root / "blobs" / f"sha256-{digest_value}"
     blob.parent.mkdir(parents = True)
     blob.write_bytes(b"GGUF-not-really")
+
+    layers = [
+        {
+            "mediaType": "application/vnd.ollama.image.model",
+            "digest": f"sha256:{digest_value}",
+        }
+    ]
+    for index, media_type in enumerate(extra_layers, start = 1):
+        layer_digest = f"{index:064x}"
+        (root / "blobs" / f"sha256-{layer_digest}").write_text("{}", encoding = "utf-8")
+        layers.append(
+            {
+                "mediaType": media_type,
+                "digest": f"sha256:{layer_digest}",
+            }
+        )
 
     tag_file = root / "manifests" / "registry.ollama.ai" / "library" / "llama3" / "latest"
     tag_file.parent.mkdir(parents = True)
@@ -32,12 +49,7 @@ def _write_ollama_store(root: Path) -> Path:
         json.dumps(
             {
                 "config": {},
-                "layers": [
-                    {
-                        "mediaType": "application/vnd.ollama.image.model",
-                        "digest": f"sha256:{digest_value}",
-                    }
-                ],
+                "layers": layers,
             }
         ),
         encoding = "utf-8",
@@ -72,6 +84,67 @@ def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     assert Path(identifier).is_file(), "the .gguf link must be materialized"
     assert label == Path(identifier).name, "logs get the link name, not the opaque ref"
     assert native_grant_backed is False
+
+
+_UNSUPPORTED_RUNTIME_LAYERS = (
+    "application/vnd.ollama.image.params",
+    "application/vnd.ollama.image.template",
+    "application/vnd.ollama.image.system",
+    "application/vnd.ollama.image.messages",
+    "application/vnd.ollama.image.adapter",
+    "application/vnd.ollama.image.prompt",
+    "application/vnd.ollama.image.future-runtime",
+)
+
+
+def _rich_manifest_ref(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-rich"
+    tag_file = _write_ollama_store(root, extra_layers = _UNSUPPORTED_RUNTIME_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+    return root, ref
+
+
+def test_rich_manifest_is_withheld_from_inventory(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root, _ = _rich_manifest_ref(tmp_path, monkeypatch)
+
+    assert ollama.scan_ollama_dir(root) == []
+
+
+def test_rich_manifest_ref_is_rejected_without_creating_links(tmp_path, monkeypatch):
+    from models.inference import LoadRequest
+    from routes.inference import _resolve_model_identifier_for_request
+
+    root, ref = _rich_manifest_ref(tmp_path, monkeypatch)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_model_identifier_for_request(LoadRequest(model_path = ref), operation = "load-model")
+
+    assert excinfo.value.status_code == 400
+    assert "unsupported runtime layers" in str(excinfo.value.detail).lower()
+    for media_type in _UNSUPPORTED_RUNTIME_LAYERS:
+        assert media_type in str(excinfo.value.detail)
+    links_root = root / ".studio_links"
+    assert not links_root.exists() or not any(path.is_file() for path in links_root.rglob("*"))
+
+
+def test_license_metadata_does_not_hide_a_plain_manifest(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-licensed"
+    _write_ollama_store(
+        root,
+        extra_layers = ("application/vnd.ollama.image.license",),
+    )
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    rows = ollama.scan_ollama_dir(root)
+    assert len(rows) == 1
+    assert ollama.is_ollama_manifest_ref(rows[0].load_id)
 
 
 def test_a_ref_outside_known_ollama_dirs_is_a_400(tmp_path, monkeypatch):
