@@ -54,14 +54,15 @@ import { PRODUCT_NAME } from "@/config/branding";
 import {
   FEATURE_AGENTS_NAV,
   FEATURE_API_MONITOR,
+  FEATURE_AUDIO,
   FEATURE_EXPORT,
   FEATURE_FILES_NAV,
-  FEATURE_MEMORY_NAV,
-  FEATURE_MANAGEMENT_NAV,
-  FEATURE_SEARCH_NAV,
   FEATURE_IMAGES,
+  FEATURE_MANAGEMENT_NAV,
+  FEATURE_MEMORY_NAV,
   FEATURE_PROJECTS,
   FEATURE_RECIPES,
+  FEATURE_SEARCH_NAV,
   FEATURE_TRAIN,
   FEATURE_VIDEO,
 } from "@/config/disabled-features";
@@ -132,6 +133,7 @@ import { cn } from "@/lib/utils";
 import {
   Archive03Icon,
   ArrowRight02Icon,
+  AudioWave01Icon,
   BadgeInfoIcon,
   BotIcon,
   BubbleChatIcon,
@@ -1180,8 +1182,7 @@ export function AppSidebar() {
     management: {
       icon: Settings02Icon,
       label: t("shell.navigation.management"),
-      active:
-        pathname === "/management" || pathname.startsWith("/management/"),
+      active: pathname === "/management" || pathname.startsWith("/management/"),
       disabled: !getProductCapability("management").available,
       tooltip: getProductCapability("management").reason ?? undefined,
       onClick: () => {
@@ -1238,6 +1239,18 @@ export function AppSidebar() {
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/video" }));
+      },
+    },
+    audio: {
+      icon: AudioWave01Icon,
+      label: t("shell.navigation.audio"),
+      active: pathname === "/audio" || pathname.startsWith("/audio/"),
+      onClick: () => {
+        navigate({ to: "/audio" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/audio" }));
       },
     },
     recipes: {
@@ -1302,6 +1315,7 @@ export function AppSidebar() {
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&
+      (item.id !== "audio" || FEATURE_AUDIO) &&
       (item.id !== "recipes" || FEATURE_RECIPES) &&
       (item.id !== "export" || FEATURE_EXPORT) &&
       (item.id !== "api" || FEATURE_API_MONITOR),
@@ -1309,8 +1323,7 @@ export function AppSidebar() {
   const unpinnedNavIds = enabledNav
     .filter((item) => !item.pinned)
     .map((item) => item.id);
-  // More needs two or more rows to be worth a click; with exactly one unpinned, the menu and that row are both dropped.
-  const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
+  const overflowNavIds = unpinnedNavIds;
   const inlineNavIds = enabledNav
     .filter((item) => item.pinned)
     .map((item) => item.id);

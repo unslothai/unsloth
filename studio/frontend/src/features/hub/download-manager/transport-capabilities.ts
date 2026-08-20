@@ -19,6 +19,9 @@ export interface DownloadTransportCapabilities {
   // machine's RAM, hf_xet build, and recent Xet failures.
   auto_resolves_to?: "xet" | "http";
   auto_reason?: string | null;
+  // Whether an interrupted HTTP transfer leaves bytes the next attempt can append to. Server-side
+  // because only the backend knows which huggingface_hub writer is installed.
+  partials_resumable?: boolean;
 }
 
 export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabilities = {
@@ -30,6 +33,9 @@ export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabili
   // Unknown backend state: stay on Xet, the download-time ladder still falls back to HTTP.
   auto_resolves_to: "xet",
   auto_reason: null,
+  // Unverified means "do not promise a resume". Continuing a partial is honest either way; only
+  // the byte-resume wording would be a lie.
+  partials_resumable: false,
 };
 export function normalizeDownloadTransportCapability(
   value: unknown,
@@ -64,6 +70,7 @@ export function normalizeDownloadTransportCapabilities(
     xet?: unknown;
     auto_resolves_to?: unknown;
     auto_reason?: unknown;
+    partials_resumable?: unknown;
   };
   return {
     http: normalizeDownloadTransportCapability(candidate.http, {
@@ -82,5 +89,7 @@ export function normalizeDownloadTransportCapabilities(
         : DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK.auto_resolves_to,
     auto_reason:
       typeof candidate.auto_reason === "string" ? candidate.auto_reason : null,
+    // Anything but an explicit true (older backend, junk value) stays false.
+    partials_resumable: candidate.partials_resumable === true,
   };
 }

@@ -9,7 +9,7 @@ import { stopChatThread } from "./stop-chat-thread";
 
 export const countAllChats = countStoredChats;
 
-export async function clearAllChats() {
+export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
   // Invalidate fresh-thread initialization before either queue cancellation or
   // storage enumeration can yield. A late initializer must not recreate a chat
   // after this clear finishes.
@@ -25,6 +25,5 @@ export async function clearAllChats() {
     stopChatThread(threadId);
   }
   requestPromptQueueStop();
-  await chatHistoryClearBoundary.waitForPending();
-  return await clearStoredChats();
+  return await clearStoredChats(options);
 }

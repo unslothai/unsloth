@@ -19,6 +19,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -99,6 +100,7 @@ function ensureActiveModelInStoreList(
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
+    hasVideoInput: status.has_video_input ?? false,
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
@@ -130,9 +132,6 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
-  /** The caller verified the status is the model this tab just picked, so the
-   * slot control it holds belongs to that model and must survive. */
-  readoptingSameModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -160,6 +159,14 @@ export function applyActiveModelStatusToStore(
         modelId: checkpointId,
         presetSource: store.activePresetSource,
       }),
+      // The model's own remembered settings outrank the recommendation, or
+      // every poll would undo them, but not past the context it loaded with.
+      // context_length is reported for a safetensors load too, so this is not
+      // narrowed to GGUF; absent, there is nothing to cap against.
+      {
+        fromModelDefaults: true,
+        maxTokensCap: status.context_length ?? undefined,
+      },
     );
   }
 
@@ -180,6 +187,7 @@ export function applyActiveModelStatusToStore(
       ? (status.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
+  const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentGgufContextLength = status.is_gguf
@@ -208,11 +216,11 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
-  // A model/variant change underneath this tab, as opposed to re-adopting the
-  // model the tab just picked, where hydratingExistingModel fires on the stale
-  // checkpoint. The echo cannot stand in: a new model can report the old count.
-  const slotsModelChanged =
-    hydratingExistingModel && !options.readoptingSameModel;
+  // A model/variant change underneath this tab. The controls in the store belong
+  // to the model that just left, so they are reseeded here the way every other
+  // load param at this site already is: the echo cannot stand in, since a new
+  // model can report the old count.
+  const slotsModelChanged = hydratingExistingModel;
   // This model's remembered override, read only on a fresh store or a model
   // change, so a steady poll cannot re-pin a control the user just blanked.
   // Through the resident resolver, not the raw id: an API-driven load reports the
@@ -338,6 +346,9 @@ export function applyActiveModelStatusToStore(
     reasoningEffortLevels,
     reasoningEffort: clampedReasoningEffort,
     supportsPreserveThinking,
+    ...(hydratingExistingModel && {
+      preserveThinking: preserveThinkingOnLoad,
+    }),
     supportsTools,
     ...resolveToolsEnabledOnLoad(supportsTools),
     reasoningEnabled: supportsReasoning
@@ -357,6 +368,7 @@ export function applyActiveModelStatusToStore(
     loadedIsDiffusion: status.is_diffusion ?? false,
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
     // The spec / KV seeds share the GPU-fields reseed mechanism below: a
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"
@@ -455,6 +467,25 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel != null &&
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
+      }),
+    // What the running server was actually invoked with. Without this a tab opened
+    // while a model was already loaded knows nothing about its pass-through
+    // arguments (the switch path is where they were recorded), and a rollback after
+    // a failed switch restores that model without them: the failed target is left
+    // resident, so an omitted field cannot inherit across models either.
+    //
+    // Adopted from every settled status, not only a first read or a model change:
+    // another tab or an API client can reload the SAME model and variant with
+    // different arguments, or with none, and a baseline pinned at the first read
+    // would resend the old list from the rollback path and resurrect arguments that
+    // are not running. seedLoadParams is the guard that matters here, and it is the
+    // same one the rest of this block uses: while a load is in flight performLoad
+    // owns these values, so a poll that answers mid-switch cannot overwrite them.
+    // A backend that does not publish the field changes nothing.
+    ...(status.requested_llama_extra_args !== undefined &&
+      (status.is_gguf ?? true) &&
+      seedLoadParams && {
+        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
       }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),

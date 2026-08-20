@@ -1,4 +1,4 @@
-import { FEATURE_FILES_NAV } from "@/config/disabled-features";
+import { getProductCapability } from "@/config/platform-capabilities";
 import { FilesPage } from "@/features/files/files-page";
 import { createRoute, redirect } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
@@ -9,7 +9,9 @@ export const Route = createRoute({
   path: "/files",
   staticData: { title: "Dosyalar" },
   beforeLoad: () => {
-    if (!FEATURE_FILES_NAV) throw redirect({ to: "/chat" });
+    if (!getProductCapability("files").available) {
+      throw redirect({ to: "/chat" });
+    }
     return requireAuth();
   },
   component: FilesPage,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -8,32 +11,37 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
-  type GpuDevice,
+  gpuVramUsedIsPerDevice,
+  resolveGpuVramUsedGb,
+} from "@/hooks/gpu-vram";
+import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
+  type GpuDevice,
 } from "@/hooks/use-system";
+import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import {
   isPlatformAuthEnabled,
   usePlatformConnectionStore,
 } from "@/integrations/platform-backend";
-import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { toast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
-import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { PlatformOperationsPanel } from "../components/platform-operations-panel";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
+import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -185,16 +193,7 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
   return device.visible_ordinal ?? device.index;
 }
 
-export function ResourcesTab() {
-  return isPlatformAuthEnabled() ? (
-    <PlatformResourcesTab />
-  ) : (
-    <LegacyResourcesTab />
-  );
-}
-
 function PlatformResourcesTab() {
-  const t = useT();
   const status = usePlatformConnectionStore((state) => state.status);
   const version = usePlatformConnectionStore((state) => state.version);
   const health = usePlatformConnectionStore((state) => state.health);
@@ -212,63 +211,51 @@ function PlatformResourcesTab() {
     return () => controller.abort();
   }, [checkConnection]);
 
-  const statusLabel =
-    status === "connected"
-      ? "Bağlı"
-      : status === "degraded"
-        ? "Kısmi hizmet"
-        : status === "checking" || status === "idle"
-          ? "Kontrol ediliyor"
-          : status === "unauthorized"
-            ? "Yetki gerekli"
-            : "Bağlantı yok";
-  const services = Object.entries(health ?? {}).filter(
-    ([key, value]) => key !== "status" && key !== "_meta" && value != null,
-  );
+  const healthDetails = health
+    ? Object.entries(health)
+        .filter(([key, value]) => key !== "status" && !key.startsWith("_") && value)
+        .map(([key, value]) => `${key}: ${String(value)}`)
+        .join(" · ")
+    : null;
 
   return (
     <div className="flex flex-col gap-6">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">
-          {t("settings.resources.title")}
-        </h1>
+        <h1 className="text-xl font-semibold font-heading">Kaynaklar</h1>
         <p className="text-xs text-muted-foreground">
-          Rag Platform servis durumu ve bu dağıtımın desteklediği kaynak
-          bilgileri.
+          Rag Platform bağlantısı ve operasyon durumu
         </p>
       </header>
 
-      <SettingsSection title="Rag Platform durumu">
-        <InfoRow label="Bağlantı" value={statusLabel} />
-        <InfoRow label="Sürüm" value={version ?? "—"} />
-        {services.map(([name, value]) => (
+      <SettingsSection title="Rag Platform servis durumu">
+        <InfoRow label="Bağlantı" value={status} />
+        <InfoRow label="Backend sürümü" value={version ?? "Bilinmiyor"} />
+        {health ? (
           <InfoRow
-            key={name}
-            label={name.replaceAll("_", " ")}
-            value={String(value)}
+            label="Sağlık"
+            value={health.status}
+            detail={healthDetails ?? undefined}
           />
-        ))}
-        {lastCheckedAt && (
+        ) : null}
+        {lastCheckedAt ? (
           <InfoRow
             label="Son kontrol"
             value={new Date(lastCheckedAt).toLocaleString()}
           />
-        )}
-        {error && (
-          <p role="alert" className="py-2 text-xs text-destructive">
+        ) : null}
+        {error ? (
+          <p role="alert" className="py-2 text-sm text-destructive">
             {error.message}
           </p>
-        )}
-      </SettingsSection>
-      <PlatformOperationsPanel />
-
-      <SettingsSection title="Kaynak telemetrisi">
-        <p className="py-3 text-sm text-muted-foreground">
+        ) : null}
+        <p className="py-3 text-sm leading-relaxed text-muted-foreground">
           CPU, RAM, disk, GPU ve model belleği telemetrisi bu Rag Platform
           dağıtımında sunulmuyor. Yanıltıcı sıfır değerler yerine yalnızca
           backend tarafından doğrulanan servis durumu gösterilir.
         </p>
       </SettingsSection>
+
+      <PlatformOperationsPanel />
     </div>
   );
 }
@@ -327,16 +314,15 @@ function LegacyResourcesTab() {
     const diskTotal = systemInfo.disk?.total_gb ?? 0;
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
+    const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
     const vramTotal = aggregateGpuMemoryTotalGb(devices);
-    // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-    // fabricates a 0-used total, so the aggregate is unknown if any device is.
-    const vramUsageKnown =
-      devices.length > 0 &&
-      devices.every((device) => isFiniteNumber(device.vram_used_gb));
-    const vramUsed = vramUsageKnown
-      ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
-      : null;
-    const vramFree = vramUsageKnown
+    // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+    // total, so the device's own row stays unknown. The host figure can still be
+    // known when no device's is (#7452).
+    const perDeviceKnown = gpuVramUsedIsPerDevice(devices);
+    const vramUsed = resolveGpuVramUsedGb(displayedGpu);
+    const vramUsageKnown = vramUsed !== null;
+    const vramFree = perDeviceKnown
       ? devices.reduce(
           (sum, device) =>
             sum +
@@ -347,7 +333,9 @@ function LegacyResourcesTab() {
               )),
           0,
         )
-      : null;
+      : vramUsed !== null
+        ? Math.max(0, vramTotal - vramUsed)
+        : null;
     const vramPercent =
       vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
         ? (vramUsed / vramTotal) * 100
@@ -360,6 +348,7 @@ function LegacyResourcesTab() {
       diskTotal,
       diskFree,
       diskUsed,
+      diskPercent,
       vramTotal,
       vramUsed,
       vramFree,
@@ -516,7 +505,7 @@ function LegacyResourcesTab() {
             detail={t("settings.resources.liveMonitor.free", {
               value: formatGb(metrics.diskFree),
             })}
-            percent={systemInfo.disk?.percent_used ?? 0}
+            percent={metrics.diskPercent}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}
@@ -630,17 +619,11 @@ function LegacyResourcesTab() {
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
                     </span>
-                    <span
-                      aria-hidden={true}
-                      className="h-3 w-px shrink-0 bg-border"
-                    />
+                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.free", { value: freeText })}
                     </span>
-                    <span
-                      aria-hidden={true}
-                      className="h-3 w-px shrink-0 bg-border"
-                    />
+                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.total", {
                         value: totalText,
@@ -664,6 +647,10 @@ function LegacyResourcesTab() {
         )}
       </SettingsSection>
 
+      {/* Below the GPU section it describes, above the memory settings that
+          apply to whichever backend is selected. */}
+      <LlamaBackendSection />
+
       <ModelMemorySection />
 
       <SettingsSection title={t("settings.resources.storage.title")}>
@@ -686,7 +673,7 @@ function LegacyResourcesTab() {
           <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
-                readOnly={true}
+                readOnly
                 aria-label={t("settings.resources.storage.modelsFolder")}
                 value={modelsFolderPath}
                 title={hfCache?.cacheHome}
@@ -795,4 +782,10 @@ function LegacyResourcesTab() {
       </SettingsSection>
     </div>
   );
+}
+
+
+export function ResourcesTab() {
+  if (isPlatformAuthEnabled()) return <PlatformResourcesTab />;
+  return <LegacyResourcesTab />;
 }

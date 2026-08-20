@@ -1003,6 +1003,28 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
+	/* The backward-traversal reveal sentinel in thread.tsx is a real tab stop, so it needs a
+	   real focus indicator. The rule above is scoped to :where(div, main, ...) and never
+	   matched a span, so focus visibly disappeared for one stop before the next Shift+Tab
+	   reached the action bar, which is a focus-visible failure rather than a cosmetic one.
+
+	   The element stays 0x0 and the ring is drawn by outline-offset. Outlines do not take part
+	   in layout, so the indicator appears without shifting the message the way giving the span
+	   dimensions on focus would. Nothing is drawn at rest, and :focus-visible means a mouse
+	   click never draws it either. */
+	.aui-assistant-reveal-sentinel {
+		display: inline-block;
+		width: 0;
+		height: 0;
+		vertical-align: middle;
+	}
+
+	.aui-assistant-reveal-sentinel:focus-visible {
+		outline: 1px solid var(--ring-soft);
+		outline-offset: 6px;
+		border-radius: 2px;
+	}
+
 	/* Number fields use the shared grey stepper instead of native spinners. */
 	input[type="number"] {
 		appearance: textfield;
@@ -1096,17 +1118,46 @@ html[data-chat-font] .aui-root {
 		color: #fff !important;
 	}
 
+	/* Multi-select: the same fill a hovered or active row gets, no outline. */
+	.sidebar-nav-btn[data-selected="true"] {
+		background-color: var(--nav-surface-hover) !important;
+		color: #000 !important;
+	}
+	.dark .sidebar-nav-btn[data-selected="true"] {
+		color: #fff !important;
+	}
+
 	.sidebar-row-action {
 		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
 	@media (pointer: coarse) {
-		/* Only chat rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
+		/* Chat and project rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
 		.sidebar-row-action.sidebar-touch-reveal {
 			@apply opacity-100 pointer-events-auto;
 		}
 	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
+	}
+	/* Pinned/Projects/Recents header actions. They sit in the label's flex row,
+	   not over a pill, so they reveal on the header's hover. */
+	.sidebar-header-action {
+		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 pointer-events-none outline-none transition-opacity duration-150;
+		color: inherit;
+	}
+	.group\/sidebar-header:hover .sidebar-header-action,
+	.sidebar-header-action:focus-visible,
+	.sidebar-header-action[data-state="open"] {
+		@apply opacity-100 pointer-events-auto;
+	}
+	.sidebar-header-action:hover {
+		background-color: var(--nav-surface-hover);
+	}
+	@media (pointer: coarse) {
+		/* No hover to reveal them on touch. */
+		.sidebar-header-action {
+			@apply opacity-100 pointer-events-auto;
+		}
 	}
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
@@ -1285,6 +1336,55 @@ html[data-chat-font] .aui-root {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 	}
+
+	/* Crossfade media settings into their in-flow action footers. Multiple alpha stops
+	   approximate a smooth 48px ease without painting a separate footer overlay. */
+	.panel-scroll-fade-action.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 0,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			#000 0,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+	}
+	.panel-scroll-fade-action.is-scrolled:not(.is-bottom-faded) {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+	}
+	.panel-scroll-fade-action.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
+			transparent 100%
+		);
+	}
 	.panel-scroll-fade.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
@@ -1325,17 +1425,6 @@ html[data-chat-font] .aui-root {
 	.diffusion-surface [data-slot="info-hint"]:focus-visible {
 		opacity: 1;
 		pointer-events: auto;
-	}
-
-	/* The Create / Train action floats over its settings, so hover must lighten the fill
-	   rather than thin it: a translucent green would show the controls behind it. Mixes to
-	   what bg-primary/80 looks like on the page, but stays opaque. */
-	.btn-float-action:hover:not(:disabled) {
-		background-color: color-mix(
-			in srgb,
-			var(--primary) 80%,
-			var(--background)
-		) !important;
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -2454,10 +2543,17 @@ html[data-chat-font] .aui-root {
 	 *    that gates content-visibility flips rendered height between the
 	 *    200px placeholder and the actual code-block height as the block
 	 *    sits near the viewport edge during stream finalization. The
-	 *    height jump is small but visible, and the rendering optimization
-	 *    is unnecessary for chat content (thread length is bounded). We
-	 *    force `visible` to keep the rendered height of code blocks fully
-	 *    determined by their actual content at all times.
+	 *    height jump is small but visible. We force `visible` to keep the
+	 *    rendered height of code blocks fully determined by their actual
+	 *    content at all times.
+	 *
+	 *    This used to be justified by "thread length is bounded", which
+	 *    #8977 disproves. It is kept for the flicker alone. Do not reach
+	 *    back for `content-visibility: auto` here: WebKit below Safari 26
+	 *    cannot find skipped content with find-in-page (webkit.org/b/283846)
+	 *    and Studio has no in-thread search to fall back on. Containment on
+	 *    the message roots was measured as no help either; what grows with
+	 *    thread length is inherited-property style recalc, not layout.
 	 *
 	 * 2. `[data-sd-animate]` (`sd-fadeIn`, 150ms). Streamdown wraps each
 	 *    streaming text segment in a span carrying this attribute. When

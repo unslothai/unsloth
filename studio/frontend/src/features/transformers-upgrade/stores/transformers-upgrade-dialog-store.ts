@@ -3,7 +3,10 @@
 
 import { create } from "zustand";
 import { installLatestTransformers } from "../api/transformers-upgrade-api";
-import type { TransformersUpgradeInfo, TransformersUpgradePhase } from "../types";
+import type {
+  TransformersUpgradeInfo,
+  TransformersUpgradePhase,
+} from "../types";
 
 type Resolver = (installed: boolean) => void;
 
@@ -25,6 +28,11 @@ interface TransformersUpgradeDialogStore {
    *  model before swapping, so the caller must treat it as already unloaded; the
    *  custom-code fallback resolves true without installing and leaves it loaded. */
   installRan: boolean;
+  /** Completed installs this session. The sidecar it provisions is a persistent overlay
+   *  that changes every later answer about every model, what is left to install and
+   *  whether a run still loads 4-bit, so anything caching those answers keys on this and
+   *  re-asks once it moves. Survives `resolve`, unlike the per-consent flags. */
+  sidecarGeneration: number;
   /** True when the server unloaded the active chat model during this consent,
    *  including a swap that failed AFTER the unload: callers must then treat
    *  their previous model as gone and roll back on any later cancel. */
@@ -37,7 +45,10 @@ interface TransformersUpgradeDialogStore {
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
-    options?: { trustRemoteCodeFallback?: boolean; forceCancelActive?: boolean },
+    options?: {
+      trustRemoteCodeFallback?: boolean;
+      forceCancelActive?: boolean;
+    },
   ) => Promise<boolean>;
   /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
@@ -54,6 +65,7 @@ export const useTransformersUpgradeDialogStore =
     trustRemoteCodeFallback: false,
     forceCancelActive: false,
     installRan: false,
+    sidecarGeneration: 0,
     serverUnloadedChat: false,
     requestConsent: (modelName, upgrade, options) =>
       new Promise<boolean>((resolve) => {
@@ -108,7 +120,11 @@ export const useTransformersUpgradeDialogStore =
           // serverUnloadedChat was latched above (and is never reset here): a
           // retry after a failed-after-unload attempt reports false because the
           // model is already gone, and a superseded install may have set it too.
-          set({ installRan: true });
+          // The overlay is live from here on, for this tab and every model in it.
+          set({
+            installRan: true,
+            sidecarGeneration: get().sidecarGeneration + 1,
+          });
           get().resolve(true);
           return;
         }

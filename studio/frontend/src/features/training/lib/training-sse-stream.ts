@@ -1,7 +1,7 @@
 
 
 
-import { takeSseFrame } from "../api/sse-framing.ts";
+import { takeSseFrame } from "../../../lib/sse-framing.ts";
 import type { TrainingProgressPayload } from "../types/runtime";
 
 export type TrainingProgressEventName =

@@ -13,7 +13,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -383,6 +383,7 @@ function RequestDetail({
     ? (detail.reply ?? entry.reply_preview)
     : entry.reply_preview;
 
+
   return (
     <div className="flex min-w-0 flex-col gap-5 p-5">
       <header className="flex min-w-0 flex-col gap-2">
@@ -456,7 +457,11 @@ function RequestDetail({
             value: entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",
           },
           {
-            label: "Speed",
+            label: "Prompt speed",
+            value: formatTokPerSec(entry.prompt_tok_per_sec) ?? "–",
+          },
+          {
+            label: "Generation speed",
             value: formatTokPerSec(entry.tok_per_sec) ?? "–",
           },
           {

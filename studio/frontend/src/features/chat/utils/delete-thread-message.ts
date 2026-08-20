@@ -34,22 +34,25 @@ import {
   reconcileServerManagedMessages,
 } from "./research-message-sync";
 
-function cloneContent(
+// A copy of the list, not of what is in it. assistant-ui replaces parts and attachments
+// rather than mutating them, and the records built from these are serialized straight
+// into the PUT body, so a deep clone of the whole thread bought nothing and cost more
+// than the request that follows it.
+function snapshotContent(
   content: ThreadMessage["content"],
 ): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
-  return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
+  return Array.isArray(content)
+    ? ([...content] as ThreadMessage["content"])
+    : [];
 }
 
-function cloneAttachments(
+function snapshotAttachments(
   attachments: readonly CompleteAttachment[] | undefined,
 ): readonly CompleteAttachment[] {
-  if (!Array.isArray(attachments)) {
-    return [];
-  }
-  return JSON.parse(JSON.stringify(attachments));
+  return Array.isArray(attachments) ? [...attachments] : [];
 }
 
 export function exportedItemToRecord(
@@ -57,9 +60,9 @@ export function exportedItemToRecord(
   parentId: string | null,
   message: ThreadMessage,
 ): MessageRecord {
-  const content = cloneContent(message.content);
+  const content = snapshotContent(message.content);
   if (message.role === "user") {
-    const attachments = cloneAttachments(message.attachments);
+    const attachments = snapshotAttachments(message.attachments);
     const custom = message.metadata?.custom;
     return {
       id: message.id,
@@ -94,6 +97,8 @@ async function withStoredResearchMessages(
   if (!records.some((record) => hasResearchMetadata(record.metadata))) {
     return records;
   }
+  // The read below wants the row in place, which is the only reason this path ensures it.
+  await ensureStoredChatThread(remoteId);
   // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
   // Swallowing a failure here would send the unreconciled payload, which the server rejects
   // wholesale, so the read failure has to surface as itself rather than as a later 409.
@@ -114,7 +119,8 @@ export async function syncExportedRepositoryToBackend(
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
-  await ensureStoredChatThread(remoteId);
+  // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
+  // this used to make every save pay for the same GET /threads/{id} twice.
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
   );

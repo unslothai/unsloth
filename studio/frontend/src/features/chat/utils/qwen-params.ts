@@ -28,5 +28,7 @@ export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const params = needsPresencePenalty
     ? { ...base, presencePenalty: 1.5 }
     : base;
+  // Deliberately unmarked, unlike the post-load path applying the same table: the
+  // user asked for this mode here, so it must land even on a chat pinning sampling.
   store.setParams({ ...store.params, ...params });
 }

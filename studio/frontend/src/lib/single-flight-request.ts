@@ -7,16 +7,12 @@ export function createSingleFlightRequest<TResult>(
   let inFlight: Promise<TResult> | null = null;
 
   return () => {
-    if (inFlight) {
-      return inFlight;
-    }
+    if (inFlight) return inFlight;
 
     const current = Promise.resolve().then(request);
     inFlight = current;
     const clear = () => {
-      if (inFlight === current) {
-        inFlight = null;
-      }
+      if (inFlight === current) inFlight = null;
     };
     void current.then(clear, clear);
     return current;
@@ -49,9 +45,7 @@ export function createScopedSingleFlightRequest<TInput, TResult>(
     const current = { scope, controller, promise };
     inFlight = current;
     const clear = () => {
-      if (inFlight === current) {
-        inFlight = null;
-      }
+      if (inFlight === current) inFlight = null;
     };
     void promise.then(clear, clear);
     return promise;
@@ -64,13 +58,10 @@ export function createScopedSingleFlightRequest<TInput, TResult>(
 
   return {
     run: (scope, input) => {
-      if (!inFlight) {
-        return start(scope, input);
-      }
-      if (inFlight.scope === scope) {
-        return inFlight.promise;
-      }
-      return supersede(scope, input);
+      if (!inFlight) return start(scope, input);
+      return inFlight.scope === scope
+        ? inFlight.promise
+        : supersede(scope, input);
     },
     refresh: supersede,
   };

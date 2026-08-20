@@ -17,9 +17,8 @@ import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
-import type { SandboxFile } from "./sandbox-files";
+import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { isSandboxToolResult } from "@/features/chat/api/chat-adapter";
 
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {

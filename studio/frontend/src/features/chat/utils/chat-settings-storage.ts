@@ -1,22 +1,29 @@
-import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend/config";
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import {
+  getChatSettings,
+  saveChatSettingsPatch,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
-  getChatSettings,
-  saveChatSettingsPatch,
 } from "../api/chat-settings-api";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
-  type ChatPresetSource,
-  type Preset,
   defaultInferenceParams,
   getPresetOwnedConfigKey,
   getUniquePresetName,
   normalizeCustomPresets,
+  type ChatPresetSource,
+  type Preset,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
+import { isPlatformAuthEnabled } from "@/integrations/platform-backend";
+import {
+  assignSanitizedMirroredSettings,
+  hasNoMirroredSettings,
+} from "./mirrored-chat-settings";
 
 const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
@@ -151,6 +158,23 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
+// Not capped. The server merge never removes keys and keeps an existing key in
+// its original position, so a load-time trim would permanently hide the oldest
+// entries: editing one of those models would write an update that the next
+// reload silently drops again. Entries are a dozen numbers each.
+function sanitizeInferenceParamsByModel(
+  value: unknown,
+): Record<string, PersistedInferenceParams> | undefined {
+  if (!isRecord(value)) return undefined;
+  const byModel: Record<string, PersistedInferenceParams> = {};
+  for (const [modelId, params] of Object.entries(value)) {
+    if (!modelId) continue;
+    const sanitized = sanitizeInferenceParams(params);
+    if (sanitized) byModel[modelId] = sanitized;
+  }
+  return hasKeys(byModel) ? byModel : undefined;
+}
+
 function toFullPreset(preset: PersistedChatPreset): Preset {
   const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
   return {
@@ -222,6 +246,10 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
 
   const settings: PersistedChatSettings = {};
   const inferenceParams = sanitizeInferenceParams(value.inferenceParams);
+  const inferenceParamsByModel = sanitizeInferenceParamsByModel(
+    value.inferenceParamsByModel,
+  );
+  const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
@@ -237,6 +265,12 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
+  if (inferenceParamsByModel) {
+    settings.inferenceParamsByModel = inferenceParamsByModel;
+  }
+  if (rememberParamsPerModel !== undefined) {
+    settings.rememberParamsPerModel = rememberParamsPerModel;
+  }
   if (customPresets !== undefined) settings.customPresets = customPresets;
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
@@ -262,33 +296,9 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
+  assignSanitizedMirroredSettings(value, settings);
 
   return settings;
-}
-
-function mergeChatSettings(
-  base: PersistedChatSettings,
-  patch: PersistedChatSettings,
-): PersistedChatSettings {
-  return sanitizeChatSettings({
-    ...base,
-    ...patch,
-    inferenceParams:
-      base.inferenceParams || patch.inferenceParams
-        ? { ...base.inferenceParams, ...patch.inferenceParams }
-        : undefined,
-  });
-}
-
-function loadPlatformChatSettings(): PersistedChatSettings {
-  return sanitizeChatSettings(
-    parseJson(getStorageItem(PLATFORM_CHAT_SETTINGS_KEY)),
-  );
-}
-
-function persistPlatformChatSettings(settings: PersistedChatSettings): void {
-  if (!canUseStorage()) return;
-  localStorage.setItem(PLATFORM_CHAT_SETTINGS_KEY, JSON.stringify(settings));
 }
 
 function loadLegacySystemPromptPresets(
@@ -334,6 +344,8 @@ function loadLegacySystemPromptPresets(
 export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
   return (
     (!settings.inferenceParams || !hasKeys(settings.inferenceParams)) &&
+    settings.inferenceParamsByModel === undefined &&
+    settings.rememberParamsPerModel === undefined &&
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
@@ -345,7 +357,8 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
-    settings.toolCallTimeout === undefined
+    settings.toolCallTimeout === undefined &&
+    hasNoMirroredSettings(settings)
   );
 }
 
@@ -372,9 +385,7 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const autoTitle = loadBool(AUTO_TITLE_KEY);
   const preserveThinking = loadBool(PRESERVE_THINKING_KEY);
   const collapseHtmlArtifacts = loadBool(COLLAPSE_HTML_ARTIFACTS_KEY);
-  const allowArtifactNetworkAccess = loadBool(
-    ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
-  );
+  const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
   const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
   const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
@@ -414,12 +425,32 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   return settings;
 }
 
-export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatSettings> {
-  if (isPlatformChatPersistenceEnabled()) {
-    return mergeChatSettings(
-      loadLegacyChatSettings(),
-      loadPlatformChatSettings(),
+export interface LoadedChatSettings extends PersistedChatSettings {
+  settings: PersistedChatSettings;
+  /**
+   * The GET answered, so a mirrored field missing from `settings` is missing on
+   * the server too. False when the read fell back to this browser's legacy
+   * storage: nothing is then known about the server, and treating every field
+   * as absent would back this browser's stale values over another's.
+   */
+  fromServer: boolean;
+}
+
+export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSettings> {
+  if (isPlatformAuthEnabled()) {
+    const stored = sanitizeChatSettings(
+      parseJson(getStorageItem(PLATFORM_CHAT_SETTINGS_KEY)),
     );
+    const legacy = loadLegacyChatSettings();
+    const settings = {
+      ...legacy,
+      ...stored,
+      inferenceParams: {
+        ...legacy.inferenceParams,
+        ...stored.inferenceParams,
+      },
+    };
+    return { ...settings, settings, fromServer: false };
   }
 
   let dbSettings: PersistedChatSettings;
@@ -430,7 +461,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
     if (isEmptyChatSettings(legacySettings)) {
       throw error;
     }
-    return legacySettings;
+    return { settings: legacySettings, fromServer: false };
   }
 
   const legacySettings = loadLegacyChatSettings();
@@ -439,18 +470,24 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
       !isEmptyChatSettings(dbSettings) ||
       isEmptyChatSettings(legacySettings)
     ) {
-      return dbSettings;
+      return { settings: dbSettings, fromServer: true };
     }
     try {
-      return sanitizeChatSettings(await saveChatSettingsPatch(legacySettings));
+      return {
+        settings: sanitizeChatSettings(
+          await saveChatSettingsPatch(legacySettings),
+        ),
+        fromServer: true,
+      };
     } catch {
-      return legacySettings;
+      // The GET still answered (empty), so absence remains authoritative.
+      return { settings: legacySettings, fromServer: true };
     }
   }
 
   if (isEmptyChatSettings(legacySettings)) {
     markLegacySettingsImportDone();
-    return dbSettings;
+    return { settings: dbSettings, fromServer: true };
   }
 
   const mergedSettings = {
@@ -466,9 +503,9 @@ export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatS
       await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
-    return savedSettings;
+    return { settings: savedSettings, fromServer: true };
   } catch {
-    return mergedSettings;
+    return { settings: mergedSettings, fromServer: true };
   }
 }
 
@@ -476,16 +513,23 @@ export async function savePersistedChatSettingsPatch(
   patch: PersistedChatSettings,
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
-  if (isPlatformChatPersistenceEnabled()) {
-    const merged = mergeChatSettings(
-      mergeChatSettings(loadLegacyChatSettings(), loadPlatformChatSettings()),
-      sanitizeChatSettings(patch),
-    );
-    persistPlatformChatSettings(merged);
+  const sanitizedPatch = sanitizeChatSettings(patch);
+  if (isPlatformAuthEnabled()) {
+    const current = (await loadChatSettingsWithLegacyImport()).settings;
+    const merged = sanitizeChatSettings({
+      ...current,
+      ...sanitizedPatch,
+      inferenceParams: {
+        ...current.inferenceParams,
+        ...sanitizedPatch.inferenceParams,
+      },
+    });
+    if (canUseStorage()) {
+      localStorage.setItem(PLATFORM_CHAT_SETTINGS_KEY, JSON.stringify(merged));
+    }
     return merged;
   }
-
   return sanitizeChatSettings(
-    await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
+    await saveChatSettingsPatch(sanitizedPatch, options),
   );
 }

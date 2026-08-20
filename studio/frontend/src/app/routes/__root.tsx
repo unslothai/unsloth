@@ -5,6 +5,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { branding } from "@/config/branding";
 import {
   FEATURE_API_MONITOR,
+  FEATURE_AUDIO,
   FEATURE_IMAGES,
   FEATURE_VIDEO,
 } from "@/config/disabled-features";
@@ -83,6 +84,11 @@ const VideoPage = lazy(() =>
   import("@/features/video").then((m) => ({ default: m.VideoPage })),
 );
 
+// AudioPage also stays mounted so speech generation or transcription survives navigation.
+const AudioPage = lazy(() =>
+  import("@/features/audio").then((m) => ({ default: m.AudioPage })),
+);
+
 function PersonalizationSyncMount() {
   const platformProfileEnabled = isPlatformAuthEnabled();
   usePersonalizationSync(hasAuthToken() && !platformProfileEnabled);
@@ -98,6 +104,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/files",
   "/memory",
   "/search",
+  "/management",
   "/hub",
   "/login",
   "/signup",
@@ -134,6 +141,11 @@ function isChatOnlyAllowed(pathname: string): boolean {
   // where that explanation belongs, so a direct link or a reload has to reach VideoPage's gate
   // instead of bouncing to /chat. It self-gates on videoSupported, so nothing loads.
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
+  if (
+    FEATURE_AUDIO &&
+    (pathname === "/audio" || pathname.startsWith("/audio/"))
+  )
+    return true;
   return false;
 }
 
@@ -232,9 +244,16 @@ function RootLayout() {
     setVideoMounted(true);
   }
   const shouldMountVideo = FEATURE_VIDEO && (isVideoRoute || videoMounted);
-  // Chat, Images and Video each render their own full-height shell, so all three want the chat-style layout: no outer pt-14 inset, no outer
-  // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
-  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
+
+  const isAudioRoute = FEATURE_AUDIO && pathname === "/audio";
+  const [audioMounted, setAudioMounted] = useState(isAudioRoute);
+  if (isAudioRoute && !audioMounted) {
+    setAudioMounted(true);
+  }
+  const shouldMountAudio = FEATURE_AUDIO && (isAudioRoute || audioMounted);
+  // Chat and media pages render their own full-height shells, so they need chat-style layout: no outer pt-14 inset or outer scroll.
+  const isChatLike =
+    isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -285,6 +304,7 @@ function RootLayout() {
       }
       // Cmd/Ctrl+Shift+O opens a new chat.
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
+        if (isAuthFlowRoute) return;
         e.preventDefault();
         clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
         const chatRuntime = useChatRuntimeStore.getState();
@@ -394,27 +414,44 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
+              {shouldMountAudio && (
+                <div
+                  className={
+                    isAudioRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isAudioRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <AudioPage active={isAudioRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && !isImagesRoute && !isVideoRoute && (
-                <AnimatePresence initial={false} mode="popLayout">
-                  <motion.div
-                    key={pathname}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.06 }}
-                    className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
-                  >
-                    <Suspense fallback={<RouteFallback />}>
-                      <Outlet />
-                    </Suspense>
-                  </motion.div>
-                </AnimatePresence>
-              )}
+              {!isChatRoute &&
+                !isImagesRoute &&
+                !isVideoRoute &&
+                !isAudioRoute && (
+                  <AnimatePresence initial={false} mode="popLayout">
+                    <motion.div
+                      key={pathname}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.06 }}
+                      className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
+                    >
+                      <Suspense fallback={<RouteFallback />}>
+                        <Outlet />
+                      </Suspense>
+                    </motion.div>
+                  </AnimatePresence>
+                )}
             </div>
           </SidebarInset>
         </SidebarProvider>

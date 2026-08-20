@@ -221,6 +221,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 isVisionModel: false,
                 isEmbeddingModel: false,
                 isAudioModel: false,
+                audioCapabilityUnknown: false,
                 isLoadingModelDefaults: false,
                 isCheckingVision: false,
                 modelDefaultsError: null,
@@ -335,6 +336,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
+              audioCapabilityUnknown: modelDetails.audio_type_known === false,
               isLoadingModelDefaults: autoSelectionPromise !== null,
               isCheckingVision: false,
               modelDefaultsError: null,
@@ -751,6 +753,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           approvedRemoteCodeFingerprint?: string | null;
           isVisionModel?: boolean;
           isAudioModel?: boolean;
+          audioCapabilityUnknown?: boolean;
           isEmbeddingModel?: boolean;
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
@@ -773,6 +776,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.approvedRemoteCodeFingerprint = null;
           patch.isVisionModel =
             options?.isVision ?? effectiveModelType === "vision";
+          patch.audioCapabilityUnknown = false;
           patch.isAudioModel =
             options?.isAudio ?? effectiveModelType === "audio";
           patch.isEmbeddingModel =
@@ -791,6 +795,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isVisionModel: false,
             isEmbeddingModel: false,
             isAudioModel: false,
+            audioCapabilityUnknown: false,
             isDatasetAudio: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
@@ -829,6 +834,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isVisionModel: false,
             isEmbeddingModel: false,
             isAudioModel: false,
+            audioCapabilityUnknown: false,
             isDatasetAudio: false,
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
@@ -957,32 +963,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
           });
-        },
-        setDatasetSource: (datasetSource) => {
-          const state = get();
-          if (datasetSource === state.datasetSource) {
-            const invariantPatch = datasetSourceInvariantPatch(state);
-            if (invariantPatch.datasetStreaming !== undefined) {
-              set(invariantPatch);
-            }
-            return;
-          }
-          if (datasetSource === "s3") {
-            selectS3SourceInternal();
-            return;
-          }
-          if (
-            state.datasetSource === "s3" &&
-            state.browseDatasetSelection.source === datasetSource
-          ) {
-            restoreBrowseDatasetSourceInternal();
-            return;
-          }
-          if (datasetSource === "upload") {
-            selectLocalDatasetInternal(null);
-            return;
-          }
-          selectHfDatasetInternal(null);
         },
         selectHfDataset: selectHfDatasetInternal,
         selectLocalDataset: selectLocalDatasetInternal,
@@ -1230,32 +1210,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) =>
           setUserEdit({ datasetSliceEnd }),
-        setUploadedFile: (uploadedFile) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          setUserEdit((state) => ({
-            uploadedFile,
-            datasetKnownCached: false,
-            datasetLocalPath: null,
-            browseDatasetSelection:
-              state.datasetSource === "upload"
-                ? createUploadBrowseDatasetSelection(uploadedFile)
-                : state.browseDatasetSelection,
-            datasetCheckFailed: false,
-            datasetSubset: null,
-            datasetSplit: null,
-            datasetEvalSplit: null,
-            manualDatasetOptionsValid: true,
-            datasetManualMapping: emptyManualMapping(),
-            datasetSliceStart: null,
-            datasetSliceEnd: null,
-            uploadedEvalFile: null,
-            isDatasetImage: null,
-            isDatasetAudio: false,
-            isCheckingDataset: false,
-          }));
-        },
         setUploadedEvalFile: (uploadedEvalFile) =>
           setUserEdit({
             uploadedEvalFile,

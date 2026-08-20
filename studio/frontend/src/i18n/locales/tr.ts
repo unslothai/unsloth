@@ -20,6 +20,10 @@ export const tr = {
     rateLimitedTitle: "Hugging Face hız sınırına ulaşıldı",
     rateLimitedBody:
       "Bir süre bekleyin, ardından {noun} aramasını yeniden deneyin.",
+    modelDropped: "Model çıkarıldı",
+    modelDroppedByProvider: "{provider} · artık sunulmuyor",
+    modelDisabled: "Model devre dışı",
+    modelDisabledByProvider: "{provider} · devre dışı",
     hfToken: {
       label: "HF token'ı",
       saved: "Kaydedildi",
@@ -129,6 +133,7 @@ export const tr = {
       runOptions: "Çalıştırma seçenekleri",
     },
     navigation: {
+      audio: "Ses",
       newChat: "Yeni sohbet",
       returnToChat: "Sohbete Geri Dön",
       returnToChats: "{count} Sohbetlere Dön",
@@ -1346,6 +1351,12 @@ export const tr = {
         "Bu veri kümesi henüz bu cihazda değil. Eğitim otomatik olarak indirecektir.",
       noticeDatasetPartial:
         "Eğitim, kısmi veri kümesi indirme işlemini okumadan önce tamamlayacaktır.",
+      noticeTransformersUpgrade:
+        "Yüklü transformers bu mimariyi henüz desteklemiyor. Çalıştırmayı başlatmak önce transformers {version} yüklemeyi önerir.",
+      noticeSixteenBitOnly:
+        "Bu mimari 16 bit LoRA ile eğitilir: 4 bit kullanılamaz; bu nedenle çalıştırma QLoRA'dan çok daha fazla VRAM gerektirir.",
+      noticeInstallSwitchesSixteenBit:
+        "16 bit desteğini etkinleştirmek için gerekli paketleri yükleyin.",
       advancedSettings: "Gelişmiş ayarlar",
       defaultAdvancedSettings: "Varsayılanlar",
       nonDefaultAdvancedSettings: "{count} varsayılan değil",

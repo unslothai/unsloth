@@ -1,13 +1,22 @@
 
 
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   type PlusMenuItemId,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
+  useSidebarOrganizationStore,
 } from "@/features/chat";
+import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -24,10 +33,7 @@ import { Columns2Icon } from "lucide-react";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
-import {
-  SettingsGroupDivider,
-  SettingsSection,
-} from "../components/settings-section";
+import { SettingsSection } from "../components/settings-section";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -127,6 +133,18 @@ export function ChatTab() {
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const projectAttachmentTarget = useChatRuntimeStore(
+    (state) => state.projectAttachmentTarget,
+  );
+  const setProjectAttachmentTarget = useChatRuntimeStore(
+    (state) => state.setProjectAttachmentTarget,
+  );
+  const rememberParamsPerModel = useChatRuntimeStore(
+    (state) => state.rememberParamsPerModel,
+  );
+  const setRememberParamsPerModel = useChatRuntimeStore(
+    (state) => state.setRememberParamsPerModel,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
@@ -164,6 +182,8 @@ export function ChatTab() {
   const setShowAllQuantizations = useChatRuntimeStore(
     (state) => state.setShowAllQuantizations,
   );
+  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
@@ -175,6 +195,18 @@ export function ChatTab() {
   );
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
+  );
+  const collapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
+  const setCollapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.setCollapseThinkingByDefault,
+  );
+  const pastedTextMinChars = useChatPreferencesStore(
+    (state) => state.pastedTextMinChars,
+  );
+  const setPastedTextMinChars = useChatPreferencesStore(
+    (state) => state.setPastedTextMinChars,
   );
 
   useEffect(() => {
@@ -236,7 +268,29 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
-        <SettingsGroupDivider />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.projectsSection")}
+          description={t("settings.chat.projectsSectionDescription")}
+        >
+          <Switch
+            checked={organizeBy === "project"}
+            onCheckedChange={(checked) =>
+              setOrganizeBy(checked ? "project" : "list")
+            }
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.thinking.collapseByDefault")}
+          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+        >
+          <Switch
+            checked={collapseThinkingByDefault}
+            onCheckedChange={setCollapseThinkingByDefault}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
@@ -255,14 +309,56 @@ export function ChatTab() {
             onCheckedChange={setShowResponseModel}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.general.autoTitleNewChats")}
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.projectAttachments")}
+          description={t("settings.chat.projectAttachmentsDescription")}
+        >
+          <Switch
+            checked={projectAttachmentTarget === "project"}
+            onCheckedChange={(checked) =>
+              setProjectAttachmentTarget(checked ? "project" : "thread")
+            }
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.rememberParamsPerModel")}
+          description={t("settings.chat.rememberParamsPerModelDescription")}
+        >
+          <Switch
+            checked={rememberParamsPerModel}
+            onCheckedChange={setRememberParamsPerModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.pastedTextThreshold")}
+          description={t("settings.chat.pastedTextThresholdDescription")}
+        >
+          <Select
+            value={String(pastedTextMinChars)}
+            onValueChange={(value) => setPastedTextMinChars(Number(value))}
+          >
+            <SelectTrigger
+              className="w-36"
+              aria-label={t("settings.chat.pastedTextThreshold")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PASTED_TEXT_THRESHOLD_CHOICES.map((choice) => (
+                <SelectItem key={choice} value={String(choice)}>
+                  {choice === 0
+                    ? t("settings.chat.pastedTextThresholdOff")
+                    : choice.toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.profile.greetingSloth")}

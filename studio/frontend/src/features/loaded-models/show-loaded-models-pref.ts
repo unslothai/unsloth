@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Whether the corner indicator may appear. On by default; only an explicit
-// "false" (Settings -> General -> Notifications) disables it. Same shape as the
-// llama.cpp update banner pref.
+// Whether the corner indicator may appear. Off by default; only an explicit
+// "true" (Settings -> General -> Notifications) enables it. An older explicit
+// "false" still reads as off, so anyone who already turned it down stays that
+// way. Tri-state on purpose: see setShowLoadedModels.
 
 import { useSyncExternalStore } from "react";
 
@@ -29,20 +30,19 @@ function notify(): void {
 
 export function getShowLoadedModels(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) !== "false";
+    return localStorage.getItem(STORAGE_KEY) === "true";
   } catch {
-    return true;
+    return false;
   }
 }
 
 export function setShowLoadedModels(show: boolean): void {
   try {
-    if (show) {
-      // Remove rather than store "true" so the default stays on.
-      localStorage.removeItem(STORAGE_KEY);
-    } else {
-      localStorage.setItem(STORAGE_KEY, "false");
-    }
+    // Both values written, never removed: "false" is the one an older reader
+    // also treats as off, so a pre-update tab does not flip the card back on
+    // through the storage event. Absent still means off here, so the default
+    // is unaffected.
+    localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
   } catch {
     // storage unavailable
   }

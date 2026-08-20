@@ -325,6 +325,11 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
+        // Both sides measure the same cache; keep the local reading and let the
+        // remote one cover a row the local listing could not price.
+        download_remaining_bytes:
+          variant.download_remaining_bytes ??
+          remoteVariant.download_remaining_bytes,
         update_available: remoteVariant.update_available === true,
       };
     });

@@ -1,4 +1,4 @@
-import { FEATURE_AGENTS_NAV } from "@/config/disabled-features";
+import { getProductCapability } from "@/config/platform-capabilities";
 import {
   createRoute,
   lazyRouteComponent,
@@ -17,7 +17,9 @@ export const Route = createRoute({
   path: "/agents",
   staticData: { title: "Agents" },
   beforeLoad: () => {
-    if (!FEATURE_AGENTS_NAV) throw redirect({ to: "/chat" });
+    if (!getProductCapability("agents").available) {
+      throw redirect({ to: "/chat" });
+    }
     return requireAuth();
   },
   component: AgentsPage,

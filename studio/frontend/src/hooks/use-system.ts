@@ -21,6 +21,9 @@ export interface GpuDevice {
 export interface SystemGpuInfo {
   available: boolean;
   backend?: string;
+  /** Used VRAM across the visible GPUs when no single device's usage could be
+   * attributed. Windows ROCm only; null everywhere else. See #7452. */
+  vram_used_gb_aggregate?: number | null;
   /** Whether GGUF loads accept explicit gpu_ids in the device records'
    * declared index space. */
   gguf_gpu_ids_supported?: boolean;
@@ -30,19 +33,9 @@ export interface SystemGpuInfo {
   devices: GpuDevice[];
 }
 
-/** Sum dedicated VRAM while counting a shared host-memory pool only once. */
-export function aggregateGpuMemoryTotalGb(devices: GpuDevice[]): number {
-  const dedicated = devices
-    .filter((device) => !device.shared_memory)
-    .reduce((sum, device) => sum + (device.memory_total_gb ?? 0), 0);
-  const shared = Math.max(
-    0,
-    ...devices
-      .filter((device) => device.shared_memory)
-      .map((device) => device.memory_total_gb ?? 0),
-  );
-  return dedicated + shared;
-}
+// Lives in gpu-vram.ts with the other VRAM rules, re-exported here for the
+// callers that already import it from this module.
+export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
   platform: string;

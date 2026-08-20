@@ -21,6 +21,7 @@ import {
   addScanFolder,
   listScanFolders,
   removeScanFolder,
+  scanFolderStatusCopy,
 } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
 import {
@@ -468,6 +469,7 @@ export function OnDeviceFoldersDialog({
                 ) : (
                   sortedFolders.map((folder) => {
                     const removing = pending === `remove:${folder.id}`;
+                    const problem = scanFolderStatusCopy(folder.status);
                     return (
                       <div
                         key={folder.id}
@@ -505,6 +507,14 @@ export function OnDeviceFoldersDialog({
                               {folder.path}
                             </TooltipContent>
                           </Tooltip>
+                          {problem ? (
+                            <p
+                              data-testid={`scan-folder-problem-${folder.id}`}
+                              className="mt-1 text-ui-10p5 text-amber-600 dark:text-amber-500"
+                            >
+                              {problem.title}. {problem.hint}
+                            </p>
+                          ) : null}
                         </div>
                         {isTauri ? (
                           <Tooltip>

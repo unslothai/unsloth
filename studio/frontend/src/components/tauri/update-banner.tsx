@@ -70,9 +70,8 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
-  // Keyed by the backend release, not the app's SemVer; headings drop the v.
-  const notesTargetVersion =
-    (info?.pypiVersion ?? info?.version)?.replace(LEADING_V, "") ?? null;
+  // The Studio version offered. Not a notes key; it scopes the expanded state.
+  const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
 
@@ -110,11 +109,37 @@ export function UpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              : cn(
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+                  // Floor = the header and the action row, the parts of this
+                  // card that cannot give up height. Under it a capped rail
+                  // takes the height out of the notes, which clip;
+                  // min-height:auto would instead be the whole card, so this
+                  // one would yield nothing and clip the banner below it.
+                  //
+                  // Its own constants, not the browser card's: this card
+                  // carries one more status line under the version, worth about
+                  // 20px at the default type size and 24px at the largest.
+                  // Measured the same way, at every step from 15px to 20px:
+                  // 204, 210, 215, 221, 227, 233 at the widths where the action
+                  // pair holds together, and 204, 210, 262, 269, 277, 304 below
+                  // 384px where it wraps onto a row of its own. See
+                  // web/update-banner for why the floor is split into a fixed
+                  // and a scaled part, and why the narrow regime needs its own.
+                  //
+                  // The failure card has no notes to give up, so shrinking it
+                  // could only clip the diagnostics and the retry button. It
+                  // holds its height and the rail scrolls instead.
+                  showFailure
+                    ? "shrink-0"
+                    : "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+                ),
           )}
+          // See the browser card: dismissible, so it may cover the composer.
+          data-overlay-dismissible="true"
           data-testid="tauri-update-banner"
         >
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -138,7 +163,7 @@ export function UpdateBanner({
               </svg>
             </button>
 
-            <div className="flex min-w-0 items-start gap-4 pr-6">
+            <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
               <Icon
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
@@ -171,7 +196,7 @@ export function UpdateBanner({
             </div>
 
             {showFailure && lastFailure && (
-              <p className="mt-3 line-clamp-2 text-xs text-destructive">
+              <p className="mt-3 line-clamp-2 shrink-0 text-xs text-destructive">
                 {lastFailure.error}
               </p>
             )}
@@ -180,8 +205,6 @@ export function UpdateBanner({
               <ReleaseNotesPanel
                 version={notesTargetVersion}
                 open={notesOpen}
-                // Used only if CHANGELOG.md has no section for this version.
-                fallbackMarkdown={info?.body ?? null}
                 className="min-h-0 flex-1"
                 releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
               />
@@ -189,7 +212,8 @@ export function UpdateBanner({
 
             <div
               className={cn(
-                "mt-4 flex flex-wrap items-center gap-x-1 gap-y-2",
+                // Wraps on a narrow card, never compresses on a short one.
+                "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
                 !showFailure && notesTargetVersion
                   ? "justify-between"
                   : "justify-end",
@@ -263,16 +287,30 @@ export function UpdateBanner({
                 </div>
               )}
             </div>
-            {manualMessage && (
-              <p className="mt-3 text-xs text-destructive">{manualMessage}</p>
-            )}
-            {manualReport && (
-              <textarea
-                readOnly={true}
-                value={manualReport}
-                onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
-              />
+            {(manualMessage || manualReport) && (
+              // The clipboard fallback, and the one region of the failure card
+              // that may give up height. The card is capped at the viewport and
+              // clips, and the rail cannot scroll to what that cap hides, so
+              // without a scroller here the report the reader is being asked to
+              // select and copy is the part that goes missing in a short window.
+              <div
+                className="hover-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+                data-testid="tauri-update-manual-report"
+              >
+                {manualMessage && (
+                  <p className="mt-3 text-xs text-destructive">
+                    {manualMessage}
+                  </p>
+                )}
+                {manualReport && (
+                  <textarea
+                    readOnly={true}
+                    value={manualReport}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                  />
+                )}
+              </div>
             )}
           </div>
         </motion.div>

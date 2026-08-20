@@ -1,10 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronLeftIcon, ChevronRightIcon, SearchIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  SearchIcon,
+  UploadIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -31,25 +39,33 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
-  getPlatformModelReadiness,
-  isPlatformApiError,
   type PlatformDatasetChunkMethod,
   type PlatformModel,
+  getPlatformModelReadiness,
+  isPlatformApiError,
 } from "@/integrations/platform-backend";
 import { toast } from "@/lib/toast";
 
-import {
-  createKnowledgeBase,
-  deleteKnowledgeBase,
-  updateKnowledgeBase,
-} from "../api/rag-api";
 import {
   datasetEmbeddingModelReference,
   getKnowledgeBase,
   listKnowledgeBasePage,
 } from "../api/platform-dataset-adapter";
-import type { KnowledgeBase } from "../types/rag";
+import {
+  createKnowledgeBase,
+  deleteKnowledgeBase,
+  listKnowledgeBaseDocuments,
+  updateKnowledgeBase,
+} from "../api/rag-api";
+import {
+  type KnowledgeBase,
+  RAG_UPLOAD_ACCEPT,
+  isLinkedFolderManaged,
+} from "../types/rag";
+import { DocumentStatusChip } from "./document-status-chip";
+import { LinkedFoldersManager } from "./linked-folders-manager";
 import { PlatformPipelineSelect } from "./platform-pipeline-select";
+import { useRagDocuments } from "./use-rag-documents";
 
 const PAGE_SIZE = 8;
 const CHUNK_METHODS: readonly {
@@ -74,13 +90,10 @@ const CHUNK_METHODS: readonly {
 type View =
   | { kind: "list" }
   | { kind: "create" }
-  | { kind: "edit"; kb: KnowledgeBase };
+  | { kind: "edit"; kb: KnowledgeBase }
+  | { kind: "documents"; kb: KnowledgeBase };
 
-type SortValue =
-  | "update-desc"
-  | "update-asc"
-  | "create-desc"
-  | "create-asc";
+type SortValue = "update-desc" | "update-asc" | "create-desc" | "create-asc";
 
 interface FieldErrors {
   embeddingModel?: string;
@@ -270,8 +283,13 @@ export function KnowledgeBaseDialog({
     if (open) return;
     detailAbortRef.current?.abort();
     mutationAbortRef.current?.abort();
+    detailAbortRef.current = undefined;
+    mutationAbortRef.current = undefined;
     setView({ kind: "list" });
     setConfirmingDelete(null);
+    setEditingId(null);
+    setSaving(false);
+    setDeleting(false);
   }, [open]);
 
   function startCreate() {
@@ -317,7 +335,11 @@ export function KnowledgeBaseDialog({
     if (parserConfig.trim()) {
       try {
         const value = JSON.parse(parserConfig) as unknown;
-        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          Array.isArray(value)
+        ) {
           throw new TypeError("Parser ayarı bir JSON nesnesi olmalıdır.");
         }
         parsedConfig = value as Record<string, unknown>;
@@ -399,14 +421,20 @@ export function KnowledgeBaseDialog({
               ? "Knowledge base oluştur"
               : view.kind === "edit"
                 ? "Knowledge base ayarları"
-                : "Knowledge bases"}
+                : view.kind === "documents"
+                  ? view.kb.name
+                  : "Knowledge bases"}
           </DialogTitle>
           <DialogDescription>
-            Rag Platform dataset’lerini oluşturun, arayın ve yönetin.
+            {view.kind === "documents"
+              ? "Upload documents to index for retrieval in chat."
+              : "Rag Platform dataset’lerini oluşturun, arayın ve yönetin."}
           </DialogDescription>
         </DialogHeader>
 
-        {showForm ? (
+        {view.kind === "documents" ? (
+          <KnowledgeBaseDocuments kb={view.kb} onBack={backToList} />
+        ) : showForm ? (
           <div className="flex max-h-[70dvh] flex-col gap-4 overflow-y-auto pr-1">
             <div className="grid gap-2">
               <Label htmlFor="kb-name">Ad</Label>
@@ -639,13 +667,17 @@ export function KnowledgeBaseDialog({
                     key={kb.id}
                     className="flex items-center justify-between gap-3 px-3 py-2"
                   >
-                    <div className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => setView({ kind: "documents", kb })}
+                      className="min-w-0 flex-1 text-left"
+                    >
                       <div className="truncate font-medium">{kb.name}</div>
                       <div className="truncate text-xs text-muted-foreground">
                         {kb.documentCount ?? 0} belge
                         {kb.description ? " · " + kb.description : ""}
                       </div>
-                    </div>
+                    </button>
                     <div className="flex items-center gap-1">
                       <Button
                         type="button"
@@ -745,5 +777,85 @@ export function KnowledgeBaseDialog({
         </AlertDialogContent>
       </AlertDialog>
     </Dialog>
+  );
+}
+
+function KnowledgeBaseDocuments({
+  kb,
+  onBack,
+}: {
+  kb: KnowledgeBase;
+  onBack: () => void;
+}) {
+  const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
+  const { documents, loading, uploading, refresh, upload, remove } =
+    useRagDocuments({ type: "kb", kbId: kb.id }, lister);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleLinkedSourcesChanged = useCallback(() => {
+    void refresh({ quiet: true });
+  }, [refresh]);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <ChevronLeftIcon className="size-4" />
+          All knowledge bases
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+        >
+          {uploading ? <Spinner /> : <UploadIcon className="size-3.5" />}
+          Upload
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple={true}
+          accept={RAG_UPLOAD_ACCEPT}
+          className="hidden"
+          onChange={(event) => {
+            if (event.target.files?.length) void upload(event.target.files);
+            event.target.value = "";
+          }}
+        />
+      </div>
+      {loading && documents.length === 0 ? (
+        <div className="flex justify-center py-6">
+          <Spinner />
+        </div>
+      ) : documents.length === 0 ? (
+        <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+          No documents yet. Upload a PDF, Markdown, DOCX, HTML, or text file.
+        </div>
+      ) : (
+        <div className="flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
+          {documents.map((document) => (
+            <DocumentStatusChip
+              key={document.id}
+              filename={document.filename}
+              status={document.status}
+              progress={document.progress}
+              error={document.error}
+              onRemove={
+                document.id.startsWith("pending_") ||
+                isLinkedFolderManaged(document)
+                  ? undefined
+                  : () => void remove(document.id)
+              }
+            />
+          ))}
+        </div>
+      )}
+      <div className="border-t pt-3">
+        <LinkedFoldersManager
+          scope={{ type: "knowledge_base", id: kb.id }}
+          compact={true}
+          onSourcesChanged={handleLinkedSourcesChanged}
+        />
+      </div>
+    </div>
   );
 }

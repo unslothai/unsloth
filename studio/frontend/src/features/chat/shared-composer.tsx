@@ -38,6 +38,7 @@ import {
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -95,6 +96,9 @@ import {
   resolveInitialConfig,
   type PerModelConfig,
 } from "@/features/model-picker";
+import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
+import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -109,8 +113,11 @@ import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/prese
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
-  providerTypeSupportsVision,
+  providerModelSupportsVision,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
+import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -128,6 +135,7 @@ import {
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -588,6 +596,9 @@ export function SharedComposer({
   );
   const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const mmprojFallbackReason = useChatRuntimeStore(
+    (s) => s.mmprojFallbackReason,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -659,13 +670,15 @@ export function SharedComposer({
   const imageUnavailableReason = getImageInputUnavailableReason({
     activeModel,
     isExternalModel,
-    externalSupportsVision: providerTypeSupportsVision(
+    externalSupportsVision: providerModelSupportsVision(
       selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
     ),
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
     modelLoaded,
     loadError: lastModelLoadError,
+    mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a
@@ -786,11 +799,14 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
-  // Disable only when a loaded model can't run it; with no model the toggle
-  // can still be pre-selected, matching Web search/Code/MCP.
-  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
-  const showRagPill = !isExternalModel;
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
+  const ragDisabled =
+    modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
+  const showRagPill = !isExternalModel || externalUsesStudioTools;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
   // permissions always show; the rest are conditional. Narrow viewports
   // collapse too: the labelled row is wider than a phone-width composer.
@@ -904,6 +920,7 @@ export function SharedComposer({
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
+      let videoUnsupported = false;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -920,6 +937,12 @@ export function SharedComposer({
           });
           continue;
         }
+        // video_base64 targets the single loaded GGUF, so at most one side of
+        // a compare could answer. Say that rather than drop the file.
+        if (isVideoFile(file)) {
+          videoUnsupported = true;
+          continue;
+        }
         // Handle image files
         if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
@@ -934,6 +957,11 @@ export function SharedComposer({
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (videoUnsupported) {
+        toast.error("Video can't be attached in compare mode", {
+          description: "Open a single chat with a video-capable model instead.",
+        });
       }
       setPendingImages((prev) => [...prev, ...next]);
     },
@@ -1162,11 +1190,6 @@ export function SharedComposer({
       });
       let loadedFromConfig = false;
 
-      function modelDisplayName(id: string): string {
-        const parts = id.split("/");
-        return parts[parts.length - 1] || id;
-      }
-
       // Warm the device cache before the snapshot below reconciles the GPU
       // pick: on a cold cache the reconcile passes a stale pick through.
       try {
@@ -1261,6 +1284,62 @@ export function SharedComposer({
           });
           resolvedIsDiffusion = staged.isDiffusion;
           diffusionUnknown = staged.diffusionUnknown;
+        }
+        // Pass-through arguments can live only in the server's override map (set
+        // through the API, or from another browser), and this config comes from
+        // local storage. /load's omission path inherits them from a RESIDENT
+        // instance of the same model, which a compare pane starting cold or
+        // switching away from the other model does not have, so without this the
+        // experiment runs a different command from the one that was saved.
+        if (
+          targetIsGguf &&
+          // Not for the diffusion runner, which appends none of them.
+          resolvedIsDiffusion !== true
+        ) {
+          try {
+            // Sanitised for the same reason the panel sanitises what it hydrates:
+            // either list becomes an EXPLICIT /load argument, which is validated
+            // strictly rather than going through the carry-over paths that drop a
+            // newly denied flag quietly. A pane on an install upgraded across a
+            // denylist change would otherwise answer 400 on a comparison that ran
+            // the day before, whether the list came from the server or from this
+            // browser's own storage.
+            const managed = await loadManagedLlamaFlags();
+            const clean = (tokens: readonly string[]) =>
+              sanitizeStoredExtraArgs(
+                tokens,
+                managed?.managed ?? new Set<string>(),
+                {
+                  maxBytes: managed?.maxBytes,
+                  windowsCommandBudget: managed?.windowsCommandBudget,
+                },
+              );
+            const local = ownConfig.llamaExtraArgs;
+            if (local === undefined) {
+              const resolvedArgs = await fetchLoadExtraArgs(
+                sel.id,
+                sel.id,
+                sel.ggufVariant ?? null,
+              );
+              const cleaned = clean(resolvedArgs.tokens);
+              if (cleaned.length > 0) {
+                ownConfig.llamaExtraArgs = cleaned;
+              } else if (resolvedArgs.explicit) {
+                // An explicit empty row is a cleared box, and this pane has to send
+                // it as one: left undefined the field is omitted and /load carries
+                // the resident model's arguments into the comparison, so the panes
+                // would not be running the command they are compared on.
+                ownConfig.llamaExtraArgs = [];
+              }
+            } else if (local !== null && local.length > 0) {
+              const cleaned = clean(local);
+              if (cleaned.length !== local.length) {
+                ownConfig.llamaExtraArgs = cleaned.length > 0 ? cleaned : [];
+              }
+            }
+          } catch {
+            // The load still works; a real overrides outage surfaces there.
+          }
         }
         // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
         // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
@@ -1366,6 +1445,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                // Only when this panel has read the stored value: omitted, the load
+                // inherits it, which is what keeps CLI-set flags working.
+                ...(ownConfig.llamaExtraArgs !== undefined
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
+                  : {}),
                 // omitted when blank: a null counts as set and strips inherited -b / -ub
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
@@ -1399,7 +1484,7 @@ export function SharedComposer({
           }
           if (!upgraded) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+              `${compareModelDisplayName(sel.id)} needs a newer transformers release to load.`,
             );
           }
         }
@@ -1418,7 +1503,7 @@ export function SharedComposer({
           });
           if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
+              `${compareModelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -1448,6 +1533,12 @@ export function SharedComposer({
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 n_parallel: ownConfig.nParallel ?? null,
+                // Only when this panel has read the stored value: omitted, the load
+                // inherits it, which is what keeps CLI-set flags working.
+                ...(ownConfig.llamaExtraArgs !== undefined
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
+                  : {}),
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
                   : {}),
@@ -1470,6 +1561,14 @@ export function SharedComposer({
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          // Same cap as the interactive load: this replays the model's
+          // remembered settings, and a budget kept from a larger context does
+          // not fit the one it just loaded with.
+          {
+            maxTokensCap: resp.is_gguf
+              ? (resp.context_length ?? undefined)
+              : effectiveMaxSeqLength,
+          },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
@@ -1505,6 +1604,7 @@ export function SharedComposer({
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
@@ -1516,6 +1616,13 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          // What this pane's launch is running, for a later rollback: the status
+          // applier is held off for the whole load, so nothing else records it, and
+          // a switch straight after would snapshot the other model's list.
+          loadedLlamaExtraArgs:
+            resp.requested_llama_extra_args !== undefined
+              ? (resp.requested_llama_extra_args ?? [])
+              : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
@@ -1532,6 +1639,8 @@ export function SharedComposer({
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+
+          mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
           // so when it becomes the active model, the UI and later reload/save use
@@ -1572,6 +1681,7 @@ export function SharedComposer({
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
+          hasVideoInput: Boolean(resp.has_video_input),
         };
         if (idx === -1) {
           store.setModels([
@@ -1598,8 +1708,8 @@ export function SharedComposer({
       if (handle1) handle1.appendMessage(content);
       if (handle2) handle2.appendMessage(content);
 
-      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
-      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+      const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
+      const name2 = model2?.id ? compareModelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);

@@ -24,13 +24,21 @@ export function useNativePathLeasesSupported(): boolean {
         controller = new AbortController();
         fetch(apiUrl("/api/health"), { signal: controller.signal })
           .then((response) => response.json())
-          .then((health) => {
+          .then(async (health) => {
             if (disposed) return;
-            if (health?.native_path_leases_supported === true) {
-              setSupported(true);
-            } else {
+            if (health?.native_path_leases_supported !== true) {
               check(5000);
+              return;
             }
+            // The health bit says the backend holds a key, not that it holds
+            // OURS. A survivor adopted from a dead previous app has one of its
+            // own, so the grant would fail on the signature instead. Only the
+            // app knows which backend it spawned.
+            const { invoke } = await import("@tauri-apps/api/core");
+            const usable = await invoke<boolean>("native_path_leases_usable");
+            if (disposed) return;
+            if (usable) setSupported(true);
+            else check(5000);
           })
           .catch(() => {
             if (!disposed) check(5000);

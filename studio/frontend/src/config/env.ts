@@ -23,11 +23,20 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 
 interface PlatformState {
   deviceType: DeviceType;
+  // Unified memory: GPU and system draw on one pool, so an over-committed load has
+  // nowhere to spill and takes the machine down rather than failing. Narrower than
+  // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
+  // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
+  appleSilicon: boolean;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
   // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
   // Train/Export instead of silently disabling them.
   chatOnlyReason: string | null;
+  // What specifically blocked that reason, when the backend can name it. Today only the
+  // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
+  // the greyed-out Train row can only repeat "run `unsloth studio update`".
+  chatOnlyDetail: string | null;
   // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
   // whether the server was launched with --secure.
   cloudflareUrl: string | null;
@@ -59,11 +68,13 @@ const localDeviceType = detectLocalPlatform();
 
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
+  appleSilicon: false,
   // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
   // that must decide something before /api/health answers. Capability gating must read
   // capabilitiesUnknown() first and hold, not gray a tab out on this.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
+  chatOnlyDetail: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -166,6 +177,7 @@ export async function fetchDeviceType(options?: {
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;
+        apple_silicon?: boolean;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         hardware_detecting?: boolean;
@@ -189,15 +201,26 @@ export async function fetchDeviceType(options?: {
       const keepPlatform = data.device_type === undefined && previous.fetched;
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
+      // Rides with device_type and is kept on the same terms: a provisional or
+      // unauthenticated reply carries neither, and a browser guess cannot tell Apple
+      // Silicon from Intel. Absent means false, the pre-Apple-Silicon wording -- correct
+      // on an Intel Mac, and on a Mac browser pointed at a Linux host.
+      const appleSilicon =
+        data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason } = resolveVerdict(data, previous);
+      const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
+        data,
+        previous,
+      );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
       usePlatformStore.setState({
         deviceType,
+        appleSilicon,
         chatOnly,
         chatOnlyReason,
+        chatOnlyDetail,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

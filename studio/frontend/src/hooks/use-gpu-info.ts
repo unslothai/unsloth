@@ -1,13 +1,14 @@
 
 
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type GpuIndexKind,
   type PinnableGpuContext,
   type ReconciledGpuSelection,
   type SystemGpuDevice,
   pickLoadDevice,
+  pinnableGpuContext,
   reconcileGpuSelection,
   resolveGpuSelectionContext,
 } from "./gpu-selection";
@@ -31,6 +32,10 @@ export {
 export interface GpuInfo {
   available: boolean;
   budgetKnown: boolean;
+  /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
+   * GPU-less one, because "which runtimes can this host place" is exactly the question a host
+   * with no usable GPU has to answer. Empty until system info arrives. */
+  backend: string;
   name: string;
   memoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
@@ -46,6 +51,7 @@ export interface GpuInfo {
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
+  backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
@@ -63,6 +69,7 @@ function toGpuInfo(
   // CPU/RAM exist even on GPU-less hosts (e.g. Mac), so populate them on every
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
+    backend: data?.device_backend ?? "",
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
@@ -92,14 +99,20 @@ function toGpuInfo(
   };
 }
 
-function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
+function toGpuDevices(
+  data: SystemInfoResponse | null,
+  // Diffusion runs on torch, not llama-server, so it reads the torch inventory even where the
+  // inference backend is Vulkan: those are separate runtimes and a Vulkan chat build says nothing
+  // about the CUDA / ROCm devices an image or video load can be pinned to.
+  forDiffusion = false,
+): SystemGpuDevice[] {
   // GGUF loads run through llama-server, so on a Vulkan build the pickable set
   // is the inference inventory, not the torch view: it can see cards torch
   // cannot, and its indices are the ggml ordinals `--device Vulkan<i>` pins.
   // The XPU ban does not apply there, it is about torch-xpu ordinals that no
   // applicator speaks; a Vulkan pick does not use them.
   const inference = data?.inference_gpu;
-  if (inference?.backend === "vulkan") {
+  if (!forDiffusion && inference?.backend === "vulkan") {
     // The installed inference backend is confirmed Vulkan, so even an empty
     // device list (probe still cold, or transiently failed) must NOT fall
     // through to the torch/CUDA inventory below: those physical IDs are
@@ -201,10 +214,10 @@ export function useInferenceGpuInfo(): GpuInfo {
 }
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
-export function useGpuDevices(): SystemGpuDevice[] {
+export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
   const cachedSystem = getCachedSystemInfo();
   const [devices, setDevices] = useState<SystemGpuDevice[]>(
-    cachedSystem ? toGpuDevices(cachedSystem) : [],
+    cachedSystem ? toGpuDevices(cachedSystem, forDiffusion) : [],
   );
   useEffect(() => {
     // No early return on cachedSystem: a consumer mounting as the cache fills
@@ -213,7 +226,7 @@ export function useGpuDevices(): SystemGpuDevice[] {
     let lastSerialized: string | null = null;
     const sync = (data: SystemInfoResponse | null) => {
       if (cancelled) return;
-      const next = toGpuDevices(data);
+      const next = toGpuDevices(data, forDiffusion);
       // Every refresh builds a fresh array, so compare by value or a 3s Vulkan
       // retry loop would re-render this hook forever.
       const serialized = JSON.stringify(next);
@@ -229,8 +242,26 @@ export function useGpuDevices(): SystemGpuDevice[] {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [forDiffusion]);
   return devices;
+}
+
+/**
+ * Cards an image or video load may be pinned to, or empty when there is nothing to choose
+ * between. Neither engine shards a diffusion checkpoint, so this drives a single-choice control
+ * rather than the chat picker's candidate pool.
+ */
+export function useDiffusionGpuChoices(): SystemGpuDevice[] {
+  const devices = useGpuDevices(true);
+  // Memoized on the device list, which only changes when the inventory does. pinnableGpuContext
+  // builds a fresh filtered array per call, so an unmemoized return changed identity on every
+  // render of the page holding it: it feeds the load-advanced snapshot, that feeds the download
+  // footprint resolver, and the GGUF picker re-runs its effect whenever the resolver changes --
+  // clearing the sizes it had and re-POSTing a download plan per variant on every status poll.
+  return useMemo(() => {
+    const context = pinnableGpuContext(devices, true);
+    return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];
+  }, [devices]);
 }
 
 /** Whether device discovery is settled enough to rewrite remembered UI state. */
