@@ -4172,9 +4172,91 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def replace_with_busy_retry(src: Path, dst: Path, *, attempts: int = 8) -> None:
+    """``os.replace``, retried against transient Windows sharing violations.
+
+    A directory rename fails with WinError 5/32/145 while any process holds a
+    handle inside it, and Defender or the search indexer routinely does for a
+    second or two after an extraction or a shutdown. Without a backoff a
+    scanner that has not let go yet turns the whole update into a failure, and
+    on the paths that move the *existing* install that failure is the one this
+    installer most needs to avoid. Mirrors the Node installer's
+    ``_replace_with_retry``; other errors raise immediately rather than stall
+    on a real problem, and POSIX never retries because EACCES/EBUSY there mean
+    a permission or mount problem that no amount of waiting clears.
+    """
+    if attempts < 1:
+        raise ValueError("replace_with_busy_retry needs at least one attempt")
+    delay = 0.25
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            if not transient or attempt == attempts - 1:
+                raise
+            log(
+                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
+                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
+
+
 def remove_tree(path: Path | None) -> None:
     if path and path.exists():
         shutil.rmtree(path, ignore_errors = True)
+
+
+def _clear_readonly_and_retry(func: Callable[[str], Any], path: str, excinfo: Any) -> None:
+    """``shutil.rmtree`` handler that clears the read-only bit and retries.
+
+    Straight out of the shutil docs' rmtree example. Windows refuses to unlink
+    a file carrying the read-only attribute, and a llama.cpp tree picks that
+    attribute up from the archive it was extracted from or from a security
+    product. Without this a single read-only DLL aborts the whole cleanup,
+    which on the failure path means the install is neither replaced nor
+    restored. A failure after the chmod propagates unchanged.
+
+    Two things are deliberately refused rather than retried, because in both
+    cases the retry would do more damage than the original error:
+
+    ``rmtree`` routes failures of ``lstat``, ``open``, ``scandir``, ``islink``
+    and ``close`` through this same hook, and none of those can be called with
+    a lone path, so calling ``func(path)`` for them raises a ``TypeError`` over
+    the real error or, for ``scandir``, returns an unconsumed iterator and
+    reports success for a subtree that was never removed.
+
+    A link is never touched either. ``rmtree`` reports its refusal to run on a
+    linked root through this hook, and ``os.chmod`` follows both symlinks and
+    junctions, so chmod-ing here would change the permissions of whatever the
+    link points at, which for a linked install directory is a tree this
+    installer does not own.
+    """
+    error = excinfo[1] if isinstance(excinfo, tuple) else excinfo
+    if func not in (os.unlink, os.remove, os.rmdir):
+        raise error
+    if _is_link_or_junction(Path(path)):
+        raise error
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _rmtree_handler_kwargs() -> dict[str, Any]:
+    # Windows only. It is the one platform where a read-only entry blocks its
+    # own removal; on POSIX the permission that decides an unlink lives on the
+    # parent directory, so a chmod of the entry cannot help, and S_IWRITE is an
+    # assignment rather than a bit clear, so it would leave an unreadable
+    # directory at 0o200 and harder to delete than it was found.
+    if os.name != "nt":
+        return {}
+    # onexc replaced onerror in 3.12 and onerror is deprecated from there on;
+    # both hand the callback (function, path, error) so one handler covers the
+    # 3.9 floor this installer still supports.
+    if sys.version_info >= (3, 12):
+        return {"onexc": _clear_readonly_and_retry}
+    return {"onerror": _clear_readonly_and_retry}
 
 
 def remove_tree_logged(path: Path | None, label: str) -> None:
@@ -4185,7 +4267,7 @@ def remove_tree_logged(path: Path | None, label: str) -> None:
         return
     log(f"removing {label} at {path}")
     try:
-        shutil.rmtree(path)
+        shutil.rmtree(path, **_rmtree_handler_kwargs())
     except Exception as exc:
         log(f"failed to remove {label} at {path}: {exc}")
         raise
@@ -4215,6 +4297,57 @@ def cleanup_install_side_paths(
     prune_install_staging_root(install_dir)
     if cleanup_failures:
         raise RuntimeError("cleanup failed for " + "; ".join(cleanup_failures))
+
+
+def _install_side_path_candidates(install_dir: Path, label: str) -> list[Path]:
+    root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
+    if not root.is_dir():
+        return []
+    # glob.escape because the install directory name reaches here from
+    # UNSLOTH_LLAMA_CPP_PATH, and an unescaped bracket in it would match the
+    # side paths of a *different* install living in the same parent, which
+    # holds a different install lock.
+    pattern = f"{glob.escape(install_dir.name)}.{label}-*"
+    # Link roots are excluded: rmtree refuses them anyway, and a linked side
+    # path points at a tree this installer did not create.
+    return sorted(
+        path for path in root.glob(pattern) if path.is_dir() and not _is_link_or_junction(path)
+    )
+
+
+def prune_stale_install_side_paths(install_dir: Path, *, keep: Iterable[Path | None] = ()) -> int:
+    """Drop rollback and failed trees earlier updates parked under the staging root.
+
+    ``activate_install_tree`` retains an unrestored rollback tree on purpose,
+    because at the moment it gives up that tree is the only llama.cpp left. A
+    full install with a CUDA or ROCm runtime is gigabytes and nothing else in
+    the tree ever reads or removes those paths, so without a sweep every failed
+    update parks another copy for good. They are only safe to drop where the
+    caller can show they are no longer the last copy, which is why both call
+    sites pass an explicit ``keep``.
+    """
+    kept: set[Path] = set()
+    for path in keep:
+        if not path:
+            continue
+        try:
+            kept.add(path.resolve())
+        except OSError:
+            continue
+    removed = 0
+    for label in ("rollback", "failed"):
+        for candidate in _install_side_path_candidates(install_dir, label):
+            try:
+                if candidate.resolve() in kept:
+                    continue
+            except OSError:
+                continue
+            try:
+                remove_tree_logged(candidate, f"stale {label} path from an earlier update")
+                removed += 1
+            except Exception as exc:
+                log(f"could not remove stale {label} path {candidate}: {exc}")
+    return removed
 
 
 def confirm_install_tree(install_dir: Path, host: HostInfo) -> None:
@@ -4280,7 +4413,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            os.replace(install_dir, rollback_dir)
+            replace_with_busy_retry(install_dir, rollback_dir)
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -4332,7 +4465,51 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             if rollback_dir and rollback_dir.exists():
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
-                os.replace(rollback_dir, install_dir)
+                try:
+                    replace_with_busy_retry(rollback_dir, install_dir)
+                except OSError as restore_exc:
+                    # The rename is the only way to put the previous install
+                    # back in one step, and when it cannot run at all the
+                    # rollback tree is the sole remaining llama.cpp. A copy is
+                    # slower and needs the space twice over, but the choice
+                    # here is between that and handing the user an install path
+                    # with nothing in it. A copy that dies partway leaves
+                    # install_dir exactly where a bare rename failure would
+                    # have left it, and the cleanup below removes it while the
+                    # rollback tree stays retained.
+                    if _is_link_or_junction(rollback_dir):
+                        # The install directory was a link, so the aside-move
+                        # renamed the link rather than a tree. copytree honours
+                        # symlinks *inside* what it copies but always follows
+                        # the root, so copying here would silently replace a
+                        # user's --with-llama-cpp-dir link with a real
+                        # multi-gigabyte duplicate of a checkout this
+                        # installer does not own.
+                        log("previous install is a link; not copying it back")
+                        raise
+                    log(
+                        f"rollback rename failed ({restore_exc}); copying the previous install "
+                        f"back to {install_dir}"
+                    )
+                    try:
+                        # symlinks are copied as links so a link inside the
+                        # install can never be dereferenced into a real tree,
+                        # and dirs_exist_ok stays off so a leftover tree at
+                        # install_dir is never merged into a half-and-half
+                        # install that confirm_install_tree would accept.
+                        shutil.copytree(rollback_dir, install_dir, symlinks = True)
+                    except Exception as copy_exc:
+                        log(f"copying the previous install back also failed: {copy_exc}")
+                        raise restore_exc from copy_exc
+                    log(f"copied the previous install back to {install_dir}")
+                    # The copy left the source behind; the install is live
+                    # again, so the duplicate is dead weight rather than the
+                    # last copy of anything. A failure to remove it only costs
+                    # disk, and the next successful activation sweeps it up.
+                    try:
+                        remove_tree_logged(rollback_dir, "copied rollback path")
+                    except Exception as duplicate_exc:
+                        log(f"non-fatal: the copied rollback path could not be removed: {duplicate_exc}")
                 restored = True
                 log(f"restored previous install from rollback path {rollback_dir.name}")
                 if is_busy_lock_error(exc):
@@ -4359,6 +4536,15 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         keep_rollback = not restored and rollback_dir is not None and rollback_dir.exists()
         if keep_rollback:
             log(f"previous install kept at rollback path {rollback_dir}")
+            # Exactly one retained copy. Anything an earlier failed update left
+            # behind is an older revision of the same install, superseded by
+            # the one being kept here, and keeping them all turns a repeated
+            # failure into an unbounded pile of multi-gigabyte trees.
+            superseded = prune_stale_install_side_paths(
+                install_dir, keep = (rollback_dir, failed_dir)
+            )
+            if superseded:
+                log(f"removed {superseded} superseded install tree(s) from earlier failed updates")
             log(
                 "rollback restoration failed; cleaning staging, install, and failed paths before source build fallback"
             )
@@ -4397,6 +4583,12 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(
                     f"non-fatal: rollback cleanup failed after successful activation: {cleanup_exc}"
                 )
+        # confirm_install_tree just passed, so anything an earlier update
+        # retained under the staging root is provably no longer the last copy
+        # of anything and can go. This is the only point where that is true.
+        stale = prune_stale_install_side_paths(install_dir, keep = (rollback_dir,))
+        if stale:
+            log(f"removed {stale} install tree(s) left behind by earlier failed updates")
     finally:
         remove_tree(failed_dir)
         remove_tree(staging_dir)

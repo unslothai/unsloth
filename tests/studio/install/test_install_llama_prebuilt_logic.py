@@ -39,6 +39,9 @@ validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
+replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
+remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
+prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
 install_prebuilt = INSTALL_LLAMA_PREBUILT.install_prebuilt
@@ -818,6 +821,15 @@ def test_activate_install_tree_keeps_rollback_when_restore_fails(
         return original_replace(src, dst)
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    # The rename is retried by a copy, so the retention path is only reached
+    # once the copy is out of the running too (no space, no permission).
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ENOSPC, "No space left on device")
+        ),
+    )
 
     with pytest.raises(PrebuiltFallback, match = "previous install kept at") as excinfo:
         activate_install_tree(staging_dir, install_dir, host)
@@ -837,6 +849,449 @@ def test_activate_install_tree_keeps_rollback_when_restore_fails(
     assert "cleaning staging, install, and failed paths before source build fallback" in output
     assert "removing failed install path" in output
     assert "removing rollback path" not in output
+
+
+def test_activate_install_tree_copies_previous_install_back_when_restore_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    with pytest.raises(PrebuiltFallback, match = "activation failed; restored previous install"):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # A rollback path nothing can read is not a working llama.cpp, so a copy is
+    # attempted before giving up on the install path itself.
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not (install_dir / "new.txt").exists()
+    assert not staging_dir.exists()
+    assert sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*")) == []
+
+    output = "".join(capsys.readouterr())
+    assert "copying the previous install back" in output
+
+
+def test_activate_install_tree_does_not_follow_a_symlink_out_of_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("precious\n")
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+    try:
+        (install_dir / "link-out").symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    with pytest.raises(PrebuiltFallback):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # Every removal and the copy fallback have to treat the link as a link; a
+    # single dereference here would wipe a directory outside the install.
+    assert (outside / "precious.txt").read_text() == "precious\n"
+    assert (install_dir / "link-out").is_symlink()
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+
+
+def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def sharing_violation(src, dst):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            exc = OSError(errno.EACCES, "The process cannot access the file")
+            exc.winerror = 32
+            raise exc
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", sharing_violation)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    replace_with_busy_retry(source, destination)
+
+    assert attempts["count"] == 3
+    assert (destination / "payload.txt").read_text() == "payload\n"
+
+
+def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    attempts = {"count": 0}
+
+    def denied(src, dst):
+        attempts["count"] += 1
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "posix")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.time,
+        "sleep",
+        lambda _seconds: pytest.fail("POSIX permission errors must not be waited out"),
+    )
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst")
+
+    assert attempts["count"] == 1
+
+
+def test_remove_tree_logged_clears_read_only_files(tmp_path: Path):
+    tree = tmp_path / "tree"
+    (tree / "nested").mkdir(parents = True)
+    locked = tree / "nested" / "locked.bin"
+    locked.write_bytes(b"locked")
+    os.chmod(locked, stat.S_IRUSR)
+
+    remove_tree_logged(tree, "read only tree")
+
+    assert not tree.exists()
+
+
+def test_remove_tree_logged_refuses_a_symlinked_root_without_touching_the_target(
+    tmp_path: Path,
+):
+    target = tmp_path / "outside"
+    target.mkdir()
+    (target / "precious.txt").write_text("precious\n")
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    # rmtree reports its refusal to run on a link through the read-only
+    # handler, which must not chmod or delete through it.
+    with pytest.raises(OSError):
+        remove_tree_logged(link, "symlinked tree")
+
+    assert link.is_symlink()
+    assert (target / "precious.txt").read_text() == "precious\n"
+    assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
+
+
+def test_activate_install_tree_leaves_a_symlinked_install_target_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "real-install-elsewhere"
+    target.mkdir()
+    (target / "old.txt").write_text("old install\n")
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+
+    install_dir = tmp_path / "llama.cpp"
+    try:
+        install_dir.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # The link is renamed aside as a link, so the tree it pointed at, which
+    # lives outside anything this installer owns, must come through untouched.
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert (target / "old.txt").read_text() == "old install\n"
+    assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
+
+
+def test_successful_activation_reclaims_side_paths_from_earlier_failed_updates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    stranded = staging_root / "llama.cpp.rollback-20200101000000-1"
+    stranded.mkdir()
+    (stranded / "old.txt").write_text("stranded\n")
+    stale_failed = staging_root / "llama.cpp.failed-20200101000000-1"
+    stale_failed.mkdir()
+    (stale_failed / "junk.txt").write_text("junk\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # A confirmed install is the one moment where a retained copy is provably
+    # not the last one, so this is where the accumulated trees are reclaimed.
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert not stranded.exists()
+    assert not stale_failed.exists()
+    assert not (tmp_path / ".staging").exists()
+
+
+def test_failed_activation_does_not_reclaim_side_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    stranded = staging_root / "llama.cpp.rollback-20200101000000-1"
+    stranded.mkdir()
+    (stranded / "old.txt").write_text("stranded\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    with pytest.raises(PrebuiltFallback):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert (stranded / "old.txt").read_text() == "stranded\n"
+
+
+def _fail_restore_and_copy(monkeypatch: pytest.MonkeyPatch, install_dir: Path) -> None:
+    """Force both ways of putting the previous install back to fail."""
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError("restore failed")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ENOSPC, "No space left on device")
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+
+def test_repeated_retention_keeps_exactly_one_previous_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    staging_root = tmp_path / ".staging"
+
+    for attempt in range(3):
+        install_dir.mkdir(parents = True, exist_ok = True)
+        (install_dir / "old.txt").write_text(f"install {attempt}\n")
+        staging_dir = create_install_staging_dir(install_dir)
+        (staging_dir / "new.txt").write_text("new install\n")
+        _fail_restore_and_copy(monkeypatch, install_dir)
+        with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+            activate_install_tree(staging_dir, install_dir, linux_host())
+        monkeypatch.undo()
+
+    # Each retained tree supersedes the last, so a machine that keeps failing
+    # parks one copy rather than one copy per attempt.
+    rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "install 2\n"
+    assert sorted(staging_root.glob("llama.cpp.failed-*")) == []
+
+
+def test_retention_does_not_copy_a_linked_previous_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    target = tmp_path / "user-checkout"
+    target.mkdir()
+    (target / "old.txt").write_text("user build\n")
+
+    install_dir = tmp_path / "llama.cpp"
+    try:
+        install_dir.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError("restore failed")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    copied: list[tuple] = []
+    original_copytree = INSTALL_LLAMA_PREBUILT.shutil.copytree
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *args, **kwargs: (copied.append(args), original_copytree(*args, **kwargs))[1],
+    )
+
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # copytree follows its source root even with symlinks = True, so a linked
+    # install must never be copied: that would replace the user's own checkout
+    # link with a real duplicate of a tree the installer does not own.
+    assert copied == []
+    assert (target / "old.txt").read_text() == "user build\n"
+    assert not (target / "new.txt").exists()
+    assert "previous install is a link; not copying it back" in "".join(capsys.readouterr())
+
+
+def test_prune_stale_install_side_paths_ignores_another_installs_side_paths(tmp_path: Path):
+    # An install directory name reaches this code from UNSLOTH_LLAMA_CPP_PATH,
+    # so a glob metacharacter in it must not reach through to a sibling.
+    bracketed = tmp_path / "llama[1].cpp"
+    bracketed.mkdir()
+    sibling = tmp_path / "llama1.cpp"
+    sibling.mkdir()
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(bracketed)
+    victim = staging_root / "llama1.cpp.rollback-20240101000000-1"
+    victim.mkdir()
+
+    assert prune_stale_install_side_paths(bracketed) == 0
+
+    assert victim.exists()
+
+
+def test_replace_with_busy_retry_rejects_a_zero_attempt_budget(tmp_path: Path):
+    # Falling off the loop would report a move that never happened, which on
+    # the aside-move is the exact failure this installer must never fake.
+    with pytest.raises(ValueError):
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts = 0)
+
+
+def test_readonly_rmtree_handler_only_retries_the_removal_calls(tmp_path: Path):
+    handler = INSTALL_LLAMA_PREBUILT._clear_readonly_and_retry
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    error = PermissionError(errno.EACCES, "Permission denied")
+
+    # rmtree routes lstat/open/scandir/islink/close failures through the same
+    # hook, and none of those can be called with a lone path.
+    for rejected in (os.open, os.scandir, os.lstat):
+        with pytest.raises(PermissionError):
+            handler(rejected, str(victim), error)
+    with pytest.raises(PermissionError):
+        handler(os.open, str(victim), (type(error), error, None))
+
+    assert victim.exists()
+
+
+def test_readonly_rmtree_handler_never_chmods_through_a_link(tmp_path: Path):
+    target = tmp_path / "outside"
+    target.mkdir()
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    error = OSError("Cannot call rmtree on a symbolic link")
+    with pytest.raises(OSError):
+        INSTALL_LLAMA_PREBUILT._clear_readonly_and_retry(os.rmdir, str(link), error)
+
+    assert link.is_symlink()
+    assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
+
+
+def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
+    if os.name == "nt":
+        pytest.skip("the read-only handler is Windows only by design")
+    tree = tmp_path / "tree"
+    unreadable = tree / "unreadable"
+    unreadable.mkdir(parents = True)
+    (unreadable / "file.bin").write_bytes(b"x")
+    os.chmod(unreadable, 0o500)
+    try:
+        with pytest.raises(OSError):
+            remove_tree_logged(tree, "unreadable tree")
+        # S_IWRITE is an assignment, not a bit clear, so a handler running here
+        # would leave the directory at 0o200 and harder to delete by hand than
+        # it was found. On POSIX the unlink permission lives on the parent, so
+        # there is nothing a chmod of this entry could have fixed anyway.
+        assert stat.S_IMODE(os.stat(unreadable).st_mode) == 0o500
+    finally:
+        os.chmod(unreadable, 0o700)
+
+
+def test_prune_stale_install_side_paths_keeps_the_paths_it_is_told_to_keep(tmp_path: Path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    keeper = staging_root / "llama.cpp.rollback-20250101000000-2"
+    keeper.mkdir()
+    doomed = staging_root / "llama.cpp.rollback-20200101000000-1"
+    doomed.mkdir()
+
+    assert prune_stale_install_side_paths(install_dir, keep = (keeper, None)) == 1
+
+    assert keeper.exists()
+    assert not doomed.exists()
 
 
 def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
