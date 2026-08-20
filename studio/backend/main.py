@@ -1104,7 +1104,6 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") == _SKILL_BUNDLE_IMPORT_PATH:
         from core.inference.skills import MAX_ARCHIVE_BYTES
-
         return upload_request_limit_bytes(MAX_ARCHIVE_BYTES)
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)

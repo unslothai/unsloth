@@ -32,7 +32,7 @@ class SkillEnabledRequest(BaseModel):
 
 
 def _bad_skill_request(exc: SkillError) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code = 400, detail = str(exc))
 
 
 @router.get("")
@@ -40,7 +40,7 @@ async def get_skills(current_subject: str = Depends(get_current_subject)):
     try:
         skills = await asyncio.to_thread(list_skills)
     except SkillError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code = 500, detail = str(exc)) from exc
     return {"skills": skills}
 
 
@@ -52,9 +52,9 @@ async def import_skill(
 ):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix != ".zip":
-        raise HTTPException(status_code=400, detail="Skill bundle must be a ZIP archive.")
+        raise HTTPException(status_code = 400, detail = "Skill bundle must be a ZIP archive.")
 
-    fd, temporary_name = tempfile.mkstemp(prefix="unsloth-skill-", suffix=".zip")
+    fd, temporary_name = tempfile.mkstemp(prefix = "unsloth-skill-", suffix = ".zip")
     total = 0
     try:
         with os.fdopen(fd, "wb") as output:
@@ -62,15 +62,15 @@ async def import_skill(
                 total += len(chunk)
                 if total > MAX_ARCHIVE_BYTES:
                     raise HTTPException(
-                        status_code=413,
-                        detail="Skill archive exceeds the 100 MB upload limit.",
+                        status_code = 413,
+                        detail = "Skill archive exceeds the 100 MB upload limit.",
                     )
                 output.write(chunk)
         try:
             skill = await asyncio.to_thread(
                 import_skill_archive,
                 Path(temporary_name),
-                replace=replace,
+                replace = replace,
             )
         except SkillError as exc:
             raise _bad_skill_request(exc) from exc
@@ -96,7 +96,7 @@ async def update_skill_enabled(
     return {"skill": skill}
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code = 204)
 async def remove_skill(name: str, current_subject: str = Depends(get_current_subject)):
     try:
         await asyncio.to_thread(delete_skill, name)
