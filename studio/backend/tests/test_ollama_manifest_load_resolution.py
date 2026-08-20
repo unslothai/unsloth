@@ -86,18 +86,36 @@ def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     assert native_grant_backed is False
 
 
-def test_retagged_manifest_materializes_a_new_load_path(tmp_path, monkeypatch):
-    from hub.services.models import ollama
+def test_retagged_manifest_replaces_one_hardlink_and_invalidates_loaded_identity(
+    tmp_path, monkeypatch
+):
     from types import SimpleNamespace
 
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    from hub.services.models import ollama
 
     root = tmp_path / "ollama-retagged"
     tag_file = _write_ollama_store(root)
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    def deny_symlink(*_args, **_kwargs):
+        raise OSError("symlinks disabled")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
     ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
 
     first_path = ollama.materialize_ollama_model_ref(ref)
+    first_resolved = Path(first_path).resolve()
+    first_stat = first_resolved.stat()
+    first_identity = (
+        (
+            str(first_resolved),
+            first_stat.st_dev,
+            first_stat.st_ino,
+            first_stat.st_size,
+            first_stat.st_mtime_ns,
+        ),
+    )
     assert Path(first_path).read_bytes() == b"GGUF-not-really"
 
     replacement_digest = "b" * 64
@@ -109,14 +127,15 @@ def test_retagged_manifest_materializes_a_new_load_path(tmp_path, monkeypatch):
 
     second_path = ollama.materialize_ollama_model_ref(ref)
 
-    assert second_path != first_path
-    assert Path(first_path).read_bytes() == b"GGUF-not-really"
+    assert second_path == first_path
     assert Path(second_path).read_bytes() == b"GGUF-replacement"
+    assert list((root / ".studio_links").rglob("*.gguf")) == [Path(second_path)]
 
     resident = SimpleNamespace(
         is_loaded = True,
         _model_identifier = ref,
         _gguf_path = first_path,
+        _gguf_load_identity = first_identity,
     )
     replacement_intent = GgufLoadIntent(model_identifier = ref, gguf_path = second_path)
     assert not LlamaCppBackend.matches_load_source(resident, replacement_intent)

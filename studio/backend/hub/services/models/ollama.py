@@ -77,28 +77,6 @@ def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ..
     return tuple(sorted(unsupported))
 
 
-def _ollama_load_revision(layers: list[object]) -> str:
-    """Stable revision for blobs that affect the direct llama.cpp load."""
-    artifacts: list[tuple[str, str]] = []
-    for layer in layers:
-        if not isinstance(layer, dict):
-            continue
-        media_type = layer.get("mediaType")
-        digest = layer.get("digest")
-        if (
-            media_type
-            in (
-                "application/vnd.ollama.image.model",
-                "application/vnd.ollama.image.projector",
-            )
-            and isinstance(digest, str)
-            and digest
-        ):
-            artifacts.append((media_type, digest))
-    payload = json.dumps(sorted(artifacts), separators = (",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-
 def _safe_is_file(path: Path) -> bool:
     try:
         return path.is_file()
@@ -321,8 +299,7 @@ def _ollama_model_info_from_manifest(
     model_blob: Optional[Path] = None
     gguf_link_path: Optional[str] = None
     stem_hash = hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
-    load_revision = _ollama_load_revision(layers)
-    model_link_dir = links_root / stem_hash / load_revision if links_root is not None else None
+    model_link_dir = links_root / stem_hash if links_root is not None else None
     safe_name = repo_name.replace("/", "-")
     quant = f"-{file_type}" if file_type else ""
 
