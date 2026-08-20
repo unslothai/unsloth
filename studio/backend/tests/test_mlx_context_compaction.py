@@ -122,7 +122,9 @@ def _word_count(messages, *_args, **_kwargs):
             )
         return ""
 
-    return 2 * len(messages) + sum(len(text(message.get("content")).split()) for message in messages)
+    return 2 * len(messages) + sum(
+        len(text(message.get("content")).split()) for message in messages
+    )
 
 
 def test_orchestrator_compacts_an_mlx_prompt_before_generation():
@@ -154,9 +156,9 @@ def test_orchestrator_compacts_an_mlx_prompt_before_generation():
     assert result["system_prompt"] == ""
     assert result["truncation"]["fits"] is True
     assert result["truncation"]["dropped_messages"] >= 1
-    assert result["truncation"]["prompt_tokens_before"] > result["truncation"][
-        "prompt_tokens_after"
-    ]
+    assert (
+        result["truncation"]["prompt_tokens_before"] > result["truncation"]["prompt_tokens_after"]
+    )
     assert result["messages"][-1]["content"] == "Answer the newest question now."
     assert result["events"][-1]["type"] == "context_truncated"
 

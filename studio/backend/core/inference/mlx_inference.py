@@ -1504,7 +1504,9 @@ class MLXInferenceBackend:
                 continue_final_message = continue_final_message,
             )
             if prompt is None:
-                raise RuntimeError("apply_chat_template returned None — processor may be incompatible")
+                raise RuntimeError(
+                    "apply_chat_template returned None — processor may be incompatible"
+                )
         else:
             prompt = self._render_text_chat_prompt(
                 full_messages,

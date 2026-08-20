@@ -16286,8 +16286,7 @@ async def openai_chat_completions(
             tools_on = _sf_tools_on,
             mcp_allowed = _sf_mcp_allowed,
             checkpoint_fitted = (
-                _sf_model_info.get("is_mlx")
-                and _rolling_context_policy(payload) is not None
+                _sf_model_info.get("is_mlx") and _rolling_context_policy(payload) is not None
             ),
         )
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
@@ -16332,8 +16331,7 @@ async def openai_chat_completions(
             _sf_nudge,
             _sf_tools_to_use,
             checkpoint_fitted = (
-                _sf_model_info.get("is_mlx")
-                and _rolling_context_policy(payload) is not None
+                _sf_model_info.get("is_mlx") and _rolling_context_policy(payload) is not None
             ),
         )
 
@@ -16651,7 +16649,6 @@ async def openai_chat_completions(
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
-
             _sf_context_truncation = None
 
             def _drain_to_text():
@@ -16728,9 +16725,7 @@ async def openai_chat_completions(
                     )
                 ],
             )
-            return _model_json_response_with_context_truncation(
-                response, _sf_context_truncation
-            )
+            return _model_json_response_with_context_truncation(response, _sf_context_truncation)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
@@ -16927,9 +16922,7 @@ async def openai_chat_completions(
                     enable_thinking = base_kwargs.get("enable_thinking"),
                     reasoning_effort = base_kwargs.get("reasoning_effort"),
                     preserve_thinking = base_kwargs.get("preserve_thinking"),
-                    continue_final_message = bool(
-                        base_kwargs.get("continue_final_message", False)
-                    ),
+                    continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
                     # Client-owned tool contracts cannot be repaired by silently
                     # adding search_conversation, so they keep the rolling window.
                     supports_tools = bool(
@@ -17001,19 +16994,13 @@ async def openai_chat_completions(
                         break
                     if isinstance(cumulative, dict):
                         if cumulative.get("type") == "context_truncated":
-                            _sf_context_truncation_holder["value"] = (
-                                _accumulate_context_truncation(
-                                    _sf_context_truncation_holder["value"], cumulative
-                                )
+                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                                _sf_context_truncation_holder["value"], cumulative
                             )
                             yield _context_truncated_sse_chunk(
                                 completion_id,
                                 model_name,
-                                {
-                                    key: value
-                                    for key, value in cumulative.items()
-                                    if key != "type"
-                                },
+                                {key: value for key, value in cumulative.items() if key != "type"},
                             )
                         continue
                     if isinstance(cumulative, GenStreamError):
@@ -17202,10 +17189,8 @@ async def openai_chat_completions(
                 for token in generate(messages_override):
                     if isinstance(token, dict):
                         if token.get("type") == "context_truncated":
-                            _sf_context_truncation_holder["value"] = (
-                                _accumulate_context_truncation(
-                                    _sf_context_truncation_holder["value"], token
-                                )
+                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                                _sf_context_truncation_holder["value"], token
                             )
                         continue
                     if isinstance(token, GenStreamError):
