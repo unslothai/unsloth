@@ -33,6 +33,17 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import {
+  answerTextFromParts,
+  extractSearchImages,
+  isSearchImageEntry,
+  isSearchImagesToolResult,
+  missingListSubjects,
+  SEARCH_IMAGE_TOOL,
+  searchResultText,
+  type SearchImageEntry,
+  type SearchImagesToolResult,
+} from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
@@ -1026,7 +1037,11 @@ export function toolResultModelText(
   result: unknown,
   toolName?: string,
 ): unknown {
-  if (isMcpImageToolResult(result) || isSandboxWrapper(result, toolName)) {
+  if (
+    isMcpImageToolResult(result) ||
+    isSearchImagesToolResult(result) ||
+    isSandboxWrapper(result, toolName)
+  ) {
     return result.text;
   }
   return result;
@@ -1090,6 +1105,7 @@ function serializeToolResultPart(
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
     isMcpImageToolResult(result) ||
+    isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
     // Replay the stdout the model saw, not the card's sessionId/images/files:
@@ -5915,6 +5931,11 @@ export function createOpenAIStreamAdapter(
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)
                         : { text: rawEvent, files: [] as SandboxFile[] };
+                    // Same rule: only from the tool that emits it.
+                    const { text: searchText, images: webImages } =
+                      toolCallParts[idx].toolName === SEARCH_IMAGE_TOOL
+                        ? extractSearchImages(rawResult)
+                        : { text: rawResult, images: [] as SearchImageEntry[] };
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
@@ -5928,6 +5949,7 @@ export function createOpenAIStreamAdapter(
                           files?: SandboxFile[];
                         }
                       | McpImageToolResult
+                      | SearchImagesToolResult
                       | {
                           image_b64: string;
                           image_mime: string;
@@ -6010,6 +6032,8 @@ export function createOpenAIStreamAdapter(
                         sessionId: sandboxSessionId || "_default",
                         files: createdFiles,
                       };
+                    } else if (webImages.length > 0) {
+                      parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
                     }
@@ -6578,9 +6602,8 @@ export function createOpenAIStreamAdapter(
           ) {
             return [];
           }
-          return parseSourcesFromResult(
-            typeof tc.result === "string" ? tc.result : "",
-          );
+          // An image-bearing result is an object; citations live on `.text`.
+          return parseSourcesFromResult(searchResultText(tc.result));
         });
 
         const meta = serverMetadata;
@@ -6648,7 +6671,93 @@ export function createOpenAIStreamAdapter(
           incompleteReason = "length";
         }
 
+        // Before the lookup below: its network time is not generation time.
         const finishedAt = Date.now();
+
+        // Small models list things and never ask for their pictures, so fetch the
+        // missing ones and record the web_search call they should have made.
+        // Local tool loop only (a hosted provider would be replayed a tool it never
+        // saw), never over the user's own documents, never behind an approval prompt.
+        const answerUsedPrivateDocs = toolCallParts.some(
+          (part) => part.toolName === "search_knowledge_base",
+        );
+        const toolCallsNeedApproval =
+          useChatRuntimeStore.getState().confirmToolCalls &&
+          useChatRuntimeStore.getState().permissionMode === "ask";
+        if (
+          incompleteReason === null &&
+          !isExternalRequest &&
+          supportsTools &&
+          toolsEnabled &&
+          !answerUsedPrivateDocs &&
+          !toolCallsNeedApproval &&
+          useChatRuntimeStore.getState().searchImages
+        ) {
+          // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
+          const answerText = answerTextFromParts(
+            buildAssistantContent(mergeContinuation(cumulativeText)),
+          );
+          const subjects = missingListSubjects(answerText, toolCallParts);
+          if (subjects.length > 0) {
+            // Bounded so a slow engine cannot hold a finished answer open.
+            // Linked by hand: AbortSignal.any is newer than the Safari floor.
+            const lookupAbort = new AbortController();
+            const onRunAbort = () => lookupAbort.abort();
+            runAbort.signal.addEventListener("abort", onRunAbort, { once: true });
+            const lookupTimer = setTimeout(() => lookupAbort.abort(), 15_000);
+            try {
+              const token = getAuthToken();
+              const response = await fetch(
+                apiUrl("/api/inference/search-images/lookup"),
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                  },
+                  body: JSON.stringify({ subjects }),
+                  signal: lookupAbort.signal,
+                },
+              );
+              if (response.ok) {
+                const data = (await response.json()) as {
+                  text?: unknown;
+                  images?: unknown;
+                };
+                const webImages = Array.isArray(data.images)
+                  ? data.images.filter(isSearchImageEntry)
+                  : [];
+                if (webImages.length > 0) {
+                  const args = { image_queries: subjects };
+                  toolCallParts.push({
+                    type: "tool-call" as const,
+                    // No colon: replayed ids must satisfy ^[a-zA-Z0-9_-]+$.
+                    // Guarded: randomUUID is undefined over plain HTTP on a LAN.
+                    toolCallId: `auto-images-${
+                      typeof crypto !== "undefined" && "randomUUID" in crypto
+                        ? crypto.randomUUID()
+                        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+                    }`,
+                    toolName: "web_search",
+                    argsText: JSON.stringify(args),
+                    args,
+                    result: {
+                      text: typeof data.text === "string" ? data.text : "",
+                      webImages,
+                    },
+                    textCursor: cumulativeText.length,
+                  } as PositionedToolCallPart);
+                }
+              }
+            } catch {
+              // Pictures are a garnish: a failed lookup leaves the answer as written.
+            } finally {
+              clearTimeout(lookupTimer);
+              runAbort.signal.removeEventListener("abort", onRunAbort);
+            }
+          }
+        }
+
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,

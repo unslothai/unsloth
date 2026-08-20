@@ -21402,7 +21402,11 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tool_stream_exec import accepts_output_callback, stream_tool_execution
+        from core.inference.tool_stream_exec import (
+            accepts_output_callback,
+            search_images_kwargs,
+            stream_tool_execution,
+        )
         from core.inference.tools import (
             build_rag_autoinject,
             execute_tool,
@@ -22743,6 +22747,9 @@ class LlamaCppBackend:
                             )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
+                            kwargs.update(
+                                search_images_kwargs(execute_tool, _decision.tool_name)
+                            )
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

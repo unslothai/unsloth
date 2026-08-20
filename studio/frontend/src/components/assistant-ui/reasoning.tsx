@@ -5,7 +5,10 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MarkdownText,
+  SearchImagesEnabledContext,
+} from "@/components/assistant-ui/markdown-text";
 import {
   Collapsible,
   CollapsibleContent,
@@ -271,7 +274,11 @@ function ReasoningText({
   );
 }
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+const ReasoningImpl: ReasoningMessagePartComponent = () => (
+  <SearchImagesEnabledContext.Provider value={false}>
+    <MarkdownText />
+  </SearchImagesEnabledContext.Provider>
+);
 
 const COPY_RESET_MS = 2000;
 

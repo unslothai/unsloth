@@ -448,6 +448,12 @@ def _accepts_output_callback(func: Callable[..., str]) -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+def _search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, bool]:
+    from core.inference.tool_stream_exec import search_images_kwargs
+
+    return search_images_kwargs(func, tool_name)
+
+
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
     """Call a single-turn generator with active tool schemas when supported."""
     try:
@@ -1297,6 +1303,7 @@ def run_safetensors_tool_loop(
                     )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
+                    kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

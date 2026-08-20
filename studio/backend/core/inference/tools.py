@@ -6,6 +6,7 @@
 
 import ast
 import codecs
+import copy
 import fnmatch
 import functools
 import hashlib
@@ -8909,6 +8910,25 @@ WEB_SEARCH_TOOL = {
 }
 
 
+def web_search_tool_with_images() -> dict:
+    # web_search plus image_queries, offered while the Search images setting is on.
+    tool = copy.deepcopy(WEB_SEARCH_TOOL)
+    fn = tool["function"]
+    fn["description"] += (
+        " To show pictures, pass image_queries: the exact names of the specific things you "
+        'will mention, one per entry (e.g. ["German Shepherd", "Labrador"]), never a list '
+        "title. Each returns an [[img:...]] token; put it on its own line under that item. "
+        "image_queries may also be sent alone after the answer."
+    )
+    fn["parameters"]["properties"]["image_queries"] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": 5,
+        "description": "Specific things to fetch one picture each for, named exactly as in your answer.",
+    }
+    return tool
+
+
 def _build_sandbox_paths_note() -> str:
     """Platform and working-directory note, on BOTH tool descriptions.
 
@@ -9440,6 +9460,7 @@ def execute_tool(
     disable_sandbox: bool = False,
     output_callback = None,
     website_policy: dict | None = None,
+    search_images: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -9525,6 +9546,8 @@ def execute_tool(
             timeout = effective_timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
+            include_images = search_images,
+            image_queries = arguments.get("image_queries"),
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
@@ -10434,8 +10457,13 @@ def _fetch_url_raw(
     deadline: float | None = None,
     cancel_event = None,
     website_policy: dict | None = None,
-) -> tuple[str | None, str, str]:
+    raw_bytes_max: int | None = None,
+) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes``
+    untouched (no PDF or text handling) and refused past that many bytes. The
+    same scheme, host, redirect and budget gates apply either way.
 
     ``error`` is a user-facing message string when the fetch failed (the
     existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
@@ -10557,8 +10585,13 @@ def _fetch_url_raw(
             # Success: read the capped body enforcing the budget between chunks
             # (see _read_capped_body), so a slow-drip server can't stretch a
             # single resp.read past the deadline.
-            declared_pdf = content_type == "application/pdf"
-            read_limit = _MAX_PDF_FETCH_BYTES + 1 if declared_pdf else max_bytes
+            declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            if raw_bytes_max is not None:
+                read_limit = raw_bytes_max + 1
+            elif declared_pdf:
+                read_limit = _MAX_PDF_FETCH_BYTES + 1
+            else:
+                read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
                 resp,
                 read_limit,
@@ -10571,6 +10604,10 @@ def _fetch_url_raw(
 
             # A missing or wrong PDF MIME type is common: once the initial text-sized
             # read identifies PDF magic, finish the bounded download to reach the EOF xref.
+            if raw_bytes_max is not None:
+                if len(raw_bytes) > raw_bytes_max:
+                    return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
+                return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
@@ -10847,11 +10884,17 @@ def _web_search(
     url: str | None = None,
     cancel_event = None,
     website_policy: dict | None = None,
+    include_images: bool = False,
+    image_queries = None,
 ) -> str:
     """Search the web and return formatted results.
 
     ddgs fans the query out across its search engines, so a single engine refusing is already
     covered. If ``url`` is provided, fetches that page directly instead of searching.
+    ``include_images`` adds image results registered server-side and offered to the model
+    as ``[[img:<id>]]`` tokens, with a frontend-only envelope appended: one picture per
+    ``image_queries`` subject when the model named them, else a handful for the query.
+    ``image_queries`` alone (no query) is a pure image lookup.
     """
     # Direct URL fetch mode.
     if url and url.strip():
@@ -10859,6 +10902,17 @@ def _web_search(
         return _fetch_page_text(
             url.strip(),
             timeout = fetch_timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
+        )
+
+    subjects = _clean_image_queries(image_queries)
+    if subjects and not (query and query.strip()):
+        if not include_images:
+            return IMAGE_SEARCH_DISABLED
+        return _image_search(
+            subjects,
+            timeout = timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
@@ -10884,7 +10938,8 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        results = DDGS(timeout = timeout).text(effective_query, max_results = wanted)
+        client = DDGS(timeout = timeout)
+        results = client.text(effective_query, max_results = wanted)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -10908,9 +10963,154 @@ def _web_search(
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
+        if include_images and subjects:
+            # The model named what it will show: one picture per subject, no generic pile.
+            text += "\n\n---\n\n" + _image_search(
+                subjects,
+                timeout = timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
+        elif include_images:
+            text += _web_search_images_suffix(
+                client,
+                effective_query,
+                wanted,
+                cancel_event,
+                website_policy,
+            )
+        elif subjects:
+            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         return _search_failure_message(e, timeout)
+
+
+IMAGE_SEARCH_MAX_QUERIES = 5
+IMAGE_SEARCH_PER_QUERY = 2
+IMAGE_SEARCH_DISABLED = (
+    "Image search is turned off. It can be enabled under Settings > Chat > Web search."
+)
+
+
+def _clean_image_queries(queries) -> list[str]:
+    # Strings only, trimmed, deduped case-insensitively, capped; anything else is [].
+    if isinstance(queries, str):
+        queries = [queries]
+    if not isinstance(queries, list):
+        return []
+    cleaned: list[str] = []
+    for raw in queries:
+        if not isinstance(raw, (str, int, float)):
+            continue
+        subject = " ".join(str(raw).split())[:80]
+        if subject and subject.lower() not in {c.lower() for c in cleaned}:
+            cleaned.append(subject)
+        if len(cleaned) >= IMAGE_SEARCH_MAX_QUERIES:
+            break
+    return cleaned
+
+
+def _image_search(
+    queries,
+    timeout: int = _EXEC_TIMEOUT,
+    cancel_event = None,
+    website_policy: dict | None = None,
+) -> str:
+    # One lookup per subject, concurrently; same registry and tokens as web_search.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .search_images import images_envelope, register_images
+
+    cleaned = _clean_image_queries(queries)
+    if not cleaned:
+        return "No subjects provided."
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+    try:
+        from ddgs import DDGS
+
+        from .web_access_policy import scope_search_query
+    except Exception as e:
+        return _search_failure_message(e, timeout)
+    if not callable(getattr(DDGS, "images", None)):
+        return "Image search is unavailable in this install."
+
+    def lookup(subject: str) -> list:
+        # A client per call: ddgs instances are not documented thread-safe.
+        try:
+            return list(
+                DDGS(timeout = timeout).images(
+                    scope_search_query(subject, website_policy),
+                    max_results = IMAGE_SEARCH_PER_QUERY * 4,
+                    safesearch = "moderate",
+                )
+                or []
+            )
+        except Exception as exc:  # noqa: BLE001 - one subject failing must not lose the rest
+            logger.debug("image lookup skipped %r (%s)", subject, type(exc).__name__)
+            return []
+
+    with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
+        raw_by_subject = list(pool.map(lookup, cleaned))
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+
+    sections: list[str] = []
+    entries_all: list[dict[str, str]] = []
+    for subject, raw in zip(cleaned, raw_by_subject):
+        entries = register_images(
+            raw,
+            website_policy,
+            max_images = IMAGE_SEARCH_PER_QUERY,
+            subject = subject,
+        )
+        if not entries:
+            sections.append(f"{subject}: no image found")
+            continue
+        entries_all.extend(entries)
+        # One token per subject; spares ride along in the envelope as fallbacks.
+        first = entries[0]
+        domain = f" — {first['domain']}" if first["domain"] else ""
+        sections.append(
+            f"{subject}:\n- [[img:{first['id']}]] {first['title'] or '(untitled)'}{domain}"
+        )
+    if not entries_all:
+        return "No images found for: " + ", ".join(cleaned)
+    header = (
+        "Images by subject. To show one, write its token exactly as given, e.g. "
+        f"[[img:{entries_all[0]['id']}]], on its own line directly under the text about that "
+        "subject. Use only these tokens; one per subject is enough."
+    )
+    return header + "\n\n" + "\n\n".join(sections) + images_envelope(entries_all)
+
+
+def _web_search_images_suffix(client, query, wanted, cancel_event, website_policy) -> str:
+    # "" when images are unavailable; never raises, the text results stand on their own.
+    from .search_images import (
+        MAX_IMAGES_PER_SEARCH,
+        format_images_for_model,
+        images_envelope,
+        register_images,
+    )
+
+    images_fn = getattr(client, "images", None)
+    if not callable(images_fn):
+        return ""
+    try:
+        raw = images_fn(
+            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
+        )
+    except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
+        logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
+        return ""
+    if cancel_event is not None and cancel_event.is_set():
+        return ""
+    entries = register_images(list(raw or []), website_policy)
+    if not entries:
+        return ""
+    return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
 
 
 def _check_signal_escape_patterns(code: str):
