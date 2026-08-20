@@ -234,6 +234,11 @@ def reasoning_flag_in_source() -> bool | None:
     None when the file cannot be read, which is the honest answer under SMOKE_BASE_URL: the
     server is then someone else's tree and this one says nothing about it.
     """
+    # SMOKE_BASE_URL serves a bundle built somewhere else, so the local working tree is not
+    # evidence about it. Reading it anyway would label a flag-on bundle as flag-off in the
+    # report, which is the one thing the `reasoning` arm exists to get right.
+    if _EXTERNAL:
+        return None
     try:
         text = FLAG_SOURCE.read_text(encoding = "utf-8")
     except OSError:
@@ -451,6 +456,14 @@ def run_cell(context, arm: str, fillers: int, options: argparse.Namespace) -> di
                 f"arm {arm!r} never rendered a [data-probe=trigger] with the grow hooks "
                 f"installed; page errors so far: {errors}"
             ) from exc
+
+        # Re-read the size AFTER the arm is drivable, and do not trust the value captured above.
+        # Document size is the x axis of this experiment, so it is worth taking at the moment the
+        # measurement actually starts rather than at the earliest moment the page was willing to
+        # say anything. The page now publishes from a post-commit effect, but this harness also
+        # runs against SMOKE_BASE_URL, where the served bundle may be an older one that still
+        # published from module scope after two frames.
+        ready["elements"] = page.evaluate("() => document.getElementsByTagName('*').length")
 
         # The page echoes the query it parsed. A renamed or misspelt parameter would otherwise
         # sweep four identical cells and report the flat line as a result.

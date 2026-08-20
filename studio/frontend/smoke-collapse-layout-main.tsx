@@ -197,6 +197,30 @@ function App() {
       setExtra((current) => current + n);
     (window as unknown as Record<string, unknown>).__probeReset = () => setExtra(0);
   }, []);
+
+  // Readiness is published from HERE, after this component and its filler tree have committed,
+  // and not from module scope after two frames of the initial render. `createRoot` renders
+  // concurrently, so a large `fillers` cell can still be mid-mount two frames in, and a count
+  // taken then reports the document as far smaller than it ends up. That number is the x axis of
+  // the whole experiment, so getting it from a pre-commit DOM would silently flatten the curve.
+  // The frames are still waited out, so the count is taken after layout rather than during it.
+  useEffect(() => {
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        (window as unknown as Record<string, unknown>).__probeReady = {
+          arm,
+          fillers,
+          paneParagraphs,
+          elements: document.getElementsByTagName("*").length,
+        };
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, []);
   return (
     <div>
       {/* The collapsible sits FIRST so that the filler is all after it in document order. A
@@ -221,15 +245,6 @@ if (!root) {
 
 createRoot(root).render(<App />);
 
-// The driver waits on this rather than on a timeout, and reads the layout-object count from it so
-// that "document size" is a measured number in the report and not the `fillers` parameter.
-requestAnimationFrame(() => {
-  requestAnimationFrame(() => {
-    (window as unknown as Record<string, unknown>).__probeReady = {
-      arm,
-      fillers,
-      paneParagraphs,
-      elements: document.getElementsByTagName("*").length,
-    };
-  });
-});
+// `__probeReady` is published from an effect inside `App` (see above), not from here. At module
+// scope the only thing that can be waited on is frames, and frames do not imply that a concurrent
+// initial mount has committed.
