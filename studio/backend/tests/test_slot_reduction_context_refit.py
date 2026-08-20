@@ -153,9 +153,7 @@ class TestTheRefitStaysOnTheCardsTheReductionChose:
     alone, and only the small card can hold a longer context."""
 
     def test_the_refit_does_not_pull_in_another_card(self, tmp_path):
-        got = _plan(
-            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
-        )
+        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
         assert (got["slots"], got["fit"], got["devices"]) == (2, "off", "0")
         assert got["ctx"] == 7_680
 
@@ -163,17 +161,13 @@ class TestTheRefitStaysOnTheCardsTheReductionChose:
         reduced = _plan(
             tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
         )
-        direct = _plan(
-            tmp_path, weights_mib = 10_200, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS
-        )
+        direct = _plan(tmp_path, weights_mib = 10_200, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS)
         assert reduced["devices"] == direct["devices"] == "0"
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
     def test_the_ceiling_still_counts_the_card_the_launch_left_out(self, tmp_path):
         """The ceiling is a hardware bound, so it keeps measuring across both cards."""
-        mixed = _plan(
-            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
-        )
+        mixed = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
         alone = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
         assert mixed["ctx"] == alone["ctx"] == 7_680
         assert (mixed["ceiling"], alone["ceiling"]) == (9_472, 7_680)

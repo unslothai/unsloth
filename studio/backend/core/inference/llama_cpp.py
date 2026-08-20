@@ -16213,7 +16213,9 @@ class LlamaCppBackend:
                             # closures read the rebound slot and micro-batch values; the
                             # helper re-prices flat compute and MTP per candidate.
 
-                            def _slots_hold(ctx: int, devices: list[tuple[int, int]]) -> Optional[list[int]]:
+                            def _slots_hold(
+                                ctx: int, devices: list[tuple[int, int]]
+                            ) -> Optional[list[int]]:
                                 """Return the GPU subset if the final slot count fits."""
                                 _gi, _uf, _got = self._slots_that_fit_on_gpu(
                                     n_parallel,
@@ -16236,7 +16238,9 @@ class LlamaCppBackend:
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
-                            def _largest_ctx(devices: list[tuple[int, int]]) -> Optional[tuple[int, list[int]]]:
+                            def _largest_ctx(
+                                devices: list[tuple[int, int]],
+                            ) -> Optional[tuple[int, list[int]]]:
                                 """Largest 256-aligned context these cards hold. The
                                 footprint grows monotonically with context."""
                                 _lo = max(1, min(4096, native_ctx_for_cap) // 256)
@@ -16261,7 +16265,11 @@ class LlamaCppBackend:
                             _plan_gpus = [g for g in gpus if g[0] in _kept]
                             _refit = _largest_ctx(_plan_gpus)
                             # Explicit contexts are never rewritten.
-                            if _refit is not None and not explicit_ctx and _refit[0] > effective_ctx:
+                            if (
+                                _refit is not None
+                                and not explicit_ctx
+                                and _refit[0] > effective_ctx
+                            ):
                                 logger.info(
                                     "Context re-fitted %d -> %d for %d serving slot(s).",
                                     effective_ctx,
@@ -16272,7 +16280,9 @@ class LlamaCppBackend:
                             # The ceiling stays a hardware bound like the sweep above, so
                             # measure it across every card at the final slot count: an
                             # explicit request that large re-selects GPUs and does load.
-                            _ceiling = _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
+                            _ceiling = (
+                                _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
+                            )
                             if _ceiling is not None:
                                 max_available_ctx = max(max_available_ctx, _ceiling[0])
 
