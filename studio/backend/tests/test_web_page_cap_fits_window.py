@@ -359,7 +359,12 @@ class TestDenseAsciiIsMeasuredNotEstimated:
     # 1.33 characters per token: the Qwen3-4B rate measured on `base64` output above.
     _RATE = 1.33
 
-    def _serving(self, monkeypatch, ctx, rate = None):
+    def _serving(
+        self,
+        monkeypatch,
+        ctx,
+        rate = None,
+    ):
         """A loaded llama.cpp backend that prices text at a real dense-ASCII rate."""
         rate = self._RATE if rate is None else rate
         backend = SimpleNamespace(
@@ -400,8 +405,10 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         estimate, so nothing that already fitted is shrunk."""
         _window(monkeypatch, 5120)
         self._serving(monkeypatch, 5120, rate = 4.2)
-        text = ("Artificial intelligence is the study of machines that perceive their "
-                "environment and take actions that maximise the chance of a goal. ") * 200
+        text = (
+            "Artificial intelligence is the study of machines that perceive their "
+            "environment and take actions that maximise the chance of a goal. "
+        ) * 200
         budget = tools._tool_result_char_budget()
 
         assert tools._dense_char_limit(text, budget) == budget
@@ -422,8 +429,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
 
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
-            lambda: SimpleNamespace(is_loaded = True, context_length = 5120,
-                                    count_chat_tokens = _boom),
+            lambda: SimpleNamespace(is_loaded = True, context_length = 5120, count_chat_tokens = _boom),
         )
         text = "0123456789abcdef" * 2000
 
