@@ -662,6 +662,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
@@ -904,16 +906,18 @@ export async function forkChatThread(
   return data;
 }
 
-export async function getForkCount(
+/** Fork counts for a whole thread, keyed by message id. One request per thread, not per message. */
+export async function getThreadForkCounts(
   threadId: string,
-  messageId: string,
-): Promise<number> {
+): Promise<ReadonlyMap<string, number>> {
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/forks`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/forks`,
   );
-  if (response.status === 404) return 0;
-  const data = await parseJsonOrThrow<{ count: number }>(response);
-  return data.count;
+  if (response.status === 404) return new Map();
+  const data = await parseJsonOrThrow<{ counts?: Record<string, number> }>(
+    response,
+  );
+  return new Map(Object.entries(data.counts ?? {}));
 }
 
 /** Thread ids whose sandbox still holds files, for a caller that never asked. */

@@ -363,6 +363,21 @@ def test_a_ttl_raised_during_the_step_spares_the_next_teardown(media, monkeypatc
     assert video.unloads == 0
 
 
+def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(media, monkeypatch):
+    # A request may register _pending during the off-loop pin read, invalidating prior idleness.
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+
+    def _pinned_while_a_request_lands(owner, *_args, **_kwargs):
+        mk._TRACKERS[owner].note_pending()
+        return False
+
+    monkeypatch.setattr(mk, "_user_pinned", _pinned_while_a_request_lands)
+    _step()  # Both models are seen; only the TTL remains.
+    _step(*_BOTH)
+    assert media[arb.DIFFUSION].unloads == 0
+    assert media[arb.VIDEO].unloads == 0
+
+
 def test_a_different_model_restarts_the_ttl(media, monkeypatch):
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
     engine = media[arb.DIFFUSION]

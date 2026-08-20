@@ -14,7 +14,9 @@ import sys
 import threading
 import time
 import uuid
+from functools import wraps
 from typing import Any, Optional
+from weakref import WeakKeyDictionary
 
 from loggers import get_logger
 
@@ -153,6 +155,35 @@ def stdio_mcp_enabled() -> bool:
     if loopback_default_active() and (remote_connector_active() or get_tool_policy() is False):
         return False
     return True
+
+
+def stdio_mcp_disabled_reason() -> str:
+    """User-facing reason local commands are off, mirroring stdio_mcp_enabled().
+
+    Telling a user whose gate is suspended by an active tunnel to set
+    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 would re-enable local command execution on
+    a published API, so the suspended cases must name their actual cause."""
+    from state.tool_policy import get_tool_policy
+    from utils.host_policy import loopback_default_active, remote_connector_active
+
+    if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1" and loopback_default_active():
+        if remote_connector_active():
+            return (
+                "Local commands are disabled while Remote Access is on, because the "
+                "server is reachable from outside this machine. Turn off Remote Access "
+                "to use local MCP servers, or use an http:// or https:// URL instead."
+            )
+        if get_tool_policy() is False:
+            return (
+                "Local commands are disabled because tools are disabled for this "
+                "server. Restart without --disable-tools, or use an http:// or "
+                "https:// URL instead."
+            )
+    return (
+        "Local commands aren't enabled on this server. To allow them, set "
+        "UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Unsloth, or use an "
+        "http:// or https:// URL instead."
+    )
 
 
 # Probe timeouts for discovering a server's tool list. OAuth needs minutes for
@@ -811,6 +842,28 @@ _tool_cache: dict[str, list[dict]] = {}
 # re-probed (see record_probe_failure). Cleared on a successful probe or
 # eviction.
 _probe_cooloff_until: dict[str, float] = {}
+
+# Coordinate off-loop token-count snapshots with row and schema-cache mutations.
+_mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+
+
+def mcp_server_snapshot_guard() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    return _mcp_server_snapshot_locks.setdefault(loop, asyncio.Lock())
+
+
+def serialize_mcp_server_mutation(handler):
+    """Run an MCP mutation from validation through row/cache commit as one snapshot."""
+
+    @wraps(handler)
+    async def _serialized(*args, **kwargs):
+        async with mcp_server_snapshot_guard():
+            return await handler(*args, **kwargs)
+
+    return _serialized
+
 
 # MCP server fields whose change invalidates a server's discovered tools: the
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at

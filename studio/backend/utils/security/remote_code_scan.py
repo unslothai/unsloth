@@ -34,6 +34,7 @@ from typing import Optional
 
 from loggers import get_logger
 from utils.hf_cache_settings import active_hf_hub_cache
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -495,6 +496,8 @@ def repo_remote_code_files(
                     if not name.endswith(".py"):
                         continue
                     p = directory_path / name
+                    if is_appledouble_metadata(p):
+                        continue
                     if not p.is_file():
                         raise RemoteCodeUnscannable(
                             f"{model_name}: Python source {p.relative_to(root)} is unreadable"

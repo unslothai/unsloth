@@ -67,10 +67,12 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    mcp_display_parts,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
+    accepts_kwarg,
     accepts_output_callback,
     stream_tool_execution,
 )
@@ -564,6 +566,16 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     return _sse(new_payload)
 
 
+def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
+    """Provenance for a hand-built unrun card; carries the MCP display name so a
+    budget-exhausted or truncated MCP call never shows the internal server id."""
+    provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        provenance["mcp_server"] = mcp[0]
+    return provenance
+
+
 def _unrun_call_card(
     *, tool_name: str, tool_call_id: str, arguments: Any, result: str, provenance: dict[str, Any]
 ) -> list[str]:
@@ -718,6 +730,8 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Studio tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # Kept before the loop appends anything: this is the branch the request is on.
+    request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -982,7 +996,7 @@ async def stream_with_studio_tools(
                     # well formed to show; the result says what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
-                    provenance = {"source": "local", "round_id": round_id + 1},
+                    provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
         # tool_choice "none" is an instruction, and a provider that emits a call
@@ -1054,7 +1068,7 @@ async def stream_with_studio_tools(
                     tool_call_id = call.get("stream_id") or call["id"],
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = {"source": "local", "round_id": round_id},
+                    provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the
@@ -1209,6 +1223,24 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Provider loops share the local catalogue selector, so
+                # search_conversation is advertised here too once a thread has an archive
+                # and needs the same branch: the stored rows are the whole DAG, and Retry
+                # leaves the replaced response in them.
+                if accepts_kwarg(execute_tool, "conversation_branch"):
+                    kwargs["conversation_branch"] = request_branch
+                # And a budget, so the tool's clamp is not skipped. Studio cannot measure
+                # an external model's window, and a custom OpenAI-compatible endpoint can
+                # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
+                # replayed on every later call. Unmeasurable means one recall's worth.
+                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                    try:
+                        from core.rag import config as rag_config
+                        kwargs["conversation_budget_tokens"] = max(
+                            1, int(rag_config.CHUNK_TOKENS)
+                        ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+                    except Exception:
+                        pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
