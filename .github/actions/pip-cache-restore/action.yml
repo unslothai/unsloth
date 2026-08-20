@@ -63,7 +63,20 @@ runs:
         set -euo pipefail
         dir="$(python -m pip cache dir)"
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
-        pyver="$(python -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+        # Minor, deliberately not patch. Nothing in this repo pins a patch version:
+        # 53 steps ask for '3.12' and the one matrix offers '3.11' and '3.13', so the
+        # patch is whatever the hosted image happens to ship that week. Carrying it in
+        # the key duplicated the WHOLE cache every time GitHub bumped it, which is not
+        # a hypothetical -- measured 2026-08-20, two entries differing in nothing but
+        # 3.12.13 vs 3.12.14 held 10.85 and 11.21 GiB, 44% of the repo's 50 GiB budget
+        # between them, against a total that had climbed back to 99.1% full. The same
+        # pairing showed up in 10 of the 12 pip entries.
+        #
+        # Safe because of WHAT is cached, the same argument the uv cache rests on: pip
+        # stores downloaded wheels, tagged cp312 and so ABI-compatible across every
+        # 3.12.x, behind an HTTP cache addressed by URL and hash. A stale entry cannot
+        # serve wrong content; the worst it can do is miss.
+        pyver="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
         hash="${{ hashFiles(inputs.key-files) }}"
         # Empty means the globs matched nothing, which would silently collapse
         # every job onto one key. Loud here, where the cause is one line away.
