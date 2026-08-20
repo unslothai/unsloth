@@ -43,12 +43,14 @@ test("both response types carry the raw disable_vision echo", () => {
   );
 });
 
-test("the applier seeds the switch from status, under the tensorParallel guard", () => {
-  // Unguarded it would fight the user: every poll would stamp the running
-  // model's value over a switch that was flipped but not yet applied.
+test("the applier seeds the switch from status, through the seed resolver", () => {
+  // Unguarded it would fight the user: every poll would stamp the running model's
+  // value over a switch that was flipped but not yet applied. The rule is in
+  // shouldSeedVisionSwitch, which vision-switch-seed.test.ts pins case by case;
+  // this only checks the applier still routes through it.
   assert.match(
     APPLIER,
-    /status\.disable_vision !== undefined &&\s*\n\s*\(prevState\.loadedVisionDisabledByUser === null \|\|\s*\n?\s*hydratingExistingModel\) && \{\s*\n\s*disableVision: status\.disable_vision,/,
+    /status\.disable_vision !== undefined &&\s*\n\s*shouldSeedVisionSwitch\(\{/,
   );
   // An older backend that omits the field must change nothing at all, so no
   // `?? false` may creep in here.

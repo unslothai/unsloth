@@ -31,6 +31,7 @@ import type { ChatModelSummary } from "../types/runtime";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
+import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -402,16 +403,23 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    // A load knob like tensorParallel above, so the same reseed and the same
-    // "unseeded" guard. Without it a tab that never performed the load shows
-    // Vision ON over a model running with its projector off, and the next Reload
-    // silently puts the projector back. Seeded from disable_vision -- the request
-    // the load ran with -- not vision_disabled_by_user, which is also gated on the
-    // model HAVING a projector and so cannot round-trip a text-only GGUF.
+    // A load knob like tensorParallel above. Without a reseed a tab that never
+    // performed the load shows Vision ON over a model running with its projector
+    // off, and the next Reload silently puts the projector back. Seeded from
+    // disable_vision -- the request the load ran with -- not
+    // vision_disabled_by_user, which is also gated on the model HAVING a projector
+    // and so cannot round-trip a text-only GGUF.
+    //
+    // Unlike tensorParallel the guard is not just "unseeded": the baseline below is
+    // unguarded, so an external reload of the same model would move it and the image
+    // gate while leaving this control behind. See shouldSeedVisionSwitch.
     ...(seedLoadParams &&
       status.disable_vision !== undefined &&
-      (prevState.loadedVisionDisabledByUser === null ||
-        hydratingExistingModel) && {
+      shouldSeedVisionSwitch({
+        incoming: status.disable_vision,
+        previous: prevState,
+        hydratingExistingModel,
+      }) && {
         disableVision: status.disable_vision,
       }),
     // The rollback baseline, and unguarded like the mirror below rather than
