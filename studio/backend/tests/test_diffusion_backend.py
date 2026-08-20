@@ -7493,6 +7493,92 @@ def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
         backend._release_teardown_locked()
 
 
+def test_cancel_reaches_a_waiter_once_the_generation_it_queued_behind_exits(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The reason a request is waiting changes under it: it queues behind a denoising
+    # generation, that generation exits, and a replacement takes the slot. Whether Stop may
+    # signal it is therefore decided by cancel_generate() on live state, not cached per
+    # waiter, since a waiter asleep in its timed acquisition cannot notice the handover.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    denoising = threading.Event()
+    release_active = threading.Event()
+    calls: list[int] = []
+    real_call = _FakePipe.__call__
+
+    def _call(self, **kwargs):
+        first = not calls
+        calls.append(1)
+        if first:
+            denoising.set()
+            assert release_active.wait(5), "the active generation was never released"
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
+    active.start()
+    assert denoising.wait(5), "the first generation never started denoising"
+    waiter = threading.Thread(target = generate, args = ("waiter", "waiter"), daemon = True)
+    waiter.start()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        release_active.set()
+        pytest.fail("the waiting request was never published")
+
+    # A replacement reserves while the first generation is still denoising, so the slot the
+    # waiter is queued for goes to the teardown rather than to the waiter.
+    with backend._lock:
+        backend._reserve_teardown_locked()
+    release_active.set()
+    active.join(5)
+    assert not active.is_alive()
+
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with backend._generation_cancel_lock:
+                if backend._active_generate_cancel is None:
+                    break
+            time.sleep(0.01)
+        else:
+            pytest.fail("the active generation never deregistered")
+
+        assert backend.cancel_generate() is True, "Stop did not reach the waiting request"
+        waiter.join(5)
+        assert not waiter.is_alive(), "the waiting request stayed queued through the teardown"
+        assert isinstance(outcomes["waiter"], RuntimeError)
+        assert str(outcomes["waiter"]) == DIFFUSION_CANCELLED_MSG
+        assert not backend._queued_generate_cancels
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+        waiter.join(5)
+
+
 class _FirstAcquireHookLock:
     """Generation-lock wrapper that runs a hook before the first acquisition attempt."""
 

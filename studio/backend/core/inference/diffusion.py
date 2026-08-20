@@ -1100,9 +1100,8 @@ class DiffusionBackend:
         self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
-        # Requests waiting for the slot while NOTHING is denoising: they are waiting on a model
-        # transition, so Stop has to reach them. A request merely serialised behind another
-        # generation is a different caller's work and stays out of this set.
+        # Every request waiting for the generation slot. cancel_generate() signals these only
+        # when nothing is denoising, i.e. when the wait really is a model transition.
         self._queued_generate_cancels: set[threading.Event] = set()
         # Unloads / superseding loads waiting on _generate_lock to free this pipeline. A queued
         # generation is not the ACTIVE one teardown should cancel, so without this fence it could
@@ -1155,20 +1154,6 @@ class DiffusionBackend:
         if self._teardown_waiters == 0:
             self._teardown_drained.set()
 
-    def _track_queued_cancel(self, cancel: threading.Event) -> None:
-        """Keep ``cancel`` Stop-reachable exactly while no generation owns the slot.
-
-        Nothing denoising means the generation lock is held or reserved by a load or an
-        unload, so this request is waiting on a model transition and the page is still
-        showing its Generate as pending. Once a generation owns the slot, Stop is about
-        THAT generation, so a request merely serialised behind it must not be signalled.
-        """
-        with self._generation_cancel_lock:
-            if self._active_generate_cancel is None:
-                self._queued_generate_cancels.add(cancel)
-            else:
-                self._queued_generate_cancels.discard(cancel)
-
     @contextmanager
     def _generation_slot(self, cancel: threading.Event):
         """Hold the generation lock, yielding to teardown and remaining cancellable.
@@ -1183,14 +1168,16 @@ class DiffusionBackend:
         or reserved before the check and makes this request yield.
         """
         admitted = False
+        # Published before anything is attempted, so there is no window in which Stop answers
+        # false, the page settles its button, and this request runs anyway. cancel_generate()
+        # decides which members it may signal.
+        with self._generation_cancel_lock:
+            self._queued_generate_cancels.add(cancel)
         try:
             while True:
                 # A replacement holds this lock throughout construction. Timed acquisition keeps
-                # a queued HTTP request responsive to Stop without weakening that barrier, and
-                # publishing the event BEFORE the first attempt leaves no window in which Stop
-                # answers false, settles the page's button, and lets this run after the load.
+                # a queued HTTP request responsive to Stop without weakening that barrier.
                 while True:
-                    self._track_queued_cancel(cancel)
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._generate_lock.acquire(timeout = 0.1):
@@ -1202,9 +1189,7 @@ class DiffusionBackend:
                         with self._generation_cancel_lock:
                             cancelled = cancel.is_set()
                             if not cancelled:
-                                # The slot is a generation's from here, so nothing still waiting
-                                # for it is waiting on a model transition any more.
-                                self._queued_generate_cancels.clear()
+                                self._queued_generate_cancels.discard(cancel)
                                 self._active_generate_cancel = cancel
                                 admitted = True
                     else:
@@ -1217,7 +1202,6 @@ class DiffusionBackend:
                 # Waiting on the gate takes no lock at all, so the teardown owner is free to hold
                 # _lock for as long as its transition needs while Stop still lands here.
                 while True:
-                    self._track_queued_cancel(cancel)
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._teardown_drained.wait(timeout = 0.1):
@@ -5898,9 +5882,18 @@ class DiffusionBackend:
         during the VAE decode or the encode that precedes step 0 lands when that finishes.
         Same contract as the video backend."""
         with self._generation_cancel_lock:
+            # Stop is about the generation that is DENOISING. A request only serialised behind
+            # it on _generate_lock is a different caller's work, so it keeps its turn rather
+            # than failing with a cancellation nobody asked for.
+            active = self._active_generate_cancel
+            if active is not None:
+                active.set()
+                return True
+            # Nothing is denoising, so every waiter is queued behind a model transition and
+            # Stop is the answer for all of them. Decided here, on live state, rather than by
+            # each waiter polling: a waiter asleep in its timed acquisition cannot notice that
+            # the generation it was behind has exited.
             cancels = set(self._queued_generate_cancels)
-            if self._active_generate_cancel is not None:
-                cancels.add(self._active_generate_cancel)
             if not cancels:
                 return False
             for cancel in cancels:
