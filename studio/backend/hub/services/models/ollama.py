@@ -354,7 +354,10 @@ def _ollama_model_info_from_manifest(
         previous_projector_hardlink: Optional[Path] = None
         try:
             if projector_link.is_symlink():
-                previous_projector = projector_link.resolve(strict = True)
+                try:
+                    previous_projector = projector_link.resolve(strict = True)
+                except FileNotFoundError:
+                    pass
             elif projector_link.exists():
                 previous_projector_hardlink = model_link_dir / (
                     f".{mmproj_name}.rollback-{uuid.uuid4().hex[:8]}"

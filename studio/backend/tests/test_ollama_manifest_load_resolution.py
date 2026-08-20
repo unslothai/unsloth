@@ -217,6 +217,52 @@ def test_missing_projector_retag_is_rejected_before_main_link_changes(tmp_path, 
     assert projector_path.read_bytes() == b"{}"
 
 
+@pytest.mark.parametrize("remove_projector", [False, True])
+def test_dangling_projector_link_can_be_replaced_or_removed(
+    tmp_path, monkeypatch, remove_projector
+):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-dangling-projector"
+    tag_file = _write_ollama_store(
+        root,
+        extra_layers = ("application/vnd.ollama.image.projector",),
+    )
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+    model_path = ollama.materialize_ollama_model_ref(ref)
+    projector_path = next(Path(model_path).parent.glob("*-mmproj.gguf"))
+
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    if remove_projector:
+        manifest["layers"] = manifest["layers"][:1]
+    else:
+        projector_digest = "c" * 64
+        (root / "blobs" / f"sha256-{projector_digest}").write_bytes(b"GGUF-projector-replacement")
+        manifest["layers"][1]["digest"] = f"sha256:{projector_digest}"
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    real_is_symlink = Path.is_symlink
+    real_resolve = Path.resolve
+
+    def is_symlink(path):
+        return path == projector_path or real_is_symlink(path)
+
+    def resolve(path, *args, **kwargs):
+        if path == projector_path and kwargs.get("strict"):
+            raise FileNotFoundError(projector_path)
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+    assert ollama.materialize_ollama_model_ref(ref) == model_path
+    if remove_projector:
+        assert not projector_path.exists()
+    else:
+        assert projector_path.read_bytes() == b"GGUF-projector-replacement"
+
+
 def test_failed_main_retag_restores_the_previous_projector(tmp_path, monkeypatch):
     from hub.services.models import ollama
 
