@@ -1818,3 +1818,39 @@ def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch)
     # And a thread still inside its epoch keeps saying so, since every fit records it.
     _install([_row("the compacted reply", True), _row("a later reply that fit", True)])
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
+
+
+def test_a_restated_instruction_keeps_its_newest_position():
+    """Otherwise the block's own later-wins rule reports the opposite of the truth.
+
+    The all-short fallback reserves the oldest qualifying turn and walks it first, so a
+    repeat was dropped in favour of its own older copy. "metric", "imperial", "metric"
+    then rendered as metric followed by imperial, telling the model imperial was current
+    at the moment the user had just restored metric.
+    """
+    messages = [
+        {"role": "user", "content": "Use metric units"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Use imperial units"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Use metric units"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    items = carried_forward_items(messages, max_tokens = 4096)
+
+    # One copy of the repeated rule, and it is the LAST word.
+    assert items.count("Use metric units") == 1
+    assert items == ["Use imperial units", "Use metric units"]
+
+
+def test_the_plain_walk_still_keeps_one_copy_of_a_repeated_rule():
+    """The dedupe's original purpose: one rule restated many times must not spend every
+    slot. Unchanged by keeping the newest position, since the newest-first walk already
+    sees the newest copy first."""
+    messages = []
+    for _ in range(5):
+        messages.append({"role": "user", "content": INSTRUCTION})
+        messages.append({"role": "assistant", "content": "ok"})
+
+    assert carried_forward_items(messages, max_tokens = 4096) == [INSTRUCTION]

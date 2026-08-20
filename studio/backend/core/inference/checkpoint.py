@@ -152,7 +152,7 @@ def _select_items(
     # `reversed(chosen)` put the oldest turn LAST, inverting the supersession the header
     # promises.
     picked: list[tuple[int, str]] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     spent = 0
     for index in order:
         if len(picked) >= max_items:
@@ -165,13 +165,24 @@ def _select_items(
             # Users restate a standing rule, and each copy used to take a slot out of
             # eight: one rule repeated eight times crowded out the user's other rule.
             # Checked before the cost is charged, so a repeat cannot exhaust the budget.
+            #
+            # The surviving copy keeps the NEWEST position. `reserve_oldest` walks the
+            # oldest qualifying turn first, so without this a restatement was dropped in
+            # favour of its own older copy: "metric", "imperial", "metric" rendered as
+            # metric then imperial, and the header's later-wins rule then told the model
+            # imperial was current when the user had just restored metric. In the plain
+            # newest-first walk the first sighting is already the newest, so nothing
+            # moves there.
+            slot = seen[item]
+            if index > picked[slot][0]:
+                picked[slot] = (index, item)
             continue
         if spent + cost > max_tokens:
             # Skipped, not truncated, and the loop continues: an older instruction that
             # still fits beats nothing.
             continue
         picked.append((index, item))
-        seen.add(item)
+        seen[item] = len(picked) - 1
         spent += cost
     return [item for _, item in sorted(picked)]
 
