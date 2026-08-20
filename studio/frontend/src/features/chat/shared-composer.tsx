@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
@@ -1477,6 +1482,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1565,6 +1571,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1636,6 +1643,9 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...(targetIsGguf && !(resp.is_diffusion ?? false)
+            ? committedServerTuningState(ownConfig)
+            : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status
           // applier is held off for the whole load, so nothing else records it, and
           // a switch straight after would snapshot the other model's list.

@@ -19,7 +19,14 @@ from pydantic import (
     model_validator,
 )
 
-from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import (
+    BATCH_MAX,
+    BATCH_MIN,
+    CACHE_RAM_MAX_MIB,
+    CTX_CHECKPOINTS_MAX,
+    PARALLEL_MAX,
+    PARALLEL_MIN,
+)
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
@@ -179,6 +186,54 @@ class LoadRequest(BaseModel):
             "Ignored for non-GGUF models."
         ),
     )
+    load_mode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = Field(
+        None,
+        description = (
+            "How llama-server reads the weights off disk (--load-mode). 'auto' "
+            "memory-maps unless a device cannot, 'mmap' forces the mapping, "
+            "'mlock' keeps the model in RAM rather than letting it swap or "
+            "compress, 'mmap+mlock' does both, 'dio' uses DirectIO where "
+            "available and 'none' asks for no special mode. Omit for the "
+            "llama.cpp default. The Model Memory settings own host placement, so "
+            "'Keep model in GPU memory' replaces this with mmap+mlock and "
+            "'Don't reserve system RAM' drops a mode that would hold a full host "
+            "copy. Ignored for non-GGUF models."
+        ),
+    )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = (
+            "KV cache dtype for the DRAFT model's context "
+            "(--spec-draft-type-k / --spec-draft-type-v), for example 'q8_0'. "
+            "Separate from cache_type_kv, which is the target model's. Only "
+            "reaches the command line when the load attaches a separate draft "
+            "model; omit for the llama.cpp default (f16). Ignored for non-GGUF "
+            "models."
+        ),
+    )
+    ctx_checkpoints: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = CTX_CHECKPOINTS_MAX,
+        description = (
+            "Context checkpoints kept per slot (--ctx-checkpoints), which let a "
+            "sliding-window model rewind instead of re-processing the prompt. "
+            "Omit for the llama.cpp default (32); 0 disables them. "
+            "Each costs host memory, and a model without a sliding window "
+            "ignores it. Ignored for non-GGUF models."
+        ),
+    )
+    cache_ram: Optional[int] = Field(
+        None,
+        ge = -1,
+        le = CACHE_RAM_MAX_MIB,
+        description = (
+            "Host memory in MiB llama-server may spend caching prompt state it "
+            "has evicted from a slot (--cache-ram). Omit for the llama.cpp "
+            "default (8192); 0 disables the cache and -1 lifts the limit. "
+            "Ignored for non-GGUF models."
+        ),
+    )
     tensor_parallel: bool = Field(
         False,
         description = (
@@ -249,7 +304,7 @@ class LoadRequest(BaseModel):
         ),
     )
 
-    @field_validator("n_batch", "n_ubatch", mode = "before")
+    @field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", mode = "before")
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
         # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
@@ -433,6 +488,27 @@ class ValidateModelRequest(BaseModel):
         le = 16,
         description = "Draft depth intended for the follow-up load; sizes the draft KV.",
     )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = (
+            "Draft KV cache dtype intended for the follow-up load. Sent so this "
+            "preflight strips the same inherited draft-cache flags /load would, "
+            "and so approves the command the load actually runs. The coexistence "
+            "estimate prices the drafter's weights but not its KV, so the value "
+            "itself does not move the number."
+        ),
+    )
+    ctx_checkpoints: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = CTX_CHECKPOINTS_MAX,
+        description = (
+            "Checkpoints (--ctx-checkpoints) intended for the follow-up load, so "
+            "the coexistence estimate sizes the SWA cache like /load. Each one is "
+            "a per-slot snapshot that scales with the slot's context, so a load "
+            "asking for them needs materially more memory than one that does not."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -446,7 +522,7 @@ class ValidateModelRequest(BaseModel):
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
-    _no_booleans = field_validator("n_batch", "n_ubatch", mode = "before")(
+    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", mode = "before")(
         LoadRequest._no_booleans.__func__
     )
 
@@ -923,6 +999,36 @@ class _InferenceRuntimeFields(BaseModel):
         description = (
             "Micro-batch size (--ubatch-size) the load was invoked with, or None "
             "when the load left it at the llama.cpp default (or to extra args / env)."
+        ),
+    )
+    requested_load_mode: Optional[str] = Field(
+        None,
+        description = (
+            "Load mode (--load-mode) the load was invoked with, or None when the "
+            "load left it at the llama.cpp default. This is what was REQUESTED: "
+            "the Model Memory settings can replace it, and what they emit is "
+            "reported by the model-memory settings route instead."
+        ),
+    )
+    requested_spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = (
+            "Draft KV cache dtype the load was invoked with, or None when the "
+            "load left it at the llama.cpp default (or attached no drafter)."
+        ),
+    )
+    requested_ctx_checkpoints: Optional[int] = Field(
+        None,
+        description = (
+            "Checkpoints (--ctx-checkpoints) the load was invoked with, or None "
+            "when the load left it at the llama.cpp default."
+        ),
+    )
+    requested_cache_ram: Optional[int] = Field(
+        None,
+        description = (
+            "Host prompt cache size in MiB (--cache-ram) the load was invoked "
+            "with, or None when the load left it at the llama.cpp default."
         ),
     )
     requested_llama_extra_args: Optional[List[str]] = Field(

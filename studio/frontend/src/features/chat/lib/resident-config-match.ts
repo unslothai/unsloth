@@ -23,6 +23,10 @@ type ResidentRuntime = Pick<
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
+  | "requested_load_mode"
+  | "requested_spec_draft_cache_type"
+  | "requested_ctx_checkpoints"
+  | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
   | "chat_template_override"
@@ -334,6 +338,37 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
+  },
+  {
+    chatOnly: true,
+    // Same shape as the batch pair above: a blank control means the llama.cpp
+    // default, and the status echoes what the load asked for rather than what it
+    // resolved to, so null on both sides is agreement and anything else reloads.
+    pinned: () => true,
+    agrees: (c, s) => (c.loadMode ?? null) === (s.requested_load_mode ?? null),
+  },
+  {
+    chatOnly: true,
+    // Always pinned, unlike spec_draft_n_max: the status echoes what the load
+    // REQUESTED, so a resident server that asked for nothing reports null and a
+    // blank control agrees with it. Reading blank as "no opinion" instead would
+    // mean clearing the dtype back to the f16 default never relaunched, leaving
+    // the server on the quantized draft cache the panel no longer shows.
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.specDraftCacheDtype ?? null) ===
+      (s.requested_spec_draft_cache_type ?? null),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.ctxCheckpoints ?? null) === (s.requested_ctx_checkpoints ?? null),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
