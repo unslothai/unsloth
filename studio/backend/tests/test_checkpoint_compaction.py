@@ -1873,13 +1873,21 @@ def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
     ]
 
     only_one = _select_items(
-        messages, max_tokens = 4096, max_items = 1, min_chars = 0, reserve_oldest = True,
+        messages,
+        max_tokens = 4096,
+        max_items = 1,
+        min_chars = 0,
+        reserve_oldest = True,
     )
     assert only_one == ["Actually build Tetris instead"]
 
     # With room for two, the opening task is still reserved, rendered oldest first.
     both = _select_items(
-        messages, max_tokens = 4096, max_items = 2, min_chars = 0, reserve_oldest = True,
+        messages,
+        max_tokens = 4096,
+        max_items = 2,
+        min_chars = 0,
+        reserve_oldest = True,
     )
     assert both == ["Build a Flappy Bird game", "Actually build Tetris instead"]
 
@@ -1887,14 +1895,20 @@ def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
 def test_the_opening_task_still_survives_a_run_of_short_increments():
     """The reason reserve_oldest exists: newest-first alone spends every slot on the
     increments nearest the end and evicts the statement of the task itself."""
-    messages = [{"role": "user", "content": "Build a Flappy Bird game"},
-                {"role": "assistant", "content": "ok"}]
+    messages = [
+        {"role": "user", "content": "Build a Flappy Bird game"},
+        {"role": "assistant", "content": "ok"},
+    ]
     for step in ("add music", "now the score", "fix the pipes", "tune gravity"):
         messages.append({"role": "user", "content": step})
         messages.append({"role": "assistant", "content": "ok"})
 
     items = _select_items(
-        messages, max_tokens = 4096, max_items = 3, min_chars = 0, reserve_oldest = True,
+        messages,
+        max_tokens = 4096,
+        max_items = 3,
+        min_chars = 0,
+        reserve_oldest = True,
     )
 
     assert "Build a Flappy Bird game" in items
