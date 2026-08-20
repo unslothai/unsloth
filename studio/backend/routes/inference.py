@@ -50,6 +50,11 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
+from hub.services.models.ollama import (
+    acquire_ollama_model_ref,
+    is_ollama_manifest_ref,
+    materialize_ollama_model_ref,
+)
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
@@ -180,6 +185,12 @@ _install_httpcore_asyncgen_silencer()
 # Status polls can start a cold subprocess probe or wait on a release lookup.  Keep
 # that bounded work out of the default executor, which drives local token streaming.
 _STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
+
+
+# Lease waiters must not consume default workers needed by the current holder.
+_OLLAMA_LEASE_EXECUTOR = ThreadPoolExecutor(
+    max_workers = 2, thread_name_prefix = "inference-ollama-lease"
+)
 
 # Stop has to preempt exactly when the box is busy, so it gets its own workers for the same reason
 # the probes above do. Every /images/generate sits in the default executor for the whole run (it
@@ -5023,7 +5034,12 @@ def _active_gguf_intent(
         # A repo or directory variant has not been resolved to a file yet. Do
         # not inherit the resident file or source matching would compare that
         # file with itself and ignore a requested quant switch.
-        gguf_path = source.gguf_path if model_identifier.lower().endswith(".gguf") else None,
+        gguf_path = (
+            source.gguf_path
+            if is_ollama_manifest_ref(model_identifier)
+            or model_identifier.lower().endswith(".gguf")
+            else None
+        ),
         hf_variant = request.gguf_variant or source.hf_variant,
         chat_template_override = chat_template_override,
         extra_args = effective_extra,
@@ -5040,9 +5056,61 @@ def _active_gguf_intent(
     )
 
 
+def _public_model_identifier(requested: str, resolved: str) -> str:
+    return requested if is_ollama_manifest_ref(requested) else resolved
+
+
+async def _lease_ollama_model_ref(
+    request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
+) -> Optional[str]:
+    if not is_ollama_manifest_ref(request.model_path):
+        return None
+    loop = asyncio.get_running_loop()
+    lease_future = loop.run_in_executor(
+        _OLLAMA_LEASE_EXECUTOR, acquire_ollama_model_ref, request.model_path
+    )
+    try:
+        lease = await asyncio.shield(lease_future)
+    except asyncio.CancelledError:
+
+        def _release_cancelled_lease(done):
+            try:
+                done.result().release()
+            except BaseException:
+                pass
+
+        lease_future.add_done_callback(_release_cancelled_lease)
+        raise
+    except ValueError as exc:
+        logger.warning("inference.ollama_materialize_failed: %s", exc)
+        raise HTTPException(
+            status_code = 400,
+            detail = redact_native_paths(str(exc)),
+        ) from exc
+    stack.callback(lease.release)
+    return lease.path
+
+
 def _resolve_model_identifier_for_request(
-    request: LoadRequest | ValidateModelRequest, *, operation: str
+    request: LoadRequest | ValidateModelRequest,
+    *,
+    operation: str,
+    resolved_ollama_path: Optional[str] = None,
 ) -> tuple[str, str, bool]:
+    if is_ollama_manifest_ref(request.model_path):
+        # The read-only inventory scan hands the picker an opaque manifest
+        # reference; the load path owns the filesystem write that turns it into
+        # a loadable .gguf link (hub/services/models/ollama.py).
+        if resolved_ollama_path is None:
+            try:
+                resolved_ollama_path = materialize_ollama_model_ref(request.model_path)
+            except ValueError as exc:
+                logger.warning("inference.ollama_materialize_failed: %s", exc)
+                raise HTTPException(
+                    status_code = 400,
+                    detail = redact_native_paths(str(exc)),
+                ) from exc
+        return resolved_ollama_path, Path(resolved_ollama_path).name, False
     if not request.native_path_lease:
         return request.model_path, request.model_path, False
     try:
@@ -7629,9 +7697,11 @@ def _resolve_gguf_load_intent(
     n_parallel: int,
 ) -> GgufLoadIntent:
     """Resolve source, companions, settings, and placement into one load value."""
+
+    public_model_identifier = _public_model_identifier(request.model_path, config.identifier)
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
-            model_identifier = config.identifier,
+            model_identifier = public_model_identifier,
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
@@ -7662,7 +7732,7 @@ def _resolve_gguf_load_intent(
                     log_native_fallback = True,
                 )
         source = GgufLoadIntent(
-            model_identifier = config.identifier,
+            model_identifier = public_model_identifier,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
@@ -8691,9 +8761,21 @@ async def _load_model_impl(
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
 
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "load-model")
+        resolved_ollama_path = await _lease_ollama_model_ref(
+            request,
+            operation = "load-model",
+            stack = gguf_load_stack,
         )
+        model_identifier, model_log_label, native_grant_backed = (
+            _resolve_model_identifier_for_request(
+                request,
+                operation = "load-model",
+                resolved_ollama_path = resolved_ollama_path,
+            )
+        )
+
+        # Keep the inventory ref public while loading the materialized artifact.
+        public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -8737,6 +8819,7 @@ async def _load_model_impl(
                 is_local_model = _loaded_is_local_model(
                     llama_backend, native_grant_backed, llama_backend.model_identifier
                 ),
+                inference_identifier = model_identifier,
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
@@ -8745,7 +8828,7 @@ async def _load_model_impl(
                 _active_gguf_intent(
                     request,
                     llama_backend,
-                    model_identifier = model_identifier,
+                    model_identifier = public_model_identifier,
                     chat_template_override = effective_chat_template_override,
                     n_parallel = _n_parallel,
                     native_grant_backed = native_grant_backed,
@@ -8851,7 +8934,7 @@ async def _load_model_impl(
         extra_llama_args = _resolve_inherited_extra_args(
             request,
             config,
-            model_identifier,
+            public_model_identifier,
             extra_llama_args,
             effective_chat_template_override,
         )
@@ -9180,7 +9263,7 @@ async def _load_model_impl(
             )
             _close_load_event(
                 _load_event,
-                model_log_label if native_grant_backed else config.identifier,
+                model_log_label if native_grant_backed else public_model_identifier,
                 request.gguf_variant or getattr(llama_backend, "hf_variant", None),
             )
             # Clear any idle-unload reload stash now, not only on the next poll.
@@ -9206,7 +9289,7 @@ async def _load_model_impl(
             return _gguf_load_response(
                 llama_backend,
                 "loaded",
-                model_log_label if native_grant_backed else config.identifier,
+                model_log_label if native_grant_backed else public_model_identifier,
                 display_name = model_log_label if native_grant_backed else config.display_name,
                 is_local_model = config.is_local,
                 inference_identifier = config.identifier,
@@ -9597,9 +9680,20 @@ async def validate_model(
 
     native_grant_backed = False
     model_log_label = request.model_path
+
+    ollama_load_stack = ExitStack()
     try:
+        resolved_ollama_path = await _lease_ollama_model_ref(
+            request,
+            operation = "validate-model",
+            stack = ollama_load_stack,
+        )
         model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "validate-model")
+            _resolve_model_identifier_for_request(
+                request,
+                operation = "validate-model",
+                resolved_ollama_path = resolved_ollama_path,
+            )
         )
 
         # The frontend validates before it loads, so this needs the same guard as
@@ -9630,7 +9724,10 @@ async def validate_model(
         # fourth argument unchanged and a --ctx-size the load is about to use would
         # be missing from the estimate that approves it.
         effective_extra_args = _resolve_inherited_extra_args(
-            request, config, model_identifier, getattr(request, "llama_extra_args", None)
+            request,
+            config,
+            _public_model_identifier(request.model_path, model_identifier),
+            getattr(request, "llama_extra_args", None),
         )
 
         # The caller's list is judged BEFORE anything rewrites it, exactly as /load
@@ -9970,6 +10067,9 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+
+    finally:
+        ollama_load_stack.close()
 
 
 def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> str:

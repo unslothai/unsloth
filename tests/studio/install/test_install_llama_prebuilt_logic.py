@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -4400,7 +4401,11 @@ def _run_setup_ps1_routing(
     )
     script_path = tmp_path / "routing.ps1"
     script_path.write_text(script, encoding = "utf-8")
-    completed = subprocess.run(
+    # run_pwsh, not subprocess.run: this helper feeds every routing case below, and a pwsh
+    # killed at startup returns rc -6 with empty stdout, which the callers would compare
+    # against the bash mirror and report as setup.ps1 routing the exit code wrongly.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    completed = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
             "-NoProfile",
