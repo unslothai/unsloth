@@ -38,7 +38,7 @@ from core.inference.context_window import (
     prompt_budget,
     truncate_oldest_messages,
 )
-from core.inference.instruction_pin import INSTRUCTION_MIN_CHARS, is_substantive
+from core.inference.instruction_pin import is_substantive
 
 # "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is
 # both the A/B arm and the escape hatch for a template family that misbehaves.
@@ -122,7 +122,7 @@ def _select_items(
     """The instruction turns out of `evicted`, oldest first, under both caps.
 
     `reserve_oldest` takes the oldest qualifying turn before the newest-first walk. It is
-    for the no-floor pass, where the thread is one of short prompts and the FIRST turn is
+    for the thread of short prompts, where the FIRST turn is
     the one that says what is being built: newest-first alone would spend all eight slots
     on the increments nearest the end ("add music", "now the score", "fix the pipes") and
     evict the statement of the task itself, which is the loss this pass exists to stop.
@@ -216,30 +216,27 @@ def carried_forward_items(
 
     Repeats collapse to their newest copy, on the same key `_recap` uses.
 
-    Two passes. The first wants a paragraph, on the reasoning that someone who typed one
-    wrote an instruction. That floor is 80 characters, and a real chat does not clear it:
-    measured on a live session, "Create a Flappy Bird game in HTML" (33), "Add music to
-    the game" (21) and "Continue work" (13) all failed it, so three resets each carried an
-    EMPTY block and the statement of what the user was building was evicted with the rest.
-    The budget was never the constraint there -- 473 tokens free and nothing to spend it
-    on.
+    ONE walk, with no length floor. The floor was 80 characters, and a real chat does not
+    clear it: measured on a live session, "Create a Flappy Bird game in HTML" (33), "Add
+    music to the game" (21) and "Continue work" (13) all failed it, so three resets each
+    carried an EMPTY block and the statement of what the user was building was evicted
+    with the rest. The budget was never the constraint there -- 473 tokens free and
+    nothing to spend it on.
 
-    So when the first pass finds nothing, take the same walk again without the length
-    floor. `is_substantive` still applies `_CONTINUATIONS`, which is what actually keeps
-    "ok" and "continue" out of the system turn; the floor was only ever a second guess at
-    the same question, and an empty block is not the safer answer -- it is the one where
-    the model is told the conversation was compacted and given nothing of it.
+    It was first kept as a fallback, taken only when the floored pass found nothing. That
+    was worse than useless in the case that matters most: a long "Build a Flappy Bird
+    game ..." followed by a short "Actually make it Tetris" clears the floor on the first
+    turn alone, so the fallback never ran and the block carried only the abandoned
+    request. The user's latest direction was dropped precisely because an earlier turn
+    happened to be wordy.
+
+    `is_substantive` still applies `_CONTINUATIONS`, which is what actually keeps "ok" and
+    "continue" out of the system turn; the floor was only ever a second guess at the same
+    question, and an empty block is not the safer answer -- it is the one where the model
+    is told the conversation was compacted and given nothing of it.
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
-    items = _select_items(
-        evicted,
-        max_tokens = max_tokens,
-        max_items = max_items,
-        min_chars = INSTRUCTION_MIN_CHARS,
-    )
-    if items:
-        return items
     return _select_items(
         evicted,
         max_tokens = max_tokens,

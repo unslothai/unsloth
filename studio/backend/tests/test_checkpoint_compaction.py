@@ -390,10 +390,15 @@ def test_a_short_instruction_is_carried_when_it_is_all_there_is():
     assert carried_forward_items([short], max_tokens = 4096) == ["Always answer in French."]
 
 
-def test_a_long_instruction_still_wins_over_a_short_one():
-    """The floor is a preference, not a filter: the fallback only runs when the first
-    pass came back empty, so a thread that HAS a paragraph is unchanged and a passing
-    remark alongside it is not promoted into the system turn."""
+def test_a_short_remark_is_carried_alongside_a_long_instruction():
+    """The cost of dropping the length floor, stated rather than hidden.
+
+    A passing remark like "fix it" now reaches the block, where the floored pass would
+    have excluded it. Nothing structural separates it from "Actually make it Tetris", so
+    the two cannot be told apart, and the trade favours keeping both: a wasted slot out of
+    eight in a block that already labels itself lossy, against losing the user's latest
+    direction outright. Ordering still carries the meaning, oldest first.
+    """
     messages = [
         {"role": "user", "content": "fix it"},
         {"role": "assistant", "content": "ok"},
@@ -401,7 +406,7 @@ def test_a_long_instruction_still_wins_over_a_short_one():
         {"role": "assistant", "content": "Understood."},
     ]
 
-    assert carried_forward_items(messages, max_tokens = 4096) == [INSTRUCTION]
+    assert carried_forward_items(messages, max_tokens = 4096) == ["fix it", INSTRUCTION]
 
 
 def test_filler_is_never_carried_even_when_the_block_would_be_empty():
@@ -1913,3 +1918,42 @@ def test_the_opening_task_still_survives_a_run_of_short_increments():
 
     assert "Build a Flappy Bird game" in items
     assert "tune gravity" in items, "the newest increment must survive too"
+
+
+def test_a_short_correction_survives_a_long_earlier_instruction():
+    """The length floor used to gate the whole selection.
+
+    A long task statement cleared the 80-character floor on its own, so the no-floor
+    fallback never ran and a later short correction was dropped: the block carried only
+    the abandoned request, precisely because an earlier turn happened to be wordy.
+    """
+    messages = [
+        {"role": "user", "content": (
+            "Build a Flappy Bird game in HTML with a canvas, gravity, pipes that scroll, "
+            "a score counter and a game over screen that lets the player restart."
+        )},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Actually make it Tetris"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    items = carried_forward_items(messages, max_tokens = 4096)
+
+    assert "Actually make it Tetris" in items
+    assert items[-1] == "Actually make it Tetris", "the correction must read as current"
+
+
+def test_a_nudge_is_still_excluded_without_the_length_floor():
+    """`_CONTINUATIONS`, not the character count, is what keeps filler out."""
+    messages = [
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "ok"},
+        {"role": "assistant", "content": "sure"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "sure"},
+    ]
+
+    items = carried_forward_items(messages, max_tokens = 4096)
+
+    assert items == [INSTRUCTION]
