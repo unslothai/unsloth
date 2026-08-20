@@ -462,7 +462,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
             )
         elif export_type == "autoround4bit":
-            success, message = backend.export_autoround_4bit(
+            success, message, output_path = backend.export_autoround_4bit(
                 save_directory = cmd.get("save_directory", ""),
                 export_format = cmd.get("export_format", "auto_awq"),
                 bits = cmd.get("bits", 4),

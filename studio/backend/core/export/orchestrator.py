@@ -652,9 +652,14 @@ class ExportOrchestrator:
                     # all in one op off a single merge, so scale the timeout by the quant count.
                     _qm = params.get("quantization_method")
                     _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
+                    _timeout = 3600 * max(1, _n)
+                    if export_type == "autoround4bit":
+                        # Auto-Round calibration (iters/nsamples) can run considerably
+                        # longer than a plain GGUF quant; match the prior standalone timeout.
+                        _timeout = max(_timeout, 7200)
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600 * max(1, _n),
+                        timeout = _timeout,
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")
@@ -681,32 +686,24 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
-        if not self._ensure_subprocess_alive():
-            return False, "Export subprocess is not running"
-
-        cmd = {
-            "type": "export",
-            "export_type": "autoround4bit",
-            "save_directory": save_directory,
-            "export_format": export_format,
-            "bits": bits,
-            "group_size": group_size,
-            "iters": iters,
-            "nsamples": nsamples,
-            "dataset": dataset,
-            "push_to_hub": push_to_hub,
-            "repo_id": repo_id,
-            "hf_token": hf_token,
-            "private": private,
-        }
-        self._send_cmd(cmd)
-
-        try:
-            resp = self._wait_response("export_autoround4bit_done", timeout = 7200.0)
-            return resp.get("success", False), resp.get("message", "")
-        except RuntimeError as exc:
-            return False, str(exc)
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Export the model to 4-bit (AWQ/GPTQ/Auto-Round) via Intel Auto-Round."""
+        return self._run_export(
+            "autoround4bit",
+            {
+                "save_directory": save_directory,
+                "export_format": export_format,
+                "bits": bits,
+                "group_size": group_size,
+                "iters": iters,
+                "nsamples": nsamples,
+                "dataset": dataset,
+                "push_to_hub": push_to_hub,
+                "repo_id": repo_id,
+                "hf_token": hf_token,
+                "private": private,
+            },
+        )
 
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""

@@ -37,10 +37,10 @@ from models import (
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
+    ExportAutoRound4bitRequest,
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
-    ExportAutoRound4bitRequest,
 )
 
 router = APIRouter()
@@ -493,8 +493,10 @@ async def export_autoround_4bit(
     Wraps ExportBackend.export_autoround_4bit.
     """
     try:
+        await _ensure_export_supported()
         backend = get_export_backend()
-        success, message = backend.export_autoround_4bit(
+        success, message, output_path = await asyncio.to_thread(
+            backend.export_autoround_4bit,
             save_directory = request.save_directory,
             export_format = request.export_format,
             bits = request.bits,
@@ -511,10 +513,19 @@ async def export_autoround_4bit(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success = True, message = message)
+        return ExportOperationResponse(
+            success = True,
+            message = message,
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+        )
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting Auto-Round 4-bit model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,

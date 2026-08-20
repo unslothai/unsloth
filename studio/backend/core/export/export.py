@@ -1456,7 +1456,7 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, Optional[str]]:
         """Export model to 4-bit quantized format using Auto-Round.
 
         Produces an AWQ, GPTQ, or native Auto-Round quantized model that can
@@ -1476,10 +1476,10 @@ class ExportBackend:
             private: Create a private Hub repository.
 
         Returns:
-            Tuple of (success: bool, message: str)
+            Tuple of (success: bool, message: str, output_path: Optional[str])
         """
         if not self.current_model or not self.current_tokenizer:
-            return False, "No model loaded. Please select a checkpoint first."
+            return False, "No model loaded. Please select a checkpoint first.", None
 
         try:
             from unsloth.save import save_to_autoround_4bit
@@ -1493,7 +1493,7 @@ class ExportBackend:
                 return False, (
                     f"Could not import save_to_autoround_4bit: {exc}. "
                     "Ensure the unsloth package is installed."
-                )
+                ), None
 
         try:
             import tempfile
@@ -1508,7 +1508,7 @@ class ExportBackend:
                 _tmp_ctx = tempfile.TemporaryDirectory(prefix = "_unsloth_autoround4bit_")
                 out_dir = _tmp_ctx.__enter__()
             else:
-                return False, "Either save_directory or push_to_hub must be specified."
+                return False, "Either save_directory or push_to_hub must be specified.", None
 
             logger.info(f"Saving Auto-Round 4-bit model to: {out_dir}")
 
@@ -1541,14 +1541,18 @@ class ExportBackend:
                 "auto_gptq": "GPTQ",
                 "auto_round": "Auto-Round",
             }.get(export_format, export_format.upper())
-            return True, f"Auto-Round 4-bit ({fmt_label}) model exported successfully"
+            return (
+                True,
+                f"Auto-Round 4-bit ({fmt_label}) model exported successfully",
+                out_dir if save_directory else None,
+            )
 
         except Exception as e:
             logger.error(f"Error exporting Auto-Round 4-bit model: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
-            return False, f"Auto-Round 4-bit export failed: {str(e)}"
+            return False, f"Auto-Round 4-bit export failed: {str(e)}", None
 
 
 # Global export backend instance
