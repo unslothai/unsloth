@@ -6597,15 +6597,16 @@ def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0
     signalled.
     """
     pgid = None
-    if _validation_server_leads_group() and hasattr(os, "getpgid"):
+    process_pid = getattr(process, "pid", None)
+    if process_pid is not None and _validation_server_leads_group() and hasattr(os, "getpgid"):
         try:
-            pgid = os.getpgid(process.pid)
+            pgid = os.getpgid(process_pid)
         except OSError:
             # Already reaped, so its own pid is the group id: it was started in
             # a session of its own, and the kernel holds that number for as long
             # as any member of the group is still there.
-            pgid = process.pid
-        if pgid != process.pid:
+            pgid = process_pid
+        if pgid != process_pid:
             pgid = None  # not the leader after all; never signal a shared group
     if pgid is not None:
         try:
