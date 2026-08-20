@@ -14,13 +14,15 @@ export const CPU_FALLBACK_MESSAGE =
   "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session.";
 
 const MMPROJ_FALLBACK_MESSAGES: Record<MmprojFallbackReason, string> = {
-  // Covers both routes to the same placement: the fit estimate predicting the
-  // projector will not fit in VRAM alongside the model, and a GPU startup failure
-  // recovered by retrying on CPU. Worded for the outcome rather than the route,
-  // since "could not start on the GPU" is untrue of the predicted case, which
-  // never attempts a GPU load.
+  // Three routes reach this one placement: the fit estimate predicting the
+  // projector will not fit in VRAM, a GPU allocation failure at startup, and a
+  // bare signal crash with no non-projector diagnostic. So the message names the
+  // outcome and no cause. "Could not start on the GPU" is untrue of the predicted
+  // route, which never attempts a GPU load, and "does not fit in VRAM" is untrue
+  // of the crash routes -- and that one is worse than vague, because it sends
+  // someone whose GPU runtime is broken off to cut context and offload layers.
   cpu_offload:
-    "Studio is running the vision projector in system memory, because it does not fit in VRAM alongside the model. Image input remains available, but image processing may be slower.",
+    "Studio is running the vision projector in system memory rather than on the GPU. Image input remains available, but image processing may be slower.",
   projector_incompatible:
     "The vision projector is incompatible with the installed llama.cpp build, so Studio reloaded this model in text-only mode. Update Studio, then reload the model to restore image input.",
   projector_startup_failure:
