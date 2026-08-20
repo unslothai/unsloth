@@ -175,6 +175,23 @@ def test_an_mmproj_only_child_still_decides_presence(tmp_path):
     assert [(Path(r.path).name, r.model_format) for r in rows] == [("gemma-4-GGUF", None)]
 
 
+def test_a_config_beside_an_imatrix_lists_for_the_reason_a_lone_config_does(tmp_path):
+    # The boundary of this change, asserted so it reads as deliberate. A folder holding a
+    # config and nothing loadable has always been listed (format None) -- that is how a
+    # checkpoint still downloading its weights stays visible -- and it lists whether or not
+    # an imatrix sits beside it. So the config disjunct is not an imatrix filter to bypass:
+    # suppressing it would hide in-flight downloads, which is a different change.
+    from routes.models import _scan_models_dir
+
+    for name in ("config-only", "config-and-imatrix"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "config.json").write_text("{}", encoding = "utf-8")
+    (tmp_path / "config-and-imatrix" / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
+
+    rows = {Path(r.path).name: r.model_format for r in _scan_models_dir(tmp_path)}
+    assert rows == {"config-only": None, "config-and-imatrix": None}
+
+
 def test_the_lmstudio_scanner_does_not_publish_an_imatrix_only_model_dir(tmp_path):
     # Same presence test in the nested publisher/model layout.
     from routes.models import _scan_lmstudio_dir
