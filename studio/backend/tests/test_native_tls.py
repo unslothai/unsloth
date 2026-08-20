@@ -28,11 +28,16 @@ def _reset_activation(monkeypatch):
     import os
 
     monkeypatch.setattr(native_tls, "_activated", False)
-    for key in ("UNSLOTH_STUDIO_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
+    for key in (
+        "UNSLOTH_STUDIO_NATIVE_TLS",
+        "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND",
+        "UV_SYSTEM_CERTS",
+        "UV_NATIVE_TLS",
+    ):
         monkeypatch.delenv(key, raising = False)
     yield
     # monkeypatch cannot undo vars that were absent, so drop what setdefault added.
-    for key in ("UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
+    for key in ("UNSLOTH_STUDIO_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
         os.environ.pop(key, None)
 
 
@@ -183,3 +188,66 @@ def test_linux_explicit_opt_out_wins_over_desktop_owner(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "0")
     monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
     assert native_tls.native_tls_enabled() is False
+
+
+# ── the `python -c` probe children resolve the same decision ──
+
+
+def test_activate_spells_the_resolved_decision_into_the_env(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    # main.py pops the desktop-owner vars before probes spawn, so the children
+    # re-resolve from the tri-state flag: a default that flipped on here must
+    # read as on there. setdefault, so an explicit user value is never rewritten.
+    assert os.environ["UNSLOTH_STUDIO_NATIVE_TLS"] == "1"
+
+
+def test_disabled_activation_leaves_the_flag_env_absent(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is False
+    assert "UNSLOTH_STUDIO_NATIVE_TLS" not in os.environ
+
+
+def _run_inline_gate(monkeypatch, platform, owner_kind = None, flag = None):
+    import os
+
+    calls = _fake_truststore(monkeypatch)
+    if owner_kind is not None:
+        monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", owner_kind)
+    if flag is not None:
+        monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", flag)
+    # A child's `sys` is whatever it was handed: only platform and path are
+    # read. `import truststore` still consults the real sys.modules, which
+    # _fake_truststore holds the stub in.
+    child_sys = _types.SimpleNamespace(platform = platform, path = [])
+    namespace = {"os": os, "sys": child_sys, "_TRUSTSTORE_VENDOR": "/vendor"}
+    exec(native_tls.inline_gate_source(), namespace)
+    return calls
+
+
+def test_inline_gate_injects_for_linux_desktop_child(monkeypatch):
+    # A child launched directly by the desktop app sees the handshake marker.
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "tauri") == ["inject"]
+
+
+def test_inline_gate_skips_headless_linux_child(monkeypatch):
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "") == []
+
+
+def test_inline_gate_opt_out_wins_over_desktop_owner(monkeypatch):
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "tauri", flag = "0") == []
+
+
+def test_inline_gate_keeps_platform_and_opt_in_defaults(monkeypatch):
+    assert _run_inline_gate(monkeypatch, "darwin", owner_kind = "") == ["inject"]
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "", flag = "1") == ["inject"]
