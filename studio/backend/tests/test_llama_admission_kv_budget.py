@@ -474,6 +474,7 @@ class TestToolLoopsReserveTheirUpperBound:
         ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
         none of which carry a client catalogue."""
         from types import SimpleNamespace
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -524,6 +525,7 @@ class TestToolLoopsReserveTheirUpperBound:
         """The passthrough and streaming /v1/responses run ONE generation per HTTP
         call; the client sends the next round itself, with its own reservation."""
         from types import SimpleNamespace
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -547,17 +549,11 @@ class TestCancellingTheBlockingHeadReopensTheLine:
     def test_a_smaller_waiter_runs_once_the_oversized_head_is_cancelled(self):
         async def scenario():
             queue = LlamaAdmissionQueue("cancel-head")
-            head_room = await _reserve(
-                queue, capacity = 4, tokens = 1000, budget = 2048
-            )
+            head_room = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
             assert head_room.lease_nowait() is not None
 
-            blocked = await _reserve(
-                queue, capacity = 4, tokens = 1500, budget = 2048
-            )
-            behind = await _reserve(
-                queue, capacity = 4, tokens = 500, budget = 2048
-            )
+            blocked = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
+            behind = await _reserve(queue, capacity = 4, tokens = 500, budget = 2048)
             # 1000 + 1500 > 2048, and FIFO holds the 500 behind it.
             assert blocked.lease_nowait() is None
             assert behind.lease_nowait() is None
