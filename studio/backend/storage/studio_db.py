@@ -29,6 +29,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
@@ -116,11 +117,27 @@ def _default_project_root(project: dict) -> str:
     return str(project_workspaces_root() / folder_name)
 
 
+class ProjectWorkspaceError(OSError):
+    """Raised when a project's workspace folder cannot be created.
+
+    Tagged, and carrying the folder, so a caller can name it. The same upsert
+    also touches the database directory, and that is a different path with a
+    different fix.
+    """
+
+    def __init__(self, path: str, cause: OSError):
+        super().__init__(str(cause))
+        self.path = path
+
+
 def _ensure_project_workspace(root_path: str) -> str:
     root = Path(root_path).expanduser()
-    root_resolved = ensure_dir(root).resolve()
-    for subdir in _PROJECT_WORKSPACE_SUBDIRS:
-        ensure_dir(root_resolved / subdir)
+    try:
+        root_resolved = ensure_dir(root).resolve()
+        for subdir in _PROJECT_WORKSPACE_SUBDIRS:
+            ensure_dir(root_resolved / subdir)
+    except OSError as exc:
+        raise ProjectWorkspaceError(str(root), exc) from exc
     return str(root_resolved)
 
 
@@ -351,6 +368,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             anthropic_code_exec_container_id TEXT,
             forked_from_thread_id TEXT,
             forked_from_message_id TEXT,
+            settings_json TEXT,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
@@ -358,6 +376,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     chat_thread_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
     }
+    if "settings_json" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
+    # Orders one writer's snapshot writes against its own earlier ones. A tab closing
+    # sends its last edit keepalive, which can overtake a PATCH already accepted by the
+    # server, and no client-side cancel reaches a handler that is already running: the
+    # older write has to be refused here. Scoped to the writer that sent it, so two
+    # browsers are never ordered against each other; see write_chat_thread_settings.
+    # {writer id: highest seq seen from it}. One writer and one seq is not enough: a
+    # write from another tab overwrites them, and the delayed request the ordering exists
+    # to refuse is then compared against a watermark that is no longer its own.
+    if "settings_seqs" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_seqs TEXT")
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
@@ -1519,8 +1549,6 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("Path does not exist")
     if not os.path.isdir(normalized):
         raise ValueError("Path must be a directory, not a file")
-    if not os.access(normalized, os.R_OK | os.X_OK):
-        raise ValueError("Path is not readable")
     # Reject a local filesystem root ("/", or a bare "C:\\"): registering one seeds the browse
     # allowlist above denied system dirs. A UNC share root has none under it, so it stays
     # allowed (it was registerable before this guard). Mirrors scan_folders.py.
@@ -1537,6 +1565,12 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             raise ValueError(f"Path under {prefix} is not allowed")
+
+    # Last, so a denied path is never opened: os.access alone passes on folders
+    # macOS TCC or a Windows ACL still refuses at scan time, which is how a
+    # registered folder ends up looking empty instead of blocked.
+    if not is_readable_dir(normalized):
+        raise ValueError("Path is not readable")
 
     conn = get_connection()
     try:
@@ -1603,9 +1637,9 @@ def _json_loads(value: str | None, fallback):
         return fallback
 
 
-def _chat_thread_from_row(row: sqlite3.Row) -> dict:
+def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> dict:
     data = dict(row)
-    return {
+    thread = {
         "id": data["id"],
         "title": data["title"],
         "modelType": data["model_type"],
@@ -1622,6 +1656,9 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "forkedFromThreadId": data.get("forked_from_thread_id"),
         "forkedFromMessageId": data.get("forked_from_message_id"),
     }
+    if include_settings:
+        thread["settings"] = _json_loads(data.get("settings_json"), None)
+    return thread
 
 
 def _chat_project_from_row(row: sqlite3.Row) -> dict:
@@ -1679,8 +1716,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -1693,7 +1730,9 @@ def upsert_chat_thread(thread: dict) -> dict:
                 openai_code_exec_container_id = excluded.openai_code_exec_container_id,
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
-                forked_from_message_id = excluded.forked_from_message_id
+                forked_from_message_id = excluded.forked_from_message_id,
+                -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
+                settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
             """,
             (
                 thread["id"],
@@ -1709,6 +1748,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
                 thread.get("forkedFromMessageId"),
+                json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
             ),
         )
         conn.commit()
@@ -1725,6 +1765,9 @@ class ChatThreadPreconditionFailed(Exception):
 
 
 # Same order the title migration picks its opening message in.
+# Watermarks kept per thread, one per tab that has written its settings.
+_MAX_SETTINGS_WRITERS = 32
+
 _OPENING_USER_MESSAGE = """(
     SELECT id FROM chat_messages
     WHERE thread_id = ? AND role = 'user'
@@ -1737,6 +1780,7 @@ def update_chat_thread(
     patch: dict,
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
+    settings_write: Optional[dict] = None,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row
     still holds that title, so a concurrent rename wins instead of being lost.
@@ -1767,6 +1811,10 @@ def update_chat_thread(
             "forked_from_message_id",
             patch.get("forkedFromMessageId"),
         ),
+        "settings": (
+            "settings_json",
+            json.dumps(patch["settings"]) if patch.get("settings") is not None else None,
+        ),
     }
     assignments = []
     values = []
@@ -1774,11 +1822,14 @@ def update_chat_thread(
         if key in patch:
             assignments.append(f"{column} = ?")
             values.append(value)
-    if not assignments:
+    if not assignments and settings_write is None:
         return get_chat_thread(id)
 
     conn = get_connection()
     try:
+        # The snapshot rides in the same transaction as the guarded metadata write, or a
+        # rejected precondition returns 409 with the settings change already committed.
+        conn.execute("BEGIN IMMEDIATE")
         # Guards ride in the WHERE clause, so check and write are one statement.
         where = ["id = ?"]
         guard: list = [id]
@@ -1789,18 +1840,147 @@ def update_chat_thread(
             where.append(_OPENING_USER_MESSAGE)
             guard += [id, expected_opening_message_id]
         guarded = expected_title is not None or expected_opening_message_id is not None
-        cursor = conn.execute(
-            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
-            (*values, *guard),
-        )
-        applied = cursor.rowcount
+        applied = 1
+        if assignments:
+            cursor = conn.execute(
+                f"UPDATE chat_threads SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
+                (*values, *guard),
+            )
+            applied = cursor.rowcount
+        if guarded and applied == 0:
+            conn.rollback()
+            if conn.execute("SELECT 1 FROM chat_threads WHERE id = ?", (id,)).fetchone() is None:
+                return None
+            raise ChatThreadPreconditionFailed(id)
+        if settings_write is not None:
+            if _write_chat_thread_settings_in_conn(conn, id, **settings_write) is None:
+                conn.rollback()
+                return None
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
         if row is None:
             return None
-        if guarded and applied == 0:
-            raise ChatThreadPreconditionFailed(id)
         return _chat_thread_from_row(row)
+    finally:
+        conn.close()
+
+
+def _write_chat_thread_settings_in_conn(
+    conn,
+    id: str,
+    *,
+    replace: Optional[dict] = None,
+    merge: Optional[dict] = None,
+    clear: bool = False,
+    seq: Optional[int] = None,
+    writer: Optional[str] = None,
+    keep_unreadable = None,
+) -> Optional[bool]:
+    """The snapshot write itself, on a connection whose transaction the caller owns.
+
+    None when the row is gone. True when it wrote, False when an older write from the
+    same writer was refused; both leave the caller's transaction usable.
+
+    The all-or-nothing the caller wants is about FAILURE: a rejected metadata
+    precondition must not leave the settings committed, and a missing row must write
+    nothing. A refusal is not a failure. It means this writer has already landed a newer
+    snapshot, so the row holds what the writer wanted either way, and rolling the
+    metadata back with it would drop a rename the client sent in the same PATCH and got
+    a 200 for.
+    """
+    row = conn.execute(
+        "SELECT settings_json, settings_seqs FROM chat_threads WHERE id = ?",
+        (id,),
+    ).fetchone()
+    if row is None:
+        return None
+    seqs = _json_loads(row["settings_seqs"], None) if "settings_seqs" in row.keys() else None
+    seqs = seqs if isinstance(seqs, dict) else {}
+    if seq is not None and writer is not None:
+        seen = seqs.get(writer)
+        if isinstance(seen, int) and seq <= seen:
+            # This writer has already had a newer snapshot stored; this one is the
+            # straggler. Held per writer, so a write from another tab in between does
+            # not wipe the watermark this comparison depends on.
+            return False
+        # Re-inserted, not just assigned, so this writer moves to the end and the map
+        # stays in least-recently-used order.
+        seqs.pop(writer, None)
+        seqs[writer] = seq
+        # One entry per tab that has ever written, so bound it. Evicted by last use and
+        # never by counter: every session starts its own counter at 1, so comparing them
+        # across writers would throw out the newest tab and keep long-dead ones, leaving
+        # the active writer with no watermark for its own stragglers to be refused by.
+        while len(seqs) > _MAX_SETTINGS_WRITERS:
+            seqs.pop(next(iter(seqs)))
+    stored = _json_loads(row["settings_json"], None)
+    stored = stored if isinstance(stored, dict) else {}
+    if clear:
+        settings_json = None
+    else:
+        if merge is not None:
+            base = stored
+            changes = merge
+        else:
+            base = keep_unreadable(stored) if keep_unreadable else {}
+            changes = replace or {}
+        settings_json = json.dumps({**base, **changes})
+    conn.execute(
+        "UPDATE chat_threads SET settings_json = ?, settings_seqs = ? WHERE id = ?",
+        (settings_json, json.dumps(seqs) if seqs else None, id),
+    )
+    return True
+
+
+def write_chat_thread_settings(
+    id: str,
+    *,
+    replace: Optional[dict] = None,
+    merge: Optional[dict] = None,
+    clear: bool = False,
+    seq: Optional[int] = None,
+    writer: Optional[str] = None,
+    keep_unreadable = None,
+) -> Optional[dict]:
+    """Write a thread's settings snapshot, reading and merging in one transaction.
+
+    Doing the read in the route and the write here lets two requests on the same thread,
+    two tabs or a tab closing behind an open one, both turn a partial patch into a full
+    replacement built from the same stale snapshot, and the second one lands on top. The
+    read, the merge and the write have to be one transaction, so they are.
+
+    `writer` and `seq` order the writes, and only ever against the same writer's own
+    earlier ones: a write is dropped when it comes from the writer whose snapshot is
+    already stored and carries a seq no newer than it. Two browsers are never compared,
+    because their clocks and counters have nothing to do with each other and the one that
+    happened to be behind would have every edit silently refused. Within one writer the
+    ordering is real, which is the case that needs it: an aborted fetch does not stop a
+    handler the server has already started.
+
+    `keep_unreadable(stored) -> dict` names the part of the stored snapshot the caller
+    could not read, which a replacement carries forward rather than deleting. Passed in
+    rather than imported so this module stays free of the wire models.
+    """
+    conn = get_connection()
+    try:
+        # IMMEDIATE takes the write lock up front, so the read below cannot be overtaken.
+        conn.execute("BEGIN IMMEDIATE")
+        applied = _write_chat_thread_settings_in_conn(
+            conn,
+            id,
+            replace = replace,
+            merge = merge,
+            clear = clear,
+            seq = seq,
+            writer = writer,
+            keep_unreadable = keep_unreadable,
+        )
+        if applied is None:
+            conn.rollback()
+            return None
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return _chat_thread_from_row(row) if row is not None else None
     finally:
         conn.close()
 
@@ -1841,7 +2021,8 @@ def list_chat_threads(
             "ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC",
             values,
         ).fetchall()
-        return [_chat_thread_from_row(row) for row in rows]
+        # the snapshot is only read when a thread is opened, so it is left out of the listing.
+        return [_chat_thread_from_row(row, include_settings = False) for row in rows]
     finally:
         conn.close()
 
@@ -3097,8 +3278,8 @@ def fork_chat_thread(
             INSERT INTO chat_threads
                 (id, title, model_type, model_id, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
-                 forked_from_thread_id, forked_from_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?)
+                 forked_from_thread_id, forked_from_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 new_thread_id,
@@ -3110,6 +3291,7 @@ def fork_chat_thread(
                 int(created_at),
                 source_thread_id,
                 branch_message_id,
+                src_dict.get("settings_json"),
             ),
         )
         fork_messages = []
@@ -3169,6 +3351,39 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
             (thread_id, message_id),
         ).fetchone()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def chat_thread_has_messages(thread_id: str) -> bool:
+    """Whether this thread has any saved message. Existence only, no rows hydrated.
+
+    A temporary (incognito) chat is never written here, so this is what tells a thread
+    whose turns can be archived from one whose turns must not be.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE thread_id = ? LIMIT 1", (thread_id,)
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def fork_counts_for_thread(thread_id: str) -> dict[str, int]:
+    """Fork counts for every message of one thread, keyed by message id."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT forked_from_message_id, COUNT(*) FROM chat_threads
+            WHERE forked_from_thread_id = ? AND forked_from_message_id IS NOT NULL
+            GROUP BY forked_from_message_id
+            """,
+            (thread_id,),
+        ).fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
     finally:
         conn.close()
 

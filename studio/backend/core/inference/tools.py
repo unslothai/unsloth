@@ -29,6 +29,20 @@ import sys
 import tempfile
 import contextlib
 import threading
+from contextvars import ContextVar
+
+# The window of the model THIS request is served by, set by execute_tool for the call's
+# duration. Left unset, the budget falls back to the process-global probe, which is right
+# for the local loops and wrong for anything else: an external-provider request runs
+# Studio's tool loop without touching a resident GGUF, so inheriting that GGUF's window
+# let a small resident model truncate pages for a large cloud model, and a large resident
+# model hand the full 16,000 characters to a small OpenAI-compatible endpoint.
+_UNSET_CONTEXT_TOKENS = object()
+_REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
+    "unsloth_request_context_tokens",
+    default = _UNSET_CONTEXT_TOKENS,
+)
+
 import uuid
 import time
 import urllib.parse
@@ -4530,7 +4544,9 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # Tools that are read-only regardless of their arguments, so auto mode never has
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+# search_conversation only reads this chat's own past turns, so auto mode would otherwise
+# prompt for approval on every call.
+_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -4543,7 +4559,7 @@ def is_always_safe_tool(name: str) -> bool:
 
 # Tools whose provisional card is only a text preview of the arguments, so it can stream
 # while awaiting approval.
-_TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal"})
+_TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal", "edit_file"})
 
 
 def has_text_only_provisional_card(name: str) -> bool:
@@ -4606,6 +4622,11 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
     if name == "python":
         return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    # Always writes, and python's open(..., "w") already prompts, so the cheaper
+    # tool must not become the quiet way around that. Stated rather than left to
+    # the fail-closed default, so a later clause cannot drop it.
+    if name == "edit_file":
+        return True
     return True
 
 
@@ -8883,6 +8904,466 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
+# edit_file
+#
+# Without it, changing a file means a whole-file `cat > f <<'EOF'` or
+# open(...).write(...): ~7.7k output tokens to rewrite a 500-line file that a
+# patch does in ~45, and anything the model fails to retype is lost.
+#
+# Exact-string replacement, not a unified diff: models corrupt @@ hunk headers
+# far more often than they mis-copy a literal snippet, and a bad header patches
+# the wrong place instead of failing. A missing or non-unique old_string is a
+# hard error naming the match count, so the retry is "add context".
+
+# The whole text is read to find the match, so the cap is on the file.
+_EDIT_FILE_MAX_BYTES = _env_int("UNSLOTH_STUDIO_EDIT_FILE_MAX_BYTES", 16 * 1024 * 1024)
+
+# Bounded receipt: lines alone are no bound, since one line of minified JS can
+# be the whole file, so characters are capped per line and over the receipt.
+_EDIT_FILE_DIFF_LINES = 40
+_EDIT_FILE_DIFF_LINE_CHARS = 200
+_EDIT_FILE_DIFF_CHARS = 4000
+# Lines either side of the first change that are handed to difflib. Diffing the
+# whole file would split it into one str per line: 8M of them at the 16MB cap.
+_EDIT_FILE_DIFF_WINDOW_LINES = 120
+
+
+def _edit_file_resolve(
+    raw_path: str, session_id: "str | None", disable_sandbox: bool
+) -> "tuple[str | None, str]":
+    """Resolve the model's path the way python/terminal resolve theirs.
+
+    Same rules as the sitecustomize shim: a code-interpreter habit prefix
+    (/mnt/data, /workspace, ...) keeps its suffix under the workdir, everything
+    else is relative to it. Containment is checked on the realpath, so a symlink
+    planted inside cannot reach out.
+    """
+    raw = (raw_path or "").strip()
+    if not raw:
+        return None, "Error: 'path' is required."
+    workdir = _get_workdir(session_id)
+    candidate = raw
+    # An absolute path already inside the workdir is a real path, not a habit
+    # one: a project rooted at /workspace/repo would otherwise have its own
+    # prefix stripped and be rejoined onto itself.
+    already_inside = os.path.isabs(raw) and not _is_outside_workdir(raw, workdir)
+    if not disable_sandbox and not already_inside:
+        for prefix in _MISSING_PATH_PREFIXES:
+            if candidate == prefix or candidate.startswith(prefix + "/"):
+                candidate = candidate[len(prefix) :].lstrip("/")
+                break
+    if not candidate:
+        return None, "Error: 'path' is required."
+    target = candidate if os.path.isabs(candidate) else os.path.join(workdir, candidate)
+    try:
+        target = os.path.realpath(target)
+    except (OSError, ValueError):
+        return None, f"Error: cannot resolve path '{raw}'."
+    # Full access runs python/terminal unsandboxed already; holding this one
+    # tool to the workdir would just push the model back to cat.
+    if not disable_sandbox and _is_outside_workdir(target, workdir):
+        return None, (
+            f"Error: '{raw}' is outside this conversation's working directory, "
+            "which is the only place edit_file can write. Use a relative path "
+            f"(for example '{os.path.basename(raw) or 'file.py'}')."
+        )
+    return target, ""
+
+
+def _edit_file_decode(data: bytes, path: str) -> "tuple[str, str, str, str]":
+    """Decode file bytes into (text, newline, bom, error).
+
+    ``text`` is normalized to \\n so an old_string with plain newlines still
+    matches a CRLF file; matching raw bytes would fail every edit of a
+    Windows-authored source. The original convention is returned so the write
+    puts it back instead of converting every line ending in the file.
+    """
+    bom = ""
+    if data.startswith(codecs.BOM_UTF8):
+        bom = codecs.BOM_UTF8.decode("utf-8")
+        data = data[len(codecs.BOM_UTF8) :]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "", "\n", "", f"Error: '{os.path.basename(path)}' is not UTF-8 text."
+    if "\x00" in text:
+        return "", "\n", "", f"Error: '{os.path.basename(path)}' is a binary file."
+    crlf = text.count("\r\n")
+    # Judged against the total so a file with a couple of stray CRs is still
+    # written back as LF; a mixed file is normalized to whichever dominates.
+    newline = "\r\n" if crlf and crlf * 2 >= text.count("\n") else "\n"
+    return text.replace("\r\n", "\n"), newline, bom, ""
+
+
+def _edit_file_write(
+    path: str,
+    text: str,
+    newline: str,
+    bom: str,
+    *,
+    expect: "bytes | None" = None,
+    workdir: "str | None" = None,
+) -> str:
+    """Write the new content, replacing the file atomically.
+
+    Sibling temp file then rename: an interrupted write must not leave a source
+    file half-replaced. The mode is carried over so an edit keeps the
+    executable bit.
+
+    ``expect`` are the bytes the edit was computed from, compared again here so
+    a file another chat rewrote meanwhile is not reverted to this call's stale
+    copy. ``workdir`` re-checks containment just before the rename, so a parent
+    swapped for a symlink after the path was resolved is caught.
+    """
+    payload = (bom + text.replace("\n", newline)).encode("utf-8")
+    directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok = True)
+    except OSError as exc:
+        return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
+    tmp = ""
+    try:
+        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        try:
+            shutil.copymode(path, tmp)
+        except OSError:
+            pass  # new file, or a mode we cannot read; the default is fine
+        if workdir is not None and _is_outside_workdir(path, workdir):
+            return (
+                f"Error: '{os.path.basename(path)}' moved outside the working "
+                "directory while the edit was being prepared; nothing was written."
+            )
+        if expect is not None:
+            try:
+                with open(path, "rb") as fh:
+                    current = fh.read(len(expect) + 1)
+            except OSError:
+                current = None
+            if current != expect:
+                return (
+                    f"Error: '{os.path.basename(path)}' changed while this edit "
+                    "was being prepared; nothing was written. Read it again and "
+                    "redo the edit against the current contents."
+                )
+        os.replace(tmp, path)
+        tmp = ""
+    except OSError as exc:
+        return f"Error: cannot write '{os.path.basename(path)}': {exc}"
+    finally:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+    return ""
+
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@")
+
+
+def _edit_file_shift_hunk(line: str, offset: int) -> str:
+    """Add ``offset`` to both line numbers in a @@ hunk header."""
+    match = _HUNK_HEADER_RE.match(line)
+    if not match:
+        return line
+    before_span = match.group(2) or ""
+    after_span = match.group(4) or ""
+    shifted = (
+        f"@@ -{int(match.group(1)) + offset}{before_span} "
+        f"+{int(match.group(3)) + offset}{after_span} @@"
+    )
+    return shifted + line[match.end() :]
+
+
+def _edit_file_line_window(text: str, index: int, lines: int) -> "tuple[int, int]":
+    """Offsets of a window of ``lines`` lines either side of ``index``."""
+    start = index
+    for _ in range(lines):
+        newline = text.rfind("\n", 0, start)
+        if newline == -1:
+            start = 0
+            break
+        start = newline
+    if start and text[start : start + 1] == "\n":
+        start += 1
+    end = index
+    for _ in range(lines):
+        newline = text.find("\n", end)
+        if newline == -1:
+            end = len(text)
+            break
+        end = newline + 1
+    return start, max(end, index)
+
+
+def _edit_file_receipt(
+    before: str,
+    old: str,
+    new: str,
+    name: str,
+    count: int,
+    change_at: int = 0,
+) -> str:
+    """A bounded unified diff of what changed.
+
+    Line-numbered so the model can confirm the edit landed where it meant. Two
+    separate bounds, because either alone leaks: difflib sees only a window
+    around the first change, and the generator is consumed lazily.
+    """
+    import difflib
+    import itertools
+
+    window_start, window_end = _edit_file_line_window(
+        before, change_at, _EDIT_FILE_DIFF_WINDOW_LINES
+    )
+    # The window is cut out of the old text and the replacement replayed on it,
+    # rather than a second window of the same LINE COUNT cut out of the new one.
+    # An edit that adds or removes lines shifts everything after it, so equal
+    # windows end on different text and difflib calls that a second hunk --
+    # deletions the edit never made, a window away from anything that changed.
+    window_end = max(window_end, change_at + len(old))  # keep the match whole
+    before_window = before[window_start:window_end]
+    # Right in both modes: without replace_all the file held exactly one match.
+    after_window = before_window.replace(old, new)
+    first_line = before.count("\n", 0, window_start) + 1
+    stream = difflib.unified_diff(
+        before_window.split("\n"),
+        after_window.split("\n"),
+        lineterm = "",
+        n = 2,
+    )
+    # drop the ---/+++ headers; the name is on the summary line
+    taken = list(itertools.islice(stream, 2 + _EDIT_FILE_DIFF_LINES + 1))[2:]
+    plural = "" if count == 1 else "s"
+    head = f"Edited {name} ({count} replacement{plural})"
+    if not taken:
+        return head
+    if len(taken) > _EDIT_FILE_DIFF_LINES:
+        # An exact remaining count would cost the full diff this avoids.
+        diff = taken[:_EDIT_FILE_DIFF_LINES] + ["... (more diff lines)"]
+    else:
+        diff = taken
+    diff = [
+        line
+        if len(line) <= _EDIT_FILE_DIFF_LINE_CHARS
+        else f"{line[:_EDIT_FILE_DIFF_LINE_CHARS]}... (+{len(line) - _EDIT_FILE_DIFF_LINE_CHARS} chars)"
+        for line in diff
+    ]
+    # difflib numbered the hunks against the window, so shift them back to real
+    # file lines; line 3 of a 9000-line file is worse than no numbers at all.
+    if first_line > 1:
+        diff = [_edit_file_shift_hunk(line, first_line - 1) for line in diff]
+    body = "\n".join(diff)
+    if len(body) > _EDIT_FILE_DIFF_CHARS:
+        body = body[:_EDIT_FILE_DIFF_CHARS] + "\n... (receipt truncated)"
+    return head + "\n" + body
+
+
+def _edit_file_replace_all(value: object) -> "bool | None":
+    """Read replace_all strictly; None means "not a boolean".
+
+    bool("false") is True, and models do emit the JSON string. Coercing it that
+    way turns the multi-match guard off and rewrites every occurrence.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no", ""):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _edit_file_create(
+    target: str,
+    new: str,
+    name: str,
+    newline: str,
+    workdir: "str | None" = None,
+) -> str:
+    """Handle the empty-old_string case: create a file, never clobber one.
+
+    A zero-byte file is writable here on purpose: refusing every existing target
+    would strand the model, since an empty old_string would be refused and no
+    other old_string can match an empty file.
+
+    The absent case is created with O_EXCL rather than checked and then written:
+    two chats sharing a workspace can both pass a lexists() check and the later
+    rename drops the earlier file. O_EXCL also gives the new file the usual
+    umask-derived mode, where a mkstemp temp file would leave it 0600.
+    """
+    payload = (new.replace("\n", newline)).encode("utf-8")
+    if not os.path.lexists(target):
+        directory = os.path.dirname(target) or "."
+        try:
+            os.makedirs(directory, exist_ok = True)
+        except OSError as exc:
+            return f"Error: cannot create directory for '{name}': {exc}"
+        if workdir is not None and _is_outside_workdir(target, workdir):
+            return (
+                f"Error: '{name}' moved outside the working directory while the "
+                "edit was being prepared; nothing was written."
+            )
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        # Never follow a symlink planted at the final component in the meantime.
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(target, flags, 0o666)
+        except FileExistsError:
+            return (
+                f"Error: '{name}' was created by something else while this call "
+                "was preparing it; nothing was written."
+            )
+        except OSError as exc:
+            return f"Error: cannot write '{name}': {exc}"
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+        except OSError as exc:
+            # ENOSPC partway through leaves the bytes that fit -- a file
+            # truncated mid-token -- and the retry the message asks for cannot
+            # clear it, since an empty old_string refuses a non-empty target.
+            # Removing the inode puts the retry back on the create path.
+            with contextlib.suppress(OSError):
+                os.remove(target)
+            return f"Error: cannot write '{name}': {exc}"
+        return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
+    try:
+        st = os.stat(target)
+    except OSError:
+        st = None
+    # Refused rather than measured: a FIFO reports st_size 0, so it fell into
+    # the zero-byte branch below, whose write reopens the target -- and open()
+    # on a FIFO with no writer blocks for ever.
+    if st is None or not S_ISREG(st.st_mode) or st.st_size:
+        return (
+            f"Error: '{name}' already exists. An empty 'old_string' only "
+            "creates a new file; to change this one, pass the exact text to "
+            "replace."
+        )
+    # Guarded like any other edit, so a chat that filled it in is not clobbered.
+    error = _edit_file_write(target, new, newline, "", expect = b"", workdir = workdir)
+    if error:
+        return error
+    return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
+
+
+def _edit_file(
+    arguments: dict,
+    session_id: "str | None" = None,
+    disable_sandbox: bool = False,
+) -> str:
+    """Replace an exact string in a file. See the notes above."""
+    old = arguments.get("old_string")
+    new = arguments.get("new_string")
+    # Checked, not coerced: str(None) would write the literal "None" into a file.
+    if not isinstance(old, str) or not isinstance(new, str):
+        return "Error: 'old_string' and 'new_string' must both be strings."
+    # A truncated emoji escape ("\ud83d") survives json.loads as a lone surrogate
+    # that cannot be encoded, and the UnicodeEncodeError the write raises is
+    # swallowed upstream into "Unknown tool: edit_file" -- the one answer that
+    # sends the model back to the whole-file rewrite. old_string needs no check,
+    # being only ever compared.
+    try:
+        new.encode("utf-8")
+    except UnicodeEncodeError:
+        return (
+            "Error: 'new_string' contains unpaired surrogate characters, usually "
+            "a half-written emoji; nothing was written. Send it again as plain text."
+        )
+    target, error = _edit_file_resolve(
+        str(arguments.get("path") or ""), session_id, disable_sandbox
+    )
+    if error:
+        return error
+    name = os.path.basename(target)
+    # Normalized for the same reason the file is, so the two can match.
+    old = old.replace("\r\n", "\n")
+    new = new.replace("\r\n", "\n")
+    replace_all = _edit_file_replace_all(arguments.get("replace_all"))
+    if replace_all is None:
+        return "Error: 'replace_all' must be true or false."
+    # Decided before the no-op check below, not after: both strings empty is the
+    # documented way to create __init__.py or .gitkeep, and read as "identical,
+    # nothing to change" it was refused, leaving no way to write a zero-byte
+    # file.
+    if not old:
+        return _edit_file_create(
+            target,
+            new,
+            name,
+            "\n",
+            workdir = None if disable_sandbox else _get_workdir(session_id),
+        )
+    if old == new:
+        return "Error: 'old_string' and 'new_string' are identical; nothing to change."
+    try:
+        st = os.stat(target)
+    except FileNotFoundError:
+        return f"Error: '{name}' does not exist. Pass an empty 'old_string' to create it."
+    except OSError as exc:
+        return f"Error: cannot read '{name}': {exc}"
+    if os.path.isdir(target):
+        return f"Error: '{name}' is a directory."
+    # A FIFO reads forever and a character device such as /dev/zero reads until
+    # memory runs out. Neither reports a useful st_size, and this path carries
+    # no timeout or cancel event, so the turn cannot be recovered.
+    if not S_ISREG(st.st_mode):
+        return f"Error: '{name}' is not a regular file."
+    if st.st_size > _EDIT_FILE_MAX_BYTES:
+        return (
+            f"Error: '{name}' is larger than "
+            f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB; edit it with python instead."
+        )
+    try:
+        with open(target, "rb") as fh:
+            data = fh.read(_EDIT_FILE_MAX_BYTES + 1)
+    except OSError as exc:
+        return f"Error: cannot read '{name}': {exc}"
+    before, newline, bom, error = _edit_file_decode(data, target)
+    if error:
+        return error
+    count = before.count(old)
+    if count == 0:
+        return (
+            f"Error: 'old_string' was not found in {name}. It must match the "
+            "file byte for byte, including indentation. Read the file and copy "
+            "the text to replace out of it."
+        )
+    if count > 1 and not replace_all:
+        return (
+            f"Error: 'old_string' matches {count} places in {name}. Include "
+            "surrounding lines to make it unique, or pass replace_all=true to "
+            f"change all {count}."
+        )
+    after = before.replace(old, new) if replace_all else before.replace(old, new, 1)
+    error = _edit_file_write(
+        target,
+        after,
+        newline,
+        bom,
+        expect = data,
+        workdir = None if disable_sandbox else _get_workdir(session_id),
+    )
+    if error:
+        return error
+    # Windowed around the first replacement, rather than diffing the whole file.
+    return _edit_file_receipt(
+        before,
+        old,
+        new,
+        name,
+        count if replace_all else 1,
+        change_at = max(before.find(old), 0),
+    )
+
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -9155,6 +9636,7 @@ TERMINAL_TOOL_FULL_ACCESS = {
     },
 }
 
+# edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
     "python": PYTHON_TOOL_FULL_ACCESS,
     "terminal": TERMINAL_TOOL_FULL_ACCESS,
@@ -9162,11 +9644,11 @@ _FULL_ACCESS_TOOL_BY_NAME = {
 
 
 def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
-    """Swap python/terminal for their Full access schemas.
+    """Swap python/terminal/edit_file for their Full access schemas.
 
-    Only the two sandboxed built-ins are touched; web_search, render_html,
+    Only the sandboxed built-ins are touched; web_search, render_html,
     search_knowledge_base and MCP tools are passed through untouched, and a list
-    without either built-in is returned as-is so callers can apply this
+    without any of them is returned as-is so callers can apply this
     unconditionally. The input list is never mutated -- ALL_TOOLS entries are
     module globals shared across requests.
     """
@@ -9184,6 +9666,71 @@ def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
             swapped = True
     return out if swapped else tools
 
+
+EDIT_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit_file",
+        # The description does the steering: given the tool but no preference,
+        # a model keeps writing heredocs because that is what it was trained on.
+        "description": (
+            "Change a file by replacing an exact string in it. Prefer this over "
+            "rewriting a file with python or a shell heredoc: it sends only the "
+            "lines that change, so editing a large file costs a fraction of the "
+            "tokens and cannot drop the parts you did not retype. Read the file "
+            "first and copy old_string out of it verbatim, including indentation. "
+            "old_string must match exactly one place unless replace_all is true; "
+            "if it matches none or several you get an error and nothing is "
+            "written. Paths are relative to the working directory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File to edit, relative to the working directory.",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": (
+                        "Exact text to replace, copied from the file. Pass an "
+                        "empty string to create a new file."
+                    ),
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Text to put in its place.",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": (
+                        "Replace every occurrence instead of requiring a unique "
+                        "match. Defaults to false."
+                    ),
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+}
+
+# Appended, not substituted: the sandboxed text never claims absolute paths
+# fail, so there is nothing false to rewrite, only a capability to add. A model
+# that thinks it cannot reach a real checkout falls back to the whole-file rewrite.
+_EDIT_FILE_FULL_ACCESS_CLAUSE = (
+    " The code sandbox is disabled, so an absolute path resolves as written and "
+    "edits the real file there, anywhere the Unsloth Studio process can reach."
+)
+
+EDIT_FILE_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **EDIT_FILE_TOOL["function"],
+        "description": EDIT_FILE_TOOL["function"]["description"] + _EDIT_FILE_FULL_ACCESS_CLAUSE,
+    },
+}
+
+_FULL_ACCESS_TOOL_BY_NAME["edit_file"] = EDIT_FILE_TOOL_FULL_ACCESS
 
 RENDER_HTML_TOOL = {
     "type": "function",
@@ -9241,18 +9788,65 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     },
 }
 
+SEARCH_CONVERSATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_conversation",
+        "description": (
+            "Search earlier turns of THIS conversation that were removed from your "
+            "context when it grew too long. Use it whenever the user refers to something "
+            "discussed earlier that you cannot see, instead of saying you have no record "
+            "of it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max earlier turns to return.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
+    EDIT_FILE_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
+    SEARCH_CONVERSATION_TOOL,
 ]
 
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole
 # request, so validate up front and skip with a warning.
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _mcp_tool_model_visible(tool: dict) -> bool:
+    """False for MCP Apps tools marked app-only (_meta.ui.visibility without
+    "model"): those exist for a server-rendered widget to call, not the LLM."""
+    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
+    for key in ("meta", "_meta"):
+        meta = tool.get(key)
+        if not isinstance(meta, dict):
+            continue
+        ui = meta.get("ui")
+        visibility = ui.get("visibility") if isinstance(ui, dict) else None
+        if visibility is None:
+            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
+            visibility = meta.get("ui/visibility")
+        if isinstance(visibility, (list, tuple)):
+            return "model" in visibility
+    return True
 
 
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
@@ -9264,6 +9858,9 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         raw_name = tool.get("name") or ""
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
+            continue
+        if not _mcp_tool_model_visible(tool):
+            logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
         # Bad chars or oversized names would 400 the whole request; skip + warn
@@ -9288,7 +9885,10 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 "function": {
                     "name": name,
                     "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                    "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
+                    # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both.
+                    "parameters": tool.get("inputSchema")
+                    or tool.get("input_schema")
+                    or {"type": "object", "properties": {}},
                 },
             }
         )
@@ -9325,7 +9925,10 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    # Keep the SQLite-backed server list off the event loop.
+    servers = [
+        s for s in await asyncio.to_thread(mcp_servers_db.list_servers) if s.get("is_enabled")
+    ]
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -9351,9 +9954,8 @@ async def get_enabled_mcp_tools() -> list[dict]:
             ),
             return_exceptions = True,
         )
-        # An edit/delete can land while we await a probe; re-read and drop a
-        # result whose server changed or was removed mid-probe, else a stale
-        # tool list (or cool-off on a just-fixed server) persists.
+        # Keep this re-read on-loop so an edit cannot invalidate between it and
+        # the cache writes below. Drop results for changed or removed servers.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])
@@ -9416,6 +10018,10 @@ def execute_tool(
     disable_sandbox: bool = False,
     output_callback = None,
     website_policy: dict | None = None,
+    conversation_branch: list[dict] | None = None,
+    conversation_budget_tokens: int | None = None,
+    conversation_token_counter = None,
+    context_tokens = _UNSET_CONTEXT_TOKENS,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -9435,6 +10041,9 @@ def execute_tool(
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    # Set unconditionally, so a value from an earlier call on this thread can never be
+    # read by a later one. That is what makes a try/finally reset unnecessary here.
+    _REQUEST_CONTEXT_TOKENS.set(context_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base_with_budget(
@@ -9442,6 +10051,21 @@ def execute_tool(
             rag_scope,
             effective_timeout,
             cancel_event,
+        )
+    if name == "search_conversation":
+        # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
+        # works with or without a document rag_scope.
+        return _search_knowledge_base_with_budget(
+            arguments,
+            {
+                "thread_id": thread_id,
+                "branch_messages": conversation_branch,
+                "budget_tokens": conversation_budget_tokens,
+                "token_counter": conversation_token_counter,
+            },
+            effective_timeout,
+            cancel_event,
+            search_fn = _search_conversation,
         )
     if name == "render_html":
         return _render_html_result(arguments)
@@ -9452,11 +10076,12 @@ def execute_tool(
             return f"Error: malformed MCP tool name '{name}'"
         server = mcp_servers_db.get_server(server_id)
         if not server:
-            return f"Error: MCP server '{server_id}' not found"
+            return f"Error: MCP server for tool '{tool_name}' not found"
+        display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
-            return f"Error: MCP server '{server_id}' is disabled"
+            return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
-            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+            return f"Error: stdio MCP server '{display}' is disabled on this host"
         # Persist a stateful stdio session only per conversation (thread_id).
         # session_id is the project-wide sandbox id, so scoping by it alone leaks
         # browser/DB/REPL state across conversations; fall back to one-shot. Tag +
@@ -9523,6 +10148,15 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
             )
+    # Same in-flight guard as the two above: it writes into the session workdir,
+    # so a chat deleted mid-call must not unlink it underneath.
+    if name == "edit_file":
+        with _session_in_flight(session_id):
+            return _edit_file(
+                arguments,
+                session_id = session_id,
+                disable_sandbox = disable_sandbox,
+            )
     return f"Unknown tool: {name}"
 
 
@@ -9572,12 +10206,159 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     return text
 
 
+# Ceiling for a model-supplied top_k. Small on purpose: this returns whole archived turns
+# into a protected exchange the rolling window cannot trim.
+_MAX_CONVERSATION_SEARCH_TOP_K = 8
+
+
+def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
+    """Search this thread's archived turns. ``rag_scope`` carries only the thread id here;
+    the model supplies ``query``/``top_k``."""
+    scope = rag_scope or {}
+    thread_id = scope.get("thread_id")
+    query = (arguments or {}).get("query", "")
+    if not query or not str(query).strip():
+        return "Error: query is empty."
+    if not thread_id:
+        return "There is no earlier conversation to search."
+    try:
+        from core.rag import conversation_archive
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Conversation archive unavailable: %s", exc)
+        return "Searching earlier conversation is unavailable on this server."
+    if not conversation_archive.enabled():
+        return "Searching earlier conversation is unavailable on this server."
+
+    # Clamped, not trusted: top_k comes from the model, and a negative value reaches a
+    # Python slice as out[:-1], returning nearly the whole candidate pool as a ~30k-token
+    # tool result that the protected current exchange cannot evict.
+    requested = _opt_int((arguments or {}).get("top_k"))
+    # None, not the ceiling: an omitted top_k must fall through to the configured recall
+    # default. Defaulting to the maximum returned eight chunks into that same protected
+    # exchange, enough to fail the next pass on a 4K chat.
+    top_k = (
+        None if requested is None else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
+    )
+    # Then against the room actually left: the fixed cap bounds what the model may ask
+    # for, not what fits. Eight chunks is roughly 4,000 tokens once wrapped, so on a 4K
+    # chat overshooting here is a context-length error no later preflight can recover.
+    budget = scope.get("budget_tokens")
+    if budget is not None:
+        default_k = 1
+        try:
+            from core.rag import config as rag_config
+            affordable = max(0, int(budget)) // max(1, int(rag_config.CHUNK_TOKENS))
+            default_k = max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+        except Exception:
+            affordable = 0
+        if affordable <= 0:
+            return "There is no room left in this context to search earlier conversation."
+        # An omitted top_k still means the configured default; room is a cap on it, not a
+        # target. Taking the room itself asked a 128K chat for 200 passages, past both the
+        # default and the ceiling the model's own value is held to.
+        top_k = (
+            min(default_k, _MAX_CONVERSATION_SEARCH_TOP_K, affordable)
+            if top_k is None
+            else max(1, min(top_k, affordable))
+        )
+
+    # The branch this request is on, so a response replaced by Retry cannot be searched
+    # back out of the archive. Absent callers fall back to the whole stored thread.
+    def _recall(k):
+        return conversation_archive.recall(
+            str(thread_id),
+            str(query),
+            top_k = k,
+            branch_messages = scope.get("branch_messages"),
+        )
+
+    found = _recall(top_k)
+    if not found:
+        return "No earlier turns of this conversation matched that query."
+
+    # Then against what the result actually costs. CHUNK_TOKENS is what the chunker AIMS
+    # at, not what a chunk weighs: chunks overlap, the chunker's tokenizer is not the
+    # model's, and the rendered block adds markup, source metadata and the tool framing
+    # around it. Measured on a 500-token budget: one chunk came back as 1,256 estimated
+    # tokens. So the count is halved until the rendered result fits, the same backoff the
+    # forced recall uses, and a single chunk that still does not fit is refused rather
+    # than appended to an exchange the window is not allowed to evict.
+    if budget is not None:
+        counter = scope.get("token_counter")
+        attempt = max(1, int(top_k or 1))
+        while True:
+            rendered = _rendered_conversation_search(found)
+            if _conversation_search_cost(rendered, counter) <= int(budget):
+                return rendered
+            if attempt <= 1:
+                return "There is no room left in this context to search earlier conversation."
+            attempt = max(1, attempt // 2)
+            found = _recall(attempt)
+            if not found:
+                return "No earlier turns of this conversation matched that query."
+    return _rendered_conversation_search(found)
+
+
+# What a `tool` message costs beyond its own text: the role, the call id and whatever the
+# template wraps them in. Small, fixed, and left out entirely before, which is the wrong
+# direction on a check whose whole job is to refuse a result that will not fit.
+_TOOL_MESSAGE_FRAMING_TOKENS = 8
+
+
+def _conversation_search_cost(text: str, counter = None) -> int:
+    """What admitting this result really costs, exactly when the caller has a tokenizer.
+
+    The estimate below is pessimistic for CJK and emoji but still optimistic for ASCII
+    that tokenises densely -- source code, minified JSON, hashes, command output all run
+    nearer two or three characters per token than four -- so a result could be admitted at
+    well under its real cost and then land in the current tool exchange, which the window
+    is not allowed to evict. A tokenizer-backed caller passes its own counter, and the
+    GGUF path is one, so the check that already computes the budget exactly can now spend
+    it exactly too.
+    """
+    if counter is not None:
+        try:
+            return int(counter(text)) + _TOOL_MESSAGE_FRAMING_TOKENS
+        except Exception:
+            logger.debug("conversation search: exact result count failed", exc_info = True)
+    return _conversation_search_tokens(text) + _TOOL_MESSAGE_FRAMING_TOKENS
+
+
+def _conversation_search_tokens(text: str) -> int:
+    """A deliberately pessimistic size for a search result, in tokens.
+
+    The shared estimator charges four characters per token, which is about right for
+    English and badly wrong for text that tokenises densely: CJK and emoji run closer to
+    one token per character, so a result could be accepted at a quarter of its real cost
+    and then land in the current tool exchange, which the window cannot evict. No exact
+    counter is reachable from here, the provider loop having no tokenizer at all, so
+    non-ASCII characters are charged one token each and the rest at the usual rate.
+    """
+    dense = sum(1 for char in text if ord(char) > 127)
+    return max(1, dense + (len(text) - dense) // 4)
+
+
+def _rendered_conversation_search(found) -> str:
+    """The tool result exactly as the model would receive it."""
+    text, sources = found
+    if sources:
+        import json as _json
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    return text
+
+
 def _search_knowledge_base_with_budget(
     arguments: dict,
     rag_scope: dict | None,
     timeout: int | None,
     cancel_event = None,
+    search_fn = None,
 ) -> str:
+    """Admission-controlled RAG search.
+
+    ``search_fn`` swaps in a different search over the same capacity-of-one slot, so
+    archive lookups queue behind document lookups instead of racing for the embedder."""
+    search_fn = search_fn or _search_knowledge_base
     if cancel_event is not None and cancel_event.is_set():
         return "Error: knowledge base search cancelled."
     deadline = time.monotonic() + timeout if timeout is not None else None
@@ -9611,7 +10392,7 @@ def _search_knowledge_base_with_budget(
 
     if timeout is None and cancel_event is None:
         try:
-            return _search_knowledge_base(arguments, rag_scope)
+            return search_fn(arguments, rag_scope)
         finally:
             release_slot()
 
@@ -9619,7 +10400,7 @@ def _search_knowledge_base_with_budget(
 
     def search() -> None:
         try:
-            result.put((True, _search_knowledge_base(arguments, rag_scope)))
+            result.put((True, search_fn(arguments, rag_scope)))
         except BaseException as exc:
             result.put((False, exc))
         finally:
@@ -9743,6 +10524,20 @@ def _whole_doc_budget(scope: dict | None = None, conversation: list[dict] | None
     return min(budget, max(0, available))
 
 
+def _last_searchable_text(messages):
+    """The most recent EARLIER user turn that names something to search for, or None."""
+    try:
+        from core.inference import instruction_pin
+    except Exception:
+        return None
+    users = [m for m in (messages or []) if m.get("role") == "user"]
+    for message in reversed(users[:-1] if users else []):
+        text = _last_user_text([message])
+        if text and not instruction_pin.is_thin_query(text):
+            return text
+    return None
+
+
 def _last_user_text(conversation: list[dict]) -> str:
     """Plain text of the most recent user turn (text parts only)."""
     for msg in reversed(conversation):
@@ -9760,6 +10555,184 @@ def _last_user_text(conversation: list[dict]) -> str:
             return " ".join(t for t in parts if t).strip()
         return ""
     return ""
+
+
+def build_synthetic_search_exchange(
+    *,
+    tool_name: str,
+    call_prefix: str,
+    status_label: str,
+    query: str,
+    text: str,
+    sources: list[dict],
+) -> dict:
+    """Render a retrieval the loop never asked for as a normal tool exchange.
+
+    Returns ``{"events": [...], "messages": [...]}``: the messages are what the model
+    reads, the events what the UI draws, so a forced retrieval shows up as an ordinary
+    tool card with working citations instead of appearing from nowhere.
+    """
+    import json as _json
+    import uuid as _uuid
+
+    call_id = call_prefix + _uuid.uuid4().hex[:12]
+    args = {"query": query}
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    events = [
+        {"type": "status", "text": f"{status_label}: {query[:60]}"},
+        {
+            "type": "tool_start",
+            "tool_name": tool_name,
+            "tool_call_id": call_id,
+            "arguments": args,
+        },
+        {
+            "type": "tool_end",
+            "tool_name": tool_name,
+            "tool_call_id": call_id,
+            "result": full_result,
+        },
+        {"type": "status", "text": ""},
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": _json.dumps(args, ensure_ascii = False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": tool_name,
+            "tool_call_id": call_id,
+            "content": text,
+        },
+    ]
+    return {"events": events, "messages": messages}
+
+
+_RECALL_BLOCK = (
+    "<recalled_conversation>\n"
+    "This conversation was compacted and earlier turns were removed from your context. "
+    "Relevant earlier turns of this chat are quoted below, retrieved verbatim.\n"
+    "{text}\n"
+    "</recalled_conversation>\n\n"
+)
+
+
+def build_conversation_recall(
+    conversation: list[dict],
+    thread_id: str | None,
+    *,
+    style: str = "tool",
+    top_k: int | None = None,
+    branch_messages: list[dict] | None = None,
+) -> dict | None:
+    """Retrieve the archived turns most relevant to the latest user message.
+
+    Deliberately NOT gated on ``rag_scope``: compaction happens whether or not document
+    RAG is on, and these turns are the conversation's own, not uploaded files.
+
+    Forcing this one retrieval is the whole feature. Given only a search tool, a 35B on
+    MRCR v2 declined on 56% of rows, scoring 0.099 when it skipped against 0.461 when it
+    searched; forcing the lookup on the evicting turn took tool-only 0.258 to 0.604, and
+    the model then called the tool on 0% of rows, so it costs nothing on the common path.
+
+    ``style="tool"`` renders a tool exchange, for the tool loop which already carries a
+    tools array. ``style="inline"`` prefixes the latest user message instead, for the
+    plain path: forging tool_calls without a tools array breaks strict templates.
+    """
+    if not thread_id:
+        return None
+    try:
+        from core.rag import conversation_archive
+    except Exception:
+        return None
+    if not conversation_archive.enabled():
+        return None
+
+    # The BRANCH's latest user turn, not the loop conversation's: a later tool-loop
+    # iteration can end with an internal user-role re-prompt (the plan-without-action
+    # nudge), and searching for that controller instruction defeats the forced retrieval.
+    # branch_messages is what the client sent, so its last user turn is the real request.
+    query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
+    if not query:
+        return None
+    # A nudge ("continue", "yes") retrieves nothing, so the user's last real instruction is
+    # asked for as a SECOND query. Not applied to the model's own `search_conversation`
+    # calls: the model wrote that query, and overriding it answers a different question.
+    anchor = None
+    thin = False
+    try:
+        from core.inference import instruction_pin
+        thin = instruction_pin.is_thin_query(query)
+        if thin:
+            _behind = branch_messages or conversation
+            anchor = instruction_pin.last_substantive_instruction(_behind)
+            if not anchor:
+                # An instruction is 80 characters; a QUERY need only name something. On a
+                # first reset a thread of short prompts ("Write a story about Mars", then
+                # "continue") had no anchor at all, so recall was skipped, the block
+                # carried nothing (the same length rule) and the archive was written after
+                # tool selection, so the model saw the nudge alone with no way to reach
+                # what it was continuing. `is_thin_query` already separates "names
+                # nothing" from "short", so ask it instead.
+                anchor = _last_searchable_text(_behind)
+    except Exception:  # noqa: BLE001 -- a query refinement must never break a chat
+        anchor = None
+        thin = False
+    if thin and not anchor:
+        # A nudge with nothing behind it: searching for "continue" returns whatever shares
+        # its stopwords, and under checkpoint compaction that block is the model's FIRST
+        # sight of the search tool. Skip; the tool stays available.
+        logger.info(
+            "Conversation recall skipped: the latest message is a nudge with no "
+            "earlier instruction to search for instead"
+        )
+        return None
+    try:
+        found = conversation_archive.recall(
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = [anchor] if anchor else None,
+            # This is the automatic lookup, so it is the one the quality floor applies to.
+            forced = True,
+        )
+    except Exception:
+        logger.warning("Conversation recall failed", exc_info = True)
+        return None
+    if not found:
+        return None
+    text, sources = found
+
+    if style == "inline":
+        return {
+            "events": [],
+            "messages": [],
+            "prefix": _RECALL_BLOCK.format(text = text),
+            "sources": len(sources),
+        }
+    built = build_synthetic_search_exchange(
+        tool_name = "search_conversation",
+        call_prefix = "conv_recall_",
+        status_label = "Recalling earlier conversation",
+        query = query,
+        text = text,
+        sources = sources,
+    )
+    built["sources"] = len(sources)
+    logger.info("Conversation recall: %d earlier passage(s) for %r", len(sources), query[:80])
+    return built
 
 
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
@@ -9863,55 +10836,28 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if text is None:
         return None
 
-    import json as _json
-    import uuid as _uuid
-
-    call_id = "rag_auto_" + _uuid.uuid4().hex[:12]
-    args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
-    events = [
-        {"type": "status", "text": f"Searching documents: {query[:60]}"},
-        {
-            "type": "tool_start",
-            "tool_name": "search_knowledge_base",
-            "tool_call_id": call_id,
-            "arguments": args,
-        },
-        {
-            "type": "tool_end",
-            "tool_name": "search_knowledge_base",
-            "tool_call_id": call_id,
-            "result": full_result,
-        },
-        {"type": "status", "text": ""},
-    ]
-    messages = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": "search_knowledge_base",
-                        "arguments": _json.dumps(args, ensure_ascii = False),
-                    },
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "name": "search_knowledge_base",
-            "tool_call_id": call_id,
-            "content": text,
-        },
-    ]
+    built = build_synthetic_search_exchange(
+        tool_name = "search_knowledge_base",
+        call_prefix = "rag_auto_",
+        status_label = "Searching documents",
+        query = query,
+        text = text,
+        sources = sources,
+    )
     logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
-    return {"events": events, "messages": messages}
+    return built
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+
+# Share of the loaded window one fetched page may claim. The same window also has to hold
+# the system prompt, the carried-forward block, the user's turn, the call itself and room
+# to answer, so a third is already generous.
+_PAGE_CONTEXT_SHARE = 0.35
+# Below this a page is too clipped to answer from, so the fetch is not worth making small.
+_MIN_PAGE_CHARS = 2000
+# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+_HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
@@ -10696,9 +11642,160 @@ def _looks_like_html_document(body: str) -> bool:
     return bool(_HTML_DOCUMENT_RE.match(probe))
 
 
+def _loaded_context_tokens() -> int | None:
+    """The active model's context window, or None when it cannot be read.
+
+    Mirrors `research_runs._loaded_context_length` and `routes.inference.
+    _monitor_context_length`: llama.cpp first, then the orchestrator the API layer reads.
+    Both branches are needed. A native/Transformers chat leaves `is_loaded` false, and
+    stopping at that probe reported "unknown", which kept the full 16,000-character cap
+    and reproduced on small native models exactly the overflow this budget exists to
+    prevent.
+
+    The ML backends live in a worker subprocess, so the in-process singleton is
+    unpopulated here and importing it pulls in the ML stack; peek at the orchestrator
+    instead of constructing one. Every failure is "unknown" so a fetch is never blocked by
+    not knowing.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
+        llama = get_llama_cpp_backend()
+        if getattr(llama, "is_loaded", False):
+            ctx = getattr(llama, "context_length", None)
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+    except Exception:  # noqa: BLE001 -- an unreadable window is "unknown", never an error
+        pass
+    try:
+        from core.research_runs import _peek_inference_backend  # noqa: PLC0415
+
+        backend = _peek_inference_backend()
+        name = getattr(backend, "active_model_name", None)
+        models = getattr(backend, "models", {}) or {}
+        info = models.get(name) if (name and isinstance(models, dict)) else None
+        for candidate in (
+            (info or {}).get("context_length"),
+            getattr(backend, "context_length", None),
+            getattr(backend, "max_seq_length", None),
+        ):
+            if isinstance(candidate, int) and candidate > 0:
+                return candidate
+    except Exception:  # noqa: BLE001 -- same rule: unknown, never an error
+        return None
+    return None
+
+
+def _result_char_budget(cap: int) -> int:
+    """`cap`, lowered to what the serving window can actually hold.
+
+    Shared by fetched pages and by terminal/python results, because the failure is the
+    same: a fixed character cap has no relation to the loaded context, so on a small
+    window one result fills most of it. That result lands in the NEWEST turn, which the
+    fit protects, so compaction cannot drop the very thing that does not fit and the
+    request goes irreducible. Measured live on a 5120-token window: 7043 and 6684 token
+    requests refused, both on the code tools, whose 16,000-character cap is about 4,000
+    tokens on its own.
+    """
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    if not ctx:
+        return cap
+    return max(_MIN_PAGE_CHARS, min(cap, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+
+
+def _tool_result_char_budget() -> int:
+    """The terminal/python cap, sized to the window. See `_result_char_budget`."""
+    return _result_char_budget(_MAX_OUTPUT_CHARS)
+
+
+def _page_char_budget() -> int:
+    """`_MAX_PAGE_CHARS`, lowered to what the serving window can actually hold.
+
+    16,000 characters is roughly 4,000 tokens: fine on a 128k model, nonsensical on a
+    4,864-token one. Measured there, a single fetched page came back at 12,295 characters,
+    the request went irreducible at 8,995 tokens against a 3,648-token budget with
+    `latest_turn_role: "tool"`, and the user was advised to shorten a conversation
+    consisting of one 11-token question. Nothing downstream can recover from it either:
+    the fit protects the newest turn, so compaction may not drop the very result that does
+    not fit.
+
+    Above roughly an 11k window this returns the old constant unchanged, so only the models
+    that cannot afford a whole page are affected.
+    """
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    if not ctx:
+        return _MAX_PAGE_CHARS
+    return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+
+
+def _window_context_tokens() -> int | None:
+    """The window this request is served by, or None when it cannot be read."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    return ctx if ctx else None
+
+
+def _dense_prefix_chars(text: str, token_budget: float) -> int:
+    """How many leading characters of `text` cost at most `token_budget` tokens.
+
+    Four characters per token is an English rate. Measured with Qwen3, Llama 3.2 and
+    tiktoken on real fetched pages, CJK prose runs 1.3-1.6 characters per token, and the
+    percent-escaped links a CJK page is full of (`%E7%9F%A5`) run 1.3-1.5: both are the
+    same non-ASCII bytes, one spelled in ASCII. Charging them a token each, the rule
+    `context_window.estimate_messages_tokens_dense` already uses, keeps the share the
+    caller asked to reserve a share instead of the whole budget.
+
+    One pass, so it costs nothing next to the fetch it sizes.
+    """
+    spent = 0.0
+    index = 0
+    length = len(text)
+    while index < length:
+        start = index
+        if text[index] == "%" and _HEX_PAIR_RE.match(text, index + 1):
+            spent += 3.0  # a non-ASCII byte spelled in ASCII; charge it like one
+            index += 3
+        else:
+            spent += 1.0 if ord(text[index]) > 127 else 0.25
+            index += 1
+        # Cut on whole characters (and whole escapes), so the tail is never half a
+        # percent-escape the model has to guess at.
+        if spent > token_budget:
+            return start
+    return length
+
+
+def _dense_char_limit(text: str, max_chars: int) -> int:
+    """`max_chars`, lowered when `text` tokenises denser than four characters per token.
+
+    Without this the window-derived caps above reserve their share only for English. On
+    the 4,864-token window this PR was measured against, the 6,809-character page budget
+    is 35% of the window in English and 3,800-4,500 real tokens of a Chinese or Japanese
+    page: 80-95% of the whole prompt budget, in the newest turn, which the fit protects.
+    That is the same irreducible refusal the budget exists to prevent.
+    """
+    ctx = _window_context_tokens()
+    if not ctx or len(text) <= _MIN_PAGE_CHARS:
+        return max_chars
+    # Kept a float, so English text lands on exactly the character budget rather than
+    # one character short of it.
+    fitted = _dense_prefix_chars(text, ctx * _PAGE_CONTEXT_SHARE)
+    # Never above what the caller allowed, and never below the floor that keeps a page
+    # worth reading. An explicit cap smaller than the floor still wins.
+    return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
+
+
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
         return "(page returned no readable text)"
+    max_chars = _dense_char_limit(text, max_chars)
     if len(text) > max_chars:
         return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
     return text
@@ -10706,7 +11803,9 @@ def _truncate_page_text(text: str, max_chars: int) -> str:
 
 def _fetch_page_text(
     url: str,
-    max_chars: int = _MAX_PAGE_CHARS,
+    # Resolved per call rather than bound at import: the default would freeze the constant
+    # before any model is loaded, which is exactly when the window is still unknown.
+    max_chars: int | None = None,
     timeout: int = 30,
     cancel_event = None,
     website_policy: dict | None = None,
@@ -10720,6 +11819,8 @@ def _fetch_page_text(
     instead of the repo page's UI chrome. Blocks private/loopback/link-local
     targets (SSRF protection) and caps the download size.
     """
+    if max_chars is None:
+        max_chars = _page_char_budget()
     # One wall-clock budget for the whole fetch. The README API attempt and its
     # HTML fallback both draw from it, so a slow/failed API call cannot hand the
     # fallback a fresh full timeout and double the worst case.
@@ -12149,7 +13250,15 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
-def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+def _truncate(text: str, limit: int | None = None) -> str:
+    # Resolved per call, not bound at import: the default would freeze the constant
+    # before any model is loaded, which is exactly when the window is still unknown.
+    if limit is None:
+        limit = _tool_result_char_budget()
+    # Same correction as a fetched page: a character cap reserves its share of the window
+    # only for English, and a command that prints CJK or percent-escaped text costs two to
+    # three times what the cap assumed.
+    limit = _dense_char_limit(text, limit)
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the

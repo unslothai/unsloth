@@ -223,6 +223,129 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     )
 
 
+def _compat_inventory_row(tmp_path, name = "model"):
+    return models_route.LocalModelInfo(
+        id = name,
+        display_name = "Model",
+        path = str(tmp_path / f"{name}.gguf"),
+        source = "models_dir",
+        model_format = "gguf",
+    )
+
+
+def _compat_inventory_sources(tmp_path):
+    return models_route._CompatLocalInventorySources(
+        tmp_path,
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (),
+        (),
+    )
+
+
+def test_compat_local_inventory_classifies_inside_the_shared_scan(monkeypatch, tmp_path):
+    """Classification belongs to the coalesced flight, and runs off the event loop.
+
+    Producing classified rows inside the flight is what lets overlapping callers reuse one
+    result instead of each repeating the GGUF header reads on the shared executor."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    classifier_threads: list[int] = []
+    shared: list[list] = []
+    real_shared_scan = hf_cache_scan.shared_scan
+
+    async def recording_shared_scan(flights, key, factory):
+        models = await real_shared_scan(flights, key, factory)
+        shared.append(models)
+        return models
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(
+        models_route, "collect_local_models", lambda *_a, **_kw: [_compat_inventory_row(tmp_path)]
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_local_model_task",
+        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
+    )
+    monkeypatch.setattr(hf_cache_scan, "shared_scan", recording_shared_scan)
+
+    async def run():
+        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
+
+    loop_thread, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["text-generation"]
+    # The flight resolves to classified rows, so waiters on it never reclassify.
+    assert [[row.task for row in models] for models in shared] == [["text-generation"]]
+    assert classifier_threads and loop_thread not in classifier_threads
+
+
+def test_compat_local_inventory_rescans_when_the_cache_changes_during_classification(
+    monkeypatch, tmp_path
+):
+    """A deletion landing during the classification hop must not be answered with old rows."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    epoch = [0]
+    scans: list[int] = []
+
+    def collect(*_args, **_kwargs):
+        scans.append(epoch[0])
+        return [_compat_inventory_row(tmp_path, f"scan{len(scans)}")]
+
+    def classify(_model):
+        # The cache is invalidated while the first scan's rows are being classified.
+        if len(scans) == 1:
+            epoch[0] += 1
+        return "text-generation"
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", collect)
+    monkeypatch.setattr(models_route, "_local_model_task", classify)
+    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    listed = asyncio.run(models_route.list_local_models(str(tmp_path), "subject"))
+    assert scans == [0, 1], scans
+    assert [row.id for row in listed.models] == ["scan2"]
+
+
+def test_compat_local_inventory_classifies_a_superseded_result(monkeypatch, tmp_path):
+    """The give-up path serves the freshest scan it has, classified like any other."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    epoch = [0]
+    classifier_threads: list[int] = []
+
+    def collect(*_args, **_kwargs):
+        epoch[0] += 1  # every walk is invalidated before it returns
+        return [_compat_inventory_row(tmp_path)]
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", collect)
+    monkeypatch.setattr(
+        models_route,
+        "_local_model_task",
+        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
+    )
+    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
+
+    loop_thread, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["text-generation"]
+    assert classifier_threads and loop_thread not in classifier_threads
+
+
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()
@@ -4097,14 +4220,16 @@ def _write_cached_gguf(
     filename: str,
     mtime: float | None = None,
     revision: str = "rev",
+    size: int = 36,
 ) -> Path:
-    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks."""
+    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks,
+    *size* tells two revisions' copies of one filename apart."""
     import os
 
     repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
     snapshot = repo_dir / "snapshots" / revision
     snapshot.mkdir(parents = True, exist_ok = True)
-    (snapshot / filename).write_bytes(b"GGUF" + b"\0" * 32)
+    (snapshot / filename).write_bytes(b"GGUF" + b"\0" * (size - 4))
     if mtime is not None:
         os.utime(snapshot, (mtime, mtime))
     return repo_dir
@@ -4281,6 +4406,275 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert context_calls == [(str(repo_dir / "snapshots" / "newer"), True)]
+
+
+def _point_ref_at(repo_dir: Path, revision: str) -> None:
+    """Widening needs this ref to name the answering revision."""
+    refs = repo_dir / "refs"
+    refs.mkdir(parents = True, exist_ok = True)
+    (refs / "main").write_text(revision)
+
+
+def _cached_repo_variants(
+    monkeypatch,
+    hub_cache,
+    repo_dir,
+    *,
+    local_path = None,
+    active = None,
+    prefer_local_cache = True,
+):
+    _pin_caches(monkeypatch, active or hub_cache, [active, hub_cache] if active else [hub_cache])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+    return asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            # True is what the on-device card sends; False falls back through the dead Hub.
+            prefer_local_cache = prefer_local_cache,
+            local_path = str(local_path or repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+
+def test_a_quant_only_an_older_revision_holds_is_still_listed(monkeypatch, tmp_path):
+    """The hidden quant is still cached and still loadable."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
+    assert all(v.downloaded for v in response.variants)
+
+
+def test_merged_unlabelled_quants_are_told_apart(monkeypatch, tmp_path):
+    """Two revisions each hold the only unnamed quant they can see."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "foo.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "bar.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert sorted(v.quant for v in response.variants) == ["bar", "foo"]
+    labels = [v.display_label for v in response.variants]
+    assert labels == ["GGUF \u00b7 bar.gguf", "GGUF \u00b7 foo.gguf"]
+
+
+def test_a_quant_cached_twice_is_listed_once(monkeypatch, tmp_path):
+    """Described by the answering revision, the copy a load opens."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M.gguf",
+        mtime = 1_000_000_000,
+        revision = "older",
+        size = 128,
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M.gguf",
+        mtime = 2_000_000_000,
+        revision = "newer",
+        size = 64,
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    # The answering revision's copy, not the sibling's, so the row matches what a load opens.
+    assert response.variants[0].size_bytes == 64
+
+
+def test_a_sibling_revisions_torn_quant_is_listed_but_not_ready(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 1_000_000_000,
+        revision = "older",
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    by_quant = {v.quant: v for v in response.variants}
+    assert set(by_quant) == {"Q8_0", "Q4_K_M"}
+    assert by_quant["Q8_0"].downloaded is True
+    assert by_quant["Q4_K_M"].downloaded is False
+
+
+def test_a_whole_sibling_copy_replaces_a_torn_one(monkeypatch, tmp_path):
+    """A load skips the shard-short copy for the whole one, so the row must too."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 2_000_000_000,
+        revision = "newer",
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    by_quant = {v.quant: v for v in response.variants}
+    assert by_quant["Q4_K_M"].downloaded is True
+    assert by_quant["Q4_K_M"].filename == "m-Q4_K_M.gguf"
+
+
+def test_a_projector_alone_in_a_sibling_does_not_claim_vision(monkeypatch, tmp_path):
+    """A projector serves only its own revision's quants, and this sibling merges none."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 2_000_000_000,
+        revision = "newer",
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 1_000_000_000,
+        revision = "older",
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert response.has_vision is False
+
+
+def test_a_merged_rows_projector_still_flags_vision(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
+    assert response.has_vision is True
+
+
+def test_a_replaced_row_does_not_keep_its_donors_vision(monkeypatch, tmp_path):
+    """Its revision is superseded by a whole copy with no projector, so the flag goes too."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 3_000_000_000, revision = "newest"
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 2_000_000_000,
+        revision = "middle",
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 2_000_000_000, revision = "middle"
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "oldest"
+    )
+    _point_ref_at(repo_dir, "newest")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    by_quant = {v.quant: v for v in response.variants}
+    assert by_quant["Q4_K_M"].downloaded is True
+    assert response.has_vision is False
+
+
+def test_the_unreachable_hub_fallback_also_unions(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir, prefer_local_cache = False)
+
+    assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
+
+
+def test_a_repo_outside_the_active_cache_gains_no_siblings(monkeypatch, tmp_path):
+    """Such a row loads by the directory it names, not by id."""
+    active = tmp_path / "active"
+    other = tmp_path / "other"
+    active.mkdir()
+    other.mkdir()
+    repo_dir = _write_cached_gguf(
+        other, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(other, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, other, repo_dir, active = active)
+
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+
+
+def test_a_row_pinned_to_one_revision_gains_no_siblings(monkeypatch, tmp_path):
+    """A pinned row loads out of that directory alone, so nothing else may be offered on it."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(
+        monkeypatch, hub_cache, repo_dir, local_path = repo_dir / "snapshots" / "newer"
+    )
+
+    assert [v.quant for v in response.variants] == ["Q8_0"]
 
 
 def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path):
@@ -5012,3 +5406,248 @@ def test_a_saved_inpaint_pipeline_is_not_tagged_as_its_base_family():
         "FluxImg2ImgPipeline",
     ):
         assert families.detect_family_by_pipeline_class(variant) is None, variant
+
+
+# Diffusers listing probes
+
+
+def _listing_families():
+    from core.inference.diffusion_families import detect_family, family_probe_class
+    from core.inference.video_families import detect_video_family
+
+    z_image = detect_family("unsloth/Z-Image-Turbo")  # ZImagePipeline, from 0.36.0
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")  # ModularPipeline, probed on its transformer
+    assert z_image is not None and h3 is not None
+    assert family_probe_class(h3) == "MiniMaxH3Transformer3DModel"
+    return z_image, h3
+
+
+def test_the_listing_probe_reads_the_installed_version_instead_of_importing_diffusers(monkeypatch):
+    """Listing models must not import diffusers' lazy pipeline modules."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    installed = ["0.39.0"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(z_image) is True
+    assert (
+        family_pipeline_available(h3) is False
+    )  # 0.40.0 is the first release with its transformer
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+    installed[0] = "0.40.0.dev0"  # a dev build of the release that has it
+    assert family_pipeline_available(h3) is True
+
+    installed[0] = "0.35.2"  # the last release before ZImagePipeline
+    assert family_pipeline_available(z_image) is False
+    assert "diffusers" not in sys.modules
+
+
+def test_the_listing_probe_fails_open_when_the_version_is_unknowable(monkeypatch):
+    """An unknown version must not hide models from listings."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+
+    def _not_installed(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _not_installed)
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+    # A None entry blocks importing diffusers.
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.30.0")
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+
+def test_the_listing_probe_still_judges_a_conventional_module_by_its_attributes(monkeypatch):
+    """A conventional module can still be checked by its exported attributes."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.40.0")
+    stub = types.ModuleType("diffusers")
+    stub.__version__ = "0.40.0"  # new enough for every class, and it exports none of them
+    monkeypatch.setitem(sys.modules, "diffusers", stub)
+
+    assert family_pipeline_available(z_image) is False
+    assert family_pipeline_available(h3) is False
+
+    stub.ZImagePipeline = object
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is False
+
+    # Classes without a version gate are still checked directly.
+    from core.inference.diffusion_families import detect_family
+
+    sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert sdxl is not None
+    assert family_pipeline_available(sdxl) is False
+    stub.StableDiffusionXLPipeline = object
+    assert family_pipeline_available(sdxl) is True
+
+
+def test_the_listing_probe_never_touches_a_lazy_modules_attributes(monkeypatch):
+    """Attribute reads on a lazy module would trigger imports."""
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, _h3 = _listing_families()
+
+    class _Lazy(types.ModuleType):
+        def __init__(self, version: str) -> None:
+            super().__init__("diffusers")
+            self.__version__ = version
+            self.resolved: list[str] = []
+
+        def __getattr__(self, item):  # only reached for names not already in the namespace
+            self.resolved.append(item)
+            raise AttributeError(item)
+
+    lazy = _Lazy("0.40.0")
+    monkeypatch.setitem(sys.modules, "diffusers", lazy)
+    assert family_pipeline_available(z_image) is True
+    assert lazy.resolved == [], lazy.resolved
+
+    lazy = _Lazy("0.35.2")
+    monkeypatch.setitem(sys.modules, "diffusers", lazy)
+    assert family_pipeline_available(z_image) is False
+    assert lazy.resolved == [], lazy.resolved
+
+
+def test_the_load_path_stays_the_authority_on_a_nonstandard_build(monkeypatch):
+    """The load path must reject a class omitted by a nonstandard build."""
+    import pytest
+
+    from core.inference.diffusion_families import (
+        assert_pipeline_class_available,
+        family_pipeline_available,
+    )
+
+    z_image, _h3 = _listing_families()
+
+    class _LazyMissingTheClass(types.ModuleType):
+        def __getattr__(self, item):
+            raise AttributeError(item)
+
+    nonstandard = _LazyMissingTheClass("diffusers")
+    nonstandard.__version__ = "0.40.0"
+    monkeypatch.setitem(sys.modules, "diffusers", nonstandard)
+
+    assert family_pipeline_available(z_image) is True
+    with pytest.raises(ValueError, match = "ZImagePipeline"):
+        assert_pipeline_class_available("ZImagePipeline", "z-image")
+
+
+def test_the_listing_probe_does_not_read_a_module_that_is_still_importing(monkeypatch):
+    """A partial module from a concurrent import must not hide model rows."""
+    import importlib.metadata
+    import importlib.util
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+
+    partial = types.ModuleType("diffusers")
+    spec = importlib.util.spec_from_loader("diffusers", loader = None)
+    spec._initializing = True
+    partial.__spec__ = spec
+    monkeypatch.setitem(sys.modules, "diffusers", partial)
+
+    installed = ["0.40.0"]
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    # Use package metadata while the module namespace is incomplete.
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+    # An old installed version still fails the gate.
+    installed[0] = "0.35.2"
+    assert family_pipeline_available(z_image) is False
+
+    # A fully imported conventional module is checked directly.
+    spec._initializing = False
+    installed[0] = "0.40.0"
+    assert family_pipeline_available(z_image) is False
+    partial.ZImagePipeline = object
+    assert family_pipeline_available(z_image) is True
+
+
+def test_the_listing_probe_reads_a_vendor_or_prerelease_version(monkeypatch):
+    """A local or pre-release suffix names the release the build was cut from."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import detect_family, family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert sdxl is not None
+    installed = ["0.40.0+dfsg"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(sdxl) is True
+    # A vendor rebuild of the release that first shipped the class.
+    assert family_pipeline_available(h3) is True
+    assert family_pipeline_available(z_image) is True
+
+    for version in ("0.40.0rc1", "0.40.0.dev0", "0.40.1+local"):
+        installed[0] = version
+        assert family_pipeline_available(h3) is True, version
+
+    # An older rebuild is still too old.
+    installed[0] = "0.39.0+dfsg"
+    assert family_pipeline_available(h3) is False
+    assert family_pipeline_available(z_image) is True
+
+    # An unreadable version fails open, like a missing one.
+    installed[0] = "unknown"
+    assert family_pipeline_available(h3) is True
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+
+def test_every_listing_probe_class_has_a_version_gate():
+    """An unlisted class reads as available, so every probed class needs an entry."""
+    from core.inference.diffusion_families import (
+        _FAMILIES,
+        _PIPELINE_MIN_DIFFUSERS,
+        family_probe_class,
+    )
+    from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
+
+    # Exported before any diffusers still in play, so no entry can make the answer more true.
+    predates_every_release = {"StableDiffusionXLPipeline"}
+    probed = {family_probe_class(fam) for fam in (*_FAMILIES, *_VIDEO_FAMILIES)}
+    ungated = sorted(name for name in probed if name and name not in _PIPELINE_MIN_DIFFUSERS)
+    assert set(ungated) <= predates_every_release, ungated
+
+
+def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkeypatch):
+    """A family whose class the install predates must not reach the picker."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available, family_probe_class
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and family_probe_class(wan) == "WanPipeline"
+
+    installed = ["0.32.0"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(wan) is False  # WanPipeline arrived in 0.33.0
+    installed[0] = "0.33.0"
+    assert family_pipeline_available(wan) is True
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"

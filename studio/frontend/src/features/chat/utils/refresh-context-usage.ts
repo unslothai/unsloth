@@ -7,6 +7,7 @@ import {
   buildLocalTokenCountReasoning,
   buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
+  findLatestUserVideoBase64,
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
@@ -274,6 +275,15 @@ export async function refreshContextUsage(
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
     // no audio branch, so counting would price a text-only prompt. Decline as images do.
     if (findLatestUserAudioBase64(runMessages)) return;
+
+    // Same for video, and more so: the real request replays the clip as
+    // video_base64 and llama-server expands it into frames, while
+    // toOpenAIMessages has no video branch -- so counting would price a
+    // text-only prompt and the bar would show room the window does not have.
+    // /chat/count_tokens 503s on video for the same reason. Declining here also
+    // keeps up to 85 MB of base64 out of branchSignature's JSON.stringify,
+    // which is the synchronous main-thread cost the image bail above exists for.
+    if (findLatestUserVideoBase64(runMessages)) return;
 
     if (fromLiveBranch) {
       countedBranch = branchSignature(runMessages);

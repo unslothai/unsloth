@@ -97,6 +97,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      showMore: "Afficher plus",
+      showLess: "Afficher moins",
       settings: "Paramètres",
       api: "API",
       lightMode: "Mode clair",
@@ -110,6 +112,44 @@ export const fr = {
       title: "Page introuvable",
       description: "{path} n'existe pas.",
       backToChat: "Retour à la discussion",
+    },
+    selection: {
+      pinProjects: "Épingler les projets",
+      unpinProjects: "Détacher les projets",
+      deleteProjects: "Supprimer les projets",
+      deleteProjectsTitle: "Supprimer les projets",
+      deleteProjectsDescription:
+        "Supprimer {count} projets ? Leurs discussions seront supprimées définitivement.",
+      deleteProjectsFilesDescription:
+        "Le dossier de travail de chaque projet est retiré du disque.",
+      countSelected: "{count} sélectionnés",
+      pinChats: "Épingler les discussions",
+      unpinChats: "Détacher les discussions",
+      archiveChats: "Archiver les discussions",
+      markUnread: "Marquer comme non lu",
+      deleteChats: "Supprimer les discussions",
+      deleteTitle: "Supprimer les discussions",
+      deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
+      deleteFilesDescription:
+        "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+      deleteFilesLabel: "Supprimer les fichiers et le dossier bac à sable",
+      deleteChatFilesDescription:
+        "Le dossier bac à sable propre à cette discussion est retiré du disque. Les fichiers écrits dans un projet restent dans l'espace de travail du projet.",
+    },
+    organize: {
+      sidebarHeading: "Organiser la barre latérale",
+      byProject: "Par projet",
+      inOneList: "Dans une seule liste",
+      sortChatsBy: "Trier les discussions par",
+      sortPinnedBy: "Trier les épinglés par",
+      priority: "Priorité",
+      lastUpdated: "Dernière mise à jour",
+      manualOrder: "Ordre manuel",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+      organizeChats: "Organiser les discussions",
+      organizeProjects: "Organiser les projets",
+      sortPinnedChats: "Trier les discussions épinglées",
     },
     dialog: {
       deleteChat: {
@@ -146,6 +186,8 @@ export const fr = {
       closeAriaLabel: "Fermer les paramètres",
       searchPlaceholder: "Rechercher dans les paramètres…",
       searchNoResults: "Aucun paramètre trouvé.",
+      panelFailed: "Cette section n'a pas pu être chargée.",
+      panelReload: "Recharger",
     },
     tabs: {
       general: "Général",
@@ -155,11 +197,56 @@ export const fr = {
       chat: "Discussion",
       connections: "Connexions",
       apiKeys: "API",
+      remoteLan: "Accès distant et LAN",
       about: "À propos",
       data: "Données",
       agents: "Agents",
       debugging: "Journaux",
       voice: "Voix",
+      keyboardShortcuts: "Raccourcis",
+    },
+    keyboardShortcuts: {
+      title: "Raccourcis clavier",
+      description:
+        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
+      searchPlaceholder: "Rechercher des raccourcis…",
+      noResults: "Aucun raccourci ne correspond à cette recherche.",
+      unassigned: "Non attribué",
+      recording: "Appuyez sur les touches…",
+      recordingHint: "Appuyez sur la nouvelle combinaison, ou Échap pour annuler.",
+      needsModifier: "Ajoutez ⌘, Ctrl ou Alt. Une touche seule avalerait la saisie.",
+      conflict: "Également utilisé par un autre raccourci",
+      conflictShadowed: "Un autre raccourci utilise cette combinaison et s'exécute à sa place",
+      edit: "Modifier le raccourci",
+      clear: "Supprimer le raccourci",
+      reset: "Rétablir la valeur par défaut",
+      resetAll: "Tout réinitialiser",
+      groups: {
+        general: "Général",
+        chat: "Discussion",
+      },
+      actions: {
+        newChat: {
+          label: "Nouvelle discussion",
+          description: "Démarrer une nouvelle discussion",
+        },
+        searchChats: {
+          label: "Rechercher dans les discussions",
+          description: "Ouvrir la recherche de discussions",
+        },
+        toggleSidebar: {
+          label: "Afficher/masquer la barre latérale",
+          description: "Afficher ou masquer la barre latérale",
+        },
+        openSettings: {
+          label: "Ouvrir les paramètres",
+          description: "Ouvrir la fenêtre des paramètres",
+        },
+        openKeyboardShortcuts: {
+          label: "Raccourcis clavier",
+          description: "Ouvrir cette liste de raccourcis",
+        },
+      },
     },
     debugging: {
       logSection: "Fichier journal",
@@ -250,6 +337,8 @@ export const fr = {
         allowMicrophone: "Autoriser l’accès au microphone",
         micAccessBlocked:
           "L'accès au microphone a été bloqué. Autorisez l'accès au microphone pour cette page Unsloth, puis réessayez.",
+        micAccessBlockedDesktop:
+          "L'accès au microphone a été bloqué. Réessayez et choisissez Autoriser, ou activez le microphone dans les paramètres de confidentialité du système.",
         micAccessUnsupported:
           "L'accès au microphone n'est pas pris en charge dans ce navigateur ou ce contexte.",
         systemDefault: "Par défaut du système",
@@ -324,6 +413,7 @@ export const fr = {
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
+        openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
         speedLabel: "Vitesse",
@@ -333,6 +423,7 @@ export const fr = {
         previewDescription: "Lire un court extrait",
         previewFailed: "Échec de l’aperçu de la synthèse vocale",
         previewAction: "Écouter",
+        preparingAction: "Génération…",
         stopAction: "Arrêter",
         ttsLabel: "Synthèse vocale",
         notSupported: "Indisponible dans ce navigateur",
@@ -405,6 +496,9 @@ export const fr = {
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
         idleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique, en secondes",
+        mediaEnable: "Changer de modèle d’image et de vidéo par requête",
+        mediaEnableDescription:
+          "Charger, avant la génération, un modèle d’image ou de vidéo téléchargé indiqué dans une requête API. Réglage distinct : celui ci-dessus ne concerne que le modèle de discussion. Désactivé par défaut.",
         mediaIdleUnload:
           "Déchargement automatique en cas d’inactivité pour l’image et la vidéo",
         mediaIdleUnloadDescription:
@@ -412,7 +506,7 @@ export const fr = {
         mediaIdleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique de l’image et de la vidéo, en secondes",
         mediaIdlePaused:
-          "En pause tant que « Conserver le modèle dans la mémoire du GPU » ou « Décharger uniquement les modèles chargés par l'API » est activé.",
+          "En pause tant que « Conserver le modèle en mémoire GPU » est activé.",
         idleNeedsEnable:
           "Activez d’abord « Changer de modèle par requête ».",
         idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",
@@ -792,6 +886,24 @@ export const fr = {
         switchFailed: "Impossible de changer le backend llama.cpp.",
         switchInterrupted: "Le changement a été interrompu avant d’être terminé.",
         envLocked: "Fixé à {backend} par la variable d'environnement UNSLOTH_LLAMA_CPP_BACKEND, qui prévaut sur ce réglage.",
+        customPath: {
+          label: "Dossier llama.cpp personnalisé",
+          description: "Utilisez votre propre build de llama-server.",
+          hint: "Choisissez le dossier llama.cpp contenant llama-server, ou un build où il se trouve sous build/bin. Le runtime personnalisé est utilisé pour le chat GGUF, les embeddings et les modèles vocaux compatibles. Les variables d'environnement restent prioritaires.",
+          automatic: "Automatique (fourni)",
+          bundled: "Utilise le runtime llama.cpp installé par Unsloth.",
+          active: "Votre llama-server personnalisé sera utilisé au prochain chargement de modèle.",
+          environmentManaged: "Géré par la variable d'environnement {variable}.",
+          missingBinary: "llama-server n'est plus disponible dans ce dossier. Choisissez un autre dossier ou utilisez le runtime fourni.",
+          reloadRequired: "Rechargez le modèle pour utiliser le llama-server sélectionné.",
+          change: "Modifier",
+          saving: "Enregistrement...",
+          useBundled: "Utiliser la version fournie",
+          chooseTitle: "Choisir le dossier llama.cpp",
+          chooseAction: "Utiliser ce dossier",
+          saved: "Dossier llama.cpp mis à jour",
+          saveError: "Impossible de mettre à jour le dossier llama.cpp",
+        },
         backends: {
           auto: "Automatique",
           cpu: "CPU",
@@ -804,6 +916,7 @@ export const fr = {
           notInstalled: "Aucune installation llama.cpp gérée n'a été trouvée, il n'y a donc pas de backend à changer.",
           localLink: "llama.cpp est un dossier local que vous avez lié vous-même ; Unsloth ne le remplacera pas.",
           sourceBuild: "Ce llama.cpp a été compilé depuis les sources, son backend ne peut pas être changé ici.",
+          customPath: "Un dossier llama.cpp personnalisé est sélectionné. Son build détermine le backend de calcul.",
           unresolved: "Impossible de vérifier les backends disponibles. Vérifiez votre connexion et réessayez.",
         },
         // Non affiché : termes supplémentaires pour la recherche dans les réglages.
@@ -968,6 +1081,9 @@ export const fr = {
       },
     },
     chat: {
+      projectsSection: "Afficher la section Projets",
+      projectsSectionDescription:
+        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {
@@ -989,12 +1105,21 @@ export const fr = {
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
       },
+      pastedTextThreshold: "Condenser les collages longs",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
+      projectAttachments: "Partager les fichiers dans tout le projet",
+      projectAttachmentsDescription:
+        "Valeur par defaut pour les fichiers joints dans une discussion appartenant a un projet : les indexer pour tout le projet afin que chaque discussion puisse les utiliser. Chaque discussion peut le modifier depuis le menu des pieces jointes.",
+      rememberParamsPerModel: "Mémoriser les réglages par modèle",
+      rememberParamsPerModelDescription:
+        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
@@ -1089,6 +1214,9 @@ export const fr = {
       archivedVideos: "Vidéos archivées",
       archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
       manageAction: "Gérer",
+      manageChats: "Gérer les discussions",
+      manageChatsDescription:
+        "Sélectionnez plusieurs discussions pour les déplacer, les épingler, les archiver, les exporter ou les supprimer.",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",
       exportedOneArchivedChat: "1 discussion archivée a été exportée",
@@ -1112,6 +1240,9 @@ export const fr = {
       confirmBeforeDeleting: "Confirmer avant de supprimer",
       confirmBeforeDeletingDescription:
         "Demande une confirmation avant de supprimer une discussion. Désactivez cette option pour supprimer immédiatement.",
+      alwaysDeleteFiles: "Toujours supprimer les fichiers",
+      alwaysDeleteFilesDescription:
+        "La suppression d'une discussion retire aussi son dossier bac à sable du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
       filesSection: "Fichiers",
       uploadedFiles: "Fichiers importés",
       uploadedFilesDescription:
@@ -1135,6 +1266,11 @@ export const fr = {
     connections: {
       title: "Connexions",
       description: "Gérez les fournisseurs et les connexions externes.",
+    },
+    remoteLan: {
+      title: "Accès distant et LAN",
+      description:
+        "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL publique temporaire.",
     },
     apiKeys: {
       title: "API",

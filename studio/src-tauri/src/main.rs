@@ -21,6 +21,7 @@ mod preflight;
 mod process;
 mod process_identity;
 mod update;
+mod webview_permissions;
 mod windows_job;
 mod x11_threads;
 
@@ -798,6 +799,40 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.set_decorations(false)?;
+    Ok(())
+}
+
+// WebKitGTK ships two defaults that together break voice dictation on Linux:
+// `enable-media-stream` is off, and the stock `permission-request` handler
+// denies every request it never saw a listener override, including
+// microphone/camera grabs. Neither is fixable from outside the embedding
+// application, so opt in here and auto-allow only user-media requests --
+// every other permission kind (notifications, geolocation, ...) keeps the
+// default deny.
+#[cfg(target_os = "linux")]
+fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use webkit2gtk::{
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+    };
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    window.with_webview(|webview| {
+        let webview = webview.inner();
+        if let Some(settings) = webview.settings() {
+            settings.set_enable_media_stream(true);
+        }
+        webview.connect_permission_request(|_webview, request| {
+            match request.downcast_ref::<UserMediaPermissionRequest>() {
+                Some(request) => {
+                    request.allow();
+                    true
+                }
+                None => false,
+            }
+        });
+    })?;
     Ok(())
 }
 
@@ -1772,7 +1807,7 @@ fn main() {
     // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
     // before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -1783,7 +1818,7 @@ fn main() {
 
     #[cfg(target_os = "linux")]
     if let Some(variable) = webkit_rendering_workaround {
-        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+        info!("Set {variable}=1 for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
@@ -1868,6 +1903,7 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            webview_permissions::reset_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
@@ -1903,6 +1939,8 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(target_os = "linux")]
+            setup_linux_media_permissions(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]

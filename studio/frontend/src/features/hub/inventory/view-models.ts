@@ -167,6 +167,7 @@ export function buildCachedInventoryRow(
     load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    partial_resumable?: boolean;
     has_variant_state?: boolean;
     pipeline_tag?: string | null;
     task?: string | null;
@@ -230,6 +231,7 @@ export function buildCachedInventoryRow(
         : null,
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    partialResumable: row.partial_resumable === true,
     hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
@@ -311,6 +313,7 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        partialResumable: model.partial_resumable === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,

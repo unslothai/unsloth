@@ -78,10 +78,16 @@ def print_studio_access_banner(
     bind_host: str,
     display_host: str,
     include_stop_hint: bool = True,
+    lan_addresses: "tuple[str, ...]" = (),
 ) -> None:
     """Pretty-print URLs once the server is listening. Set
     ``include_stop_hint=False`` to omit the trailing stop block; pair with
-    :func:`print_studio_stop_hint` after inserting your own content."""
+    :func:`print_studio_stop_hint` after inserting your own content.
+
+    ``lan_addresses`` are the addresses a runtime LAN listener (Settings > LAN
+    access) is already serving on. A loopback launch that carries one is not
+    reachable on this machine only, so the banner must say where else it answers.
+    """
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
     title = "\033[38;5;150m"
@@ -160,22 +166,33 @@ def print_studio_access_banner(
     )
 
     if loopback_bind and not listen_all:
-        lines.extend(
-            [
-                "",
-                style(
-                    "  Reachable on this machine only (bound to 127.0.0.1).",
-                    secondary,
-                ),
-                style(
-                    f"  To expose it, stop and relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
-                    secondary,
-                ),
-                style(
-                    "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
-                    secondary,
-                ),
-            ]
+        if lan_addresses:
+            lines.append("")
+            lines.append(
+                style("  LAN access is on -- also reachable on your network at:", secondary)
+            )
+            lines.extend(style(f"    http://{a}:{port}", secondary) for a in lan_addresses)
+            lines.append(style("  Turn it off in Settings > Remote & LAN > LAN access.", secondary))
+        else:
+            lines.extend(
+                [
+                    "",
+                    style(
+                        "  Reachable on this machine only (bound to 127.0.0.1).",
+                        secondary,
+                    ),
+                    style(
+                        "  To expose it, turn on Settings > Remote & LAN > LAN access, or "
+                        f"relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
+                        secondary,
+                    ),
+                ]
+            )
+        lines.append(
+            style(
+                "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
+                secondary,
+            )
         )
 
     if include_stop_hint:

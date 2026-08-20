@@ -29,6 +29,7 @@ HARNESSES = (
     "playwright_chat_autoscroll",
     "playwright_research_freeze",
     "playwright_strip_ansi_smoke",
+    "playwright_stream_pacing",
 )
 
 
@@ -84,6 +85,32 @@ def test_start_vite_picks_the_platform_process_group(monkeypatch, no_signals, os
         # Without its own session, killing the npm wrapper orphans the node child.
         assert captured["kw"]["start_new_session"] is True
         assert "creationflags" not in captured["kw"]
+
+
+def _require_playwright_page():
+    """
+    Skip unless `from playwright.sync_api import Page` would actually work.
+
+    Two weaker guards were tried and both let this through. Checking the
+    top-level package passes because "playwright" resolves as a namespace
+    directory on the Repo tests (CPU) runner; checking "playwright.sync_api"
+    passes too, because that resolves as a namespace package as well. Only the
+    symbol the harnesses import is a real test of whether the import below can
+    succeed, so that is what is checked, and it is checked the way the harness
+    does it. The failure mode is a skip condition reported as
+
+      ImportError: cannot import name 'Page' from 'playwright.sync_api'
+      (unknown location)
+
+    on every branch, which costs an investigation each time it is seen.
+    """
+    sync_api = pytest.importorskip("playwright.sync_api")
+    if not hasattr(sync_api, "Page"):
+        pytest.skip(
+            "playwright.sync_api resolved from "
+            f"{getattr(sync_api, '__file__', None) or list(getattr(sync_api, '__path__', []))} "
+            "but has no Page; playwright is not usably installed here"
+        )
 
 
 def test_posix_teardown_signals_the_group_and_escalates(monkeypatch, posix_branch) -> None:
@@ -149,7 +176,7 @@ def test_readiness_gives_up_as_soon_as_our_server_dies(monkeypatch, no_signals) 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_ports_do_not_collide_and_are_overridable(harness) -> None:
     import re
-    src = (Path(__file__).resolve().parent / f"{harness}.py").read_text()
+    src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding = "utf-8")
     assert re.search(r'SMOKE_PORT",\s*"\d+"', src), f"{harness} has no SMOKE_PORT default"
 
 
@@ -158,7 +185,7 @@ def test_every_harness_picks_a_different_default_port() -> None:
 
     ports = {}
     for harness in HARNESSES:
-        src = (Path(__file__).resolve().parent / f"{harness}.py").read_text()
+        src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding = "utf-8")
         ports[harness] = re.search(r'SMOKE_PORT",\s*"(\d+)"', src).group(1)
     assert len(set(ports.values())) == len(HARNESSES), f"default ports collide: {ports}"
 
@@ -167,7 +194,7 @@ def test_every_harness_picks_a_different_default_port() -> None:
 def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
     """Exported-but-empty is common in shell wrappers. `in os.environ` would call it external
     and then drive "" as the base URL."""
-    pytest.importorskip("playwright")  # importing a harness pulls in playwright.sync_api
+    _require_playwright_page()
     import importlib
 
     monkeypatch.setenv("SMOKE_BASE_URL", "")
@@ -183,7 +210,7 @@ def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
 def test_an_external_smoke_base_url_is_still_honoured(harness, monkeypatch) -> None:
     """The documented pre-existing invocation. A harness that started its own server anyway
     would fail on the busy-port check."""
-    pytest.importorskip("playwright")
+    _require_playwright_page()
     import importlib
 
     monkeypatch.setenv("SMOKE_BASE_URL", "http://127.0.0.1:9999")

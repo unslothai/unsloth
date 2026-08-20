@@ -5701,6 +5701,27 @@ def test_a_shared_companion_alone_is_not_evidence_the_quant_is_here(tmp_path):
     assert snapshot_progress._materialized_bytes(snap, lambda path: path.startswith("mmproj")) == 64
 
 
+def test_finder_metadata_left_by_a_deleted_quant_is_not_that_quant(tmp_path):
+    """macOS keeps a file's metadata in a "._" companion carrying the same name, so it matches
+    the quant matcher exactly as its file does. Deleting the quant on a filesystem without
+    native xattrs strands that companion, which both walks then read as the quant still being
+    here -- hydration re-adopts the stale job and blocks a fresh download. A real GGUF a user
+    named that way is still the quant."""
+    snap = tmp_path / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (snap / "._model-Q4_K_M.gguf").write_bytes(b"\x00\x05\x16\x07" + b"m" * 60)
+
+    def matcher(path, *, companions = True):
+        return path.endswith("Q4_K_M.gguf")
+
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 0
+    assert snapshot_progress._variant_main_shard_present(snap, matcher) is False
+
+    (snap / "._named-Q4_K_M.gguf").write_bytes(b"GGUF" + b"q" * 28)
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 32
+    assert snapshot_progress._variant_main_shard_present(snap, matcher) is True
+
+
 def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
     """A root that stats but will not resolve -- an intermittent network mount, a Windows
     reparse point -- was dropped silently, so the scan answered "measured, no cache" and
@@ -6095,6 +6116,25 @@ def test_local_embedding_model_is_not_chat_capable(tmp_path):
     assert rows["tiny-llama"].capabilities.can_chat is True
     # Training and LoRA support are unchanged: this only gates chat.
     assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
+
+
+def test_a_snapshot_whose_only_weight_is_finder_metadata_is_not_a_safetensors_row(tmp_path):
+    """Every non-GGUF classification here reads the file list by suffix, and a "._" companion
+    carries the suffix of the file it describes -- so a directory left holding only those was
+    given a ready safetensors row. A real weight named that way still gets one."""
+
+    def _formats(name, weight = None):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "config.json").write_text("{}")
+        if weight is not None:
+            (d / "._model.safetensors").write_bytes(weight)
+        return [r.model_format for r in model_common._classify_local_path(d, "models_dir")]
+
+    # A config with no weight beside it is already "unknown"; metadata must not read as more.
+    assert _formats("config-only") == ["unknown"]
+    assert _formats("metadata-only", b"\x00\x05\x16\x07\x00\x02\x00\x00") == ["unknown"]
+    assert _formats("named", b"weights") == ["safetensors"]
 
 
 def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
@@ -7120,3 +7160,135 @@ def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch,
     )
 
     assert result["complete_on_disk"] is False, result
+
+
+def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
+    """Classification must not block unrelated event-loop work."""
+    from hub.services.models import local_inventory
+
+    idents: list[int] = []
+    loop_is_free = threading.Event()
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    def classify_row(row):
+        idents.append(threading.get_ident())
+        # Only a responsive event loop can set this event.
+        assert loop_is_free.wait(10), "the event loop was blocked while classification ran"
+        return "task"
+
+    async def scan(*_args):
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setitem(
+        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
+
+    async def run():
+        async def keep_the_loop_moving():
+            while not idents:
+                await asyncio.sleep(0.005)
+            loop_is_free.set()
+
+        listing = asyncio.create_task(local_inventory.list_local_models_response("./models"))
+        await asyncio.wait_for(asyncio.gather(listing, keep_the_loop_moving()), timeout = 15)
+        return threading.get_ident(), listing.result()
+
+    loop_ident, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["task"]
+    assert idents and loop_ident not in idents, "classification ran on the event loop thread"
+
+
+def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monkeypatch):
+    """The give-up path serves the freshest scan it has, and classifies it the same way."""
+    from hub.services.models import local_inventory
+
+    idents: list[int] = []
+    epoch = [0]
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    async def always_superseded(*_args):
+        epoch[0] += 1  # every walk is invalidated before it returns
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "routes.models",
+        SimpleNamespace(
+            _local_model_task = lambda row: idents.append(threading.get_ident()) or "task"
+        ),
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", always_superseded)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        listed = await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 15
+        )
+        return threading.get_ident(), listed
+
+    loop_ident, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["task"]
+    assert idents and loop_ident not in idents, "classification ran on the event loop thread"
+
+
+def test_local_inventory_retries_when_the_cache_changes_during_classification(monkeypatch):
+    """A deletion landing while classification runs must not be answered with the old rows."""
+    from hub.services.models import local_inventory
+
+    epoch = [0]
+    scans: list[int] = []
+
+    def _scan_response(tag: str):
+        row = SimpleNamespace(id = tag)
+        row.model_copy = lambda update, tag = tag: SimpleNamespace(id = tag, task = update["task"])
+        response = SimpleNamespace(models = [row])
+        response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+        return response
+
+    async def scan(*_args):
+        scans.append(epoch[0])
+        return _scan_response(f"scan{len(scans)}")
+
+    def classify_row(row):
+        # The cache is invalidated while the first scan's rows are being classified.
+        if len(scans) == 1:
+            epoch[0] += 1
+        return "task"
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setitem(
+        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 15
+        )
+
+    listed = asyncio.run(run())
+    assert scans == [0, 1], scans
+    assert [row.id for row in listed.models] == ["scan2"]
