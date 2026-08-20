@@ -1152,7 +1152,7 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 
 
 def _rocm_props_total_is_carve_out(
-    props: Any, classification: Optional[tuple[str, bool]] = None
+    props: Any, classification: Optional[tuple[str, bool, bool]] = None
 ) -> bool:
     """True when ``props.total_memory`` may understate what torch can actually use.
 
@@ -1201,7 +1201,7 @@ def _rocm_props_total_is_carve_out(
 
 def _rocm_probe_and_classify(
     mod: Any, device_indices: list[int]
-) -> tuple[dict[int, tuple[int, Any, Optional[tuple[str, bool]]]], bool]:
+) -> tuple[dict[int, tuple[int, Any, Optional[tuple[str, bool, bool]]]], bool]:
     """Probe each visible device's props once and classify each device once.
 
     Returns ``(probed, hybrid_rocm)``: ``probed[ordinal]`` is
@@ -1218,7 +1218,7 @@ def _rocm_probe_and_classify(
     """
     if mod is None:
         return {}, False
-    probed: dict[int, tuple[int, Any, Optional[tuple[str, bool]]]] = {}
+    probed: dict[int, tuple[int, Any, Optional[tuple[str, bool, bool]]]] = {}
     for ordinal, phys_idx in enumerate(device_indices):
         try:
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
@@ -1226,7 +1226,7 @@ def _rocm_probe_and_classify(
         except Exception as e:
             logger.debug("torch inventory probe failed for ordinal %d: %s", ordinal, e)
             continue
-        classification: Optional[tuple[str, bool]] = None
+        classification: Optional[tuple[str, bool, bool]] = None
         if IS_ROCM:
             try:
                 from core.training.worker import _rocm_classify_unified_memory
@@ -1264,7 +1264,7 @@ def _rocm_probe_and_classify(
 
 
 def _rocm_hybrid_keeps_carve_out(
-    props: Any, classification: Optional[tuple[str, bool]], hybrid_rocm: bool
+    classification: Optional[tuple[str, bool, bool]], hybrid_rocm: bool
 ) -> bool:
     """True when the GTT substitution must be skipped for this device.
 
@@ -1277,19 +1277,17 @@ def _rocm_hybrid_keeps_carve_out(
     visible -- reporting the carve-out would budget a 128 GiB Strix Halo as
     ~8 GiB and hide models. A device the classifier calls discrete (or that
     failed to classify) is also untouched: it keeps today's behaviour.
+
+    The arch/name table lives in ``_rocm_classify_unified_memory`` (single
+    source of truth); this function consumes its ``is_shared_pool`` answer
+    instead of re-listing the arches and names.
     """
     if not hybrid_rocm:
         return False
     if classification is None or not classification[1]:
         return False
-    arch = (classification[0] or "").lower()
-    if arch in {"gfx1150", "gfx1151", "gfx1152"}:
-        return False
-    dev_lower = (getattr(props, "name", "") or "").lower()
-    if any(
-        marker in dev_lower
-        for marker in ("890m", "880m", "8065s", "8060s", "8050s", "860m", "840m")
-    ):
+    # Genuine shared-pool arch: GTT is the real VRAM, keep the substitution.
+    if classification[2]:
         return False
     return True
 
@@ -1334,7 +1332,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             if _rocm_props_total_is_carve_out(props, classification) and hasattr(
                 mod, "mem_get_info"
             ):
-                if not _rocm_hybrid_keeps_carve_out(props, classification, hybrid_rocm):
+                if not _rocm_hybrid_keeps_carve_out(classification, hybrid_rocm):
                     try:
                         total_bytes = mod.mem_get_info(ordinal)[1]
                     except Exception as e:
@@ -2411,7 +2409,7 @@ def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: 
     keep_carve_out = {
         probed[ordinal][0]
         for ordinal in probed
-        if _rocm_hybrid_keeps_carve_out(probed[ordinal][1], probed[ordinal][2], hybrid_rocm)
+        if _rocm_hybrid_keeps_carve_out(probed[ordinal][2], hybrid_rocm)
     }
     torch_by_index = {td["index"]: td for td in torch_devices}
     for dev in utilization.get("devices", []):

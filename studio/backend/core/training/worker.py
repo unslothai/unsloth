@@ -1694,15 +1694,23 @@ def _torch_has_hip() -> bool:
         return False
 
 
-def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
+def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool, bool]:
     """Classify a ROCm device as unified-memory (APU) or discrete.
 
-    Returns ``(gcn_arch, is_unified)``:
+    Returns ``(gcn_arch, is_unified, is_shared_pool)``:
     - ``gcn_arch``: canonical arch string (e.g. ``"gfx1151"``) when a known
       attribute is present, else ``""``.
     - ``is_unified``: ``True`` for AMD APUs with a shared GPU/system-RAM pool
       (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan Point) — these
       need a lower ``set_per_process_memory_fraction`` cap to leave OS headroom.
+    - ``is_shared_pool``: ``True`` when the device is a *genuine* shared-pool
+      arch (gfx1150/51/52 Strix Point/Halo/Krackan, or a Radeon 8xxM/80xxS
+      name). For these the GTT pool IS the real VRAM, so hybrid-host code must
+      NOT substitute the carve-out even when a discrete card is visible. A
+      driver-flag-only APU (e.g. gfx1103 Phoenix iGPU) is unified but not a
+      shared-pool arch; consumers distinguish the two via this flag. This is
+      the single source of truth for the arch/name table -- callers must not
+      re-list the arches or names.
 
     Classification priority:
     1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
@@ -1724,22 +1732,12 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
             gcn_arch = _v
             break
 
-    # Driver's own answer first: hipDeviceProp_t.integrated (props.is_integrated, the same
-    # gate PR #5988's UMA safetensors fast-load uses). Strictly additive -- only a truthy
-    # value upgrades to unified, so a wheel that omits the field can't downgrade the known
-    # APU set. Covers unified APUs outside the hardcoded arches (gfx1103 Phoenix, future).
-    if getattr(props, "is_integrated", 0):
-        return gcn_arch, True
-
-    if gcn_arch:
-        # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151.
-        # Case-folded: the attribute is lowercase in practice but is not guaranteed.
-        return gcn_arch, gcn_arch.lower() in {"gfx1150", "gfx1151", "gfx1152"}
-
-    # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM,
-    # so the NVIDIA GeForce 840M cannot collide with the Krackan markers.
+    # Genuine shared-pool arch: gfx1150/51/52, or a Radeon 8xxM/80xxS name when the
+    # arch attrs are absent. Computed before the is_integrated early return so a
+    # Strix Halo (integrated flag AND gfx1151) still reports is_shared_pool=True.
+    _arch_lower = gcn_arch.lower()
     dev_lower = (getattr(props, "name", "") or "").lower()
-    is_unified = (
+    is_shared_pool = _arch_lower in {"gfx1150", "gfx1151", "gfx1152"} or (
         "890m" in dev_lower
         or "880m" in dev_lower
         or "8065s" in dev_lower
@@ -1748,7 +1746,22 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "860m" in dev_lower
         or "840m" in dev_lower
     )
-    return gcn_arch, is_unified
+
+    # Driver's own answer first: hipDeviceProp_t.integrated (props.is_integrated, the same
+    # gate PR #5988's UMA safetensors fast-load uses). Strictly additive -- only a truthy
+    # value upgrades to unified, so a wheel that omits the field can't downgrade the known
+    # APU set. Covers unified APUs outside the hardcoded arches (gfx1103 Phoenix, future).
+    if getattr(props, "is_integrated", 0):
+        return gcn_arch, True, is_shared_pool
+
+    if gcn_arch:
+        # gfx1152 is Krackan Point: same shared GPU/system-RAM pool as gfx1150/gfx1151.
+        # Case-folded: the attribute is lowercase in practice but is not guaranteed.
+        return gcn_arch, _arch_lower in {"gfx1150", "gfx1151", "gfx1152"}, is_shared_pool
+
+    # Arch attrs absent -- fall back to device-name matching. Only reached under _hw.IS_ROCM,
+    # so the NVIDIA GeForce 840M cannot collide with the Krackan markers.
+    return gcn_arch, is_shared_pool, is_shared_pool
 
 
 # 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while
@@ -3980,7 +3993,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 _rdna4 = False
                 for _i in range(_torch_lin.cuda.device_count()):
                     _props = _torch_lin.cuda.get_device_properties(_i)
-                    _lin_arch, _ = _rocm_classify_unified_memory(_props)
+                    _lin_arch, _, _ = _rocm_classify_unified_memory(_props)
                     _lin_name = (getattr(_props, "name", "") or "").lower()
                     if _lin_arch.lower() in ("gfx1200", "gfx1201") or (
                         not _lin_arch and re.search(r"rx\s*90[0-9]0|r9700", _lin_name)
@@ -4007,7 +4020,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # Classify unified vs discrete (see _rocm_classify_unified_memory's docstring).
                 _props = _torch_mem.cuda.get_device_properties(0)
                 _dev_name = _props.name
-                _gcn_arch, _is_unified = _rocm_classify_unified_memory(_props)
+                _gcn_arch, _is_unified, _ = _rocm_classify_unified_memory(_props)
                 if _is_unified and not _gcn_arch:
                     logger.debug(
                         "ROCm OOM guard: gcnArchName absent -- inferred "

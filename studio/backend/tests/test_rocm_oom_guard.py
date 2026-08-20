@@ -71,30 +71,30 @@ class TestIsIntegratedSignal:
         # gfx1103 Phoenix iGPU: outside the hardcoded arch set, but the
         # driver says integrated -> unified.
         props = _props(gcnArchName = "gfx1103", name = "Radeon 780M", is_integrated = 1)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1103"
         assert is_unified is True
 
     def test_integrated_wins_without_any_arch(self) -> None:
         props = _props(name = "Some Future APU", is_integrated = 1)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert is_unified is True
 
     def test_zero_does_not_downgrade_known_apu(self) -> None:
         # A wheel that zeroes the field must not flip Strix Halo to discrete.
         props = _props(gcnArchName = "gfx1151", name = "x", is_integrated = 0)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert is_unified is True
 
     def test_absent_keeps_existing_behavior(self) -> None:
         props = _props(gcnArchName = "gfx1201", name = "RX 9070 XT")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert is_unified is False
 
     def test_discrete_with_zero_stays_discrete(self) -> None:
         props = _props(gcnArchName = "gfx1100", name = "RX 7900 XTX", is_integrated = 0)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert is_unified is False
 
 
@@ -117,14 +117,14 @@ class TestCanonicalGcnArchName:
     )
     def test_canonical_attr(self, arch: str, expected_unified: bool) -> None:
         props = _props(gcnArchName = arch, name = "irrelevant")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == arch
         assert is_unified is expected_unified
 
     def test_arch_with_colon_suffix_stripped(self) -> None:
         """gcnArchName can carry xnack/sramecc suffix; only the base is kept."""
         props = _props(gcnArchName = "gfx1151:xnack-", name = "irrelevant")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
         assert is_unified is True
 
@@ -132,7 +132,7 @@ class TestCanonicalGcnArchName:
         """Arch attr takes priority; device name is ignored."""
         # Discrete arch, but name looks like a unified SKU — arch must win.
         props = _props(gcnArchName = "gfx1100", name = "Radeon 890M")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1100"
         assert is_unified is False
 
@@ -149,7 +149,7 @@ class TestAlternateSpellingFallback:
     )
     def test_alternate_attr_unified(self, attr_name: str) -> None:
         props = _props(**{attr_name: "gfx1151"}, name = "Radeon 8060S Graphics")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
         assert is_unified is True
 
@@ -159,14 +159,14 @@ class TestAlternateSpellingFallback:
     )
     def test_alternate_attr_discrete(self, attr_name: str) -> None:
         props = _props(**{attr_name: "gfx1201"}, name = "Radeon RX 9070 XT")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1201"
         assert is_unified is False
 
     def test_first_non_empty_attr_wins(self) -> None:
         """With multiple alternate attrs, the first non-empty one wins."""
         props = _props(gcn_arch_name = "gfx1151", arch_name = "gfx1100", name = "irrelevant")
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "gfx1151"
         assert is_unified is True
 
@@ -209,7 +209,7 @@ class TestDeviceNameFallback:
     )
     def test_unified_memory_detected(self, device_name: str) -> None:
         props = _props(name = device_name)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == "", f"expected empty gcn_arch, got {gcn!r}"
         assert is_unified is True, f"device {device_name!r} should be classified as unified-memory"
 
@@ -230,7 +230,7 @@ class TestDeviceNameFallback:
     )
     def test_discrete_not_misclassified(self, device_name: str) -> None:
         props = _props(name = device_name)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert (
             is_unified is False
@@ -239,13 +239,13 @@ class TestDeviceNameFallback:
     def test_empty_name_returns_false(self) -> None:
         """Absent name must not crash and must default to discrete."""
         props = _props()  # no 'name' attr at all
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert is_unified is False
 
     def test_none_name_returns_false(self) -> None:
         props = _props(name = None)
-        gcn, is_unified = _rocm_classify_unified_memory(props)
+        gcn, is_unified, _ = _rocm_classify_unified_memory(props)
         assert gcn == ""
         assert is_unified is False
 
@@ -254,6 +254,53 @@ class TestDeviceNameFallback:
 
 
 _WORKER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
+
+
+class TestSharedPoolFlag:
+    """is_shared_pool: genuine shared-pool arches vs driver-flag-only APUs.
+
+    The third classifier answer exists so hybrid-host code (e.g.
+    _rocm_hybrid_keeps_carve_out) can distinguish "GTT is the real VRAM"
+    (Strix Point/Halo/Krackan + Radeon 8xxM/80xxS) from a driver-flag-only
+    unified APU (e.g. gfx1103 Phoenix iGPU), without re-listing the arch/name
+    table. This is the single source of truth for that table.
+    """
+
+    def test_shared_pool_arch_via_gcn(self) -> None:
+        props = _props(gcnArchName = "gfx1151", name = "irrelevant", is_integrated = 0)
+        gcn, is_unified, is_shared_pool = _rocm_classify_unified_memory(props)
+        assert gcn == "gfx1151"
+        assert is_unified is True
+        assert is_shared_pool is True
+
+    def test_shared_pool_arch_stays_true_with_integrated_flag(self) -> None:
+        # Strix Halo carries both the integrated flag and the gfx1151 arch; the
+        # early is_integrated return must not drop the shared-pool answer.
+        props = _props(gcnArchName = "gfx1151", name = "Radeon 8060S", is_integrated = 1)
+        gcn, is_unified, is_shared_pool = _rocm_classify_unified_memory(props)
+        assert is_unified is True
+        assert is_shared_pool is True
+
+    def test_flag_only_apu_is_unified_but_not_shared_pool(self) -> None:
+        # gfx1103 Phoenix iGPU: driver flag upgrades it to unified, but it is
+        # not a genuine shared-pool arch, so hybrid code must keep its carve-out.
+        props = _props(gcnArchName = "gfx1103", name = "Radeon 780M", is_integrated = 1)
+        gcn, is_unified, is_shared_pool = _rocm_classify_unified_memory(props)
+        assert gcn == "gfx1103"
+        assert is_unified is True
+        assert is_shared_pool is False
+
+    def test_name_table_marks_shared_pool_when_arch_absent(self) -> None:
+        props = _props(name = "Radeon 8060S Graphics", is_integrated = 0)
+        gcn, is_unified, is_shared_pool = _rocm_classify_unified_memory(props)
+        assert is_unified is True
+        assert is_shared_pool is True
+
+    def test_discrete_arch_is_not_shared_pool(self) -> None:
+        props = _props(gcnArchName = "gfx1201", name = "RX 9070 XT")
+        _, is_unified, is_shared_pool = _rocm_classify_unified_memory(props)
+        assert is_unified is False
+        assert is_shared_pool is False
 
 
 class TestMemFractionSelection:
