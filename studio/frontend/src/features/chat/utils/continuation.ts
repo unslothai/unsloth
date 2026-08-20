@@ -400,6 +400,33 @@ export function wasAutoContinued(messageId: string | null | undefined): boolean 
   return Boolean(messageId && continued.has(messageId));
 }
 
+/**
+ * Whether THIS message is the one to continue automatically.
+ *
+ * `shouldAutoContinue` answers about the turn: is the reason right, does the partial
+ * still fit, is the round budget unspent. It keeps saying yes after a message has been
+ * claimed, because the budget is per turn and one spent round out of three leaves the
+ * turn resumable, while the claim is per message and is what actually decides whether a
+ * run starts. Anything rendering off the turn's answer alone therefore reports an
+ * already-claimed message as continuing while `claimAutoContinue` refuses to start
+ * anything: a spinner that never resolves, over the manual Continue button it replaces.
+ *
+ * Reachable without a reload. The continuation runs as a sibling and the branch picker
+ * leads straight back to the truncated partial, and leaving the chat and returning lands
+ * on it too whenever it is still the selected branch.
+ */
+export function shouldAutoContinueMessage(
+  messageId: string | null | undefined,
+  reason: IncompleteReason | null | undefined,
+  key: string | null | undefined,
+  options: Parameters<typeof shouldAutoContinue>[2] = {},
+): boolean {
+  if (wasAutoContinued(messageId)) {
+    return false;
+  }
+  return shouldAutoContinue(reason, key, options);
+}
+
 /** Test seam; also lets a new thread start from zero. */
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {

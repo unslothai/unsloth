@@ -26,6 +26,7 @@ const {
   resetAutoContinue,
   wasAutoContinued,
   shouldAutoContinue,
+  shouldAutoContinueMessage,
   resumesExactly,
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
@@ -459,4 +460,36 @@ test("a claim is reported and cleared by a full reset", () => {
   resetAutoContinue();
   assert.equal(wasAutoContinued("m1"), false);
   assert.equal(claimAutoContinue("m1"), true);
+});
+
+test("a message already claimed stops reporting itself as continuing", () => {
+  resetAutoContinue();
+  // The turn that fires it: nothing has claimed the message yet.
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
+  claimAutoContinue("m1");
+  recordAutoContinue("parent-1");
+
+  // Back on the truncated branch, whether through the branch picker or by returning to
+  // the chat: `claimAutoContinue` refuses the run, so the turn's own budget still saying
+  // yes would leave a spinner nothing is answering, over a hidden manual Continue button.
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), false);
+});
+
+test("a claim on one message does not silence another", () => {
+  resetAutoContinue();
+  claimAutoContinue("m1");
+  // The next round of the same turn is a new message with budget left, and continues.
+  recordAutoContinue("parent-1");
+  assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
+});
+
+test("a claimed message still honours the gates the turn itself fails", () => {
+  resetAutoContinue();
+  // Nothing about the claim resurrects a cut that was never automatic in the first place.
+  assert.equal(shouldAutoContinueMessage("m1", "cancelled", "parent-1"), false);
+  assert.equal(
+    shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
+    false,
+  );
 });

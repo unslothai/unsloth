@@ -136,7 +136,7 @@ import {
   readTextThoughtSignature,
   claimAutoContinue,
   recordAutoContinue,
-  shouldAutoContinue,
+  shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -6551,10 +6551,14 @@ const ContinueMessageBarForLastMessage: FC = () => {
 
   // Hitting Max Tokens is the reply running out of room mid-sentence, not a decision the
   // user made, so it resumes on its own and the bar never appears. Bounded, and only for
-  // `length`: see `shouldAutoContinue`.
+  // `length`: see `shouldAutoContinue`. Asked per MESSAGE, not just per turn: the round
+  // budget belongs to the turn and one spent round out of three still says yes, so
+  // arriving at a message the claim below has already taken -- the branch picker back to
+  // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
+  // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
   const autoContinuing =
     resumable &&
-    shouldAutoContinue(reason, parentId, {
+    shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
       // The same cheap estimator the backend fit uses, which is all that is needed to
       // spot a partial that has already eaten the whole budget.
