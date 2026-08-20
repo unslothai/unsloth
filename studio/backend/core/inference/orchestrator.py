@@ -1486,6 +1486,12 @@ class InferenceOrchestrator:
                 raise
             self.active_model_name = None
             self.models.clear()
+            # An inactivity timeout waiting for "loaded" (and other post-spawn
+            # failures) used to leave the worker alive: a still-running
+            # causal-conv1d install kept pip/nvcc and GPU memory after Studio
+            # had already reported the load failed (#9398). Stall retries already
+            # tear the child down; do the same for every other failed load.
+            self._shutdown_subprocess(timeout = 5)
             raise
 
     def cancel_load(self, model_name: str) -> bool:

@@ -275,6 +275,64 @@ def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
     assert ran == []  # wheel succeeded; no PyPI source build
 
 
+def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
+    # A quiet pip/uv wheel install used to emit one status and then silence the
+    # parent for >300s (#9398). Heartbeats must keep coming while install_wheel runs.
+    import threading
+    import time
+
+    monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {})
+    monkeypatch.setattr(
+        ssm_runtime,
+        "direct_wheel_url",
+        lambda **k: "https://example/causal_conv1d-1.6.1.whl",
+    )
+    monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
+
+    statuses = []
+    released = threading.Event()
+
+    def slow_install_wheel(url, **k):
+        # Hold long enough for at least one heartbeat tick.
+        assert released.wait(1.0)
+        return [("uv", _Result(returncode = 1, stdout = "nope"))]
+
+    monkeypatch.setattr(ssm_runtime, "install_wheel", slow_install_wheel)
+    # Force the source-build fallback to no-op after the wheel attempt.
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
+
+    def run_fail(cmd, **k):
+        return _Result(returncode = 1)
+
+    thread = threading.Thread(
+        target = lambda: ssm_runtime._install_kernel(
+            import_name = "causal_conv1d",
+            display_name = "causal-conv1d",
+            pypi_name = "causal-conv1d",
+            package_version = "1.6.1",
+            release_tag = "v1.6.1.post4",
+            release_base_url = "x",
+            status_cb = statuses.append,
+            run = run_fail,
+        ),
+        daemon = True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if any("Still installing causal-conv1d (prebuilt kernel)" in s for s in statuses):
+            break
+        time.sleep(0.02)
+    released.set()
+    thread.join(timeout = 2.0)
+    assert any(
+        "Still installing causal-conv1d (prebuilt kernel)" in s for s in statuses
+    ), statuses
+    assert any("Installing causal-conv1d (prebuilt kernel)" in s for s in statuses)
+
+
 def test_install_kernel_falls_back_to_source(monkeypatch):
     # no wheel -> source build -> importable after install
     states = iter([False, True])  # before install, after install

@@ -1322,6 +1322,46 @@ def test_load_model_proceeds_when_not_cancelled(monkeypatch):
     assert o.active_model_name == "m"
 
 
+def test_load_model_reaps_worker_after_inactivity_timeout(monkeypatch):
+    # Quiet causal-conv1d / pip installs used to trip the 300s inactivity wait for
+    # "loaded" (#9398). Studio reported the load failed but left the worker (and its
+    # still-running install) alive. The failure path must tear the child down.
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = None
+    o.models = {}
+    o.loading_models = set()
+    o._proc = None
+    shutdowns = []
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([0], "sel"))
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
+    monkeypatch.setattr(
+        o,
+        "_shutdown_subprocess",
+        lambda timeout = 5: shutdowns.append(timeout) or True,
+    )
+    monkeypatch.setattr(
+        o,
+        "_wait_response",
+        lambda t, timeout = 300.0: (_ for _ in ()).throw(
+            RuntimeError("Timeout waiting for 'loaded' response (no activity for 300.0s)")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match = "Timeout waiting for 'loaded'"):
+        o.load_model(types.SimpleNamespace(identifier = "m", gguf_variant = None))
+
+    assert shutdowns, "failed load must reap the worker after the inactivity timeout"
+    assert o.active_model_name is None
+    assert o.models == {}
+    assert "m" not in o.loading_models
+
+
 def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     # Stop-loading can land AFTER the pre-spawn marker recheck but while
     # _spawn_subprocess is still creating the queues/process, so cancel_load's

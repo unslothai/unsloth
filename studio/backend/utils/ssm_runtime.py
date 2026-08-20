@@ -20,8 +20,9 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from loggers import get_logger
 from utils.child_stdio import utf8_child_env
@@ -245,20 +246,41 @@ def _hipcc_gcc_install_dir() -> Optional[str]:
     return None
 
 
-def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
-    """Run *cmd* via *run*, emitting a status every 60s so the parent's inactivity
-    timeout isn't tripped by a long (e.g. ROCm) source build."""
+# How often a long install emits a status so the orchestrator's inactivity
+# deadline (300s silence) is not tripped by a quiet pip/uv download or build.
+_HEARTBEAT_SECONDS = 60.0
+
+
+@contextmanager
+def _heartbeat(status_cb: StatusCb, message: str) -> Iterator[None]:
+    """Emit *message* on a timer while the wrapped work runs.
+
+    The inference orchestrator treats silence as a dead load: status messages
+    reset its inactivity deadline. Prebuilt wheel installs and source builds
+    can both stay quiet for minutes on aarch64 / slow links, so both paths use
+    this.
+    """
     done = threading.Event()
 
-    def _beat():
-        while not done.wait(60):
-            _emit(status_cb, f"Still building {display_name} (this can take several minutes)...")
+    def _beat() -> None:
+        while not done.wait(_HEARTBEAT_SECONDS):
+            _emit(status_cb, message)
 
     threading.Thread(target = _beat, daemon = True).start()
     try:
-        return run(cmd, **kwargs)
+        yield
     finally:
         done.set()
+
+
+def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
+    """Run *cmd* via *run*, emitting a status every 60s so the parent's inactivity
+    timeout isn't tripped by a long (e.g. ROCm) source build."""
+    with _heartbeat(
+        status_cb,
+        f"Still building {display_name} (this can take several minutes)...",
+    ):
+        return run(cmd, **kwargs)
 
 
 def _install_kernel(
@@ -294,12 +316,20 @@ def _install_kernel(
     )
     if wheel_url and url_exists(wheel_url):
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
-        for installer, result in install_wheel(
-            wheel_url,
-            python_executable = sys.executable,
-            use_uv = bool(shutil.which("uv")),
-            run = run,
+        # Heartbeat while pip/uv downloads and unpacks: this path used to emit one
+        # status and then go silent, so a slow aarch64 / cold-cache install tripped
+        # the orchestrator's 300s inactivity timeout (#9398).
+        with _heartbeat(
+            status_cb,
+            f"Still installing {display_name} (prebuilt kernel)...",
         ):
+            attempts = install_wheel(
+                wheel_url,
+                python_executable = sys.executable,
+                use_uv = bool(shutil.which("uv")),
+                run = run,
+            )
+        for installer, result in attempts:
             if getattr(result, "returncode", 1) == 0:
                 # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
                 # trusting it, else source-build to match the local ABI.
