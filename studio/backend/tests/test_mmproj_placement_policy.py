@@ -1590,3 +1590,40 @@ def test_a_surviving_tensor_load_keeps_its_projector(tmp_path):
 
     assert cmd[cmd.index("--split-mode") + 1] == "tensor"
     assert "--no-mmproj-offload" not in cmd
+
+
+def test_a_dropped_quantized_cache_holds_the_deferred_pin_back(tmp_path):
+    """The verdict was measured against the f16 cache the tensor attempt ran with.
+
+    _restore_after_tensor_downgrade puts the quantized cache back before layer
+    placement, so the footprint the verdict priced is heavier than the one that
+    actually loads. Acting on it would pin a projector that fits and buy an 8.8x
+    image encode for nothing, which is the outcome this probe exists to avoid.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 4_400, 8_192), (1, 4_400, 8_192)])
+
+    cmd = _launch(
+        backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0"
+    )["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
+
+
+def test_a_gpu_drafter_holds_the_deferred_pin_back(tmp_path):
+    """The drafter-drop probe carries the same tensor exclusion this one did, so it
+    has not run either. The documented order is projector first and drafter second;
+    pinning without being able to re-ask the second half pays the encoder cost and
+    still reaches --fit on."""
+    backend, gguf = _drafter_backend(tmp_path, [(0, 4_400, 8_192), (1, 4_400, 8_192)])
+
+    cmd = _launch(
+        backend,
+        gguf,
+        tensor_parallel = True,
+        mtp_draft_path = str(tmp_path / "mtp.gguf"),
+        speculative_type = "auto",
+    )["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
