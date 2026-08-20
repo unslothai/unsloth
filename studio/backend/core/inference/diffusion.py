@@ -1100,8 +1100,8 @@ class DiffusionBackend:
         self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
-        # Every request waiting for the generation slot. cancel_generate() signals these only
-        # when no generation OWNS the slot, i.e. when the wait really is a model transition.
+        # Every request waiting for the generation slot; cancel_generate() decides which of
+        # them a Stop may signal.
         self._queued_generate_cancels: set[threading.Event] = set()
         # True from admission until _generate_lock is released. Not the same as having a live
         # _active_generate_cancel: a generation drops that at its last-word check, while it still
@@ -1174,8 +1174,7 @@ class DiffusionBackend:
         """
         admitted = False
         # Published before anything is attempted, so there is no window in which Stop answers
-        # false, the page settles its button, and this request runs anyway. cancel_generate()
-        # decides which members it may signal.
+        # false, the page settles its button, and this request runs anyway.
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
         try:
@@ -5900,10 +5899,8 @@ class DiffusionBackend:
                 active.set()
                 return True
             if self._generation_owns_slot:
-                # A generation still owns the slot but has already committed its images, so it is
-                # past cancelling (the route must not be told true and then handed the picture).
-                # A request waiting behind it is still waiting on a GENERATION, so it keeps its
-                # turn rather than inheriting that Stop.
+                # Past cancelling: the images are committed, so the route must not be told true
+                # and then handed the picture. A request behind it is still behind a GENERATION.
                 return False
             # No generation owns the slot, so every waiter is queued behind a model transition
             # and Stop is the answer for all of them. Decided here, on live state, rather than by
