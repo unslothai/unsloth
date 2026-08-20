@@ -97,9 +97,7 @@ def test_local_llama_missing_soname_still_rejects(monkeypatch, tmp_path):
 def test_local_llama_missing_backend_module_still_rejects(monkeypatch, tmp_path):
     # All sonames present, but the cuda module glob finds nothing: a cpu-only
     # source build cannot back the cuda pairing.
-    _link_local_tree(
-        monkeypatch, tmp_path, ["libggml.so", "libggml-base.so", "libggml-cpu.so"]
-    )
+    _link_local_tree(monkeypatch, tmp_path, ["libggml.so", "libggml-base.so", "libggml-cpu.so"])
 
     assert iwp.slim_pairing_for_artifact(_artifact(), _host(), "cuda") is None
 
