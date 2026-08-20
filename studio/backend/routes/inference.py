@@ -6891,6 +6891,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
             _mmproj_env_is_audio_only,
+            extra_args_disable_mmproj,
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
@@ -7008,7 +7009,16 @@ def _estimate_gguf_required_gb(
         # cannot afford. So ask the loader's own question of the same file, which is on
         # disk here. Same gate as the remote branch's include_mmproj below.
         _sized_attrs = ["gguf_mmproj_file"]
-        if disable_vision:
+        # Whether the CONFIGURED projector is one this launch opens. Bound before the
+        # switch so the inherited-projector gate below can read it either way.
+        _dv_opens_projector = True
+        if extra_args_disable_mmproj(llama_extra_args):
+            # llama_cpp.py skips the resolve entirely, so nothing of Studio's own goes
+            # on the command line and nothing is downloaded. (It does NOT unload an
+            # inherited path, which is charged below.)
+            _dv_opens_projector = False
+            _sized_attrs = []
+        elif disable_vision:
             _dv_mmproj = getattr(config, "gguf_mmproj_file", None)
             _dv_opens_projector = False
             if _dv_mmproj:
@@ -7098,21 +7108,32 @@ def _estimate_gguf_required_gb(
         # switch the loader keeps only an audio-only file, asked through the loader's
         # own helper so the two cannot answer differently.
         #
-        # NOT the extras opt-out, deliberately. --no-mmproj / --no-mmproj-auto set
+        # NOT the extras opt-out on its own. --no-mmproj / --no-mmproj-auto set
         # params.no_mmproj, which stops Studio resolving a projector of its own and
         # stops the HF auto-download, but server-context.cpp gates the load on a
         # non-empty mmproj.path and never reads that field. So an inherited path loads
-        # straight through the opt-out and has to be charged.
+        # straight through the opt-out. What the opt-out does do is empty the command
+        # line, which is why it feeds _studio_mmproj_on_argv rather than this gate.
         #
         # Added to the return rather than to total_bytes, which decides local-vs-remote
         # above and must stay the main weight's verdict. The remote branch charges the
         # repo's own projector instead; an inherited local file alongside a remote repo
         # is charged nowhere, as before this.
+        #
+        # argv overrides the env, but only when there IS argv: a configured projector
+        # the switch suppressed, or extras that skipped the resolve, both leave the
+        # command line empty and let the inherited path load after all. So this asks
+        # what Studio actually emits, not merely what the config names -- the same
+        # answer _sized_attrs above was built from, so the two cannot disagree about
+        # which single projector this launch opens.
+        _studio_mmproj_on_argv = bool(
+            getattr(config, "gguf_mmproj_file", None) and _dv_opens_projector
+        )
         _env_mmproj_bytes = 0
         _env_mmproj = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         if (
             _env_mmproj
-            and not getattr(config, "gguf_mmproj_file", None)
+            and not _studio_mmproj_on_argv
             and (not disable_vision or _mmproj_env_is_audio_only(_env_mmproj))
             and Path(_env_mmproj).is_file()
             and _same_file_key(_env_mmproj) not in _sized_keys

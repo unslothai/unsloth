@@ -1350,6 +1350,45 @@ def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(
     assert charged == expected
 
 
+def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(
+    tmp_path, monkeypatch
+):
+    """The combination that slipped through: the CONFIGURED projector is
+    image-capable, so the switch drops it and Studio emits no --mmproj at all, while
+    the inherited one is audio-only and is kept. argv only beats the environment when
+    there IS argv, so the inherited projector is what loads, and it is what has to be
+    charged."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    configured = tmp_path / "mmproj-F16.gguf"
+    configured.write_bytes(b"\x00" * (1 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (2 * MIB))
+
+    import utils.models.gguf_metadata as _meta
+
+    def _caps(path):
+        # Configured: images, so the switch drops it. Inherited: audio only, so it stays.
+        return (False, True) if str(path) == str(configured) else (True, False)
+
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
+    with patch.object(_meta, "mmproj_capabilities", _caps), patch.object(
+        _meta, "mmproj_accepts_image", lambda p: _caps(p)[1]
+    ):
+        # Weights alone: the switch drops the image projector and no env one exists.
+        weights_only = _estimate_gguf_required_gb(
+            _estimator_config(model, configured), disable_vision = True
+        )
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+        charged = _estimate_gguf_required_gb(
+            _estimator_config(model, configured), disable_vision = True
+        )
+
+    assert charged is not None and weights_only is not None
+    # The 2 MiB inherited projector, not the 1 MiB configured one that never loads.
+    assert round((charged - weights_only) * 1024) == 2
+
+
 def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, monkeypatch):
     """--no-mmproj sets params.no_mmproj, which stops Studio resolving one of its own
     and stops the HF download, but server-context.cpp gates the load on a non-empty
@@ -1367,3 +1406,37 @@ def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, mon
 
     assert bare is not None and charged is not None
     assert round((charged - bare) * 1024) == 1
+
+
+def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(
+    tmp_path, monkeypatch
+):
+    """--no-mmproj makes llama_cpp.py skip the resolve, so Studio emits no --mmproj
+    and the configured projector never loads. It does not unset an inherited path,
+    which then loads unopposed. The estimate has to move with the launch: drop the
+    configured file, charge the inherited one.
+    """
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    configured = tmp_path / "mmproj-F16.gguf"
+    configured.write_bytes(b"\x00" * (1 * MIB))
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (2 * MIB))
+    config = _estimator_config(model, configured)
+
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
+    # The configured projector, charged, with no opt-out in play.
+    normal = _estimate_gguf_required_gb(config)
+    weights_only = _estimate_gguf_required_gb(_estimator_config(model))
+    opted_out = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
+
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    inherited = _estimate_gguf_required_gb(config, llama_extra_args = ["--no-mmproj"])
+
+    for value in (normal, weights_only, opted_out, inherited):
+        assert value is not None
+    assert round((normal - weights_only) * 1024) == 1
+    # The opt-out drops the configured projector, because it never loads.
+    assert opted_out == weights_only
+    # And the inherited one takes its place at its own size.
+    assert round((inherited - weights_only) * 1024) == 2
