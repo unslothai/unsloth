@@ -175,6 +175,20 @@ def test_an_mmproj_only_child_still_decides_presence(tmp_path):
     assert [(Path(r.path).name, r.model_format) for r in rows] == [("gemma-4-GGUF", None)]
 
 
+def test_a_recommended_folder_chip_matches_what_the_picker_would_show(tmp_path):
+    # _dir_has_downloaded_model mirrors the scanners on purpose, so that a chip never leads
+    # to an empty picker. Once the scanners stopped surfacing an imatrix-only folder, an
+    # unfiltered probe here would have advertised exactly that.
+    from routes.models import _dir_has_downloaded_model, _scan_models_dir
+
+    (tmp_path / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
+    assert _dir_has_downloaded_model(tmp_path) is False
+    assert _scan_models_dir(tmp_path) == []
+
+    (tmp_path / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
+    assert _dir_has_downloaded_model(tmp_path) is True
+
+
 def test_a_config_beside_an_imatrix_lists_for_the_reason_a_lone_config_does(tmp_path):
     # The boundary of this change, asserted so it reads as deliberate. A folder holding a
     # config and nothing loadable has always been listed (format None) -- that is how a

@@ -1365,7 +1365,12 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     low = entry.name.lower()
                     if is_appledouble_metadata(entry):
                         continue
-                    if low.endswith((".gguf", ".safetensors")):
+                    # An imatrix is calibration data, and the scanners no longer surface a
+                    # folder holding only that, so counting it here would advertise a chip
+                    # whose folder opens an empty picker -- the mirror this helper keeps.
+                    if low.endswith(".gguf") and not _is_imatrix_path(entry.name):
+                        return True
+                    if low.endswith(".safetensors"):
                         return True
                     # PyTorch checkpoints; gate by name so tokenizer.bin and friends don't count as weights.
                     if _is_weight_bin(entry.name):
