@@ -18,6 +18,10 @@ import { register } from "node:module";
 import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
+import {
+  drainMockedTimers,
+  enableCountedTimers,
+} from "./helpers/mock-timer-drain.ts";
 
 const { store: localStorageFake } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
@@ -121,43 +125,15 @@ async function world(rows: Record<string, Record<string, unknown>> = {}) {
   };
 }
 
-// Advance the mock clock, then let the promise continuations that firing released
-// run, and repeat -- the write these tests assert on sits behind a debounce whose
-// callback then awaits, so one tick is never enough.
-//
-// The round count is not cosmetic and three was not enough. Three passed on the
-// node 24 a dev box happens to have and failed on the node 22 CI pins, where the
-// same chain drains far fewer continuations per round. That combination is the
-// worst kind: green locally, red on every CI run. Measured on v22.23.2, the
-// version `setup-node: 22` resolved to:
-//
-//   rounds   3    10    30    60
-//   failing  7     5     1     0
-//
-// So the bound is generous rather than tuned to the observed 60, and it stops as
-// soon as the caller can see the work it was waiting for. `until` is what makes
-// this a wait rather than a guess: without it a slower runtime silently returns
-// early again and the assertion reports a missing value instead of a slow one.
-const SETTLE_ROUNDS = 200;
-
+// Wait out the debounced write each case asserts on. The wait is on the store's own
+// outstanding timers and on the module loader, not on a round count: three rounds passed on
+// a dev box's node 24 and failed on the node 22 CI pins, and every count picked since has
+// been a guess that fails silently in one direction. See tests/helpers/mock-timer-drain.ts.
 async function settle(
   tick: (ms: number) => void,
   until?: () => boolean,
 ): Promise<void> {
-  for (let round = 0; round < SETTLE_ROUNDS; round += 1) {
-    tick(1000);
-    for (let i = 0; i < 6; i += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    if (until?.()) return;
-  }
-  if (until && !until()) {
-    throw new Error(
-      `settle: the condition never held after ${SETTLE_ROUNDS} rounds. The work ` +
-        "is either much slower than this runtime's debounce or it never ran; " +
-        "either way this is not the assertion below failing on a wrong value.",
-    );
-  }
+  await drainMockedTimers(tick, { until, label: "settle" });
 }
 
 function assertUsable(sampling: Record<string, unknown>, where: string): void {
@@ -180,7 +156,7 @@ function assertUsable(sampling: Record<string, unknown>, where: string): void {
 // ---------------------------------------------------------------------------
 
 test("C1: a legacy row opens on the installation sampling, and nothing is zeroed", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
   await settle((ms) => t.mock.timers.tick(ms));
 
@@ -204,7 +180,7 @@ test("C1: a legacy row opens on the installation sampling, and nothing is zeroed
 // legacy chat stored no sampling, so it follows the installation defaults and a model load
 // moves those. Nothing chosen is lost, but the second visit shows different numbers.
 test("C1b: a legacy chat follows the installation defaults, which a model load moves", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
   await settle((ms) => t.mock.timers.tick(ms));
   w.open("L");
@@ -240,7 +216,7 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
 });
 
 test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just the edit", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
   await settle((ms) => t.mock.timers.tick(ms));
   w.open("L");
@@ -277,7 +253,7 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
 // ---------------------------------------------------------------------------
 
 test("C2: an empty, null or absent snapshot opens on the installation settings", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   for (const snapshot of [null, {}, undefined]) {
     const w = await world();
     await settle((ms) => t.mock.timers.tick(ms));
@@ -407,7 +383,7 @@ test("C3c: the sanitizer never throws, whatever it is handed", () => {
 });
 
 test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({
     N: {
       ...LEGACY_ROW,
@@ -428,7 +404,7 @@ test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
 // 1.2 was brought back to 1.0), but the load path applies a recommendation to the live
 // params unclamped, so a custom model_defaults yaml still reaches this.
 test("C3e: an out-of-range recommendation never reaches a chat that pinned that key", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
   await settle((ms) => t.mock.timers.tick(ms));
   w.open("A");
@@ -457,7 +433,7 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
 });
 
 test("C3f: an out-of-range recommendation taken with no chat open cannot be pinned", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
   await settle((ms) => t.mock.timers.tick(ms));
 
@@ -517,7 +493,7 @@ test("C4: the sanitizer keeps every falsy and negative value", () => {
 });
 
 test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   for (const topK of [-1, 0]) {
     const edge = { ...FALSY_EDGE, topK };
     const w = await world();
@@ -551,7 +527,7 @@ test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) =>
 });
 
 test("C4c: a falsy pinned value survives a model load and a model switch", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
   await settle((ms) => t.mock.timers.tick(ms));
   w.open("A");
@@ -590,7 +566,7 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
 });
 
 test("C4d: an empty system prompt is a choice, not an absent one", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
   await settle((ms) => t.mock.timers.tick(ms));
   // A is given a prompt, B is deliberately cleared
@@ -622,7 +598,7 @@ test("C4d: an empty system prompt is a choice, not an absent one", async (t) => 
 // ---------------------------------------------------------------------------
 
 test("C5: a one-megabyte system prompt is neither truncated nor fatal", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const huge = "x".repeat(1024 * 1024);
   assert.equal(huge.length, 1_048_576);
 
