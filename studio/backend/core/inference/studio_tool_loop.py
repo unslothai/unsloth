@@ -546,13 +546,9 @@ class _Turn:
                 # Never replayed upstream: the conversation carries the
                 # de-duplicated id, which is the whole point of the rename.
                 normalized["stream_id"] = normalized["id"]
-                # Suffixing once is not enough now that the ledger starts from
-                # the replayed history: the id this mints is itself stored by
-                # the client and comes back as history on the next request, so
-                # a chat that heals a call every turn would collide again on
-                # "call_0_1_0" one request later. Counting up terminates, the
-                # ledger is finite, and the first attempt is unchanged, so an
-                # id that was already unique keeps the name it has today.
+                # The renamed id is itself stored and replayed, so a single-shot
+                # rename collides again on the next request. Counting up over a
+                # finite ledger terminates and leaves the first attempt as is.
                 renamed = f"{normalized['id']}_{self.round}_{position}"
                 attempt = 0
                 while renamed in seen:
@@ -663,16 +659,12 @@ def _is_usage_only(payload: dict[str, Any]) -> bool:
 
 
 def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
-    """Every tool-call id already present in the history this run starts from.
+    """Every tool-call id already in the history this run starts from.
 
-    The healer restarts its counter on every request, so the very first turn of
-    a new request always mints call_0. The replay normalization now hands that
-    same bare call_0 back as the id of an earlier request's call whenever one
-    stored id claims the base, so without this the two collide inside a single
-    upstream body: two tool_use blocks under one id on Anthropic, a "Duplicate
-    tool call id" rejection from mistral-common, or a silent result/call
-    mispairing where pairing is positional. Seeding the ledger makes calls()
-    rename the new one exactly as it already does for a repeat within a run.
+    The healer restarts its counter every request, so a freshly minted call_0
+    collides with a stripped call_0 replayed from history inside one upstream
+    body. Seeding the ledger makes calls() rename the new one as it does any
+    repeat within a run.
     """
     taken: set[str] = set()
     for message in conversation:

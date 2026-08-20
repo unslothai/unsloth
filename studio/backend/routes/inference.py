@@ -11910,9 +11910,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 # content_part type.
 _INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
 
-# The frontend stores tool-call ids as "<provider id>:<uuid4>" (chat-adapter.ts
-# mints them for part identity), which strict providers reject on replay --
-# OpenAI caps call ids at 64 chars, and the minted form is 66. #8913.
+# The frontend stores tool-call ids as "<provider id>:<uuid4>" (chat-adapter.ts mints them
+# for part identity), which strict providers reject on replay: OpenAI caps call ids at 64
+# chars and the minted form is 66. #8913.
 _MINTED_TOOL_CALL_ID_SUFFIX = _re.compile(
     r":[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -11921,19 +11921,13 @@ _MINTED_TOOL_CALL_ID_SUFFIX = _re.compile(
 # ("Tool call id was ... but must be a-z, A-Z, 0-9, with a length of 9").
 _MISTRAL_TOOL_CALL_ID = _re.compile(r"[a-zA-Z0-9]{9}")
 
-# Anthropic validates tool_use.id / tool_result.tool_use_id against its own charset and
-# says so in the 400: "tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'".
-# No length cap is documented or observed, so this is a charset rule only.
-#
-# It matters here because a colon is not in that set and our stored ids are full of them.
-# Two shapes reach Anthropic with one: the duplicate-base fallback below, which keeps the
-# whole "call_0:<uuid>" value, and the frontend's confirmation-scoped
-# "<sandbox>:<thread>:<approval>" ids, which have no uuid suffix to strip. Both are short
-# enough to skip the >64 branch, so before this they went out verbatim and 400'd.
-# Anthropic cannot originate these itself -- its own tool ids are server-tool ids that
-# _filter_tool_calls drops -- so the path is a history replayed after the user switches
-# an existing chat onto an Anthropic model, which is the single most common way this
-# failure is reported across other clients.
+# Anthropic states the charset in its 400: "tool_use.id: String should match pattern
+# '^[a-zA-Z0-9_-]+$'". No length cap is documented or observed, so this is charset only.
+# A colon is not in the set, and two stored shapes carry one in under 64 chars so the >64
+# branch never caught them: the duplicate-base fallback below, which keeps the whole
+# "call_0:<uuid>", and the frontend's "<sandbox>:<thread>:<approval>" confirmation ids.
+# Anthropic cannot originate either (its own ids are server-tool ids _filter_tool_calls
+# drops), so the path is a history replayed after switching an existing chat to Anthropic.
 _ANTHROPIC_TOOL_CALL_ID = _re.compile(r"[a-zA-Z0-9_-]+")
 _ANTHROPIC_TOOL_CALL_ID_ILLEGAL = _re.compile(r"[^a-zA-Z0-9_-]")
 
@@ -11941,20 +11935,19 @@ _ANTHROPIC_TOOL_CALL_ID_ILLEGAL = _re.compile(r"[^a-zA-Z0-9_-]")
 def _replay_tool_call_id_map(
     originals: "set[str]", provider_type: Optional[str] = None
 ) -> dict[str, str]:
-    """Map stored tool-call ids to replay ids: the suffix-stripped base when
-    exactly one distinct original claims it, else the full stored value (backend
-    ids like "call_0" restart every response, so the minted uuid suffix is the
-    only cross-response uniqueness). Then per-provider: Mistral only accepts
-    9-char alphanumeric ids, so anything else gets a stable sha256[:9] mapping;
-    Anthropic only accepts [a-zA-Z0-9_-], so anything else keeps a sanitized
-    prefix and gains a sha256 tail; other providers hash-shorten past 64 chars
-    (same scheme as openai_codex_client._codex_call_id, so call/output pairs
-    stay paired).
+    """Map stored tool-call ids to replay ids.
 
-    Every branch hashes the whole pre-mapping value rather than the truncated
-    prefix, so two ids sharing a prefix stay distinct, and every branch is a
-    no-op on its own output, so replaying an already-normalized history does not
-    drift the ids again on turn three."""
+    The suffix-stripped base when exactly one distinct original claims it, else
+    the full stored value: backend ids like "call_0" restart every response, so
+    the minted uuid suffix is the only cross-response uniqueness. Then per
+    provider: Mistral takes only 9-char alphanumeric ids, Anthropic only
+    [a-zA-Z0-9_-] (sanitized prefix plus sha256 tail), everything else
+    hash-shortens past 64 chars (same scheme as
+    openai_codex_client._codex_call_id, so call/output pairs stay paired).
+
+    Every branch hashes the whole pre-mapping value, not the truncated prefix,
+    so ids sharing a prefix stay distinct, and is a no-op on its own output, so
+    replaying an already-normalized history does not drift the ids again."""
     bases = {v: _MINTED_TOOL_CALL_ID_SUFFIX.sub("", v) for v in originals}
     claims: dict[str, int] = {}
     for base in bases.values():
@@ -11966,11 +11959,10 @@ def _replay_tool_call_id_map(
             if not _MISTRAL_TOOL_CALL_ID.fullmatch(replay):
                 replay = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:9]
         elif provider_type == "anthropic" and not _ANTHROPIC_TOOL_CALL_ID.fullmatch(replay):
-            # Sanitizing alone would collide "a:b" and "a_b" onto one id, which pairs the
-            # wrong result with the wrong call -- a silent wrong answer, worse than the
-            # 400 this avoids. The sha256 tail is taken over the unsanitized value, so
-            # the mapping stays injective; the readable prefix is kept only for logs.
-            # 31 + 1 + 32 is 64, matching the shortening scheme below.
+            # Sanitizing alone would collide "a:b" and "a_b" onto one id, pairing the
+            # wrong result with the wrong call: a silent wrong answer, worse than the 400
+            # this avoids. The sha256 tail is over the unsanitized value so the mapping
+            # stays injective; the prefix is readability only. 31 + 1 + 32 is 64, as below.
             digest = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:32]
             sanitized = _ANTHROPIC_TOOL_CALL_ID_ILLEGAL.sub("_", replay)[:31]
             replay = f"{sanitized}_{digest}"

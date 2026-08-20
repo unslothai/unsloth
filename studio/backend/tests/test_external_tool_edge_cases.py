@@ -687,9 +687,8 @@ def test_healed_ids_are_unique_across_turns(executed):
 def _healed_history(*call_ids):
     """A chat whose earlier turns already ran a healed call, as the route replays it.
 
-    The frontend stores a healed call as "<backend id>:<uuid4>", and the replay
-    normalization hands the bare base back whenever exactly one stored id claims
-    it, so this is the literal shape run.messages arrives in on the next request.
+    The replay normalization strips the stored "<backend id>:<uuid4>" back to the
+    bare base, so this is the shape run.messages arrives in on the next request.
     """
     out = [{"role": "user", "content": "search something"}]
     for call_id in call_ids:
@@ -721,12 +720,9 @@ def _replayed_ids(transport):
 def test_healed_ids_do_not_collide_with_replayed_history(executed):
     """The healer restarts at call_0 on a history that already replays a call_0.
 
-    The counter behind the healer's ids is per request, not per chat, so the
-    first turn of every request mints call_0 again. A history normalized down to
-    a bare call_0 therefore lands in the same upstream body as the new call: two
-    tool_use blocks under one id on Anthropic, a "Duplicate tool call id"
-    rejection from mistral-common, or a silently mispaired result where pairing
-    is positional. The cross-turn ledger cannot see it unless it starts from the
+    The counter behind the healer's ids is per request, not per chat, so a
+    history normalized down to a bare call_0 lands in the same upstream body as
+    the newly minted one. The ledger only catches that if it is seeded from the
     replayed history.
     """
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "b"}}</tool_call>'
@@ -747,11 +743,9 @@ def test_healed_ids_do_not_collide_with_replayed_history(executed):
 def test_history_rename_does_not_collide_again_on_the_next_request(executed):
     """The id the rename mints comes back as history, so it must not repeat.
 
-    Renaming to "<id>_<round>_<position>" once is not enough on its own: the
-    client stores that id too, and the request after it replays both call_0 and
-    call_0_1_0. A first turn healing a call would then be renamed onto the
-    call_0_1_0 already in the body, which is the same collision one request
-    later rather than a fix for it.
+    Renaming to "<id>_<round>_<position>" once is not enough: the client stores
+    that id too, so the next request replays both call_0 and call_0_1_0 and a
+    single-shot rename lands on the call_0_1_0 already in the body.
     """
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "c"}}</tool_call>'
     transport = FakeTransport(
@@ -770,9 +764,8 @@ def test_history_rename_does_not_collide_again_on_the_next_request(executed):
 def test_history_without_a_colliding_id_leaves_the_minted_id_alone(executed):
     """Seeding the ledger must not churn ids it has no reason to rename.
 
-    A renamed id is a worse id: it is longer, it is not what the provider
-    streamed, and it invalidates the card key the client already painted. So the
-    seeding has to be inert whenever the history does not actually claim the id.
+    A renamed id is longer, is not what the provider streamed, and invalidates
+    the card key the client already painted.
     """
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "d"}}</tool_call>'
     transport = FakeTransport(
