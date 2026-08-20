@@ -7,7 +7,14 @@
  *
  *     SBENCH_EXTRA_INIT_SCRIPT=tests/studio/studiobench/arms/content_visibility_probe.js \
  *     SBENCH_PAGE_CONSOLE="CVPOT " \
- *     python -m tests.studio.studiobench --tier fast --ab probe --out outputs/probe ...
+ *     python -m tests.studio.studiobench --tier fast --ab probe --out outputs/probe \
+ *         --attach http://127.0.0.1:PORT --attach-b http://127.0.0.1:OTHER \
+ *         --password "$(cat "$UNSLOTH_STUDIO_HOME/auth/.bootstrap_password")"
+ *
+ * The credential flags are spelled out rather than trailed off with an ellipsis. A probe run
+ * drives a real Studio like every other command in the loop, and without `--password` it dies on
+ * an HTTP 401 only after the browser has already started. See "You need a Studio, and you need
+ * its password" in the studiobench README.
  *
  * A run carrying this is a PROBE RUN and its payload is never scored: the probe forces layout on
  * every sample, and one of the things it forces is the very rendering it is asking about. See the

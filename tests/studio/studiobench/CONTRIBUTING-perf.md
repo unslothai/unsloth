@@ -254,7 +254,8 @@ has nothing to do with rendering.
 
 `arms/content_visibility_probe.js` is the working probe. Install it with
 `SBENCH_EXTRA_INIT_SCRIPT`, read it back with `SBENCH_PAGE_CONSOLE="CVPOT "`. Both are unset by
-default, so a scored run is unaffected.
+default, so a scored run is unaffected. A probe run drives a real Studio like everything else in
+the loop, so it needs the credentials above; the file's own header carries the full command.
 
 A run carrying a probe is **not scorable**, because the probe samples the DOM and forces layout on
 its own schedule. That is a gate, not a convention. The init script's path is written into
