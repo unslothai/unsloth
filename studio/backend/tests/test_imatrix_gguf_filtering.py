@@ -143,6 +143,54 @@ def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
     assert _dir_model_format(tmp_path) == "gguf"
 
 
+def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path):
+    # The predicates are not what gates a CHILD folder: _scan_models_dir decides presence
+    # from any .gguf, so an interrupted download that landed only the repo's smallest file
+    # published the folder as a local model. mmproj and MTP still decide presence, as they
+    # are companions of a real model; an imatrix is not a model artifact at all.
+    from routes.models import _scan_models_dir
+
+    repo = tmp_path / "Qwen3.8-27B-GGUF"
+    repo.mkdir()
+    (repo / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
+    assert _scan_models_dir(tmp_path) == []
+
+    (repo / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
+    rows = _scan_models_dir(tmp_path)
+    assert [(Path(r.path).name, r.model_format) for r in rows] == [
+        ("Qwen3.8-27B-GGUF", "gguf")
+    ]
+
+
+def test_an_mmproj_only_child_still_decides_presence(tmp_path):
+    # Guard the line this change must not cross: a lone vision projector keeps its row
+    # (format None), which is what the scanner has always reported for a companion.
+    from routes.models import _scan_models_dir
+
+    repo = tmp_path / "gemma-4-GGUF"
+    repo.mkdir()
+    (repo / "mmproj-F16.gguf").write_bytes(b"GGUF" + b"0" * 8)
+
+    rows = _scan_models_dir(tmp_path)
+    assert [(Path(r.path).name, r.model_format) for r in rows] == [("gemma-4-GGUF", None)]
+
+
+def test_the_lmstudio_scanner_does_not_publish_an_imatrix_only_model_dir(tmp_path):
+    # Same presence test in the nested publisher/model layout.
+    from routes.models import _scan_lmstudio_dir
+
+    model_dir = tmp_path / "unsloth" / "Qwen3.8-27B-GGUF"
+    model_dir.mkdir(parents = True)
+    (model_dir / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
+    assert _scan_lmstudio_dir(tmp_path) == []
+
+    (model_dir / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
+    rows = _scan_lmstudio_dir(tmp_path)
+    assert [(r.model_id, r.model_format) for r in rows] == [
+        ("unsloth/Qwen3.8-27B-GGUF", "gguf")
+    ]
+
+
 def test_a_downloaded_imatrix_is_not_a_downloaded_gguf_repo(tmp_path):
     # The surface a user who already clicked the old phantom row lands on: the imatrix is
     # in the HF cache, and the Downloaded list sizes a repo with the same routes/models.py

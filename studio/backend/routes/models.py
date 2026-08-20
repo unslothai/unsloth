@@ -320,6 +320,21 @@ def _local_pipeline_index(d: Path) -> bool:
         return False
 
 
+def _servable_gguf_names(directory: Path) -> list[str]:
+    """The ``.gguf`` names in *directory* that count as a model being present there.
+
+    An imatrix is calibration data for llama-quantize, not a model artifact, so it must
+    not make an otherwise empty folder look like one. mmproj and MTP drafters DO count:
+    they are real companions of a model, and the scanners let them decide presence but
+    never format (``model_format`` still asks ``_is_main_gguf_filename``).
+    """
+    return [
+        p.name
+        for p in directory.glob("*.gguf")
+        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+    ]
+
+
 def _is_gguf_companion_only_dir(path: Path) -> bool:
     """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
     MTP drafter, or both -- with nothing servable beside them.
@@ -370,7 +385,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if not child.is_dir():
                 continue
 
-            gguf_names = [p.name for p in child.glob("*.gguf") if not is_appledouble_metadata(p)]
+            gguf_names = _servable_gguf_names(child)
             has_gguf = bool(gguf_names)
             # mmproj alone is a vision adapter, not servable weights: decides presence, never format.
             has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
@@ -621,7 +636,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 try:
                     if model_dir.is_dir():
                         has_model = (
-                            any(not is_appledouble_metadata(p) for p in model_dir.glob("*.gguf"))
+                            bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
                                 not is_appledouble_metadata(p)
