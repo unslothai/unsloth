@@ -203,6 +203,11 @@ class ExportMergedModelRequest(ExportCommonOptions):
         "When set, it overrides format_type. Lets the export UI expose the full set of formats "
         "beyond the quick buttons.",
     )
+    install_missing_dependencies: bool = Field(
+        False,
+        description = "When true, Studio may install llm-compressor (workspace) or provision the "
+        "llm-compressor-main shadow after explicit user consent for compressed-tensors export.",
+    )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):
@@ -278,3 +283,21 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
         description = "GGUF LoRA output float type (only used when gguf=True). "
         "Q8_0 falls back to F16 per tensor for dims not divisible by the block size (32).",
     )
+
+
+class LlmCompressorExportProbeResponse(BaseModel):
+    """Whether FP8/FP4 compressed export can run without installing dependencies."""
+
+    ready: bool
+    needs_consent: bool
+    consent_kind: Optional[Literal["shadow", "workspace"]] = None
+    install_summary: Optional[str] = None
+    workspace_install_command: str
+    shadow_path: str
+    autoinstall_disabled: bool
+    shadow_disabled: bool
+    offline: bool
+    blocked_reason: Optional[str] = None
+    python_executable: str
+    has_pip: bool
+    has_uv: bool

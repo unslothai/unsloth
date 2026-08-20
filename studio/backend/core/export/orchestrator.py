@@ -539,6 +539,7 @@ class ExportOrchestrator:
         hf_token: Optional[str] = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
@@ -551,6 +552,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "compressed_method": compressed_method,
+                "install_missing_dependencies": install_missing_dependencies,
             },
         )
 
