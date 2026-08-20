@@ -684,6 +684,109 @@ def test_healed_ids_are_unique_across_turns(executed):
     assert len(ids) == len(set(ids)), ids
 
 
+def _healed_history(*call_ids):
+    """A chat whose earlier turns already ran a healed call, as the route replays it.
+
+    The frontend stores a healed call as "<backend id>:<uuid4>", and the replay
+    normalization hands the bare base back whenever exactly one stored id claims
+    it, so this is the literal shape run.messages arrives in on the next request.
+    """
+    out = [{"role": "user", "content": "search something"}]
+    for call_id in call_ids:
+        out.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query": "a"}'},
+                    }
+                ],
+            }
+        )
+        out.append({"role": "tool", "tool_call_id": call_id, "content": "ok"})
+    out.append({"role": "user", "content": "now search again"})
+    return out
+
+
+def _replayed_ids(transport):
+    final = transport.requests[-1]["messages"]
+    calls = [call["id"] for m in final if m.get("tool_calls") for call in m["tool_calls"]]
+    results = [m["tool_call_id"] for m in final if m.get("role") == "tool"]
+    return calls, results
+
+
+def test_healed_ids_do_not_collide_with_replayed_history(executed):
+    """The healer restarts at call_0 on a history that already replays a call_0.
+
+    The counter behind the healer's ids is per request, not per chat, so the
+    first turn of every request mints call_0 again. A history normalized down to
+    a bare call_0 therefore lands in the same upstream body as the new call: two
+    tool_use blocks under one id on Anthropic, a "Duplicate tool call id"
+    rejection from mistral-common, or a silently mispaired result where pairing
+    is positional. The cross-turn ledger cannot see it unless it starts from the
+    replayed history.
+    """
+    heal = '<tool_call>{"name": "web_search", "arguments": {"query": "b"}}</tool_call>'
+    transport = FakeTransport(
+        [
+            [_sse({"content": heal}), _sse(finish = "stop"), _DONE],
+            _answer_turn(),
+        ]
+    )
+    _run(transport, messages = _healed_history("call_0"))
+
+    calls, results = _replayed_ids(transport)
+    assert calls == results, (calls, results)
+    assert len(calls) == len(set(calls)), calls
+    assert "call_0" in calls, calls
+
+
+def test_history_rename_does_not_collide_again_on_the_next_request(executed):
+    """The id the rename mints comes back as history, so it must not repeat.
+
+    Renaming to "<id>_<round>_<position>" once is not enough on its own: the
+    client stores that id too, and the request after it replays both call_0 and
+    call_0_1_0. A first turn healing a call would then be renamed onto the
+    call_0_1_0 already in the body, which is the same collision one request
+    later rather than a fix for it.
+    """
+    heal = '<tool_call>{"name": "web_search", "arguments": {"query": "c"}}</tool_call>'
+    transport = FakeTransport(
+        [
+            [_sse({"content": heal}), _sse(finish = "stop"), _DONE],
+            _answer_turn(),
+        ]
+    )
+    _run(transport, messages = _healed_history("call_0", "call_0_1_0"))
+
+    calls, results = _replayed_ids(transport)
+    assert calls == results, (calls, results)
+    assert len(calls) == len(set(calls)), calls
+
+
+def test_history_without_a_colliding_id_leaves_the_minted_id_alone(executed):
+    """Seeding the ledger must not churn ids it has no reason to rename.
+
+    A renamed id is a worse id: it is longer, it is not what the provider
+    streamed, and it invalidates the card key the client already painted. So the
+    seeding has to be inert whenever the history does not actually claim the id.
+    """
+    heal = '<tool_call>{"name": "web_search", "arguments": {"query": "d"}}</tool_call>'
+    transport = FakeTransport(
+        [
+            [_sse({"content": heal}), _sse(finish = "stop"), _DONE],
+            _answer_turn(),
+        ]
+    )
+    _run(transport, messages = _healed_history("call_9"))
+
+    calls, results = _replayed_ids(transport)
+    assert calls == results == ["call_9", "call_0"], (calls, results)
+
+
 def test_finish_reason_length_mid_tool_call_does_not_execute(executed):
     """Truncated arguments are not a call. Documented, current behaviour."""
     transport = FakeTransport(

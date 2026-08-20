@@ -546,7 +546,19 @@ class _Turn:
                 # Never replayed upstream: the conversation carries the
                 # de-duplicated id, which is the whole point of the rename.
                 normalized["stream_id"] = normalized["id"]
-                normalized["id"] = f"{normalized['id']}_{self.round}_{position}"
+                # Suffixing once is not enough now that the ledger starts from
+                # the replayed history: the id this mints is itself stored by
+                # the client and comes back as history on the next request, so
+                # a chat that heals a call every turn would collide again on
+                # "call_0_1_0" one request later. Counting up terminates, the
+                # ledger is finite, and the first attempt is unchanged, so an
+                # id that was already unique keeps the name it has today.
+                renamed = f"{normalized['id']}_{self.round}_{position}"
+                attempt = 0
+                while renamed in seen:
+                    attempt += 1
+                    renamed = f"{normalized['id']}_{self.round}_{position}_{attempt}"
+                normalized["id"] = renamed
             seen.add(normalized["id"])
             out.append(normalized)
         return out
@@ -648,6 +660,31 @@ def _usage_chunk_line(model: str, totals: dict[str, Any]) -> str | None:
 def _is_usage_only(payload: dict[str, Any]) -> bool:
     choices = payload.get("choices")
     return "usage" in payload and isinstance(choices, list) and not choices
+
+
+def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
+    """Every tool-call id already present in the history this run starts from.
+
+    The healer restarts its counter on every request, so the very first turn of
+    a new request always mints call_0. The replay normalization now hands that
+    same bare call_0 back as the id of an earlier request's call whenever one
+    stored id claims the base, so without this the two collide inside a single
+    upstream body: two tool_use blocks under one id on Anthropic, a "Duplicate
+    tool call id" rejection from mistral-common, or a silent result/call
+    mispairing where pairing is positional. Seeding the ledger makes calls()
+    rename the new one exactly as it already does for a repeat within a run.
+    """
+    taken: set[str] = set()
+    for message in conversation:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
+                taken.add(call["id"])
+        result_id = message.get("tool_call_id")
+        if isinstance(result_id, str) and result_id:
+            taken.add(result_id)
+    return taken
 
 
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
@@ -767,7 +804,7 @@ async def stream_with_studio_tools(
     max_reprompts = MAX_ACT_REPROMPTS
     last_reprompt_text = ""
     provider_turns = 0
-    used_call_ids: set[str] = set()
+    used_call_ids: set[str] = _replayed_call_ids(conversation)
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
