@@ -1437,3 +1437,120 @@ def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path
     assert opted_out == weights_only
     # And the inherited one takes its place at its own size.
     assert round((inherited - weights_only) * 1024) == 2
+
+
+def _paravirtual(monkeypatch):
+    import core.inference.llama_cpp as _llama_cpp
+
+    monkeypatch.setattr(_llama_cpp, "_metal_device_is_paravirtual", lambda: True)
+
+
+def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(
+    tmp_path, monkeypatch
+):
+    """The paravirtual scrub runs after the switch's and takes BOTH projector vars
+    unconditionally, so a file the switch kept is gone by launch.
+
+    Two things went wrong when the "kept" answer did not know that: the capability
+    probe described an audio encoder the child does not have, and the --no-mmproj-auto
+    override was skipped, leaving a remembered --mmproj-auto free to rediscover an
+    adjacent image projector on a load the user asked to be text-only.
+    """
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    _paravirtual(monkeypatch)
+    backend, gguf = _backend(tmp_path, memory = [])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        result = _launch(
+            backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
+        )
+
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+    # Nothing survives to rediscover a projector with.
+    assert "--no-mmproj-auto" in result["cmd"]
+    # And the probe describes the child that actually launched.
+    assert backend._mmproj_has_audio is False
+
+
+def test_dropping_an_inherited_image_projector_points_at_the_switch(
+    tmp_path, monkeypatch
+):
+    """Turning Vision back on restores an inherited image projector, so the composer
+    must name the switch rather than send the user hunting for a valid mmproj."""
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
+        _launch(backend, gguf, disable_vision = True)
+
+    assert backend._vision_disabled_by_user is True
+
+
+def test_a_stale_inherited_path_does_not_blame_the_switch(tmp_path, monkeypatch):
+    """A path that names no file drops nothing, so turning Vision back on changes
+    nothing either. Blaming the switch there points at a control that cannot help."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "not-on-disk.gguf"))
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    _launch(backend, gguf, disable_vision = True)
+
+    assert backend._vision_disabled_by_user is False
+
+
+def test_a_cpu_recovery_records_the_vision_state_it_launched_with(tmp_path):
+    """_apply_cpu_fallback_state is the last thing a Vulkan-crash recovery runs: its
+    caller returns immediately after, before the load's own assignment of these two.
+
+    Leaving them behind meant the response described the PREVIOUS load's Vision state,
+    so the control flipped back on and an unchanged disable_vision request then failed
+    runtime matching and reloaded the model.
+    """
+    backend = LlamaCppBackend()
+    backend._disable_vision = False
+    backend._vision_disabled_by_user = False
+    intent = GgufLoadIntent(
+        gguf_path = str(_write_gguf(tmp_path / "model.gguf")),
+        model_identifier = "test",
+        is_vision = True,
+        disable_vision = True,
+    )
+
+    backend._apply_cpu_fallback_state(
+        intent,
+        is_vision = False,
+        mmproj_has_audio = False,
+        disable_vision = True,
+        vision_disabled_by_user = True,
+    )
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is True
+    # The rest of the recovery state still lands, so this is additive.
+    assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+
+
+def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
+    """Two call sites reach that helper and only one is on the common path, so a
+    keyword added to one and not the other is a silent half-fix. Checked at the source
+    because the second site needs a crash inside a replay this harness cannot stage."""
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    calls = source.count("self._apply_cpu_fallback_state(")
+    assert calls == 2, f"expected 2 recovery call sites, found {calls}"
+    # The load's own `self._vision_disabled_by_user = ...` uses the same words, so
+    # subtract it rather than matching loosely and passing on the wrong occurrence.
+    keyword_uses = source.count("vision_disabled_by_user = bool(") - source.count(
+        "self._vision_disabled_by_user = bool("
+    )
+    assert keyword_uses == calls
+    assert source.count("disable_vision = disable_vision,") == calls
