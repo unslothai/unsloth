@@ -1001,7 +1001,6 @@ async def stream_with_studio_tools(
             visible_answer = "".join(turn.text)
             if (
                 tools_available
-                and policy.auto_heal is not False
                 and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
@@ -1011,10 +1010,18 @@ async def stream_with_studio_tools(
                 reprompts += 1
                 last_reprompt_text = visible_answer
                 stalled_hosted = turn.hosted_replay_text()
+                leading_whitespace = visible_answer[
+                    : len(visible_answer) - len(visible_answer.lstrip())
+                ]
+                replayable_answer = leading_whitespace + strip_tool_markup(
+                    visible_answer,
+                    final = True,
+                    enabled_tool_names = allowed_tool_names,
+                )
                 stalled_content = (
-                    f"{visible_answer}\n\n{stalled_hosted}"
-                    if visible_answer and stalled_hosted
-                    else visible_answer or stalled_hosted
+                    f"{replayable_answer}\n\n{stalled_hosted}"
+                    if replayable_answer and stalled_hosted
+                    else replayable_answer or stalled_hosted
                 )
                 if stalled_content:
                     # The retry must see the assistant turn it is being asked to

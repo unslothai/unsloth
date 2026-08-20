@@ -2410,8 +2410,9 @@ def append_assistant_turn(
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
-        assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        conversation[-1] = assistant_msg
+        merged_msg = {**conversation[-1], **assistant_msg}
+        merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
 

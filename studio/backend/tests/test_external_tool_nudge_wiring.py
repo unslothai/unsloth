@@ -17,9 +17,13 @@ def test_external_tool_loop_accepts_and_gates_nudge_flag():
 
 def test_external_route_forwards_request_nudge_flag():
     from routes import inference as routes_inference
-    src = inspect.getsource(routes_inference.openai_chat_completions)
-    # Local inference already forwards the field; external Studio tools must as well.
-    assert src.count("nudge_tool_calls = payload.nudge_tool_calls") >= 2
+
+    external_src = inspect.getsource(routes_inference._proxy_to_external_provider)
+    assert external_src.count("nudge_tool_calls = payload.nudge_tool_calls") == 2
+    codex_policy = external_src.split("CodexToolPolicy(", 1)[1].split("if studio_tool_payloads", 1)[
+        0
+    ]
+    assert "nudge_tool_calls = payload.nudge_tool_calls" in codex_policy
 
 
 def test_frontend_forwards_nudge_setting_to_external_tools():

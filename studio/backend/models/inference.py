@@ -1557,11 +1557,10 @@ class ChatCompletionRequest(BaseModel):
     nudge_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
-            "model emitted a tool signal that healing could not repair, retry ONCE with "
-            "a short nudge appended (the retry shares the full prompt prefix, so the "
-            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
-            "the process default."
+            "[x-unsloth] Opt in to nudge retries when a tool-enabled model stops after "
+            "promising to act, or when a passthrough tool signal cannot be repaired. "
+            "The retry limit depends on the serving path. Default off; "
+            "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
     context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(

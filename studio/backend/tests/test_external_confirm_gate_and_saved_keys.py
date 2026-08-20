@@ -270,11 +270,14 @@ def test_the_codex_loop_keeps_reporting_its_own_model(monkeypatch):
         confirm_calls = False,
         bypass_permissions = False,
         rag_scope = None,
+        nudge_tool_calls = True,
     )
     loop_mod.stream_codex_with_studio_tools(
         object(), run = run, policy = policy, cancel_event = threading.Event()
     )
     assert entered["run"].model == "gpt-5.4-codex"
+    assert entered["policy"].auto_heal is False
+    assert entered["policy"].nudge_tool_calls is True
 
 
 def test_the_usage_chunk_falls_back_only_when_no_model_is_known():
