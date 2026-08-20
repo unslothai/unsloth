@@ -2584,14 +2584,16 @@ def test_a_cold_worker_rejects_credentials_for_another_account(monkeypatch):
         # resolve_access answers, which then returns acct-b.
         return {"account_id": "acct-a", "catalog_account_id": "acct-a"}
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "token-b", "acct-b"
 
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", _bundle)
     try:
-        refused = _codex_chat_gate(
-            monkeypatch, saved, resolve = _resolve, saved_models = [saved]
-        )
+        refused = _codex_chat_gate(monkeypatch, saved, resolve = _resolve, saved_models = [saved])
         assert refused.status_code == 400
         assert "Choose a curated Codex model." in str(refused.detail)
         # The connection is left needing a fresh catalog before anything is trusted again.
