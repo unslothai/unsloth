@@ -4172,7 +4172,12 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
-def replace_with_busy_retry(src: Path, dst: Path, *, attempts: int = 8) -> None:
+def replace_with_busy_retry(
+    src: Path,
+    dst: Path,
+    *,
+    attempts: int = 8,
+) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
     A directory rename fails with WinError 5/32/145 while any process holds a
@@ -4509,7 +4514,9 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                     try:
                         remove_tree_logged(rollback_dir, "copied rollback path")
                     except Exception as duplicate_exc:
-                        log(f"non-fatal: the copied rollback path could not be removed: {duplicate_exc}")
+                        log(
+                            f"non-fatal: the copied rollback path could not be removed: {duplicate_exc}"
+                        )
                 restored = True
                 log(f"restored previous install from rollback path {rollback_dir.name}")
                 if is_busy_lock_error(exc):

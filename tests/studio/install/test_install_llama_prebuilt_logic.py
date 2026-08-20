@@ -997,9 +997,7 @@ def test_remove_tree_logged_clears_read_only_files(tmp_path: Path):
     assert not tree.exists()
 
 
-def test_remove_tree_logged_refuses_a_symlinked_root_without_touching_the_target(
-    tmp_path: Path,
-):
+def test_remove_tree_logged_refuses_a_symlinked_root_without_touching_the_target(tmp_path: Path):
     target = tmp_path / "outside"
     target.mkdir()
     (target / "precious.txt").write_text("precious\n")
