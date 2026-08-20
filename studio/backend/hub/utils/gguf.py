@@ -699,6 +699,65 @@ def select_gguf_cache_snapshot(
     return fallback
 
 
+def merge_sibling_snapshot_variants(
+    repo_id: str,
+    selected: tuple[list[GgufVariantInfo], bool, set, Path],
+    root: Optional[Path] = None,
+) -> tuple[list[GgufVariantInfo], bool, set, Path]:
+    """*selected* widened with the quants the repo dir's other revisions hold.
+
+    The selector names one directory, so an inventory built on it drops what an upstream re-upload
+    left elsewhere. Only safe for a row loading by repo id, which the caller establishes. One repo
+    dir only: a cache can hold two differing in case, and the row owns one.
+    """
+    from hub.utils.hf_cache_state import same_existing_path
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    variants, has_vision, complete, snapshot = selected
+    merged = list(variants)
+    merged_complete = set(complete)
+    whole = {quant.lower() for quant in merged_complete}
+    held: dict[str, int] = {}
+    for index, variant in enumerate(merged):
+        if variant.quant:
+            held.setdefault(variant.quant.lower(), index)
+    # Per row, so a projector cannot outlive the row it arrived with.
+    merged_vision: dict[str, bool] = {}
+    changed = False
+    for other in iter_hf_cache_snapshots(repo_id, root = root):
+        if other.parent != snapshot.parent:
+            continue
+        if other == snapshot or same_existing_path(other, snapshot):
+            continue
+        extra, extra_vision = list_local_gguf_variants(str(other))
+        candidates = [v for v in extra if v.quant and v.quant.lower() not in whole]
+        if not candidates:
+            continue
+        other_complete = complete_snapshot_variants(str(other)) or set()
+        for variant in candidates:
+            key = variant.quant.lower()
+            index = held.get(key)
+            is_whole = variant.quant in other_complete
+            if index is None:
+                held[key] = len(merged)
+                merged.append(variant)
+            elif is_whole:
+                # A load skips the torn copy for this one, so the row describes this one.
+                merged[index] = variant
+            else:
+                continue
+            changed = True
+            merged_vision[key] = extra_vision
+            if is_whole:
+                merged_complete.add(variant.quant)
+                whole.add(key)
+    if changed:
+        # Labels disambiguate within a revision, so a merged set can hold names only the
+        # merge brings together.
+        _apply_gguf_display_labels(merged)
+    return merged, has_vision or any(merged_vision.values()), merged_complete, snapshot
+
+
 def list_gguf_variants_from_hf_cache(
     repo_id: str, root: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
