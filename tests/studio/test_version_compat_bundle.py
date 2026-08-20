@@ -154,10 +154,18 @@ def test_the_bundle_does_not_duplicate_the_install_bearing_jobs() -> None:
 def test_the_bundle_stays_parallel_and_file_scoped() -> None:
     """Without -n the bundle is six jobs' work run end to end on one runner.
 
-    Measured on the full set: serial 182.8s, `-n 4` 27.8s, `-n 8` 75.2s, all three at
-    1606 passed / 182 skipped. -n 8 being 2.7x slower than -n 4 is upstream throttling of
-    a fetch-bound suite, not core contention, so the worker count is not "as high as
+    Measured on the full set: serial 182.8s, `-n 4` 27.8s, `-n 8` 75.2s, all three at the
+    same 1788 collected. -n 8 being 2.7x slower than -n 4 is upstream throttling of a
+    fetch-bound suite, not core contention, so the worker count is not "as high as
     possible" -- it is pinned at the runner's core count.
+
+    The pass/skip SPLIT of those 1788 is environment-dependent, so do not pin a number to
+    it. On CI the job is 1604 passed / 184 skipped; on a developer box with transformers
+    and unsloth_zoo already installed it is 1606 / 182, because
+    test_peft_conversion_symbol_backfill.py::test_the_moe_snapshot_matches_the_installed_transformers
+    and test_vllm_pinned_symbols.py::test_unsloth_zoo_standby_guards_present both skip
+    when their package is absent. The six jobs this replaced installed pytest and nothing
+    else, so they skipped those two as well -- the split is unchanged by the bundling.
 
     --dist loadfile keeps a file on one worker so two suites cannot interleave.
     """
