@@ -286,8 +286,8 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
             return f
     if safes:
         return safes[0]
-    # The gguf fallback only: an imatrix is a .gguf holding no adapter, and it would be
-    # picked here. A .safetensors is never one, so the candidates above stay untouched.
+    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked
+    # here, while a .safetensors is never one, so the candidates above stay untouched.
     ggufs = [
         f
         for f in files

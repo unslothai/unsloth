@@ -323,10 +323,9 @@ def _local_pipeline_index(d: Path) -> bool:
 def _servable_gguf_names(directory: Path) -> list[str]:
     """The ``.gguf`` names in *directory* that count as a model being present there.
 
-    An imatrix is calibration data for llama-quantize, not a model artifact, so it must
-    not make an otherwise empty folder look like one. mmproj and MTP drafters DO count:
-    they are real companions of a model, and the scanners let them decide presence but
-    never format (``model_format`` still asks ``_is_main_gguf_filename``).
+    An imatrix is calibration data, not a model artifact, so it must not make an empty
+    folder look like one. mmproj and MTP drafters DO count: they are companions of a real
+    model, and presence is all they decide (format still asks _is_main_gguf_filename).
     """
     return [
         p.name
@@ -1365,9 +1364,8 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     low = entry.name.lower()
                     if is_appledouble_metadata(entry):
                         continue
-                    # An imatrix is calibration data, and the scanners no longer surface a
-                    # folder holding only that, so counting it here would advertise a chip
-                    # whose folder opens an empty picker -- the mirror this helper keeps.
+                    # The scanners no longer surface an imatrix-only folder, so counting
+                    # one here would advertise a chip that opens an empty picker.
                     if low.endswith(".gguf") and not _is_imatrix_path(entry.name):
                         return True
                     if low.endswith(".safetensors"):
