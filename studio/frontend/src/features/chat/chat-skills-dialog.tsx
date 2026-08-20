@@ -206,7 +206,7 @@ export function ChatSkillsDialog({
                       onCheckedChange={(enabled) => toggleSkill(skill, enabled)}
                       aria-label={`Enable ${skill.name}`}
                     />
-                    {skill.metadata?.bundled !== "true" ? (
+                    {!skill.bundled ? (
                       <Button
                         type="button"
                         variant="ghost"

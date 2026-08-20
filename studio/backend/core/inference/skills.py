@@ -388,7 +388,11 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                 raise
             if backup is not None:
                 shutil.rmtree(backup, ignore_errors = True)
-            return {**metadata, "enabled": registry[metadata["name"]]}
+            return {
+                **metadata,
+                "enabled": registry[metadata["name"]],
+                "bundled": False,
+            }
         except Exception:
             if (
                 backup is not None
@@ -414,17 +418,26 @@ def list_skills() -> list[dict]:
                 metadata = _validate_installed_skill(candidate)
             except SkillError:
                 continue
-            skills.append({**metadata, "enabled": registry.get(metadata["name"], True)})
+            skills.append(
+                {
+                    **metadata,
+                    "enabled": registry.get(metadata["name"], True),
+                    "bundled": False,
+                }
+            )
         installed_names = {skill["name"] for skill in skills}
         for name, (_, metadata) in _builtin_skills().items():
             if name not in installed_names:
-                skills.append({**metadata, "enabled": registry.get(name, True)})
+                skills.append(
+                    {**metadata, "enabled": registry.get(name, True), "bundled": True}
+                )
         return sorted(skills, key = lambda skill: skill["name"])
 
 
 def set_skill_enabled(name: str, enabled: bool) -> dict:
     name = _normalize_skill_name(name)
     with _LOCK:
+        bundled = not (_skills_root() / name).exists()
         metadata = _validate_installed_skill(_skill_directory(name))
         registry = _load_registry()
         if enabled:
@@ -434,7 +447,7 @@ def set_skill_enabled(name: str, enabled: bool) -> dict:
             )
         registry[name] = enabled
         _save_registry(registry)
-        return {**metadata, "enabled": enabled}
+        return {**metadata, "enabled": enabled, "bundled": bundled}
 
 
 def delete_skill(name: str) -> None:

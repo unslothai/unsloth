@@ -7,6 +7,7 @@ export interface AgentSkill {
   name: string;
   description: string;
   enabled: boolean;
+  bundled: boolean;
   license?: string;
   compatibility?: string;
   metadata?: Record<string, string>;

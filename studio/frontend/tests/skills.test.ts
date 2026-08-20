@@ -258,6 +258,15 @@ test("the import input passes its selected ZIP to the API path", () => {
   assert.equal(handler.includes("if(file){importBundle(file,false);}"), true);
 });
 
+test("delete controls use server-derived bundled status", () => {
+  const dialog = compact(
+    findFunction(DIALOG_SOURCE, "ChatSkillsDialog"),
+    DIALOG_SOURCE,
+  );
+  assert.equal(dialog.includes("!skill.bundled?"), true);
+  assert.equal(dialog.includes("metadata?.bundled"), false);
+});
+
 test("vision support gates the loader and every request list uses that decision", () => {
   const availability = findVariable(
     ADAPTER_SOURCE,

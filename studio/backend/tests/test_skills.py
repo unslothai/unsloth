@@ -61,9 +61,12 @@ def test_bundled_skill_creator_is_discoverable_and_read_only(monkeypatch: pytest
     bundled = skills.list_skills()
 
     assert [skill["name"] for skill in bundled] == ["skill-creator"]
+    assert bundled[0]["bundled"] is True
     assert bundled[0]["metadata"]["bundled"] == "true"
     assert "Code is enabled" in skills.read_skill_resource("skill-creator")
-    assert skills.set_skill_enabled("skill-creator", False)["enabled"] is False
+    disabled = skills.set_skill_enabled("skill-creator", False)
+    assert disabled["enabled"] is False
+    assert disabled["bundled"] is True
     with pytest.raises(skills.SkillError, match = "cannot be deleted"):
         skills.delete_skill("skill-creator")
 
@@ -78,9 +81,29 @@ def test_existing_skill_creator_keeps_precedence(tmp_path: Path, monkeypatch: py
         _bundle(tmp_path / "custom.zip", {"skill-creator/SKILL.md": custom})
     )
 
-    assert skills.list_skills()[0]["description"] == "Keep my existing custom skill."
+    custom_skill = skills.list_skills()[0]
+    assert custom_skill["description"] == "Keep my existing custom skill."
+    assert custom_skill["bundled"] is False
     skills.delete_skill("skill-creator")
-    assert skills.list_skills()[0]["metadata"]["bundled"] == "true"
+    bundled_skill = skills.list_skills()[0]
+    assert bundled_skill["metadata"]["bundled"] == "true"
+    assert bundled_skill["bundled"] is True
+
+
+def test_imported_skill_cannot_spoof_bundled_status(tmp_path: Path):
+    manifest = SKILL_MD.replace(
+        '  version: "1.0"',
+        '  version: "1.0"\n  bundled: "true"',
+    )
+    archive = _bundle(tmp_path / "spoofed.zip", {"unsloth/SKILL.md": manifest})
+
+    imported = skills.import_skill_archive(archive)
+
+    assert imported["metadata"]["bundled"] == "true"
+    assert imported["bundled"] is False
+    assert skills.list_skills()[0]["bundled"] is False
+    skills.delete_skill("unsloth")
+    assert skills.list_skills() == []
 
 
 def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
@@ -103,6 +126,7 @@ def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
         "metadata": {"author": "unslothai", "version": "1.0"},
         "allowed_tools": "Read Bash(python:*)",
         "enabled": True,
+        "bundled": False,
     }
     assert (tmp_path / "skills/unsloth/assets/train.yaml").is_file()
     assert not (tmp_path / "skills/unsloth/README.md").exists()
