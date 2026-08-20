@@ -218,6 +218,93 @@ test("disposing cancels a release that has not fired", () => {
   assert.deepEqual(seen, []);
 });
 
+test("a remount on a quiet thread takes the hold back and measures again", () => {
+  // Leaving the edit textarea on a COMPLETED reply swaps the message body back for its rendered
+  // parts, so every code block in it is a new element with no last remembered size -- on a
+  // thread that never stopped being quiet, and so is already released. Measured in Chromium 151:
+  // released, such a block lays out at the 200px fallback for one frame on a 2,169px block.
+  const { clock, controller, seen } = build();
+  controller.setRunning(false);
+  clock.flushFrame();
+  clock.flushFrame();
+  clock.flushTimeouts();
+  assert.equal(controller.layout(), "settled");
+
+  controller.remeasure();
+  assert.equal(
+    controller.layout(),
+    "building",
+    "the hold is immediate: the new elements must not be skippable on the frame they appear",
+  );
+  assert.deepEqual(seen, ["settled", "building"]);
+
+  // And it releases again on its own, with the same frame pair and delay a run gets. A remount
+  // that only held would leave the thread paying for every block for the rest of its life.
+  assert.equal(clock.pendingTimeouts(), 0, "the frames come first here too");
+  clock.flushFrame();
+  clock.flushFrame();
+  assert.deepEqual(clock.flushTimeouts(), [900]);
+  assert.equal(controller.layout(), "settled");
+  assert.deepEqual(seen, ["settled", "building", "settled"]);
+});
+
+test("a remount restarts the settle window rather than riding out the one already armed", () => {
+  // Not idempotent, unlike setRunning: two edits saved in quick succession are two remounts, and
+  // the second one's elements need the full window from when THEY were created.
+  const { clock, controller } = build();
+  controller.setRunning(false);
+  clock.flushFrame();
+  clock.flushFrame();
+  assert.equal(clock.pendingTimeouts(), 1);
+
+  controller.remeasure();
+  assert.equal(
+    clock.pendingTimeouts(),
+    0,
+    "the release armed before the remount must be dropped",
+  );
+  assert.equal(clock.pendingFrames(), 1, "and a fresh frame pair started");
+  clock.flushFrame();
+  clock.flushFrame();
+  clock.flushTimeouts();
+  assert.equal(controller.layout(), "settled");
+});
+
+test("a remount during a run holds without arming a release of its own", () => {
+  // The store that drives this is not the run state, so a remount can land mid-stream. Arming a
+  // release from here would settle the thread in the middle of the reply that is still writing
+  // into it; the release stays with the run, which arms one when it ends.
+  const { clock, controller, seen } = build();
+  controller.setRunning(true);
+  controller.remeasure();
+  assert.equal(controller.layout(), "building");
+  assert.equal(clock.pendingFrames(), 0, "no frame pair while the run is live");
+  assert.equal(clock.pendingTimeouts(), 0);
+
+  controller.setRunning(false);
+  clock.flushFrame();
+  clock.flushFrame();
+  clock.flushTimeouts();
+  assert.equal(controller.layout(), "settled");
+  assert.deepEqual(seen, ["settled"]);
+});
+
+test("disposing cancels a release armed by a remount", () => {
+  const { clock, controller } = build();
+  controller.setRunning(false);
+  clock.flushFrame();
+  clock.flushFrame();
+  clock.flushTimeouts();
+  controller.remeasure();
+  clock.flushFrame();
+  clock.flushFrame();
+  assert.equal(clock.pendingTimeouts(), 1);
+  controller.dispose();
+  assert.equal(clock.pendingTimeouts(), 0);
+  clock.flushTimeouts();
+  assert.equal(controller.layout(), "building");
+});
+
 test("the shipped settle delay outlasts a frame at 60Hz by a wide margin", () => {
   // The delay has to cover the render that finalizes a message, which lands one or two frames
   // after the stream ends. Anything at or below a frame would release inside it.

@@ -85,6 +85,16 @@ const REAL_TIMERS: Timers = {
 export type CodeBlockLayoutController = {
   /** Feed the thread's running state. Idempotent: repeating a value does not restart anything. */
   setRunning(running: boolean): void;
+  /**
+   * Report that code blocks have just been re-created outside a run, and take the hold back.
+   *
+   * A run is not the only thing that mounts fresh block elements. Leaving the edit textarea on
+   * a COMPLETED reply swaps the whole message body back for its rendered parts, so every block
+   * in that reply is a new element with nothing recorded, on a thread that is quiet and has
+   * therefore already been released. Not idempotent, unlike setRunning: each call is a distinct
+   * remount and restarts the measurement window.
+   */
+  remeasure(): void;
   layout(): CodeBlockLayout;
   dispose(): void;
 };
@@ -150,6 +160,17 @@ export function createCodeBlockLayoutController(options: {
       if (next) {
         cancelPending();
         set("building");
+        return;
+      }
+      armRelease();
+    },
+    remeasure(): void {
+      set("building");
+      // While a run is in flight the release belongs to setRunning, which arms one when the run
+      // ends. Arming a second one here would let the thread settle in the middle of the stream,
+      // which is the case the whole hold exists for.
+      if (running === true) {
+        cancelPending();
         return;
       }
       armRelease();

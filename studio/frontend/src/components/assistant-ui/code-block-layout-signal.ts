@@ -16,8 +16,9 @@ import {
   type CodeBlockLayoutController,
   createCodeBlockLayoutController,
 } from "@/components/assistant-ui/code-block-layout";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useAuiState } from "@assistant-ui/react";
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 /**
  * Writes `data-code-block-layout` onto the thread root.
@@ -63,6 +64,30 @@ export function CodeBlockLayoutSignal({
   useEffect(() => {
     controllerRef.current?.setRunning(isRunning);
   }, [isRunning]);
+
+  // A reply leaving (or entering) the edit textarea is a remount that no run state reports.
+  // thread.tsx renders an editing assistant message as a bare <textarea> and any other one as
+  // its rendered parts, so ending an edit mounts a brand new element for every code block in
+  // that reply while the thread is quiet and has therefore already been released. Measured in
+  // Chromium 151 on a 2,169px block: re-created in the released state it lays out at
+  // streamdown's 200px `contain-intrinsic-size` fallback for exactly one frame, moving
+  // everything below it by 1,969px and back; re-created under the hold it is 2,169px from the
+  // first frame and nothing moves.
+  //
+  // useLayoutEffect, not useEffect: the attribute has to be back on the root within the commit
+  // that created those elements. A passive effect runs after the browser has painted that
+  // commit, and that paint IS the flicker frame.
+  const editingMessageId = useChatRuntimeStore((s) => s.editingMessageId);
+  const seenEditingRef = useRef(false);
+  useLayoutEffect(() => {
+    // The first run is the mount, which is already held, and where the controller-owning
+    // effect below has not run yet anyway.
+    if (!seenEditingRef.current) {
+      seenEditingRef.current = true;
+      return;
+    }
+    controllerRef.current?.remeasure();
+  }, [editingMessageId]);
 
   return null;
 }
