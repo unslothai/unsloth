@@ -45,6 +45,18 @@ def managed_node(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def runtime_free_dir(tmp_path):
+    """A base PATH that resolves no runtime on every host. Real system dirs cannot be used
+    for this: a developer machine with Node in /usr/bin resolves a complete toolchain there,
+    so path_with_managed_node returns it unchanged and a prepend assertion fails, while a CI
+    image without Node passes. The empty dir makes the outcome depend on the managed install
+    under test rather than on what the host happens to ship."""
+    base = tmp_path / "runtime-free"
+    base.mkdir()
+    return base
+
+
+@pytest.fixture
 def managed_node_install(tmp_path, monkeypatch):
     """The real locator + a stub node binary, so managed_node_usable() is exercised."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -144,24 +156,37 @@ def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_p
     assert os.path.samefile(client.transport.command, npx)
 
 
-def test_stale_managed_node_is_not_prepended(managed_node_install, monkeypatch):
+def test_runtime_free_dir_resolves_nothing(runtime_free_dir):
+    """Pins the precondition the prepend tests below rely on. Asserting against a real
+    system dir like /usr/bin instead would make them read the host: where it ships a
+    Node the base PATH already resolves a runtime, so path_with_managed_node correctly
+    returns it unchanged and the prepend assertions flip."""
+    assert node_runtime._path_has_usable_node(str(runtime_free_dir)) is False
+    assert node_runtime._path_has_usable_node(str(runtime_free_dir), require_npm = False) is False
+
+
+def test_stale_managed_node_is_not_prepended(managed_node_install, monkeypatch, runtime_free_dir):
     """A dir left behind after the host moved to a system Node must not win the lookup."""
     monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: False)
     assert node_runtime.managed_node_usable() is False
-    assert node_runtime.path_with_managed_node("/usr/bin") == "/usr/bin"
+    base = str(runtime_free_dir)
+    assert node_runtime.path_with_managed_node(base) == base
 
 
-def test_usable_managed_node_is_prepended(managed_node_install, monkeypatch):
+def test_usable_managed_node_is_prepended(managed_node_install, monkeypatch, runtime_free_dir):
     monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
     assert node_runtime.managed_node_usable() is True
-    expected = f"{managed_node_install}{os.pathsep}/usr/bin"
-    assert node_runtime.path_with_managed_node("/usr/bin") == expected
+    base = str(runtime_free_dir)
+    expected = f"{managed_node_install}{os.pathsep}{base}"
+    assert node_runtime.path_with_managed_node(base) == expected
 
 
-def test_stale_managed_node_leaves_stdio_env_alone(managed_node_install, monkeypatch):
+def test_stale_managed_node_leaves_stdio_env_alone(
+    managed_node_install, monkeypatch, runtime_free_dir
+):
     monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: False)
-    monkeypatch.setenv("PATH", "/usr/bin")
-    assert mcp_client._stdio_env(None)["PATH"] == "/usr/bin"
+    monkeypatch.setenv("PATH", str(runtime_free_dir))
+    assert mcp_client._stdio_env(None)["PATH"] == str(runtime_free_dir)
 
 
 def test_managed_node_check_is_memoized_on_success(managed_node_install, monkeypatch):
