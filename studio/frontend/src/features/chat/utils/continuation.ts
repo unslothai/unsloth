@@ -374,26 +374,67 @@ export function autoContinueCount(key: string | null | undefined): number {
 }
 
 /**
- * How long a claim written to shared storage keeps other tabs off a message.
+ * How long a lease survives without being renewed.
  *
  * A lease, not a permanent flag: the tab that wins can be closed or crash mid-run, and a
  * flag it never gets to clear would leave the message unresumable for the life of the
- * profile. Two minutes covers a whole round -- prompt processing plus a full Max Tokens
- * generation on a local model -- so a tab opened while the winner is still streaming stays
- * out, while a tab that died takes the message back after one pause the user is likely
- * still sitting through. Erring longer wedges a live message; erring shorter buys the
- * duplicate request back.
+ * profile. The winner renews for as long as its run is live (see
+ * `renewAutoContinueLeases`), so the TTL is not a guess at how long a continuation takes:
+ * it is how long a tab that stopped renewing is still believed to be alive.
+ *
+ * Three minutes because renewals are timers, and a hidden tab is throttled to roughly one
+ * timer callback a minute in Chrome. Three minutes leaves a backgrounded winner about
+ * three chances to check in before anyone else may touch its message, while a tab that
+ * really died gives the message back inside the pause a user notices anyway. The manual
+ * Continue button is never gated on any of this, so the way out is always open.
  */
-export const AUTO_CONTINUE_LEASE_TTL_MS = 120_000;
+export const AUTO_CONTINUE_LEASE_TTL_MS = 180_000;
+
+/**
+ * How often the holder renews while its run is live. Well inside the TTL even at the
+ * once-a-minute rate a hidden tab's timers are throttled to.
+ */
+export const AUTO_CONTINUE_LEASE_RENEW_MS = 30_000;
+
+/**
+ * What a lease is cut back to when the run behind it reaches a terminal state.
+ *
+ * Released rather than held, so the TTL only ever covers a crash. Not deleted outright:
+ * another tab still showing the pre-continuation branch has not seen the sibling that was
+ * just written and would take the message straight back, which is the duplicate this
+ * whole file exists to stop. A short settle window is long enough for that tab to pick up
+ * the saved thread and short enough to be invisible otherwise.
+ */
+export const AUTO_CONTINUE_LEASE_SETTLE_MS = 30_000;
 
 /** The `localStorage` key holding the leases, one record per claimed message id. */
 export const AUTO_CONTINUE_LEASE_KEY = "unsloth_chat_auto_continue_leases";
+
+/** The Web Locks name every read-modify-write of that key is taken under. */
+export const AUTO_CONTINUE_LOCK_NAME = "unsloth_chat_auto_continue_claim";
+
+/**
+ * What a claim attempt did.
+ *
+ * Three answers, not a boolean, because the two ways of not starting a run want opposite
+ * things on screen. `held-elsewhere` is another tab running this message: this one has to
+ * drop the "Continuing automatically" spinner and put its manual Continue button back, or
+ * it shows a spinner for a run it will never own. `skipped` is this tab declining its own
+ * duplicate call -- a `<StrictMode>` replay, or a claim already in flight -- where the run
+ * IS coming and changing what is on screen would be wrong.
+ */
+export type AutoContinueClaim = "started" | "skipped" | "held-elsewhere";
 
 /** The slice of `Storage` the lease needs. Narrow so a test can hand over a fake. */
 export type AutoContinueLeaseStorage = {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+};
+
+/** The slice of `navigator.locks` the claim needs: an exclusive request by name. */
+export type AutoContinueLockManager = {
+  request<T>(name: string, callback: () => T | Promise<T>): Promise<T>;
 };
 
 type Lease = { token: string; expires: number };
@@ -411,7 +452,28 @@ function browserLeaseStorage(): AutoContinueLeaseStorage | null {
     if (typeof window === "undefined") {
       return null;
     }
-    return (window.localStorage as AutoContinueLeaseStorage | undefined) ?? null;
+    return (
+      (window.localStorage as AutoContinueLeaseStorage | undefined) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The browser's lock manager, or nothing where there is not one.
+ *
+ * `navigator.locks` is what makes the claim exclusive: read, decide and write happen
+ * inside one held lock, so no other tab can be between them. localStorage alone cannot do
+ * this -- its individual operations are atomic, but a read-modify-write across three
+ * statements is not, and the storage mutex that used to serialize such sequences was
+ * dropped from the spec, so nothing holds a lock across them.
+ */
+function browserLockManager(): AutoContinueLockManager | null {
+  try {
+    const locks = (globalThis.navigator as { locks?: unknown } | undefined)
+      ?.locks as AutoContinueLockManager | undefined;
+    return typeof locks?.request === "function" ? locks : null;
   } catch {
     return null;
   }
@@ -449,26 +511,29 @@ function newLeaseToken(): string {
  * One tab's view of which messages have been continued.
  *
  * Constructible because a second instance is precisely what a second browser tab is: its
- * own module scope, its own empty claim set, the same saved thread and the same shared
- * storage underneath. That is the case the lease exists for, and the only way to write it
- * down as a test.
+ * own module scope, its own empty claim set, the same saved thread, and the same storage
+ * and lock manager underneath. That is the case the lease exists for, and the only way to
+ * write it down as a test.
  */
-export function createAutoContinueTab(
-  {
-    storage,
-  }: {
-    /** Omit for the browser's `localStorage`; pass null for a tab with no seam. */
-    storage?: AutoContinueLeaseStorage | null;
-  } = {},
-): {
+export function createAutoContinueTab({
+  storage,
+  locks,
+}: {
+  /** Omit for the browser's `localStorage`; pass null for a tab with no seam. */
+  storage?: AutoContinueLeaseStorage | null;
+  /** Omit for `navigator.locks`; pass null for a browser that has none. */
+  locks?: AutoContinueLockManager | null;
+} = {}): {
   claim: (
     messageId: string | null | undefined,
     options?: { now?: number },
-  ) => boolean;
+  ) => Promise<AutoContinueClaim>;
   claimed: (
     messageId: string | null | undefined,
     options?: { now?: number },
   ) => boolean;
+  renew: (options?: { now?: number }) => Promise<void>;
+  release: (options?: { now?: number }) => Promise<void>;
   reset: () => void;
 } {
   /**
@@ -484,15 +549,60 @@ export function createAutoContinueTab(
    */
   const continued = new Set<string>();
 
-  /** Lease tokens this tab wrote, so a reset clears its own and nobody else's. */
+  /** Claims this tab has in flight. The lock is async, so a second call can arrive. */
+  const claiming = new Set<string>();
+
+  /** Lease tokens this tab holds, so it renews and releases its own and nobody else's. */
   const ownTokens = new Map<string, string>();
 
-  const seam = (): AutoContinueLeaseStorage | null =>
+  const leaseSeam = (): AutoContinueLeaseStorage | null =>
     storage === undefined ? browserLeaseStorage() : storage;
+
+  const lockSeam = (): AutoContinueLockManager | null =>
+    locks === undefined ? browserLockManager() : locks;
+
+  /**
+   * Run `mutate` with nobody else inside it.
+   *
+   * With a lock manager this is genuinely exclusive across tabs. Without one -- an older
+   * browser, an embedded webview, the test runner -- it degrades to running the body
+   * straight through, which is the write-then-read-back below and no worse than what
+   * shipped before. A lock manager that rejects the request is treated the same way,
+   * and a body that has already run is never run twice.
+   */
+  async function exclusively<T>(mutate: () => T, fallback: T): Promise<T> {
+    const manager = lockSeam();
+    if (!manager) {
+      return mutate();
+    }
+    let ran = false;
+    try {
+      return await manager.request(AUTO_CONTINUE_LOCK_NAME, () => {
+        ran = true;
+        return mutate();
+      });
+    } catch {
+      return ran ? fallback : mutate();
+    }
+  }
+
+  /** Drop what has lapsed, so the key cannot grow with every truncated reply. */
+  function prune(
+    leases: Record<string, Lease>,
+    now: number,
+  ): Record<string, Lease> {
+    const out: Record<string, Lease> = {};
+    for (const [id, lease] of Object.entries(leases)) {
+      if (lease.expires > now) {
+        out[id] = lease;
+      }
+    }
+    return out;
+  }
 
   /** A lease held by ANY tab, this one included, or null. Expired reads as free. */
   function liveLease(messageId: string, now: number): Lease | null {
-    const store = seam();
+    const store = leaseSeam();
     if (!store) {
       return null;
     }
@@ -506,75 +616,130 @@ export function createAutoContinueTab(
   }
 
   /**
-   * Take the lease for `messageId`, or report that someone else holds it.
+   * Take the lease, or report who has it. Runs inside the lock.
    *
-   * Written then read back, because two tabs can pass the free check in the same tick;
-   * whichever `setItem` lands second is the token still in storage afterwards, so the
-   * other tab reads a token that is not its own and stands down. A storage that cannot be
-   * written is not an error: the tab keeps the module-only claim, which is what single-tab
-   * use has always relied on, rather than refusing a continuation the user is waiting for.
+   * A storage that cannot be read or written is not an error: the tab keeps the
+   * module-only claim, which is what single-tab use has always relied on, rather than
+   * refusing a continuation the user is waiting for.
    */
-  function takeLease(messageId: string, now: number): boolean {
-    const store = seam();
+  function takeLease(messageId: string, now: number): AutoContinueClaim {
+    const store = leaseSeam();
     if (!store) {
-      return true;
+      return "started";
+    }
+    let leases: Record<string, Lease>;
+    try {
+      leases = readLeases(store);
+    } catch {
+      return "started";
+    }
+    const held = leases[messageId];
+    if (held && held.expires > now && held.token !== ownTokens.get(messageId)) {
+      return "held-elsewhere";
+    }
+    const token = newLeaseToken();
+    const next = prune(leases, now);
+    next[messageId] = { token, expires: now + AUTO_CONTINUE_LEASE_TTL_MS };
+    try {
+      store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(next));
+      // Read back, which is the only defence left when there is no lock manager: whoever
+      // wrote last is the token in storage, and the other tab does not find its own.
+      if (readLeases(store)[messageId]?.token !== token) {
+        return "held-elsewhere";
+      }
+    } catch {
+      return "started";
+    }
+    ownTokens.set(messageId, token);
+    return "started";
+  }
+
+  /** Rewrite every lease this tab holds with a new expiry. Runs inside the lock. */
+  function restamp(expires: number, now: number): void {
+    const store = leaseSeam();
+    if (!store || ownTokens.size === 0) {
+      return;
     }
     try {
-      const token = newLeaseToken();
-      const leases = readLeases(store);
-      const held = leases[messageId];
-      if (held && held.expires > now && held.token !== ownTokens.get(messageId)) {
-        // Landed between the check above and this write. Never overwrite a live lease.
-        return false;
-      }
-      const next: Record<string, Lease> = {};
-      for (const [id, lease] of Object.entries(leases)) {
-        // Drop what has lapsed, so the key cannot grow with every truncated reply.
-        if (lease.expires > now) {
-          next[id] = lease;
+      const leases = prune(readLeases(store), now);
+      for (const [id, token] of [...ownTokens]) {
+        if (leases[id]?.token !== token) {
+          // Lapsed, or taken over while this tab was not looking. Not ours to stamp.
+          ownTokens.delete(id);
+          continue;
         }
+        leases[id] = { token, expires };
       }
-      next[messageId] = { token, expires: now + AUTO_CONTINUE_LEASE_TTL_MS };
-      store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(next));
-      if (readLeases(store)[messageId]?.token !== token) {
-        return false;
-      }
-      ownTokens.set(messageId, token);
-      return true;
+      store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(leases));
     } catch {
-      return true;
+      // An unwritable seam holds no lease of ours to renew or release either.
     }
   }
 
   return {
-    claim(messageId, { now = Date.now() } = {}) {
-      if (!messageId || continued.has(messageId)) {
-        return false;
+    async claim(messageId, { now = Date.now() } = {}) {
+      if (!messageId || continued.has(messageId) || claiming.has(messageId)) {
+        return "skipped";
       }
       if (liveLease(messageId, now)) {
-        // Another tab is running this one. Not recorded locally: if that tab dies, this
-        // one takes the message back when the lease lapses.
-        return false;
+        // Cheap answer before touching the lock. Not recorded locally: if the tab holding
+        // it dies, this one takes the message back when the lease lapses.
+        return "held-elsewhere";
       }
-      if (!takeLease(messageId, now)) {
-        return false;
+      claiming.add(messageId);
+      try {
+        const outcome = await exclusively(
+          () => takeLease(messageId, now),
+          "held-elsewhere" as AutoContinueClaim,
+        );
+        if (outcome === "started") {
+          continued.add(messageId);
+        }
+        return outcome;
+      } finally {
+        claiming.delete(messageId);
       }
-      continued.add(messageId);
-      return true;
     },
     claimed(messageId, { now = Date.now() } = {}) {
       if (!messageId) {
         return false;
       }
+      // A claim of this tab's own that is still in flight deliberately does NOT count: the
+      // spinner it is rendering is the right thing to show, and treating it as taken would
+      // flash the manual bar in the middle of winning. Its duplicate calls are refused by
+      // `claim` itself.
       return continued.has(messageId) || Boolean(liveLease(messageId, now));
+    },
+    async renew({ now = Date.now() } = {}) {
+      if (ownTokens.size === 0) {
+        return;
+      }
+      await exclusively(
+        () => restamp(now + AUTO_CONTINUE_LEASE_TTL_MS, now),
+        undefined,
+      );
+    },
+    async release({ now = Date.now() } = {}) {
+      if (ownTokens.size === 0) {
+        return;
+      }
+      await exclusively(
+        () => restamp(now + AUTO_CONTINUE_LEASE_SETTLE_MS, now),
+        undefined,
+      );
+      // Held no longer: nothing renews it, and it lapses at the settle window.
+      ownTokens.clear();
     },
     reset() {
       continued.clear();
-      const store = seam();
+      claiming.clear();
+      const store = leaseSeam();
       if (!store || ownTokens.size === 0) {
         ownTokens.clear();
         return;
       }
+      // Synchronous, and so outside the lock: a reset is a test seam and a new thread
+      // starting from zero, neither of which races another tab for this key.
       try {
         const leases = readLeases(store);
         for (const [id, token] of ownTokens) {
@@ -595,10 +760,15 @@ export function createAutoContinueTab(
 const tab = createAutoContinueTab();
 
 /**
- * Whether `messageId` still needs continuing. False once it has been claimed, here or in
- * another tab holding a live lease on it.
+ * Claim `messageId` for an automatic continuation, and say what happened.
+ *
+ * Asynchronous because exclusivity is: the read-decide-write is taken under a Web Lock so
+ * that two tabs cannot both come out of it believing they won. The caller starts its run
+ * on `started` and only on `started`.
  */
-export function claimAutoContinue(messageId: string | null | undefined): boolean {
+export function claimAutoContinue(
+  messageId: string | null | undefined,
+): Promise<AutoContinueClaim> {
   return tab.claim(messageId);
 }
 
@@ -607,11 +777,35 @@ export function claimAutoContinue(messageId: string | null | undefined): boolean
  * another one whose lease is still live.
  *
  * Asked at render time, so the answer has to match what `claimAutoContinue` will do a tick
- * later. A tab that reported "continuing" and then found the message claimed would show a
- * spinner nothing is going to resolve, over the manual Continue button it hides.
+ * later as closely as a synchronous read can. It cannot be exact, because the lock that
+ * decides a genuine race resolves later; the caller therefore also re-renders off the
+ * claim's own answer rather than trusting this alone.
  */
 export function wasAutoContinued(messageId: string | null | undefined): boolean {
   return tab.claimed(messageId);
+}
+
+/**
+ * Keep this tab's leases alive while the run behind them is still going.
+ *
+ * Called on a timer for as long as the thread is running. Without it the TTL would have to
+ * guess the longest continuation anyone might generate, and a slow local model on a big
+ * Max Tokens would outlive that guess and have its message taken by another tab mid-
+ * stream.
+ */
+export function renewAutoContinueLeases(): Promise<void> {
+  return tab.renew();
+}
+
+/**
+ * Give the leases back when the run reaches a terminal state, cancelled included.
+ *
+ * They are cut to the settle window rather than deleted, so a tab still showing the
+ * pre-continuation branch cannot immediately start the duplicate this file exists to
+ * prevent, and the full TTL is left to mean one thing only: the holder crashed.
+ */
+export function releaseAutoContinueLeases(): Promise<void> {
+  return tab.release();
 }
 
 /**

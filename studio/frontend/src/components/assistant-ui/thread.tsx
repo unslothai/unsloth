@@ -136,7 +136,10 @@ import {
   readTextThoughtSignature,
   claimAutoContinue,
   recordAutoContinue,
+  releaseAutoContinueLeases,
+  renewAutoContinueLeases,
   shouldAutoContinueMessage,
+  AUTO_CONTINUE_LEASE_RENEW_MS,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -1499,6 +1502,43 @@ const ThreadMessage: FC = () => {
 // being rebuilt, and the bail-out below it would never get to run.
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
+/**
+ * Hold this tab's automatic-continuation leases for as long as a run is live.
+ *
+ * Thread level, not on the bar that took the lease: the continuation runs as a sibling and
+ * becomes the selected branch, so the truncated message unmounts almost immediately and a
+ * timer living there would die with it, mid-stream.
+ *
+ * Renewed while running, and given back on the first tick that is not -- a finished run, a
+ * cancelled one, or a failed one all land there. Only the run that follows a claim has
+ * anything to renew; every other run finds nothing held and does nothing. What is left
+ * over after that is a tab that stopped renewing without saying so, which is a tab that
+ * closed or crashed, and the TTL is what covers it.
+ */
+function useAutoContinueLeaseKeeper(): void {
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (!isRunning) {
+      // Only on the way down. An idle tick must not release a lease that was taken a
+      // moment ago and whose run has not turned `isRunning` on yet.
+      if (wasRunning.current) {
+        wasRunning.current = false;
+        void releaseAutoContinueLeases();
+      }
+      return;
+    }
+    wasRunning.current = true;
+    void renewAutoContinueLeases();
+    const timer = setInterval(() => {
+      void renewAutoContinueLeases();
+    }, AUTO_CONTINUE_LEASE_RENEW_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isRunning]);
+}
+
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
 // would otherwise reconcile the whole message list.
 export const Thread: FC<{
@@ -1522,6 +1562,7 @@ export const Thread: FC<{
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
   useThreadForkCounts();
+  useAutoContinueLeaseKeeper();
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -6556,7 +6597,14 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // arriving at a message the claim below has already taken -- the branch picker back to
   // the truncated sibling, or returning to the chat -- would otherwise show a spinner for
   // a run `claimAutoContinue` refuses to start, on top of the Continue button it hides.
+  //
+  // Another tab won the message. The claim resolves after this component has already
+  // rendered off `shouldAutoContinueMessage`, which cannot see a race the lock decides,
+  // so the answer has to come back as state: without it this tab keeps a spinner for a
+  // run it never started, with the manual Continue button hidden behind it.
+  const [claimHeldElsewhere, setClaimHeldElsewhere] = useState(false);
   const autoContinuing =
+    !claimHeldElsewhere &&
     resumable &&
     shouldAutoContinueMessage(messageId, reason, parentId, {
       fits: truncation?.fits,
@@ -6569,20 +6617,36 @@ const ContinueMessageBarForLastMessage: FC = () => {
     if (!autoContinuing || !parentId) {
       return;
     }
-    // Claimed in module scope, not a ref. `<StrictMode>` in src/main.tsx replays this
-    // effect on the same fiber with the same `autoContinuing`, so nothing inside would
-    // have differed, and rechecking the round budget would not help either: one recorded
-    // round still leaves the limit unspent. A ref fixed the replay but not a real
-    // remount, so leaving the chat with a truncated branch selected and returning fired
-    // it again, creating another sibling and another paid request. The claim survives
-    // both, and is the same seam `resetAutoContinue()` clears.
-    if (!claimAutoContinue(messageId)) {
-      return;
-    }
-    // Recorded BEFORE the run, so a round that produces nothing still spends its budget
-    // instead of re-firing this effect forever.
-    recordAutoContinue(parentId);
-    startContinuation();
+    let mounted = true;
+    // Claimed in module scope, not a ref, and under a cross-tab lock. `<StrictMode>` in
+    // src/main.tsx replays this effect on the same fiber with the same `autoContinuing`,
+    // so nothing inside would have differed, and rechecking the round budget would not
+    // help either: one recorded round still leaves the limit unspent. A ref fixed the
+    // replay but not a real remount, so leaving the chat with a truncated branch selected
+    // and returning fired it again, creating another sibling and another paid request.
+    // A module claim survived both but not a second TAB, which has its own module scope
+    // and its own empty claim; the lease behind this one is shared and settles that.
+    void claimAutoContinue(messageId).then((claim) => {
+      if (claim === "started") {
+        // Started whether or not this component is still mounted: the run belongs to the
+        // thread, not to the bar, and a claim taken and then dropped would leave the
+        // message continued by nobody.
+        //
+        // Recorded BEFORE the run, so a round that produces nothing still spends its
+        // budget instead of re-firing this effect forever.
+        recordAutoContinue(parentId);
+        startContinuation();
+        return;
+      }
+      // `skipped` is this tab's own duplicate call, where the run is coming from the
+      // other one and nothing on screen should move.
+      if (claim === "held-elsewhere" && mounted) {
+        setClaimHeldElsewhere(true);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
   }, [autoContinuing, parentId, messageId, startContinuation]);
 
   // Newest turn only: appending to an older one would strand the replies after it.
