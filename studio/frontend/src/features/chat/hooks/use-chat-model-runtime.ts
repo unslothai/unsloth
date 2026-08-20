@@ -81,6 +81,7 @@ import {
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
+import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -1760,35 +1761,17 @@ export function useChatModelRuntime() {
             });
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
-            // Qwen3/3.5/3.6: apply thinking-mode-specific params after load
+            // Qwen3-family: apply thinking-mode-specific params after load.
+            const p = resolveQwenThinkingParams(
+              modelId,
+              nextReasoningEnabled,
+            );
             if (
-              modelId.toLowerCase().includes("qwen3") &&
+              p !== null &&
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
               if (store.activePresetSource === "builtin-default") {
-                const mid = modelId.toLowerCase();
-                const needsPresencePenalty =
-                  mid.includes("qwen3.5") || mid.includes("qwen3.6");
-                const p = nextReasoningEnabled
-                  ? {
-                      temperature: 0.6,
-                      topP: 0.95,
-                      topK: 20,
-                      minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
-                    }
-                  : {
-                      temperature: 0.7,
-                      topP: 0.8,
-                      topK: 20,
-                      minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
-                    };
                 // Same rule as the load response: defaults first, this model's
                 // remembered settings over them.
                 store.setParams({ ...store.params, ...p }, {
