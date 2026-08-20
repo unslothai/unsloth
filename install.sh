@@ -954,6 +954,7 @@ _offer_systemd_user_service() {
         substep "status: systemctl --user status unsloth-studio.service"
         substep "logs:   journalctl --user -u unsloth-studio.service -f"
         substep "stop:   systemctl --user stop unsloth-studio.service"
+        substep "binds 127.0.0.1 by default; set UNSLOTH_SYSTEMD_HOST=0.0.0.0 before install for LAN"
         substep "for boot without a login session, run once: loginctl enable-linger \"\$USER\""
     else
         step "systemd" "user service install skipped (systemd user session unavailable)" "$C_WARN"
