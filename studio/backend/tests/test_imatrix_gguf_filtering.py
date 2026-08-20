@@ -143,6 +143,35 @@ def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
     assert _dir_model_format(tmp_path) == "gguf"
 
 
+def test_a_downloaded_imatrix_is_not_a_downloaded_gguf_repo(tmp_path):
+    # The surface a user who already clicked the old phantom row lands on: the imatrix is
+    # in the HF cache, and the Downloaded list sizes a repo with the same routes/models.py
+    # predicate, so the repo came back as a ~13 MB GGUF download it could not load.
+    from huggingface_hub import scan_cache_dir
+
+    from routes.models import _repo_gguf_size_bytes, _repo_has_gguf_files
+
+    repo_id = "unsloth/Qwen3.8-27B-GGUF"
+    sha = "a" * 40
+    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(sha, encoding = "utf-8")
+    snapshot = repo_dir / "snapshots" / sha
+    snapshot.mkdir(parents = True)
+    blob = blobs / ("0" * 40)
+    blob.write_bytes(b"GGUF" + b"\0" * 13_642_656)
+    try:
+        (snapshot / "imatrix_unsloth.gguf").symlink_to(blob)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    cached = next(r for r in scan_cache_dir(tmp_path).repos if r.repo_id == repo_id)
+    assert _repo_gguf_size_bytes(cached) == 0
+    assert _repo_has_gguf_files(cached) is False
+
+
 def test_a_lora_repo_weight_named_like_an_imatrix_is_still_picked(monkeypatch):
     # The exclusion belongs to the .gguf fallback: an imatrix is a GGUF holding no
     # adapter. Applied to the whole listing it also dropped .safetensors candidates,
