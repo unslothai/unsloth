@@ -45,6 +45,7 @@ from hub.utils.hf_cache_state import (
     latest_snapshot_dir,
     repo_cache_dir_has_incomplete_blobs,
 )
+from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 # Inventory is invalidated explicitly on every app-driven cache mutation, so
 # this TTL only bounds staleness from out-of-band edits while skipping re-walks
@@ -284,7 +285,7 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
             if not snapshot.is_dir():
                 # Upstream treats a file here as corruption; defer to it.
                 return None
-            entries = sorted(snapshot.rglob("*"))
+            entries = drop_appledouble_metadata(sorted(snapshot.rglob("*")))
         except OSError:
             return None
         files: set[_RecoveredFileInfo] = set()
@@ -779,6 +780,11 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         rel = path.relative_to(snapshot_dir).as_posix()
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
+        # Metadata vouching for a quant marks a torn snapshot ready: a set whose sidecars are
+        # all present but whose weights are not answers the shard count exactly as the real
+        # files would, in its own family and under their quant.
+        if is_appledouble_metadata(path):
+            continue
         quant = gguf_variant_key(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
         # quant. Judged with the loader's label, since the two extractors disagree on
@@ -975,7 +981,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     unreachable_root: set[str] = set()
     unreadable: set[str] = set()
     try:
-        paths = list(snapshot_dir.rglob("*"))
+        paths = drop_appledouble_metadata(list(snapshot_dir.rglob("*")))
     except OSError:
         return None
     for path in paths:
@@ -1989,3 +1995,32 @@ def partial_transport_for(
         hub_cache = hub_cache,
     )
     return manifest.transport if manifest is not None else None
+
+
+def partial_resume_available(
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str] = None,
+    repo_cache_dir: Optional[Path] = None,
+) -> bool:
+    """Whether THIS partial can be picked up byte for byte, rather than whether some partial
+    somewhere could be.
+
+    Both verdicts have to agree: the transport this row reports, and the registry's per-file
+    check, which rejects a 1.18+ nonce partial nothing will reopen. The installed
+    huggingface_hub cannot answer it alone, since a cache shared with a newer environment
+    holds partials this one can never continue.
+    """
+    from hub.utils import download_registry
+
+    if partial_transport_for(repo_type, repo_id, variant, repo_cache_dir) != "http":
+        return False
+    # Same root the transport was read from. A row can be displayed from a remembered, legacy
+    # or custom cache, and both halves have to answer about THAT directory: the active root
+    # neither holds its partials nor shares its manifest scope.
+    return download_registry.is_resumable_partial(
+        repo_type,
+        repo_id,
+        variant,
+        root = _hub_cache_for_repo_dir(repo_cache_dir),
+    )

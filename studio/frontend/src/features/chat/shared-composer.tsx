@@ -38,6 +38,7 @@ import {
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -134,6 +135,7 @@ import {
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -919,6 +921,7 @@ export function SharedComposer({
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
+      let videoUnsupported = false;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -935,6 +938,12 @@ export function SharedComposer({
           });
           continue;
         }
+        // video_base64 targets the single loaded GGUF, so at most one side of
+        // a compare could answer. Say that rather than drop the file.
+        if (isVideoFile(file)) {
+          videoUnsupported = true;
+          continue;
+        }
         // Handle image files
         if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
@@ -949,6 +958,11 @@ export function SharedComposer({
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (videoUnsupported) {
+        toast.error("Video can't be attached in compare mode", {
+          description: "Open a single chat with a video-capable model instead.",
+        });
       }
       setPendingImages((prev) => [...prev, ...next]);
     },
@@ -1591,6 +1605,7 @@ export function SharedComposer({
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
@@ -1667,6 +1682,7 @@ export function SharedComposer({
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
+          hasVideoInput: Boolean(resp.has_video_input),
         };
         if (idx === -1) {
           store.setModels([
