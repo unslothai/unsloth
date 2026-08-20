@@ -115,7 +115,7 @@ def _path_has_usable_node(
 ) -> bool:
     """Whether ``path`` provides what a stdio command actually uses. The installers gate
     on node plus npm and never look at npx, so each launcher is checked against what it
-    needs: node alone, node plus npm, or both plus the npx that launches it."""
+    needs: node alone, node plus npm, or node plus the npx that launches it."""
     try:
         node = shutil.which("node", path = path)
         npm = shutil.which("npm", path = path) if require_npm else None
@@ -141,7 +141,11 @@ def _path_has_usable_node(
             return False
     if not _probe_ok(node, _node_version_ok, path):
         return False
-    return _probe_ok(npm, _npm_version_ok, path) if require_npm else True
+    # The installers' npm floor still applies to an npx-only PATH: npx-cli.js hands off to
+    # the npm library beside it, so ``npx -v`` prints that npm's version and stands in for
+    # the missing npm launcher. Falling back to it keeps the floor instead of skipping it.
+    floor_launcher = npm if require_npm else (npx if require_npx else None)
+    return _probe_ok(floor_launcher, _npm_version_ok, path) if floor_launcher else True
 
 
 def _probe_ok(

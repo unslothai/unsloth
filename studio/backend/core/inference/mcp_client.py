@@ -271,8 +271,11 @@ def _command_selects_runtime(command: Optional[str]) -> bool:
 
 
 def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
-    """``(needs npm, needs npx)`` for argv[0]. node needs neither, npm needs npm, and
-    only npx needs npx, so an unrelated missing launcher cannot shadow a good runtime.
+    """``(needs npm, needs npx)`` for argv[0]. Each launcher asks only for what it runs,
+    so an unrelated missing launcher cannot shadow a good runtime: node needs neither, npm
+    needs npm, and npx needs npx alone -- npx never shells out to an ``npm`` executable,
+    its npx-cli.js delegates in-process to the npm library it ships with, so a PATH
+    exposing node and npx without a separate npm runs it fine and must be left alone.
     A pathed npm/npx is already located and only needs a node for its shebang, so it
     does not require a second copy of itself on PATH either."""
     name = _launcher_name(command) if command is not None else None
@@ -282,6 +285,8 @@ def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
         return False, False
     if name == "npm":
         return True, False
+    if name == "npx":
+        return False, True
     return True, True
 
 

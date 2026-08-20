@@ -511,13 +511,61 @@ def test_direct_node_server_keeps_a_node_only_path(managed_node_install, monkeyp
     assert unchanged == str(nodeonly)
 
 
-def test_npx_server_still_needs_npm_on_a_node_only_path(
+def test_npx_server_still_needs_npx_on_a_node_only_path(
     managed_node_install, monkeypatch, tmp_path
 ):
+    """node alone cannot launch an ``npx`` server, so the managed dir still goes on."""
     nodeonly = _node_only_dir(tmp_path)
     _patch_floors(monkeypatch, lambda executable, path = None: True)
     expected = f"{managed_node_install}{os.pathsep}{nodeonly}"
-    assert node_runtime.path_with_managed_node(str(nodeonly)) == expected
+    assert (
+        node_runtime.path_with_managed_node(str(nodeonly), require_npm = False, require_npx = True)
+        == expected
+    )
+
+
+def test_npx_server_keeps_a_path_with_npx_but_no_npm(
+    managed_node_install, monkeypatch, tmp_path
+):
+    """A curated PATH exposing node and npx without a separate npm launcher runs npx fine:
+    npx-cli.js delegates in-process to the npm it ships with and never looks up an ``npm``
+    executable. Demanding one would prepend the managed dir and silently swap the
+    configured toolchain for a different npx, changing package resolution."""
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    _make_executable(curated, "node")
+    _make_executable(curated, "npx")
+    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    monkeypatch.setenv("PATH", str(curated))
+    assert mcp_client._stdio_env(None, "npx")["PATH"] == str(curated)
+    assert mcp_client._stdio_argv(
+        ["npx", "-y", "server"], {"PATH": str(curated)}
+    )[0].startswith(str(curated))
+
+
+def test_npx_only_path_is_still_held_to_the_npm_floor(
+    managed_node_install, monkeypatch, tmp_path
+):
+    """``npx -v`` reports the bundled npm's version, so an npx-only PATH is floor-checked
+    through npx rather than waved through."""
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    _make_executable(curated, "node")
+    _make_executable(curated, "npx")
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    probed = []
+
+    def _npm_floor(executable, path = None):
+        probed.append(str(executable))
+        return False  # the bundled npm is below the installers' floor
+
+    monkeypatch.setattr(node_runtime, "_npm_version_ok", _npm_floor)
+    expected = f"{managed_node_install}{os.pathsep}{curated}"
+    assert (
+        node_runtime.path_with_managed_node(str(curated), require_npm = False, require_npx = True)
+        == expected
+    )
+    assert any(os.path.basename(p).startswith("npx") for p in probed), probed
 
 
 def test_stdio_env_does_not_shadow_node_for_a_direct_node_server(
@@ -545,7 +593,8 @@ def test_runtime_requirements_match_each_launcher():
     assert mcp_client._runtime_requirements("node.exe") == (False, False)
     assert mcp_client._runtime_requirements("npm") == (True, False)
     assert mcp_client._runtime_requirements("npm.cmd") == (True, False)
-    assert mcp_client._runtime_requirements("npx") == (True, True)
+    assert mcp_client._runtime_requirements("npx") == (False, True)
+    assert mcp_client._runtime_requirements("npx.cmd") == (False, True)
     assert mcp_client._runtime_requirements(None) == (True, True)
 
 
@@ -687,4 +736,4 @@ def test_runtime_requirements_for_pathed_launchers():
     assert mcp_client._runtime_requirements("/opt/toolchain/npm") == (False, False)
     assert mcp_client._runtime_requirements("/opt/toolchain/npx") == (False, False)
     assert mcp_client._runtime_requirements("npm") == (True, False)
-    assert mcp_client._runtime_requirements("npx") == (True, True)
+    assert mcp_client._runtime_requirements("npx") == (False, True)
