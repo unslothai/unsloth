@@ -138,6 +138,13 @@ def tier_of(records: list[dict]) -> str:
     return "?"
 
 
+def corpus_of(records: list[dict]) -> str:
+    for r in records:
+        if r.get("row_type") == "run_meta":
+            return str(r.get("corpus_hash") or "?")
+    return "?"
+
+
 def read_rows(path: Path) -> list[dict]:
     return [
         json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
@@ -154,9 +161,11 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
     """
     pooled: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     tiers: set[str] = set()
+    corpora: set[str] = set()
     for path in paths:
         records = read_rows(path)
         tiers.add(tier_of(records))
+        corpora.add(corpus_of(records))
         for metric, rows in paired(records, shard = str(path.parent.name)).items():
             pooled[metric].extend(rows)
     if len(tiers) > 1:
@@ -164,6 +173,17 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
             f"refusing to pool payloads from different tiers: {sorted(tiers)}. A "
             f"fast-tier film and a standard-tier film are different measurements of "
             f"the same action, not repetitions of one."
+        )
+    # Same rule one level down. The tier fixes how long the film runs; the corpus hash fixes what
+    # is IN it, and it covers the generator's parameters as well as every unit's bytes. Corpus v2
+    # added math, so a v1 payload and a v2 payload measure two different documents under one name,
+    # and pooling them would read the corpus change as a performance change.
+    if len(corpora) > 1:
+        raise SystemExit(
+            f"refusing to pool payloads built on different corpora: "
+            f"{sorted(h[:16] for h in corpora)}. The corpus hash covers every generated "
+            f"byte and every generator parameter, so these are two different films. "
+            f"Re-run the older side."
         )
     return pooled, tiers
 
@@ -234,14 +254,23 @@ def render(
     title: str,
     floors: dict | None = None,
     floor_tier: str | None = None,
+    floor_corpus: str | None = None,
 ) -> int:
     stats = summarise(paths)
-    tier = tier_of(read_rows(paths[0]))
+    rows = read_rows(paths[0])
+    tier = tier_of(rows)
     if floor_tier is not None and floor_tier != tier:
         raise SystemExit(
             f"refusing to score a {tier}-tier payload against a {floor_tier}-tier "
             f"floor: the two run different films, so their spreads are not the same "
             f"quantity. Run a null control at --tier {tier}."
+        )
+    corpus = corpus_of(rows)
+    if floor_corpus is not None and floor_corpus != corpus:
+        raise SystemExit(
+            f"refusing to score a payload built on corpus {corpus[:16]} against a floor "
+            f"built on {floor_corpus[:16]}: a floor is the scatter of THIS film, and a "
+            f"different corpus is a different film. Re-run the null control."
         )
     if tier == "fast":
         print("\n  NOTE: fast tier. These are directions for iteration, not reportable numbers.")
@@ -294,14 +323,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    floors, floor_tier = None, None
+    floors, floor_tier, floor_corpus = None, None, None
     if args.floor:
         floor_paths = shards_of(args.floor)
         if not floor_paths:
             print(f"no null-control payload found for {args.floor}")
             return 2
         floors = summarise(floor_paths)
-        floor_tier = tier_of(read_rows(floor_paths[0]))
+        floor_rows = read_rows(floor_paths[0])
+        floor_tier = tier_of(floor_rows)
+        floor_corpus = corpus_of(floor_rows)
 
     seen = 0
     for arg in args.payloads:
@@ -310,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nno payload found for {arg}")
             continue
         seen += 1
-        render(paths, f"PAIRED PER-METRIC TABLE: {arg}", floors, floor_tier)
+        render(paths, f"PAIRED PER-METRIC TABLE: {arg}", floors, floor_tier, floor_corpus)
     if not seen:
         return 2
     if floors is None:

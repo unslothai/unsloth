@@ -42,11 +42,15 @@ def payload(
     name: str,
     pairs: list[tuple[float, float]],
     tier: str = "standard",
+    corpus: str | None = "corpus0000",
 ) -> Path:
     """One shard: `pairs[i]` is (base, treatment) for repetition i."""
     out = tmp_path / name
     out.mkdir(parents = True, exist_ok = True)
-    rows: list[dict] = [{"row_type": "run_meta", "tier": tier}]
+    meta: dict = {"row_type": "run_meta", "tier": tier}
+    if corpus is not None:
+        meta["corpus_hash"] = corpus
+    rows: list[dict] = [meta]
     for i, (base, treat) in enumerate(pairs):
         rows += cell("100K", "base", f"rep{i}", {"open_close_ms": base})
         rows += cell("100K", "treatment", f"rep{i}", {"open_close_ms": treat})
@@ -294,6 +298,41 @@ def test_scoring_against_a_floor_from_another_tier_is_refused(tmp_path):
     with pytest.raises(SystemExit) as exc:
         F.render([result], "t", floors = {}, floor_tier = "standard")
     assert "different films" in str(exc.value)
+
+
+def test_pooling_across_corpora_is_refused(tmp_path):
+    # The tier fixes how long the film runs; the corpus hash fixes what is IN it. Corpus v2 added
+    # math, so a v1 payload and a v2 payload measure two different documents under one name, and
+    # pooling them would read the corpus change as a performance change.
+    one = payload(tmp_path, "one", [(1000.0, 900.0)], corpus = "aaaa1111")
+    two = payload(tmp_path, "two", [(1000.0, 900.0)], corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.load([one, two])
+    assert "different corpora" in str(exc.value)
+
+
+def test_scoring_against_a_floor_from_another_corpus_is_refused(tmp_path):
+    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.render([result], "t", floors = {}, floor_corpus = "aaaa1111")
+    assert "different film" in str(exc.value)
+
+
+def test_the_same_corpus_on_both_sides_pools_normally(tmp_path):
+    a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)], corpus = "aaaa1111")
+    b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)], corpus = "aaaa1111")
+    pooled, _ = F.load([a, b])
+    assert len(pooled["message_menu.open_close_ms"]) == 2
+
+
+def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_it(tmp_path):
+    # An older payload predating the field reads "?", which is a different value, not a wildcard.
+    # Treating it as compatible is how a v1 run would end up scored against a v2 floor.
+    old = payload(tmp_path, "old", [(1000.0, 900.0)], corpus = None)
+    new = payload(tmp_path, "new", [(1000.0, 900.0)], corpus = "bbbb2222")
+    with pytest.raises(SystemExit) as exc:
+        F.load([old, new])
+    assert "different corpora" in str(exc.value)
 
 
 def test_an_action_that_did_not_run_contributes_no_timing(tmp_path):
