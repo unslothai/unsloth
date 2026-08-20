@@ -4,27 +4,17 @@ about: Bug / Issue
 title: "[Bug] Please fill in your issue title here."
 labels: bug, feature request
 assignees: ''
+type: Bug
 
 ---
 
----
-name: Unsloth Studio Bug
-about: Report a problem with the Unsloth Studio desktop app or web UI
-title: "[Studio Bug] "
-labels: bug
-assignees: ""
----
+# Bug report
 
-<!--
-Search existing issues before submitting. Please do not remove the questions.
-Never post API keys, Hugging Face tokens, passwords, cookies, private prompts,
-datasets, or other sensitive information.
--->
+> **Before submitting:** Search existing issues and update Unsloth if possible. Please answer every relevant question below. Never share API keys, Hugging Face tokens, passwords, cookies, private prompts, datasets, or other sensitive information.
 
 ## Environment
 
 **Where are you using Unsloth?**
-
 - [ ] Studio desktop application
 - [ ] Studio web UI (`unsloth studio`)
 - [ ] Unsloth CLI
@@ -34,18 +24,14 @@ datasets, or other sensitive information.
 **Operating system and version:**
 
 **GPU model(s) and accelerator backend:**
-<!-- Examples: NVIDIA CUDA, AMD ROCm, Intel XPU, Apple MLX, CPU. -->
+Examples: NVIDIA CUDA, AMD ROCm, Intel XPU, Apple MLX, or CPU.
 
 **Versions:**
-<!--
-For Studio, copy the Unsloth, package, desktop, and llama.cpp versions from
-Settings → About when available.
--->
+For Studio, copy the Unsloth, package, desktop, and llama.cpp versions from **Settings → About**, when available.
 
 ## What happened?
 
 **Steps to reproduce:**
-
 1.
 2.
 3.
@@ -55,70 +41,71 @@ Settings → About when available.
 **Actual behavior:**
 
 **Model and operation involved:**
-<!--
-Include the model ID or filename and whether this involved installation,
-startup, download, training, inference, GGUF, diffusion, or export.
--->
+Include the model ID or filename and the operation, such as installation, startup, download, training, inference, GGUF, diffusion, or export.
 
 ## Diagnostics and logs
 
-<!--
-Remove API keys, Hugging Face tokens, passwords, cookies, private prompts,
-local paths you do not want to disclose, and other sensitive information.
-Do not upload your entire ~/.unsloth/studio directory: it can contain auth
-state, databases, chats, datasets, and models.
--->
+> **Privacy reminder:** Remove tokens, passwords, cookies, private prompts, sensitive local paths, and other private information. Do not upload your entire `~/.unsloth/studio` directory—it can contain authentication state, databases, chats, datasets, and models.
 
-### Desktop application
+Only include the section relevant to your setup.
 
-Click **Copy Diagnostics** on the error, startup, or update screen and paste the
-result below:
+<details>
+<summary><strong>Studio desktop application</strong></summary>
+
+Click **Copy Diagnostics** on the error, startup, or update screen and paste the result below:
 
 ```text
-PASTE COPY DIAGNOSTICS HERE
+Paste diagnostics here
 ```
 
 If **Copy Diagnostics** is unavailable, attach the newest relevant files from:
-
 - Windows: `%USERPROFILE%\.unsloth\studio\`
 - Linux/macOS: `~/.unsloth/studio/`
 
 Useful files include:
-
 - `tauri.log` and, if relevant, `tauri.log.1`
 - `logs/install-*.log`, `logs/update-*.log`, `logs/repair-*.log`, or `logs/backend-*.log`
 - The newest `logs/server/server-*.log`
 
-### Studio web UI
+</details>
+
+<details>
+<summary><strong>Studio web UI</strong></summary>
 
 Attach the newest relevant items:
-
-- Linux/macOS/Windows: `~/.unsloth/studio/logs/server/server-*.log`
-  (use `%USERPROFILE%\.unsloth\studio\logs\server\` on Windows)
+- Server log: `~/.unsloth/studio/logs/server/server-*.log`
+  - Windows folder: `%USERPROFILE%\.unsloth\studio\logs\server\`
 - Linux/macOS shortcut launches only: `~/.local/share/unsloth/studio.log`
-- Terminal output if Studio was launched from a terminal
+- Terminal output, if Studio was launched from a terminal
 - Browser Console errors for browser-only problems
 
-If you configured `UNSLOTH_STUDIO_HOME` or `STUDIO_HOME`, look under
-`<CUSTOM_STUDIO_HOME>/logs/` instead.
+If you configured `UNSLOTH_STUDIO_HOME` or `STUDIO_HOME`, use `<CUSTOM_STUDIO_HOME>/logs/` instead.
 
-### Model-specific logs, if applicable
+</details>
 
+<details>
+<summary><strong>Model-specific logs</strong></summary>
+
+Include these only when applicable:
 - GGUF/llama.cpp: newest `~/.unsloth/studio/logs/llama-server/*.log`
 - Diffusion GGUF: newest `~/.unsloth/studio/logs/diffusion-server/*.log`
 - Training resume/checkpoint bug: relevant `trainer_state.json`
 
-### Python package or notebook, if applicable
+</details>
 
-Paste the complete traceback and minimal reproduction:
+<details>
+<summary><strong>Python package or notebook</strong></summary>
+
+Paste the complete traceback and a minimal reproduction:
 
 ```python
 # Remove all tokens and private data.
 ```
 
-Also include Python, Unsloth, unsloth_zoo, PyTorch, Transformers, and TRL
-versions, plus `nvidia-smi` output when applicable.
+Also include the Python, Unsloth, `unsloth_zoo`, PyTorch, Transformers, and TRL versions, plus `nvidia-smi` output when applicable.
+
+</details>
 
 ## Additional context
 
-<!-- Add screenshots or anything else that may help. -->
+Add screenshots or any other information that may help.⏎
