@@ -108,3 +108,63 @@ def test_mistral_native_ids_pass_through_unchanged():
     )
     assert call_id == "AbCdEfGhI"
     assert output_id == "AbCdEfGhI"
+
+
+# Anthropic states its charset in the 400 it raises:
+# "tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'". A colon is not in it,
+# and two stored shapes carry one into a replay: the duplicate-base fallback above, which
+# keeps the whole "call_0:<uuid>", and the frontend's "<sandbox>:<thread>:<approval>"
+# confirmation ids, which have no uuid suffix to strip. Both are under 64 chars, so the
+# length branch never touched them and they went out verbatim.
+ANTHROPIC_ID = re.compile(r"[a-zA-Z0-9_-]+")
+
+
+def test_anthropic_rejects_nothing_it_would_have_rejected():
+    call_id, output_id = _replayed_ids(
+        "sandboxsess:threadid:approvalid", provider_type = "anthropic"
+    )
+    assert call_id == output_id
+    assert ANTHROPIC_ID.fullmatch(call_id), call_id
+
+
+def test_anthropic_colliding_bases_stay_legal_and_distinct():
+    a = "call_0:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
+    b = "call_0:11111111-2222-4333-8444-555555555555"
+    out = _build_external_messages(
+        _history(a) + _history(b), supports_vision = True, provider_type = "anthropic"
+    )
+    call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
+    output_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
+    assert call_ids == output_ids
+    assert call_ids[0] != call_ids[1]
+    assert all(ANTHROPIC_ID.fullmatch(cid) for cid in call_ids), call_ids
+
+
+def test_anthropic_legal_ids_pass_through_unchanged():
+    # Only ids Anthropic would already have refused may change, so a chat that works
+    # today keeps byte-identical ids. toolu_ is its own issued shape.
+    for legal in ("toolu_01A1B2C3D4E5F6G7H8I9J0K1", "call_abc123", "a-b_c"):
+        call_id, output_id = _replayed_ids(legal, provider_type = "anthropic")
+        assert call_id == output_id == legal
+
+
+def test_anthropic_sanitizing_alone_would_collide():
+    # "pre:fix" and "pre_fix" both sanitize to "pre_fix". Pairing the wrong result with
+    # the wrong call is a silent wrong answer, so the sha256 tail over the unsanitized
+    # value is what keeps the map injective.
+    out = _build_external_messages(
+        _history("pre:fix") + _history("pre_fix"),
+        supports_vision = True,
+        provider_type = "anthropic",
+    )
+    call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
+    assert len(set(call_ids)) == 2, call_ids
+
+
+def test_replay_is_idempotent_for_every_provider():
+    # A normalized id replayed again on turn three must not drift, or the call and its
+    # result stop matching. Feed each provider's own output back through it.
+    for provider in ("openai", "anthropic", "mistral", "gemini", "deepseek", None):
+        once, _ = _replayed_ids(MINTED, provider_type = provider)
+        twice, paired = _replayed_ids(once, provider_type = provider)
+        assert twice == once == paired, (provider, once, twice)
