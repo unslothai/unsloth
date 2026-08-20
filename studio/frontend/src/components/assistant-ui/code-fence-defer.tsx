@@ -42,20 +42,52 @@ import { memo, type RefObject, useEffect, useState } from "react";
 // block is actually on screen and the reader never sees the swap.
 const REACH_MARGIN = "100% 0px";
 
-export const deferFenceHighlightEnabled = (): boolean => {
+/*
+ * Three states, not two.
+ *
+ *   "off"        ship default. Every fence is highlighted at mount, as today.
+ *   "defer"      the change: an unreached fence is a plain shell and is never tokenized.
+ *   "tokenize"   MEASUREMENT ONLY. An unreached fence is the same plain shell, but the
+ *                highlighter is still driven over its source and the result thrown away.
+ *
+ * `tokenize` exists to answer one question and is not a shipping mode. `defer` removes two
+ * things at once: the spans from the document, and the tokenizer work that produces them. An
+ * improvement seen under `defer` alone cannot say which of the two paid for it. `tokenize`
+ * holds the DOM at `defer`'s size and puts only the tokenizer work back, so the gap between
+ * `tokenize` and `defer` is the tokenizer's contribution and the gap between `off` and
+ * `tokenize` is the document's.
+ */
+export type FenceMode = "off" | "defer" | "tokenize";
+
+export const fenceMode = (): FenceMode => {
   const runtime = (globalThis as Record<string, unknown>)
     .__UNSLOTH_DEFER_FENCE_HIGHLIGHT__;
-  if (typeof runtime === "boolean") return runtime;
+  const raw =
+    typeof runtime === "string"
+      ? runtime
+      : runtime === true
+        ? "defer"
+        : runtime === false
+          ? "off"
+          : readBuildFlag();
+  return raw === "1" || raw === "defer"
+    ? "defer"
+    : raw === "tokenize"
+      ? "tokenize"
+      : "off";
+};
+
+const readBuildFlag = (): string => {
   try {
-    return import.meta.env.VITE_UNSLOTH_DEFER_FENCE_HIGHLIGHT === "1";
+    return import.meta.env.VITE_UNSLOTH_DEFER_FENCE_HIGHLIGHT ?? "";
   } catch {
-    return false;
+    return "";
   }
 };
 
 // Streamdown trims trailing newlines off a fence body before rendering it, so
 // the shell has to as well or the two differ by a blank line of height.
-const trimTrailingNewlines = (text: string): string => {
+export const trimTrailingNewlines = (text: string): string => {
   let end = text.length;
   while (end > 0 && text[end - 1] === "\n") end -= 1;
   return text.slice(0, end);

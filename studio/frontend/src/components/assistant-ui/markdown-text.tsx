@@ -42,7 +42,8 @@ import {
 } from "streamdown";
 import {
   DeferredFenceShell,
-  deferFenceHighlightEnabled,
+  fenceMode,
+  trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
@@ -434,9 +435,25 @@ function FenceBlock({
   source: string;
 }) {
   const host = useRef<HTMLDivElement | null>(null);
+  const mode = fenceMode();
   // A streaming fence is the one the reader is watching, so it never defers.
-  const immediate = !deferFenceHighlightEnabled() || Boolean(isIncomplete);
+  const immediate = mode === "off" || Boolean(isIncomplete);
   const reached = useFenceReached(host, immediate);
+
+  // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
+  // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
+  // on the source string, so the work happens exactly once and the discarded result is the same
+  // object the real path would have used.
+  const pretokenize = mode === "tokenize" && !reached;
+  useEffect(() => {
+    if (!pretokenize) return;
+    code.highlight({
+      code: trimTrailingNewlines(source),
+      language: (language ?? "text") as never,
+      themes: STREAMDOWN_SHIKI_THEME,
+    }, () => {});
+  }, [pretokenize, source, language]);
+
   return (
     <div className="relative isolate" ref={host}>
       {reached ? (
