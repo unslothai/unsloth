@@ -46,8 +46,8 @@ def test_symlinked_cache_on_a_second_drive_adds_its_bytes():
 
 
 def test_percent_blends_the_union():
-    root = (100 * GB, 40 * GB)      # 60% used
-    second = (100 * GB, 90 * GB)    # 10% used
+    root = (100 * GB, 40 * GB)  # 60% used
+    second = (100 * GB, 90 * GB)  # 10% used
     _t, _f, pct, _fs = aggregate([root, second])
     assert round(pct, 6) == 35.0  # 70 used of 200
 

@@ -1993,7 +1993,6 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             paths = [root]
             try:
                 from utils.hf_cache_settings import active_hf_hub_cache
-
                 cache = active_hf_hub_cache()
                 if cache:
                     # realpath resolves the symlink chain to the mount that
