@@ -459,22 +459,28 @@ class TestToolLoopsReserveTheirUpperBound:
         payload,
         budget = 2048,
         capacity = 4,
+        tool_loop = False,
     ):
         import routes.inference as routes_inference
         return routes_inference._openai_llama_admission_tokens(
             payload,
             budget = budget,
             capacity = capacity,
+            tool_loop = tool_loop,
         )
 
     def test_a_tool_request_reserves_the_whole_cache(self):
+        """Keyed on the resolved path, not on ``tools``: the loop also opens on
+        ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
+        none of which carry a client catalogue."""
         from types import SimpleNamespace
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
-            tools = [{"type": "function", "function": {"name": "lookup"}}],
+            enable_tools = True,
+            tools = None,
         )
-        assert self._cost(payload) == 2048
+        assert self._cost(payload, tool_loop = True) == 2048
 
     def test_two_tool_requests_do_not_run_together(self):
         from types import SimpleNamespace
@@ -483,9 +489,10 @@ class TestToolLoopsReserveTheirUpperBound:
             payload = SimpleNamespace(
                 messages = [{"role": "user", "content": "hi"}],
                 max_tokens = 16,
-                tools = [{"type": "function", "function": {"name": "lookup"}}],
+                enable_tools = True,
+                tools = None,
             )
-            cost = self._cost(payload)
+            cost = self._cost(payload, tool_loop = True)
             first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
             assert first.lease_nowait() is not None
             second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
@@ -510,5 +517,16 @@ class TestToolLoopsReserveTheirUpperBound:
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
             tools = [],
+        )
+        assert self._cost(payload) < 2048
+
+    def test_a_forwarded_catalogue_is_not_a_tool_loop(self):
+        """The passthrough and streaming /v1/responses run ONE generation per HTTP
+        call; the client sends the next round itself, with its own reservation."""
+        from types import SimpleNamespace
+        payload = SimpleNamespace(
+            messages = [{"role": "user", "content": "hi"}],
+            max_tokens = 16,
+            tools = [{"type": "function", "function": {"name": "lookup"}}],
         )
         assert self._cost(payload) < 2048
