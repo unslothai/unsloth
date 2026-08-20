@@ -438,6 +438,10 @@ class AnthropicStreamEmitter:
         # holds back a trailing partial tag until the next delta decides it.
         self._route_mode: str = "text"
         self._tag_buf: str = ""
+        # Leading whitespace of a thinking span, held until real reasoning
+        # arrives so a whitespace-only trace never opens a block. See
+        # _emit_thinking_delta.
+        self._thinking_ws_hold: str = ""
         # Genuine reasoning only ever arrives as a single LEADING <think>
         # block per synthesis turn (the generator folds reasoning_content in
         # as a prefix). Once that block closed, or once real answer text has
@@ -672,6 +676,20 @@ class AnthropicStreamEmitter:
         return events
 
     def _emit_thinking_delta(self, text: str) -> list[str]:
+        if not self._thinking_block_open:
+            # A trace that is only whitespace is not a thought: Qwen3-style
+            # templates render "<think>\n\n</think>" on every reply when thinking
+            # is off, and llama-server parses that into reasoning_content, so an
+            # empty thinking block would be attached to ordinary answers. The
+            # non-streaming reducer already drops those, so hold the leading
+            # whitespace run and only open the block once real reasoning arrives;
+            # the held run is then emitted with it so the trace stays verbatim.
+            held = self._thinking_ws_hold + text
+            if not held.strip():
+                self._thinking_ws_hold = held
+                return []
+            self._thinking_ws_hold = ""
+            text = held
         events: list[str] = []
         if self._text_block_open:
             events.append(self._close_block())
@@ -782,6 +800,7 @@ class AnthropicStreamEmitter:
         # turn may legitimately open with its own leading <think> block.
         self._prev_text = ""
         self._tag_buf = ""
+        self._thinking_ws_hold = ""
         self._route_mode = "text"
         self._think_consumed = False
         self._turn_has_text = False
