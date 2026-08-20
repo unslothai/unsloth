@@ -416,15 +416,51 @@ def wait_for_thread_ready(
 
 #: Scroll to the very top, then back. Used by `probe_thread_completeness`.
 TRAVERSE_JS = """
-async (toTop) => {
+async ([toTop, steps, stepPx]) => {
   const D = window.__sb.dom;
   const vp = D.viewport();
   if (!vp) return { ran: false, reason: "no thread viewport" };
-  vp.scrollTo({ top: toTop ? 0 : vp.scrollHeight, behavior: "instant" });
-  await window.__sbNextPaint();
-  return { ran: true, scroll_top: vp.scrollTop, scroll_height: vp.scrollHeight };
+  // STEPPED, AND WITH A WHEEL EVENT ON EVERY STEP. A single `scrollTo({top: 0})` from the bottom
+  // does not work on this app and the reason is already documented in scene/actions.py: Studio
+  // replaces assistant-ui's autoscroll with an intent-aware one that reads a jump as programmatic
+  // and snaps it straight back to the bottom. The first version of this probe did exactly that,
+  // and reported "scrolling to the top never mounted the first message" -- which reads as the arm
+  // losing its history and was the probe never leaving the bottom of the thread.
+  //
+  // The wheel event is what the app's own listeners key off, so it registers as user intent; the
+  // scrollTo is what actually moves the viewport in a headless run with no compositor input.
+  // Both, in steps, is the same gesture scene/actions.py SCROLL_JS uses for the same reason.
+  //
+  // A virtualizer also has to be given time to materialise rows as they come into range: each
+  // step awaits a paint, so a windowed list gets a frame per step to mount what the step exposed.
+  const target = toTop ? 0 : vp.scrollHeight;
+  const direction = toTop ? -1 : 1;
+  for (let i = 0; i < steps; i += 1) {
+    const next = toTop
+      ? Math.max(0, vp.scrollTop - stepPx)
+      : Math.min(vp.scrollHeight, vp.scrollTop + stepPx);
+    vp.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: direction * stepPx, bubbles: true, cancelable: true }),
+    );
+    vp.scrollTo({ top: next, behavior: "instant" });
+    await window.__sbNextPaint();
+    if (toTop && vp.scrollTop <= 0) break;
+    if (!toTop && vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 1) break;
+  }
+  return {
+    ran: true,
+    scroll_top: vp.scrollTop,
+    scroll_height: vp.scrollHeight,
+    reached_target: toTop ? vp.scrollTop <= 2 : true,
+    target,
+  };
 }
 """
+
+#: How the traversal is stepped. 400 steps of 2,000px covers 800,000px of thread, which clears the
+#: tallest rung this benchmark runs, and a step that lands at either end breaks out early.
+TRAVERSE_STEPS = 400
+TRAVERSE_STEP_PX = 2000
 
 
 def probe_thread_completeness(
@@ -451,7 +487,7 @@ def probe_thread_completeness(
     lose the cell.
     """
     out: dict = {"probe_attempted": True, "expected_messages": expected_messages}
-    top = page.evaluate(TRAVERSE_JS, True)
+    top = page.evaluate(TRAVERSE_JS, [True, TRAVERSE_STEPS, TRAVERSE_STEP_PX])
     if not isinstance(top, dict) or not top.get("ran"):
         return {
             "probe_attempted": False,
@@ -473,10 +509,25 @@ def probe_thread_completeness(
             "mounted_at_top": seen.get("mounted"),
             "setsize_at_top": seen.get("setsize"),
             "scroll_height_at_top": top.get("scroll_height"),
+            # DID THE GESTURE ACTUALLY REACH THE TOP? Without this, "the head never mounted" and
+            # "the viewport never left the bottom" are the same reading, and the second one is a
+            # defect in this probe being reported as data loss in the app.
+            "reached_top": top.get("reached_target"),
+            "scroll_top_after_gesture": top.get("scroll_top"),
         }
     )
     # And back to the end, so the cell resumes from the state the readiness gate described.
-    page.evaluate(TRAVERSE_JS, False)
+    page.evaluate(TRAVERSE_JS, [False, TRAVERSE_STEPS, TRAVERSE_STEP_PX])
+    if not found and not top.get("reached_target"):
+        # NOT A VERDICT ABOUT THE ARM. The gesture did not get there, so nothing was learned about
+        # what the arm holds, and saying otherwise would blame the app for the probe.
+        out["head_reached"] = None
+        out["reason"] = (
+            f"the scroll gesture never reached the top of the thread (stopped at "
+            f"{top.get('scroll_top')}px), so this says nothing about what the arm holds"
+        )
+        log(f"  completeness NOT MEASURED: {out['reason']}")
+        return out
     if not found:
         out["reason"] = (
             "scrolling to the top of the thread never mounted the first message, so the arm is "

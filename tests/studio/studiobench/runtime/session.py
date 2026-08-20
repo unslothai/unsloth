@@ -77,6 +77,14 @@ IDLE_CALIBRATION_MS = 1500
 EQUIVALENCE_RUNG = "10K"
 MOUNT_TIMEOUT_S = 180
 
+#: How much of the streaming phase the thread must stay pinned for `follows_the_stream` to pass.
+#: 0.95 rather than 1.0: the sampler ticks four times a second and a legitimate pin lands a tick
+#: or two late after a large append, which is a rendering delay and not a failure to follow. It is
+#: paired with `ever_fell_behind`, which is absolute -- a thread that drifted past the tolerance
+#: even once fails, however quickly it was yanked back, because being yanked back is itself the
+#: other half of the intent contract being broken.
+FOLLOW_PINNED_MIN = 0.95
+
 # How long the composer may take to accept the click that starts the film. Not a performance
 # budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
 # 90s because it has to be well clear of the worst real reading and still bounded, since a click
@@ -355,6 +363,16 @@ class CellRunner:
             f"content chars, cadence {self.cadence}, {expected_ms / 1000:.0f}s expected"
         )
 
+        # RESET THE FOLLOW SAMPLER FOR THIS CELL, immediately before the film starts.
+        #
+        # Necessary because the counters were just made to survive a navigation, by persisting to
+        # sessionStorage -- and a cell boundary IS a navigation, to the next seeded thread on the
+        # same origin. Without this, cell 2 reports cell 1's samples plus its own, cell 3 reports
+        # all three, and a single bad cell early in a session poisons every reading after it while
+        # each one still looks like a per-cell number.
+        with contextlib.suppress(Exception):
+            page.evaluate("() => window.__sb.follow && window.__sb.follow.reset()")
+
         before_metrics = cdp_metrics(s.ctx.cdp)
         self._composer_click_ms = None
         self._click_attribution_result = None
@@ -405,6 +423,65 @@ class CellRunner:
             drained = self._drain_stream(page, expected_ms)
             w.note("drained", drained)
         row["stream"] = drained
+        # DID THE THREAD FOLLOW THE STREAM? Read once, here, after the last window of the film has
+        # closed, so the reading is charged to nothing. See the sampler in scene/dom.js.
+        #
+        # This is a GATE, not a column, because of the specific way it fails. A thread that stops
+        # following lets the streamed message leave the viewport; a windowed list then unmounts
+        # it, and the streaming cost collapses because the renderer is no longer rendering the
+        # thing being measured. The frame rate that comes out is excellent and is about nothing.
+        # A number with a caveat attached is still a number people quote without the caveat, so
+        # the caveat is a gate row that a reader has to step over.
+        follow = self._read_follow(page)
+        row["follow"] = follow
+        pinned = follow.get("pinned_fraction")
+        rec.gate(
+            "follows_the_stream",
+            bool(
+                pinned is not None
+                and pinned >= FOLLOW_PINNED_MIN
+                and not follow.get("ever_fell_behind")
+            ),
+            follow,
+        )
+        # THE OTHER HALF OF THE CONTRACT, RECORDED AND DELIBERATELY NOT GATED.
+        #
+        # It was a gate for one run and it failed on BOTH arms at nearly the same rate (32 of 79
+        # on the base, 38 of 85 on the treatment), which is the signature of a reading about the
+        # film rather than about the build. The film re-pins legitimately and often: `send_turn`
+        # and `stop_generation` each START A RUN, and pinning to the bottom on run start is the
+        # intended behaviour, not a violation; `scroll_after` ends its own gesture near the bottom
+        # by design. Separating a legitimate re-pin from a yank requires knowing which pins the
+        # app was ASKED for, which this sampler does not know.
+        #
+        # So it is reported as a per-arm figure to be compared BETWEEN arms, where the confounds
+        # are common to both and cancel, and it carries the reason it is not a verdict. Gating on
+        # it would have failed the shipped build.
+        row["scroll_intent"] = {
+            "detached_samples": follow.get("detached_samples"),
+            "yanked_back_samples": follow.get("yanked_back_samples"),
+            "gated": False,
+            "reason": (
+                "the film starts runs of its own (send_turn, stop_generation) and each start pins "
+                "to the bottom by design, so this counts legitimate re-pins as well as yanks. "
+                "Meaningful only as a difference between two arms of one session"
+            ),
+        }
+        if pinned is None:
+            self.log(f"  follow: NOT MEASURED ({follow.get('pinned_fraction_reason')})")
+        else:
+            self.log(
+                f"  follow: pinned for {pinned:.0%} of the samples taken while attached and "
+                f"streaming, worst drift {follow.get('max_distance_while_running')}px"
+                + (", AND IT FELL BEHIND" if follow.get("ever_fell_behind") else "")
+            )
+        if follow.get("detached_samples"):
+            self.log(
+                f"  scroll intent: {follow.get('yanked_back_samples')} of "
+                f"{follow.get('detached_samples')} samples found the thread back at the bottom "
+                f"after the user scrolled away"
+                + (" -- THE USER WAS YANKED DOWN" if follow.get("yanked_after_scroll") else "")
+            )
         row["pacer"] = self.pacer.last_stats()
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
@@ -536,6 +613,17 @@ class CellRunner:
                 "A pass is equivalence of the WINDOW, not of the thread."
             )
         return out
+
+    def _read_follow(self, page) -> dict:
+        """Drain the page-side follow sampler. Never raises: a missing sampler is a reason, not
+        a lost cell, and it must not read as a thread that followed."""
+        try:
+            got = page.evaluate("() => window.__sb.follow && window.__sb.follow.read()")
+        except Exception as exc:  # noqa: BLE001
+            return {"follow_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(got, dict):
+            return {"follow_attempted": False, "reason": "the follow sampler is not installed"}
+        return got
 
     def _wait_for_thread(self, page, seeded: SeededThread) -> Readiness:
         """The readiness gate. See runtime/readiness.py for what it asserts and why.

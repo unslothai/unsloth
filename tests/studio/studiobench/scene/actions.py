@@ -205,7 +205,18 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
     steps = int(ctx.args.get("steps", 14))
     step_px = int(ctx.args.get("step_px", 420))
     settle_ms = int(ctx.args.get("settle_ms", 200))
-    raw = _ev(ctx, SCROLL_JS, [steps, step_px, settle_ms])
+    # THE FOLLOW SAMPLER IS SUSPENDED FOR THE DURATION OF THIS GESTURE. This action drags the
+    # viewport thousands of pixels off the bottom on purpose, twice, while the reply is still
+    # streaming. Samples taken during it record a thread that is not pinned, which is true and is
+    # the benchmark's own doing, and averaging them in makes `follows_the_stream` a reading about
+    # the film rather than about the app. See the sampler in scene/dom.js.
+    _ev(ctx, "() => window.__sb.follow && window.__sb.follow.suspend()")
+    try:
+        raw = _ev(ctx, SCROLL_JS, [steps, step_px, settle_ms])
+    finally:
+        # Resumed even when the gesture raised, or one failed scroll silences the sampler for the
+        # rest of the cell and the arm reports a follow fraction built from nothing.
+        _ev(ctx, "() => window.__sb.follow && window.__sb.follow.resume()")
     err = _failed(raw)
     if err:
         return not_run(err)
@@ -1248,6 +1259,41 @@ class Transition:
         return self.path == "navigate"
 
 
+#: Where on an element to look for a point a user could actually hit. Fractions of the box, centre
+#: first (so a normal control behaves exactly as before), then the lower band, which is what stays
+#: uncovered when a sticky header overlaps the top of a control.
+_HIT_POINTS = (
+    (0.5, 0.5), (0.5, 0.75), (0.25, 0.75), (0.75, 0.75),
+    (0.5, 0.9), (0.15, 0.5), (0.85, 0.5), (0.5, 0.25),
+)
+
+_HIT_TEST_JS = """
+([selector, fx, fy]) => {
+  const el = document.querySelector(selector);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return null;
+  const x = r.left + r.width * fx;
+  const y = r.top + r.height * fy;
+  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
+  const top = document.elementFromPoint(x, y);
+  // `contains`, not identity: the control's own icon or label is a child and hit-tests to itself,
+  // which is still a click that reaches the control.
+  if (!top || !(top === el || el.contains(top))) return null;
+  return { x, y };
+}
+"""
+
+
+def _reachable_point(ctx: ActionContext, selector: str) -> tuple[float, float] | None:
+    """A viewport point that hit-tests to `selector`, or None if the control is truly covered."""
+    for fx, fy in _HIT_POINTS:
+        got = _ev(ctx, _HIT_TEST_JS, [selector, fx, fy])
+        if isinstance(got, dict) and "x" in got:
+            return got["x"], got["y"]
+    return None
+
+
 def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transition:
     """Click the control a user would click; fall back to the URL it would produce, and SAY SO.
 
@@ -1270,7 +1316,29 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transitio
             return Transition(ok = True, path = "click")
         except Exception as exc:  # noqa: BLE001
             click_error = f"{selector} was not clickable: {type(exc).__name__}"
-            ctx.log(f"    {click_error}; navigating instead")
+        # THE CENTRE IS COVERED, BUT THE CONTROL IS NOT. Try the rest of it, the way a user would.
+        #
+        # Playwright clicks the centre of an element and refuses when something else hit-tests
+        # there. The sidebar's sticky group label overlaps the top of the New chat button, so the
+        # centre is taken and the click times out -- but most of the button is uncovered and a
+        # person clicks it every day without noticing. Giving up at the centre and calling the
+        # control unreachable is the harness being more fragile than a user, and it cost this
+        # action on every CI run.
+        #
+        # So the element's own box is hit-tested at a spread of points and the first one that
+        # resolves to the control is clicked with a real mouse event. If NO point on the control
+        # is reachable then it genuinely cannot be clicked, which is a finding worth reporting
+        # rather than a reason to substitute a page load.
+        point = _reachable_point(ctx, selector)
+        if point is not None:
+            try:
+                ctx.page.mouse.click(point[0], point[1])
+                return Transition(ok = True, path = "click", reason = "clicked off-centre")
+            except Exception as exc:  # noqa: BLE001
+                click_error += f"; the off-centre click also failed: {type(exc).__name__}"
+        else:
+            click_error += "; no point on the control hit-tests to it"
+        ctx.log(f"    {click_error}; navigating instead")
     try:
         ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
         return Transition(ok = True, path = "navigate", reason = click_error)

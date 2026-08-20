@@ -119,6 +119,27 @@
       return all.length ? all[all.length - 1] : null;
     },
 
+    // ── following the stream ─────────────────────────────────────
+    //
+    // The jump-to-bottom control, which thread.tsx renders permanently and hides with
+    // `invisible` when the intent-aware autoscroll reports itself at the bottom. Reading the
+    // app's own state rather than recomputing it means the harness and the app cannot disagree
+    // about whether the thread is pinned, which is the whole question here.
+    jumpToBottomButton() {
+      return q(".aui-thread-scroll-to-bottom");
+    },
+    appSaysAtBottom() {
+      const jump = D.jumpToBottomButton();
+      // `null`, NOT `false`, when the control is absent. A build that does not render it has not
+      // told us it is scrolled up; it has told us nothing, and the two must not be summed.
+      return jump ? jump.classList.contains("invisible") : null;
+    },
+    distanceFromBottom() {
+      const vp = D.viewport();
+      if (!vp) return null;
+      return Math.round(vp.scrollHeight - vp.clientHeight - vp.scrollTop);
+    },
+
     // ── reasoning ────────────────────────────────────────────────
     reasoningRoots() {
       return qa('[data-slot="reasoning-root"]');
@@ -254,6 +275,27 @@
         assistant_chars: D.assistantChars(),
         viewport_scroll_height: (D.viewport() || {}).scrollHeight || null,
         viewport_client_height: (D.viewport() || {}).clientHeight || null,
+        // ── DOES THE THREAD STILL FOLLOW THE STREAM? ──────────────
+        //
+        // Three readings, taken with every census, so the answer exists for every window of the
+        // film rather than being reconstructed afterwards from timings.
+        //
+        // This is here because of a specific way a virtualized arm can produce a beautiful and
+        // meaningless frame rate. If the thread stops following, the message being streamed
+        // drifts out of the viewport; a windowed list then UNMOUNTS it, and the streaming cost
+        // collapses to almost nothing. That is not a measurement of virtualization, it is a
+        // measurement of not rendering the thing being measured, and it flatters the arm in
+        // exactly the direction this campaign keeps having to catch. An fps number from such a
+        // run must never be readable without this beside it.
+        //
+        // `app_at_bottom` is the app's OWN state, not arithmetic: thread.tsx renders the
+        // scroll-to-bottom control permanently and hides it with `invisible` exactly when
+        // use-intent-aware-autoscroll considers itself at the bottom. `distance_from_bottom` is
+        // kept alongside because a virtualizer working from estimated row heights can sit a few
+        // pixels off while the app is quite correctly pinned.
+        viewport_scroll_top: (D.viewport() || {}).scrollTop || null,
+        distance_from_bottom: D.distanceFromBottom(),
+        app_at_bottom: D.appSaysAtBottom(),
       };
       out.census_cost_ms = Math.round((performance.now() - started) * 100) / 100;
       return out;
@@ -269,4 +311,173 @@
   };
 
   window.__sb.dom = D;
+
+  // ── the follow-the-stream sampler ──────────────────────────────────────────────────────────
+  //
+  // WHY THIS IS NOT DONE FROM THE DRIVER. The question is "while a reply was streaming, was the
+  // thread pinned to the bottom", and the stream runs during the gap windows -- which are
+  // measured windows whose whole purpose is to observe the page doing nothing but stream. A
+  // `page.evaluate` per sample would put a CDP round trip and a forced style read inside exactly
+  // those windows, four times a second, which is the same class of mistake as the census that
+  // used to run inside the action windows.
+  //
+  // So it samples in the page and is READ ONCE PER CELL, outside every window. A 250ms timer,
+  // four ticks a second: frames.js documents a 1ms timer as costing nothing at ~150 ticks a
+  // second, so this is two orders of magnitude below that. It does no layout it has not already
+  // caused -- `classList.contains` is free, and `distanceFromBottom` is only read when a run is
+  // in progress.
+  //
+  // WHAT IT IS FOR. A thread that stops following unmounts the message being streamed, and the
+  // streaming cost then collapses because the renderer is no longer rendering the thing under
+  // measurement. That produces a superb frame rate and means nothing. `pinned_fraction` is the
+  // reading that makes an fps number from a windowed arm readable at all.
+  // THE COUNTERS SURVIVE A NAVIGATION, via sessionStorage.
+  //
+  // They did not, and the symptom was a confident "NOT MEASURED" on the arm that behaved best.
+  // The film ends with `thread_reopen`, which falls back to `page.goto` when the New chat control
+  // is covered; a full document navigation destroys the JS context and re-runs the init scripts,
+  // so a sampler that lived only in memory came back at zero and the whole cell's streaming
+  // phase was reported as never sampled. The treatment arm, whose thread_reopen did not run at
+  // all, kept its counters and looked like the only arm with data.
+  //
+  // sessionStorage is per-origin and per-tab and outlives a same-origin navigation, which is
+  // exactly the lifetime wanted: one cell, one page, however many documents it passes through.
+  // Saved on pagehide rather than on every tick, so the cost is one serialisation per navigation
+  // rather than four a second.
+  const FOLLOW_KEY = "__sb_follow_v1";
+  const restore = () => {
+    try {
+      const raw = window.sessionStorage.getItem(FOLLOW_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const F = Object.assign({
+    samples: 0,
+    running_samples: 0,
+    running_pinned: 0,
+    running_unknown: 0,
+    max_distance_while_running: 0,
+    suspended_samples: 0,
+    detached_samples: 0,
+    yanked_back_samples: 0,
+    // Set once the thread is seen to fall behind while a run is in progress, and never cleared.
+    // A thread that drifts away and is later yanked back to the bottom has still failed the
+    // contract, and an end-of-cell reading would show it pinned.
+    ever_fell_behind: false,
+  }, restore() || {});
+  window.addEventListener("pagehide", () => {
+    try {
+      window.sessionStorage.setItem(FOLLOW_KEY, JSON.stringify(F));
+    } catch (e) {
+      // A full sessionStorage is not worth losing the page over; the reading degrades to
+      // "not measured", which is the honest outcome and is already handled.
+    }
+  });
+  const FOLLOW_TICK_MS = 250;
+  // How far from the bottom still counts as following. Generous on purpose: a virtualizer
+  // working from estimated row heights corrects them as real rows are measured, so it can sit a
+  // little short of the exact bottom while behaving perfectly. 64px is under two lines of text,
+  // so it cannot hide a thread that has stopped following.
+  const FOLLOW_TOLERANCE_PX = 64;
+  // TWO PHASES, BECAUSE THE INTENT CONTRACT HAS TWO HALVES.
+  //
+  // The contract (plans/proud-wiggling-falcon.md): autoscroll follows a stream, AND a user who
+  // has scrolled up is never yanked down. Those are opposite requirements about the same
+  // scrollTop, so one number cannot score both -- and the first version of this sampler tried,
+  // producing 47% to 50% pinned on BOTH arms with an identical 6,615px worst drift. That figure
+  // is the film: `scroll_during_generation` drags the viewport thousands of pixels up, twice,
+  // while the reply is still arriving, and the app then CORRECTLY declines to drag it back. The
+  // sampler was recording the app honouring the second half of the contract and scoring it as a
+  // failure of the first.
+  //
+  // ATTACHED (before the harness scrolls anywhere): the thread must stay pinned as content
+  // arrives. This is "does it follow", and it is what the gate scores.
+  // DETACHED (after the harness has deliberately scrolled): the thread must NOT come back to the
+  // bottom on its own. Any sample that finds it pinned again while still streaming is the app
+  // yanking the user down, which is the other half of the contract and is recorded as its own
+  // finding rather than mixed into the fraction.
+  let detached = false;
+  let suspended = 0;
+  setInterval(() => {
+    F.samples += 1;
+    if (suspended > 0) { F.suspended_samples += 1; return; }
+    if (!D.isRunning()) return;
+    const app = D.appSaysAtBottom();
+    const distance = D.distanceFromBottom();
+    if (detached) {
+      F.detached_samples += 1;
+      // Pinned again, without anybody asking. `distance` corroborates so a build that never
+      // renders the jump control is not scored on a null.
+      if (app === true || (app === null && distance !== null && distance <= FOLLOW_TOLERANCE_PX)) {
+        F.yanked_back_samples += 1;
+      }
+      return;
+    }
+    F.running_samples += 1;
+    if (distance !== null && distance > F.max_distance_while_running) {
+      F.max_distance_while_running = distance;
+    }
+    if (app === null) {
+      F.running_unknown += 1;
+      if (distance !== null && distance > FOLLOW_TOLERANCE_PX) F.ever_fell_behind = true;
+      return;
+    }
+    if (app) {
+      F.running_pinned += 1;
+    } else {
+      F.ever_fell_behind = true;
+    }
+  }, FOLLOW_TICK_MS);
+
+  window.__sb.follow = {
+    // Called by any action that moves the viewport on purpose. Nested-safe, because more than one
+    // scope may legitimately be open at once.
+    // Called by any action that moves the viewport on purpose. Nested-safe. The FIRST suspend
+    // also latches `detached`: from that moment the user has expressed an intent to be somewhere
+    // other than the bottom, and everything after it is scored against the second half of the
+    // contract instead of the first.
+    suspend() { suspended += 1; detached = true; },
+    resume() { suspended = Math.max(0, suspended - 1); },
+    read() {
+      const measured = F.running_samples - F.running_unknown;
+      return {
+        follow_attempted: true,
+        samples: F.samples,
+        running_samples: F.running_samples,
+        running_pinned: F.running_pinned,
+        running_unknown: F.running_unknown,
+        suspended_samples: F.suspended_samples,
+        detached_samples: F.detached_samples,
+        yanked_back_samples: F.yanked_back_samples,
+        // The second half of the intent contract, as its own verdict.
+        yanked_after_scroll: F.yanked_back_samples > 0,
+        // null, not 1.0, when nothing was ever sampled mid-run. A cell whose stream finished
+        // before the first tick has not demonstrated that the thread follows; it has
+        // demonstrated nothing, and 1.0 would read as a pass.
+        pinned_fraction: measured > 0 ? F.running_pinned / measured : null,
+        pinned_fraction_reason:
+          measured > 0 ? null : "no sample was taken while a reply was streaming",
+        max_distance_while_running: F.max_distance_while_running,
+        ever_fell_behind: F.ever_fell_behind,
+        tolerance_px: FOLLOW_TOLERANCE_PX,
+        tick_ms: FOLLOW_TICK_MS,
+      };
+    },
+    reset() {
+      try { window.sessionStorage.removeItem(FOLLOW_KEY); } catch (e) {}
+      F.samples = 0;
+      F.running_samples = 0;
+      F.running_pinned = 0;
+      F.running_unknown = 0;
+      F.max_distance_while_running = 0;
+      F.suspended_samples = 0;
+      F.detached_samples = 0;
+      F.yanked_back_samples = 0;
+      F.ever_fell_behind = false;
+      suspended = 0;
+      detached = false;
+    },
+  };
 })();
