@@ -124,6 +124,57 @@ def test_local_listing_and_load_path_skip_the_imatrix(tmp_path):
     )
 
 
+def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
+    # routes/models.py keeps its own copies of these predicates, and GET /models/local
+    # (the picker) reads them, so the hub-side exclusion alone left a standalone imatrix
+    # and an imatrix-only folder still offered there as loadable GGUF models.
+    from routes.models import _dir_model_format, _is_main_gguf_filename, _is_model_directory
+
+    assert _is_main_gguf_filename("Qwen3.8-27B-UD-Q4_K_XL.gguf")
+    assert not _is_main_gguf_filename("imatrix_unsloth.gguf")
+
+    (tmp_path / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
+    (tmp_path / "config.json").write_text("{}", encoding = "utf-8")
+    assert not _is_model_directory(tmp_path)
+    assert _dir_model_format(tmp_path) is None
+
+    (tmp_path / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
+    assert _is_model_directory(tmp_path)
+    assert _dir_model_format(tmp_path) == "gguf"
+
+
+def test_a_lora_repo_weight_named_like_an_imatrix_is_still_picked(monkeypatch):
+    # The exclusion belongs to the .gguf fallback: an imatrix is a GGUF holding no
+    # adapter. Applied to the whole listing it also dropped .safetensors candidates,
+    # and a repo whose only weight leads with the token raised FileNotFoundError.
+    from core.inference import diffusion_lora
+
+    files = ["imatrix-tuned.safetensors", "imatrix_unsloth.gguf", "README.md"]
+    monkeypatch.setitem(
+        sys.modules, "huggingface_hub",
+        SimpleNamespace(HfApi = lambda token = None: SimpleNamespace(
+            list_repo_files = lambda _repo: list(files)
+        )),
+    )
+
+    assert diffusion_lora._pick_repo_weight_file("owner/lora", None) == "imatrix-tuned.safetensors"
+
+
+def test_an_imatrix_is_never_the_lora_gguf_fallback(monkeypatch):
+    files = ["imatrix_unsloth.gguf", "pytorch_lora_weights.gguf"]
+    monkeypatch.setitem(
+        sys.modules, "huggingface_hub",
+        SimpleNamespace(HfApi = lambda token = None: SimpleNamespace(
+            list_repo_files = lambda _repo: list(files)
+        )),
+    )
+    from core.inference import diffusion_lora
+
+    assert diffusion_lora._pick_repo_weight_file("owner/lora", None) == (
+        "pytorch_lora_weights.gguf"
+    )
+
+
 def _state_sources(monkeypatch, manifests, markers, manifest_for):
     from hub.utils import download_manifest
 

@@ -145,6 +145,7 @@ try:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
     )
@@ -177,6 +178,7 @@ except ImportError:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
     )
@@ -248,9 +250,9 @@ def _is_model_directory(d: Path) -> bool:
     """Return ``True`` when *d* looks like a model directory.
 
     Requires both a config (``config.json``/``adapter_config.json``) and
-    weight files. Excludes ``mmproj`` GGUFs (vision projectors) and
-    non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid false
-    positives.
+    weight files. Excludes ``mmproj`` GGUFs (vision projectors), calibration
+    imatrices and non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid
+    false positives.
     """
 
     def _is_weight_file(f: Path) -> bool:
@@ -260,7 +262,7 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower()
+            return "mmproj" not in f.name.lower() and not _is_imatrix_path(f.name)
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -3760,9 +3762,15 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A primary GGUF weight, not an mmproj vision adapter or an MTP drafter. Same rule as
-    ``hub.services.models.common``; pass a snapshot-relative path to catch ``MTP/`` copies too."""
-    return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
+    """A primary GGUF weight, not an mmproj vision adapter, an MTP drafter or a calibration
+    imatrix. Same rule as ``hub.services.models.common``; pass a snapshot-relative path to
+    catch ``MTP/`` copies too."""
+    return (
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter(name)
+        and not _is_imatrix_path(name)
+    )
 
 
 def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
