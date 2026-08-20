@@ -986,6 +986,114 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
         codex_client.forget_subscription_models(created.id)
 
 
+def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
+    """A save is the row and the proof together, so half of it must not survive.
+
+    provider_oauth_write_guard is a 30s flock and _token_request's httpx timeout is
+    per-phase, not a total budget, so a refresh holding the guard across a stalled token
+    request makes remember_catalog_account raise after update_provider has already
+    committed. Without a rollback the row keeps models nothing on disk says were ever
+    validated, and that outlives the process: with the plan catalog gone after a restart
+    and upstream unreachable, saved_models_proven_for answers False, so chat falls back to
+    the seed and even an ordinary rename is refused.
+    """
+    import json
+
+    from core.inference import openai_codex_auth as codex_auth
+    from core.inference import openai_codex_client as codex_client
+
+    listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
+    created = asyncio.run(
+        providers_route.create_provider_config(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT subscription",
+                models = ["gpt-5.4"],
+            ),
+            credential = ("alice", None),
+            via_api_key = False,
+        )
+    )
+    provider_id = created.id
+
+    credential_secrets.get_or_create_credential_encryption_key()
+    credential_secrets.upsert_secret(
+        credential_secrets.OPENAI_CODEX_OAUTH_KIND,
+        provider_id,
+        json.dumps(
+            {
+                "access_token": "at",
+                "refresh_token": "rt",
+                "expires_at": int(time.time()) + 3600,
+                "account_id": "acct-1",
+            }
+        ),
+    )
+    codex_client._offered_models[provider_id] = {
+        "gpt-5.4": {"id": "gpt-5.4", "listed": True},
+        listed: {"id": listed, "listed": True},
+    }
+    codex_client._catalog_accounts[provider_id] = "acct-1"
+
+    async def _guard_busy(_provider_id, _account_id):
+        raise codex_auth.CodexAuthError("ChatGPT credential update is busy. Please retry.")
+
+    monkeypatch.setattr(
+        providers_route.openai_codex_auth, "remember_catalog_account", _guard_busy
+    )
+
+    try:
+        with pytest.raises(codex_auth.CodexAuthError):
+            asyncio.run(
+                providers_route.update_provider_config(
+                    provider_id,
+                    ProviderUpdate(models = ["gpt-5.4", listed]),
+                    credential = ("alice", None),
+                    via_api_key = False,
+                )
+            )
+
+        # The reported failure and the stored row agree: neither half landed.
+        row = providers_db.get_provider(provider_id)
+        assert row["models"] == ["gpt-5.4"]
+        bundle = codex_auth.load_oauth_bundle(provider_id)
+        assert bundle is not None and bundle.get("catalog_account_id") is None
+
+        # Restart: the catalog is per process, the row and the bundle are not.
+        codex_client.forget_subscription_models(provider_id)
+        assert not codex_client.subscription_catalog_known(provider_id)
+
+        # The row carries no slug the seed cannot vouch for, so an unrelated edit still
+        # saves with upstream unreachable. Left torn, this is a 400.
+        async def _unreachable(_provider_id):
+            return set()
+
+        monkeypatch.setattr(
+            providers_route.openai_codex_client, "ensure_subscription_models", _unreachable
+        )
+        recorded = []
+
+        async def _remember(pid, account_id):
+            recorded.append((pid, account_id))
+
+        monkeypatch.setattr(
+            providers_route.openai_codex_auth, "remember_catalog_account", _remember
+        )
+        renamed = asyncio.run(
+            providers_route.update_provider_config(
+                provider_id,
+                ProviderUpdate(display_name = "Renamed", models = ["gpt-5.4"]),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+        assert renamed.display_name == "Renamed"
+        assert renamed.models == ["gpt-5.4"]
+        assert recorded == [(provider_id, "acct-1")]
+    finally:
+        codex_client.forget_subscription_models(provider_id)
+
+
 def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
     """A rebind between validating and recording must not stamp the new account.
 

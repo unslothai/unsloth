@@ -383,6 +383,28 @@ async def update_provider_config(
         if not replacement_api_key:
             raise HTTPException(status_code = 400, detail = "API key cannot be empty")
 
+    def _restore_metadata() -> None:
+        """Put the row back the way it was found.
+
+        update_provider commits and closes its own connection, so the row is already
+        durable by the time any later step fails; a compensating write is the only undo
+        there is.
+        """
+        if not metadata_requested:
+            return
+        try:
+            providers_db.update_provider(
+                id = provider_id,
+                display_name = existing["display_name"],
+                base_url = existing["base_url"],
+                is_enabled = bool(existing["is_enabled"]),
+                models = existing.get("models") or [],
+                available_models = existing.get("available_models") or [],
+                max_output_tokens = existing.get("max_output_tokens"),
+            )
+        except Exception:
+            logger.exception("provider.update_metadata_rollback_failed", provider_id = provider_id)
+
     with current_credential_write(credential):
         if metadata_requested:
             metadata_updates = dict(
@@ -402,21 +424,7 @@ async def update_provider_config(
             elif payload.clear_api_key:
                 credential_secrets.delete_provider_api_key(provider_id)
         except Exception:
-            if metadata_requested:
-                try:
-                    providers_db.update_provider(
-                        id = provider_id,
-                        display_name = existing["display_name"],
-                        base_url = existing["base_url"],
-                        is_enabled = bool(existing["is_enabled"]),
-                        models = existing.get("models") or [],
-                        available_models = existing.get("available_models") or [],
-                        max_output_tokens = existing.get("max_output_tokens"),
-                    )
-                except Exception:
-                    logger.exception(
-                        "provider.update_metadata_rollback_failed", provider_id = provider_id
-                    )
+            _restore_metadata()
             raise
 
     if not metadata_requested and not payload.encrypted_api_key and not payload.clear_api_key:
@@ -430,8 +438,18 @@ async def update_provider_config(
         # The account the selection was judged against, not whatever owns the connection
         # by now. remember_catalog_account re-reads under the guard and declines to write
         # when the bundle has moved on, so a rebind in between records nothing.
+        # Written after the row, never before: a proof recorded ahead of a commit that
+        # then failed would license models this connection never saved. Recording it is
+        # part of the save, so a failure here undoes the row too. Leaving the new models
+        # behind without the proof is the state saved_models_proven_for exists to catch,
+        # and it outlives the process: after a restart, with the plan catalog unreadable,
+        # the row's own slugs stop authorizing chat and the next save is refused as well.
         if validated_account:
-            await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
+            try:
+                await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
+            except Exception:
+                _restore_metadata()
+                raise
     return _provider_response(row)
 
 
