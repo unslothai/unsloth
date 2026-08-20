@@ -1689,3 +1689,51 @@ def test_a_healthy_probe_is_not_trusted_on_the_next_request(monkeypatch):
     assert (
         conversation_archive.reachable() is False
     ), "a stale yes let the next request reset into an archive that cannot be written"
+
+
+def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch):
+    """A checkpoint is a state of the thread NOW, not a mark it carries for ever.
+
+    Reload a checkpointed thread with a bigger window and the whole branch fits again, so
+    the fit stops replaying the boundary and records no checkpoint. Scanning back to an
+    older reset then forced the Studio tool loop open on every later turn, overriding
+    enable_tools = false, and with it the n > 1 and non-streaming guards, to repair a
+    compaction that no longer exists.
+    """
+    import sys
+    import types
+
+    from routes import inference as inference_routes
+
+    def _row(content, checkpointed):
+        truncation = (
+            {"fits": True, "checkpoint": True, "dropped_messages": 12, "boundary_messages": 12}
+            if checkpointed
+            else None
+        )
+        row = {"role": "assistant", "content": content}
+        if truncation:
+            row["metadata"] = {"custom": {"contextTruncation": truncation}}
+        return row
+
+    def _install(rows):
+        module = types.SimpleNamespace(list_chat_messages = lambda thread_id: rows)
+        package = types.ModuleType("storage")
+        package.studio_db = module
+        monkeypatch.setitem(sys.modules, "storage", package)
+        monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+    branch = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "the compacted reply"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a later reply that fit"},
+    ]
+
+    # Stored oldest first, as `list_chat_messages` returns them: the epoch is over.
+    _install([_row("the compacted reply", True), _row("a later reply that fit", False)])
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+    # And a thread still inside its epoch keeps saying so, since every fit records it.
+    _install([_row("the compacted reply", True), _row("a later reply that fit", True)])
+    assert inference_routes._thread_has_checkpoint("t1", branch) is True

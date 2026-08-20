@@ -3448,9 +3448,10 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     non-streaming ask/auto.
 
     Read from the assistant turn's own `contextTruncation`, the same metadata the sticky
-    boundary uses, so no new state is stored and it survives a restart. A thread that has
-    checkpointed once keeps saying so: the epoch does not stop existing because this turn
-    happens to fit.
+    boundary uses, so no new state is stored and it survives a restart. The NEWEST turn
+    answers: while an epoch is in force every fit records it on the turn it produced, so
+    a thread mid-epoch still says yes, and a thread whose window grew until the whole
+    branch fits again says no rather than forcing the loop open for ever.
     """
     if not thread_id:
         return False
@@ -3522,14 +3523,13 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
             )
             return bool(isinstance(truncation, dict) and truncation.get("checkpoint"))
 
-        if all(_checkpointed(message) for message in twins):
-            return True
-        # Older rows behind the newest turn still answer on their own: only the
-        # indistinguishable ones are held to the stricter rule.
-        twin_ids = {id(message) for message in twins}
-        for message in rows:
-            if id(message) not in twin_ids and _checkpointed(message):
-                return True
+        # The NEWEST distinguishable state answers, and nothing older. While an epoch is
+        # in force every fit records it on the turn it produced, so the newest row says
+        # so too; once the window grows and the whole branch fits again the fit records
+        # nothing, and scanning back to an older reset then forced the tool loop on for
+        # the rest of the thread's life -- overriding enable_tools = false, and the n > 1
+        # and non-streaming guards with it, to repair a compaction that no longer exists.
+        return all(_checkpointed(message) for message in twins)
     except Exception:
         return False
     return False
