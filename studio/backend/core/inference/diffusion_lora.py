@@ -281,8 +281,7 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
         for f in drop_shadowed_appledouble_names(
             list(HfApi(token = hf_token).list_repo_files(repo_id))
         )
-        # A repo that ships a calibration imatrix beside the adapter offers no LoRA
-        # weights in it, and it would be the fallback pick below.
+        # An imatrix is not adapter weights, and it would be the fallback pick below.
         if not is_imatrix_filename(f)
     ]
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]

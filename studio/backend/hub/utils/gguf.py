@@ -89,31 +89,23 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-# Calibration importance matrices published beside the weights. Unsloth ships
-# imatrix_unsloth.dat and imatrix_unsloth.gguf_file, whose suffixes keep them out
-# of a GGUF listing, but some repos publish the same file as imatrix_unsloth.gguf
-# (unsloth/Qwen3.8-27B-GGUF) and it then reaches every GGUF path as if it were
-# weights: the variant menu grew a ~13 MB row labelled "GGUF", since the quant
-# extractor finds no token in the name.
-#
-# An imatrix holds per-tensor activation statistics, not a model. llama-quantize
-# reads one at QUANTIZE time and llama-server never opens it, so it is neither a
-# selectable variant nor a companion to fetch -- unlike mmproj and the MTP
-# drafter, it is excluded outright.
-#
 # Anchored at an END of the stem, never a substring, for the reason
-# is_mtp_drafter_path documents: a name that merely contains the word (a
-# hypothetical ``Qwen3-Imatrix-Tuned-Q4_K_M.gguf``) is a real model, while every
-# published imatrix leads or closes with it -- ``imatrix.gguf``,
-# ``imatrix_unsloth.gguf``, ``<model>-imatrix.gguf``, ``<model>.imatrix``.
+# is_mtp_drafter_path documents: a name that merely contains the word
+# (``Qwen3-Imatrix-Tuned-Q4_K_M.gguf``) is a real model, while every published
+# imatrix leads or closes with it.
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """True for a calibration imatrix, in any of the suffixes repos publish it under.
+    """True for a calibration imatrix: ``imatrix.gguf``, ``imatrix_unsloth.gguf``,
+    ``imatrix_unsloth.dat``, ``<model>-imatrix.gguf``, ``<model>.imatrix``.
 
-    Must be excluded everywhere mmproj is, or the imatrix is advertised as a quant,
-    downloaded as weights and, being a valid GGUF container, handed to the loader.
+    It holds activation statistics for llama-quantize, not a model, and llama-server
+    never opens one, so it is neither a selectable variant nor a companion to fetch:
+    unlike mmproj and the MTP drafter it is excluded outright, everywhere they are.
+    Most repos spell it .dat or .gguf_file, which no GGUF listing sees; the ones that
+    publish imatrix_unsloth.gguf (unsloth/Qwen3.8-27B-GGUF) put a valid GGUF container
+    carrying no model in front of the variant menu, download and loader.
 
     CANONICAL COPY. Two mirrors must change in lockstep:
     utils/models/model_config.py ``_is_imatrix_path`` (utils cannot import hub) and
@@ -890,9 +882,8 @@ def list_partial_gguf_variants_from_state(
                 if not is_gguf_filename(expected.path):
                     continue
                 if is_imatrix_filename(expected.path):
-                    # A manifest written before imatrix filtering can still name one;
-                    # it is neither the variant's weights nor a companion fetched with
-                    # them, so it counts towards neither size.
+                    # A manifest predating this filtering can still name one; it is
+                    # neither weights nor a companion, so it counts towards neither size.
                     continue
                 if is_mtp_drafter_path(expected.path):
                     # Downloaded with every variant (like mmproj) but not a

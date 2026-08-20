@@ -1482,13 +1482,11 @@ def _is_imatrix_path(path: str) -> bool:
     """True for a calibration imatrix published beside the weights
     (``imatrix_unsloth.gguf``, ``imatrix.gguf``, ``<model>.imatrix``).
 
-    It holds activation statistics for llama-quantize, not a model, so it must be
-    excluded everywhere mmproj is: a GGUF-suffixed one is a valid container that
-    a size-ranked scan would otherwise hand to llama-server.
+    Activation statistics for llama-quantize, not a model, so it is excluded
+    everywhere mmproj is: a GGUF-suffixed one is a valid container that a
+    size-ranked scan would otherwise hand to llama-server.
 
-    Mirrors hub.utils.gguf.is_imatrix_filename. Anchored at an end of the stem,
-    never a substring, so a real model whose name contains the word stays
-    selectable.
+    Mirrors hub.utils.gguf.is_imatrix_filename.
     """
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name

@@ -518,8 +518,8 @@ def _local_main_gguf_blobs_by_quant(
                 if not hashes:
                     continue
                 if _is_imatrix_filename(normalized):
-                    # Not a companion either: nothing plans or fetches an imatrix, so a
-                    # stale copy on disk must not vouch for a variant's blobs.
+                    # Not a companion either: nothing fetches an imatrix, so a stale copy
+                    # on disk must not vouch for a variant's blobs.
                     continue
                 if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
                     companion_blobs.setdefault(normalized, set()).update(

@@ -245,8 +245,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         # Companions are folded into every plan below; keep them out of the
         # quant grouping so a drafter never lands in a variant's main files
         # (the root mtp-*.gguf carries a quant label, e.g. Q8_0).
-        # An imatrix leaves entirely rather than joining companions_expected: it is
-        # calibration data for llama-quantize, so no variant needs it downloaded.
+        # An imatrix leaves entirely rather than joining companions_expected: no
+        # variant needs llama-quantize's calibration data downloaded.
         if is_mmproj_filename(name) or is_mtp_drafter_path(name) or is_imatrix_filename(name):
             continue
         quant = gguf_variant_key(name).lower()

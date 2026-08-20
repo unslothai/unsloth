@@ -298,8 +298,8 @@ def _delete_gguf_variant_from_repos(
                 # Companions: mmproj and the drafters Studio downloads (MTP with
                 # every variant, DSpark on opt-in). No main GGUF is left, so they
                 # cannot be launched; reclaim them with the last variant. An imatrix
-                # joins them: it is no longer offered as a variant, so a copy an older
-                # build fetched as one would otherwise be unreachable from the UI.
+                # joins them: no longer offered as a variant, so a copy an older build
+                # fetched as one would be unreachable from the UI.
                 lambda name: _is_gguf_filename(name)
                 and (
                     _is_mmproj_filename(name)

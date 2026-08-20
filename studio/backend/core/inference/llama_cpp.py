@@ -1962,8 +1962,8 @@ _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORE
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate drafter (repo-root
-    ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
+    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
+    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
     drafters for DeepSeek V4 Flash). Mirrors hub.utils.gguf so variant resolution
     never picks a companion as the main model -- a Gemma ``Q8_0`` request must not
     resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight.
@@ -1975,8 +1975,8 @@ def _is_companion_gguf_path(path: str) -> bool:
         return False
     if "mmproj" in p:
         return True
-    # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix_unsloth.gguf is a valid
-    # GGUF container holding calibration statistics, so only the name rules it out.
+    # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
+    # holding calibration statistics, so only the name rules it out.
     if _IMATRIX_TOKEN_RE.search(Path(p).stem):
         return True
     return _drafter_path_kind(path) is not None
