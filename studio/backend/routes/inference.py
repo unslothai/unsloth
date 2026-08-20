@@ -1302,7 +1302,12 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     # SHARED, so the heuristic below would read it as an overflow and set the
     # client compacting a conversation that was never too long.
     if isinstance(exc, LlamaStreamError):
-        return True if exc.context_oversize else False
+        # Only an oversize refusal is an overflow. Everything else stays None, which
+        # keeps it a 500: KV starvation is server capacity exhaustion and an in-band
+        # "tokenizer failed" carries no 4xx evidence at all, so returning False would
+        # emit a 400 and tell the client its own request was at fault, discouraging the
+        # retry that is actually the right response.
+        return True if exc.context_oversize else None
     msg = str(exc)
     msg_l = msg.lower()
     if "n_ctx" in msg_l or (

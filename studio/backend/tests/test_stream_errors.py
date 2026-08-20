@@ -132,13 +132,18 @@ class TestSurvivesTheRouteLayer:
         assert "An internal error occurred" not in described
 
     def test_starvation_is_not_classified_as_a_context_overflow(self):
-        # True here would set the client compacting. The message says "context
-        # window", so only the typed flag can tell these apart.
+        # True would set the client compacting. False would emit a 400 and tell the
+        # client its own request was at fault, discouraging the retry that is the right
+        # response to server capacity exhaustion. None keeps it a 500.
         routes = self._routes()
         assert (
             routes._classify_llama_generation_error(self._error("Context size has been exceeded."))
-            is False
+            is None
         )
+
+    def test_an_unrelated_failure_is_not_downgraded_to_a_client_error(self):
+        routes = self._routes()
+        assert routes._classify_llama_generation_error(self._error("tokenizer failed")) is None
 
     def test_an_oversize_refusal_keeps_the_established_wording_and_triggers_compaction(self):
         routes = self._routes()
@@ -154,6 +159,20 @@ class TestSurvivesTheRouteLayer:
     def test_an_unrelated_error_survives_verbatim(self):
         routes = self._routes()
         assert routes._friendly_error(self._error("tokenizer failed")) == "tokenizer failed"
+
+    def test_deep_research_shows_the_friendly_text_not_the_server_text(self):
+        """`_safe_error` reads str(exc), which is deliberately the server's own wording.
+        Reading it here showed the raw "Context size has been exceeded." on the very
+        path this exception was introduced to explain."""
+        from core.research_runs import _safe_error
+
+        assert _safe_error(self._error("Context size has been exceeded.")) == KV_STARVATION_MESSAGE
+        oversize = _safe_error(self._error(
+            "request (2358 tokens) exceeds the available context size (2048 tokens)"
+        ))
+        assert "2358" in oversize and "Context Length in Model settings" in oversize
+        # A plain exception still reads from str().
+        assert _safe_error(RuntimeError("plain")) == "plain"
 
     def test_str_of_the_error_stays_the_server_text(self):
         # What lets the existing token-count regex in _friendly_error still match.

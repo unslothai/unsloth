@@ -232,7 +232,14 @@ def _safe_error(exc: BaseException) -> str:
         return "Local model request timed out"
     if isinstance(exc, httpx.HTTPStatusError):
         return f"Local model request failed with HTTP {exc.response.status_code}"
-    text = str(exc).replace("\n", " ").strip()
+    # str() on a stream error is deliberately the server's own text, so that the
+    # token-count regex in routes/inference.py still matches it. Deep Research has no
+    # such regex, so reading str() here showed the raw "Context size has been exceeded."
+    # and dropped the Model settings hint from an oversize refusal: the very case this
+    # exception was introduced to explain.
+    friendly = getattr(exc, "friendly", None)
+    text = friendly if isinstance(friendly, str) and friendly else str(exc)
+    text = text.replace("\n", " ").strip()
     return (text or exc.__class__.__name__)[:_MAX_ERROR_CHARS]
 
 
