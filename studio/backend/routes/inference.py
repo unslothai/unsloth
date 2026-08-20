@@ -5049,6 +5049,10 @@ def _active_gguf_intent(
     )
 
 
+def _public_model_identifier(requested: str, resolved: str) -> str:
+    return requested if is_ollama_manifest_ref(requested) else resolved
+
+
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
 ) -> tuple[str, str, bool]:
@@ -7652,9 +7656,7 @@ def _resolve_gguf_load_intent(
 ) -> GgufLoadIntent:
     """Resolve source, companions, settings, and placement into one load value."""
 
-    public_model_identifier = (
-        request.model_path if is_ollama_manifest_ref(request.model_path) else config.identifier
-    )
+    public_model_identifier = _public_model_identifier(request.model_path, config.identifier)
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
@@ -8721,11 +8723,8 @@ async def _load_model_impl(
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
 
-        # Materialization is only the load artifact. Keep the inventory ref as
-        # the backend/client identity so status, dedupe, and unload round-trip it.
-        public_model_identifier = (
-            request.model_path if is_ollama_manifest_ref(request.model_path) else model_identifier
-        )
+        # Keep the inventory ref public while loading the materialized artifact.
+        public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -9663,7 +9662,10 @@ async def validate_model(
         # fourth argument unchanged and a --ctx-size the load is about to use would
         # be missing from the estimate that approves it.
         effective_extra_args = _resolve_inherited_extra_args(
-            request, config, model_identifier, getattr(request, "llama_extra_args", None)
+            request,
+            config,
+            _public_model_identifier(request.model_path, model_identifier),
+            getattr(request, "llama_extra_args", None),
         )
 
         # The caller's list is judged BEFORE anything rewrites it, exactly as /load

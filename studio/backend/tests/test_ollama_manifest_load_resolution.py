@@ -86,6 +86,19 @@ def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     assert native_grant_backed is False
 
 
+def test_public_identity_keeps_the_manifest_ref():
+    from inspect import getsource
+
+    from routes.inference import _public_model_identifier, validate_model
+
+    ref = "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fllama3"
+    assert _public_model_identifier(ref, "/tmp/.studio_links/llama3.gguf") == ref
+    assert _public_model_identifier("owner/model", "owner/model") == "owner/model"
+    assert "_public_model_identifier(request.model_path, model_identifier)" in getsource(
+        validate_model
+    )
+
+
 def test_retagged_manifest_replaces_one_hardlink_and_invalidates_loaded_identity(
     tmp_path, monkeypatch
 ):
@@ -139,6 +152,55 @@ def test_retagged_manifest_replaces_one_hardlink_and_invalidates_loaded_identity
     )
     replacement_intent = GgufLoadIntent(model_identifier = ref, gguf_path = second_path)
     assert not LlamaCppBackend.matches_load_source(resident, replacement_intent)
+
+
+def test_missing_projector_retag_is_rejected_before_main_link_changes(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-missing-projector"
+    tag_file = _write_ollama_store(
+        root,
+        extra_layers = ("application/vnd.ollama.image.projector",),
+    )
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    model_path = ollama.materialize_ollama_model_ref(ref)
+    projector_path = next(Path(model_path).parent.glob("*-mmproj.gguf"))
+
+    replacement_digest = "b" * 64
+    (root / "blobs" / f"sha256-{replacement_digest}").write_bytes(b"GGUF-replacement")
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["layers"][0]["digest"] = f"sha256:{replacement_digest}"
+    manifest["layers"][1]["digest"] = f"sha256:{'c' * 64}"
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    with pytest.raises(ValueError, match = "projector"):
+        ollama.materialize_ollama_model_ref(ref)
+
+    assert Path(model_path).read_bytes() == b"GGUF-not-really"
+    assert projector_path.read_bytes() == b"{}"
+
+
+def test_projector_removal_deletes_the_stale_link(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-projector-removed"
+    tag_file = _write_ollama_store(
+        root,
+        extra_layers = ("application/vnd.ollama.image.projector",),
+    )
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    model_path = ollama.materialize_ollama_model_ref(ref)
+    projector_path = next(Path(model_path).parent.glob("*-mmproj.gguf"))
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["layers"] = manifest["layers"][:1]
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    assert ollama.materialize_ollama_model_ref(ref) == model_path
+    assert not projector_path.exists()
 
 
 def test_projector_only_retag_invalidates_loaded_identity(tmp_path, monkeypatch):

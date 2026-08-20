@@ -297,6 +297,7 @@ def _ollama_model_info_from_manifest(
         return None
 
     model_blob: Optional[Path] = None
+    projector_blob: Optional[Path] = None
     gguf_link_path: Optional[str] = None
     stem_hash = hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
     model_link_dir = links_root / stem_hash if links_root is not None else None
@@ -308,28 +309,43 @@ def _ollama_model_info_from_manifest(
             continue
         media = layer.get("mediaType", "")
         digest = layer.get("digest", "")
-        if not digest:
+        if media not in {
+            "application/vnd.ollama.image.model",
+            "application/vnd.ollama.image.projector",
+        }:
             continue
-
+        candidate = _ollama_blob_path(blobs_dir, digest) if digest else None
+        if candidate is None or not _safe_is_file(candidate):
+            layer_name = "model" if media.endswith(".model") else "projector"
+            return invalid_manifest(f"{layer_name} blob is missing")
         if media == "application/vnd.ollama.image.model":
-            candidate = _ollama_blob_path(blobs_dir, digest)
-            if candidate is None or not _safe_is_file(candidate):
-                continue
             model_blob = candidate
-            if materialize_links and model_link_dir is not None:
-                link_name = f"{safe_name}-{tag}{quant}.gguf"
-                gguf_link_path = _make_ollama_blob_link(model_link_dir, link_name, candidate)
-
-        elif materialize_links and media == "application/vnd.ollama.image.projector":
-            candidate = _ollama_blob_path(blobs_dir, digest)
-            if candidate is not None and _safe_is_file(candidate) and model_link_dir is not None:
-                mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
-                _make_ollama_blob_link(model_link_dir, mmproj_name, candidate)
+        else:
+            projector_blob = candidate
 
     if model_blob is None:
-        return None
-    if materialize_links and not gguf_link_path:
-        return None
+        return invalid_manifest("model blob is missing")
+
+    if materialize_links:
+        if model_link_dir is None:
+            return invalid_manifest("link directory is unavailable")
+        link_name = f"{safe_name}-{tag}{quant}.gguf"
+        mmproj_name = f"{safe_name}-{tag}-mmproj.gguf"
+        if projector_blob is not None:
+            if not _make_ollama_blob_link(model_link_dir, mmproj_name, projector_blob):
+                return invalid_manifest("could not materialize projector blob")
+        else:
+            stale_projector = _contained_link_path(model_link_dir, mmproj_name)
+            if stale_projector is None:
+                return invalid_manifest("projector link name is unsafe")
+            try:
+                if stale_projector.is_symlink() or stale_projector.exists():
+                    stale_projector.unlink()
+            except OSError as e:
+                return invalid_manifest(f"stale projector link could not be removed: {e}")
+        gguf_link_path = _make_ollama_blob_link(model_link_dir, link_name, model_blob)
+        if not gguf_link_path:
+            return invalid_manifest("could not materialize model blob")
 
     suffix = ""
     if model_type:
