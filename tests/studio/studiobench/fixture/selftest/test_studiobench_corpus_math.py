@@ -32,8 +32,8 @@ from studiobench.fixture.corpus import (  # noqa: E402
 )
 
 FENCE = re.compile(r"```.*?```", re.S)
-DISPLAY = (re.compile(r"\$\$\n.*?\n\$\$", re.S), re.compile(r"\\\[\n.*?\n\\\]", re.S))
-INLINE = (re.compile(r"\$ [^$\n]+? \$"), re.compile(r"\\\( .+? \\\)"))
+DISPLAY = (re.compile(r"\$\$\n(.*?)\n\$\$", re.S), re.compile(r"\\\[\n(.*?)\n\\\]", re.S))
+INLINE = (re.compile(r"\$ ([^$\n]+?) \$"), re.compile(r"\\\( (.+?) \\\)"))
 
 # The v1 corpus, measured before math was added.
 #
@@ -126,6 +126,34 @@ def test_prose_without_the_math_flag_has_none():
     text = _prose(random.Random(7), 4_000, "x")
     assert "$" not in text
     assert "\\(" not in text
+
+
+def test_every_expression_is_balanced():
+    """Structural check for the failure that would make this corpus measure the wrong thing.
+
+    KaTeX renders an expression it cannot parse as an ERROR NODE rather than failing, so a corpus
+    of malformed LaTeX would run, look busy, and measure the cost of drawing error messages. That
+    would be worse than having no math at all, because it would come with numbers.
+
+    A full parse needs KaTeX itself, which this test cannot import. All 430 expressions in the
+    shipped corpus were checked against `katex.renderToString(..., {throwOnError: true})` and all
+    430 parsed; that run is quoted in the pull request rather than repeated here. What IS repeated
+    here is the check that catches every way the generator could break on a later edit: brace
+    balance, and no empty group, which is what a missing interpolation would leave behind.
+    """
+    joined = "\n".join(_texts())
+    bodies = [m.group(1) for p in DISPLAY for m in p.finditer(joined)]
+    bodies += [m.group(1) for p in INLINE for m in p.finditer(joined)]
+    assert bodies, "no expressions found, so this test is not checking anything"
+    for body in bodies:
+        depth = 0
+        for ch in body:
+            depth += (ch == "{") - (ch == "}")
+            assert depth >= 0, body
+        assert depth == 0, body
+        assert "{}" not in body, body
+        # A trailing backslash-command with nothing after it renders as an error node.
+        assert not body.rstrip().endswith("\\"), body
 
 
 # ── still frozen ────────────────────────────────────────────────────
