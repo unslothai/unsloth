@@ -6,11 +6,14 @@
 llama-server reports one number for the whole prompt and advises shortening the
 conversation. On a two-message thread whose single turn is oversized that advice is
 useless, and on a tool result it is worse than useless: the user did not write it. These
-tests pin the three wordings and the conditions under which each is chosen.
+tests pin each wording and the conditions under which it is chosen, including the two
+thresholds: whose turn is the bulk of the prompt, and whether that turn could have been
+sent at all.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -44,6 +47,7 @@ def _refusal(
     latest_turn: int,
     role: str = "user",
     context_length: int = 5120,
+    prompt_target: int = 4096,
 ) -> dict:
     return {
         "fits": False,
@@ -52,7 +56,7 @@ def _refusal(
         "latest_turn_tokens": latest_turn,
         "latest_turn_role": role,
         "context_length": context_length,
-        "prompt_target": context_length - 1024,
+        "prompt_target": prompt_target,
     }
 
 
@@ -119,15 +123,52 @@ def test_every_wording_keeps_the_counts_and_the_client_markers():
 
 
 @pytest.mark.parametrize(
-    "latest_turn,dominates",
-    [(3379, False), (3380, True), (5000, True)],
+    "latest_turn,expected",
+    [
+        # Below two thirds of the irreducible prompt the older turns and the system
+        # prompt are a real share of the problem, so the generic advice still applies.
+        (3379, "shorten the conversation"),
+        # Over that share but inside the 4096-token prompt budget: the turn is the bulk
+        # of the prompt and would still have fit by itself, so say only that.
+        (3380, "Most of this prompt is the message just sent"),
+        (4096, "Most of this prompt is the message just sent"),
+        # Over the budget: it cannot be sent at all, whatever else is in the window.
+        (4097, "does not fit on its own"),
+    ],
 )
-def test_the_turn_has_to_dominate_the_floor(latest_turn, dominates):
-    # Two thirds of the irreducible prompt. Below it the system prompt and the older
-    # turns are a real share of the problem and the generic advice still applies.
+def test_dominating_the_floor_is_not_the_same_as_not_fitting(latest_turn, expected):
     context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = latest_turn))
+    assert expected in _friendly_error(ValueError(_SERVER_ERROR))
+
+
+def test_a_turn_that_merely_dominates_hedges_its_advice():
+    # It is the bulk of the prompt, so trimming the rest buys little. "Will not help"
+    # would be a claim the numbers do not support.
+    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500))
     message = _friendly_error(ValueError(_SERVER_ERROR))
-    assert ("does not fit on its own" in message) is dominates
+    assert "shortening the conversation will not help much" in message
+    assert "send it in smaller pieces" in message
+
+
+def test_a_dominating_tool_result_hedges_the_same_way():
+    context_refusal.record_fit(
+        _refusal(irreducible = 5120, latest_turn = 3500, role = "tool")
+    )
+    message = _friendly_error(ValueError(_SERVER_ERROR))
+    assert "Most of this prompt is a single tool result" in message
+    assert "shortening the conversation will not help much" in message
+    assert "smaller slice" in message
+
+
+def test_the_window_stands_in_when_no_prompt_budget_was_recorded():
+    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
+    refusal.pop("prompt_target")
+    context_refusal.record_fit(refusal)
+    # 4800 is over two thirds of the floor but under the 5120 window, so with no budget
+    # recorded the softer wording is the honest one.
+    assert "Most of this prompt is the message just sent" in _friendly_error(
+        ValueError(_SERVER_ERROR)
+    )
 
 
 def test_a_diagnosis_for_a_different_window_is_ignored():
@@ -210,6 +251,71 @@ def test_the_recorded_diagnosis_is_a_copy():
     context_refusal.record_fit(refusal)
     refusal["latest_turn_tokens"] = 1
     assert context_refusal.latest_refusal()["latest_turn_tokens"] == 4800
+
+
+# ---------------------------------------------------------------- worker threads
+
+
+def _record_in_worker():
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    return "drained"
+
+
+def _record_then_fail():
+    _record_in_worker()
+    raise ValueError(_SERVER_ERROR)
+
+
+def test_a_bare_to_thread_would_lose_the_refusal():
+    # The behaviour being worked around: `asyncio.to_thread` runs the drain in a COPY of
+    # the context, so this is what the non-streaming GGUF paths used to see.
+    async def _run():
+        await asyncio.to_thread(_record_in_worker)
+
+    asyncio.run(_run())
+    assert context_refusal.latest_refusal() is None
+
+
+def test_run_in_thread_carries_a_refusal_back():
+    async def _run():
+        assert await context_refusal.run_in_thread(_record_in_worker) == "drained"
+        return context_refusal.latest_refusal()
+
+    # Read inside the coroutine: `asyncio.run` gives it its own context copy, exactly as
+    # a request task does, and that is the context `_friendly_error` will read from.
+    assert asyncio.run(_run())["latest_turn_tokens"] == 4800
+
+
+def test_run_in_thread_carries_a_refusal_back_when_the_drain_raises():
+    # The path that matters: the drain diagnoses the refusal and then the request fails
+    # with the oversize error that refusal explains.
+    async def _run():
+        with pytest.raises(ValueError):
+            await context_refusal.run_in_thread(_record_then_fail)
+        return _friendly_error(ValueError(_SERVER_ERROR))
+
+    assert "does not fit on its own" in asyncio.run(_run())
+
+
+def test_run_in_thread_leaves_the_request_value_alone_when_nothing_was_recorded():
+    def _quiet():
+        return 1
+
+    async def _run():
+        context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+        await context_refusal.run_in_thread(_quiet)
+        return context_refusal.latest_refusal()
+
+    assert asyncio.run(_run())["latest_turn_tokens"] == 4800
+
+
+def test_both_non_streaming_gguf_drains_use_the_carrying_helper():
+    # Guards the two call sites named in review: a later edit back to a bare
+    # `asyncio.to_thread` would silently restore the generic advice on those paths.
+    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+    for drain in ("_drain_gguf_tool_loop", "_drain_gguf_choices"):
+        assert f"context_refusal.run_in_thread({drain})" in source
+        assert f"asyncio.to_thread({drain})" not in source
 
 
 def test_other_friendly_errors_are_untouched():
