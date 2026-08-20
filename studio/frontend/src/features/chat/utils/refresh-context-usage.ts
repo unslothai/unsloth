@@ -183,7 +183,7 @@ type RefreshOptions =
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
+/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
@@ -195,7 +195,7 @@ export async function refreshContextUsage(
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.ggufContextLength == null
+    store.loadedContextLength == null
   ) {
     return;
   }

@@ -12,11 +12,14 @@ import {
   ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
+  isServedByMlx,
+  loadedContextFields,
   resolveInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   DropdownMenu,
@@ -2046,13 +2049,18 @@ export function ChatPage({
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
-  const ggufContextLength = useChatRuntimeStore(
-    (state) => state.ggufContextLength,
+  const loadedContextLength = useChatRuntimeStore(
+    (state) => state.loadedContextLength,
   );
-  const ggufNativeContextLength = useChatRuntimeStore(
-    (state) => state.ggufNativeContextLength,
+  const nativeContextLength = useChatRuntimeStore(
+    (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const platformDeviceType = usePlatformStore((state) => state.deviceType);
+  const platformChatOnlyReason = usePlatformStore(
+    (state) => state.chatOnlyReason,
+  );
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -2192,7 +2200,7 @@ export function ChatPage({
     [inferenceParams.checkpoint],
   );
   const contextWindowKnown = hasKnownContextWindow({
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     isExternalModel,
     residentCheckpoint,
@@ -2930,9 +2938,7 @@ export function ChatPage({
           : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
-          ggufContextLength: null,
-          ggufMaxContextLength: null,
-          ggufNativeContextLength: null,
+          ...loadedContextFields(null),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
@@ -3155,7 +3161,11 @@ export function ChatPage({
           }
           // For local turns, also require the restored count to fit in
           // the active window. Skip when unknown (external provider).
-          const limit = store.ggufContextLength;
+          //
+          // llama.cpp only: it stops at the window, so a count past it is stale by
+          // definition. MLX generates straight past instead, where an over-window count
+          // is the true one and the bar has a state for it.
+          const limit = store.loadedIsGguf ? store.loadedContextLength : null;
           if (
             typeof limit === "number" &&
             limit > 0 &&
@@ -3554,7 +3564,7 @@ export function ChatPage({
                 })}
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
-                activeGgufContextLength={ggufContextLength}
+                activeLoadedContextLength={loadedContextLength}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
@@ -3641,11 +3651,16 @@ export function ChatPage({
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
-                total={ggufContextLength}
+                total={loadedContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
                 completionTokens={contextUsage?.completionTokens}
+                isMlx={isServedByMlx(
+                  Boolean(loadedIsGguf),
+                  platformDeviceType,
+                  platformChatOnlyReason,
+                )}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
@@ -3819,8 +3834,8 @@ export function ChatPage({
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
               isDiffusion={activeModelIsDiffusion}
-              nativeContextLength={ggufNativeContextLength}
-              loadedContextLength={ggufContextLength}
+              nativeContextLength={nativeContextLength}
+              loadedContextLength={loadedContextLength}
               loadedConfig={activeModelConfig}
               onReload={handleReloadActiveModel}
             />

@@ -45,6 +45,7 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import {
   NumericValueInput,
+  isServedByLlamaCpp,
   presetLoadSettingNames,
   snapToStep,
 } from "@/features/model-picker";
@@ -85,6 +86,8 @@ import {
   getPresetSaveState,
   getPresetSource,
   isSamePresetConfig,
+  MAX_TOKENS_MIN,
+  localMaxTokensCeiling,
   toPresetParams,
 } from "./presets/preset-policy";
 import {
@@ -501,20 +504,22 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
   );
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  // Direct-file / custom-folder GGUFs load without a variant label but still
-  // report a GGUF context, so detect them via the context and the checkpoint
-  // suffix too (mirrors the chat page's activeModelIsGguf). Otherwise Max Tokens
-  // would fall back to params.maxSeqLength instead of the loaded GGUF context.
-  const isGguf =
-    isLoadedGguf ||
-    ggufContextLength != null ||
-    (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf,
+    activeGgufVariant,
+    activeNativePathToken,
+    checkpoint: currentCheckpoint,
+  });
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
@@ -531,8 +536,8 @@ export function ChatSettingsPanel({
   // reads a one-slash org/name.gguf as a repository id, not a file.
   const isLocalGguf =
     isGguf && (activeModelIsLocal || isLocalModelPath(currentCheckpoint ?? ""));
-  const ggufMaxContextLength = useChatRuntimeStore(
-    (s) => s.ggufMaxContextLength,
+  const maxContextLength = useChatRuntimeStore(
+    (s) => s.maxContextLength,
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
@@ -583,7 +588,7 @@ export function ChatSettingsPanel({
       );
     }
   }, [applyLlamaUpdate, speculativeDrafterLabel]);
-  const loadedEffectiveContext = customContextLength ?? ggufContextLength;
+  const loadedEffectiveContext = customContextLength ?? loadedContextLength;
   const showSpecFallback =
     !isExternalModel &&
     isGguf &&
@@ -596,9 +601,9 @@ export function ChatSettingsPanel({
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
-    ggufMaxContextLength != null &&
+    maxContextLength != null &&
     loadedEffectiveContext != null &&
-    loadedEffectiveContext > ggufMaxContextLength;
+    loadedEffectiveContext > maxContextLength;
   const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
   const hasModelContent = showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
@@ -611,7 +616,7 @@ export function ChatSettingsPanel({
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
-  const baseContext = ggufContextLength;
+  const baseContext = loadedContextLength;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -673,7 +678,7 @@ export function ChatSettingsPanel({
     activePresetSource,
     params,
     customContextLength,
-    ggufContextLength,
+    loadedContextLength,
     kvCacheDtype,
     mlxKvBits,
     gpuMemoryMode,
@@ -695,7 +700,7 @@ export function ChatSettingsPanel({
     () => formatPresetLoadConfigSummary(capturePresetLoadConfig()),
     [
       customContextLength,
-      ggufContextLength,
+      loadedContextLength,
       kvCacheDtype,
       mlxKvBits,
       gpuMemoryMode,
@@ -739,14 +744,12 @@ export function ChatSettingsPanel({
     ? parseExternalModelId(currentCheckpoint)
     : null;
   const maxTokensMax = isExternalModel
-      ? getExternalMaxOutputTokens(
-          externalProviderType,
-          externalSelection?.modelId,
-          activeExternalProvider?.maxOutputTokens,
-        )
-      : isGguf && baseContext
-        ? baseContext
-        : Math.max(64, params.maxSeqLength);
+    ? getExternalMaxOutputTokens(
+        externalProviderType,
+        externalSelection?.modelId,
+        activeExternalProvider?.maxOutputTokens,
+      )
+    : localMaxTokensCeiling(baseContext, params.maxSeqLength);
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -1067,7 +1070,7 @@ export function ChatSettingsPanel({
                   {isUnifiedMemory ? (
                     <>
                       Context length exceeds what fits in unified memory (
-                      {ggufMaxContextLength?.toLocaleString()} tokens). The GPU
+                      {maxContextLength?.toLocaleString()} tokens). The GPU
                       and the rest of the system share one pool here, so there
                       is nothing to offload to. Lower the context, leave it on
                       Auto, or set the KV cache to q8_0.
@@ -1075,7 +1078,7 @@ export function ChatSettingsPanel({
                   ) : (
                     <>
                       Context length exceeds the estimated VRAM capacity (
-                      {ggufMaxContextLength?.toLocaleString()} tokens). The
+                      {maxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
                     </>
                   )}
@@ -1472,19 +1475,15 @@ export function ChatSettingsPanel({
               min={
                 isExternalModel
                   ? getExternalMinOutputTokens(externalProviderType)
-                  : 64
+                  : MAX_TOKENS_MIN
               }
               max={maxTokensMax}
               step={64}
               onChange={set("maxTokens")}
               displayValue={
-                isGguf && baseContext && params.maxTokens >= baseContext
+                !isExternalModel && params.maxTokens >= maxTokensMax
                   ? "Max"
-                  : !isExternalModel &&
-                      !isGguf &&
-                      params.maxTokens >= maxTokensMax
-                    ? "Max"
-                    : undefined
+                  : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />

@@ -592,7 +592,9 @@ test("only a user edit to a sampling param lands on the chat", () => {
   for (const source of [runtime, status]) {
     assert.match(
       source,
-      /mergeBackendRecommendedInference\([\s\S]{0,700}?fromModelDefaults: true/,
+      // The bound is proximity only: what this pins is that the merge says where the
+      // params came from, and the call grew when the loaded context window joined it.
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
     );
   }
 });
