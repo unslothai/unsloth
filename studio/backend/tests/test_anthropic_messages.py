@@ -4147,3 +4147,190 @@ class TestALiteralTagAfterBlankSpaceIsNotDuplicated:
             _drive_emitter(["\n\n<think>trace</think>Answer"], provenance)
         )
         assert blocks == [("text", "\n\n"), ("thinking", "trace"), ("text", "Answer")]
+
+
+class TestPreserveThinkingHonoursTheBackendDefault:
+    """An omitted `preserve_thinking` must follow the LOADED template's default.
+
+    llama-server merges chat_template_kwargs per key, so a request that omits
+    preserve_thinking leaves the launch-time --chat-template-kwargs value active
+    (llama.cpp common/chat.cpp `extra_context`). Coercing the omission to False
+    on the conversion side stripped the reasoning_content that same template was
+    still being told to render: on a preserve-by-default family the replayed
+    thinking silently vanished from the prompt. Counting shares the resolver so
+    the total keeps describing the prompt generation actually builds.
+    """
+
+    TRACE = "The user prefers metric units."
+
+    MESSAGES = [
+        {"role": "user", "content": "How far is the moon?"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": TRACE, "signature": ""},
+                {"type": "text", "text": "About 384,400 km."},
+            ],
+        },
+        {"role": "user", "content": "And the sun?"},
+    ]
+
+    @staticmethod
+    def _payload(**fields):
+        base = {"max_tokens": 16, "messages": TestPreserveThinkingHonoursTheBackendDefault.MESSAGES}
+        base.update(fields)
+        return AnthropicMessagesRequest(**base)
+
+    @staticmethod
+    def _backend(default):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            supports_preserve_thinking = True,
+            preserve_thinking_default = default,
+        )
+
+    @pytest.mark.parametrize(
+        "default, override, expected",
+        [
+            # The regression: omitted on a preserve-by-default model must keep
+            # the block, not drop it.
+            (True, None, True),
+            # Omitted on an off-by-default model still drops (unchanged).
+            (False, None, False),
+            # Explicit values win over the default in both directions and are
+            # unchanged by the resolver.
+            (True, True, True),
+            (True, False, False),
+            (False, True, True),
+            (False, False, False),
+        ],
+    )
+    def test_resolver_is_three_valued(self, default, override, expected):
+        from routes.inference import _anthropic_preserve_thinking
+
+        resolved = _anthropic_preserve_thinking(
+            self._backend(default), self._payload(preserve_thinking = override)
+        )
+        assert resolved is expected
+
+    def test_none_and_explicit_false_are_distinguishable(self):
+        """`bool()` made these identical; on a default-true backend they must
+        now resolve to opposite values."""
+        from routes.inference import _anthropic_preserve_thinking
+
+        backend = self._backend(True)
+        assert _anthropic_preserve_thinking(backend, self._payload()) is True
+        assert (
+            _anthropic_preserve_thinking(backend, self._payload(preserve_thinking = False)) is False
+        )
+
+    def test_a_backend_without_the_attribute_stays_off(self):
+        """Test doubles and non-reasoning backends lack the property."""
+        from types import SimpleNamespace
+
+        from routes.inference import _anthropic_preserve_thinking
+
+        assert _anthropic_preserve_thinking(SimpleNamespace(), self._payload()) is False
+
+    @pytest.mark.parametrize("default", [True, False])
+    @pytest.mark.parametrize("override", [None, True, False])
+    def test_conversion_and_counting_cannot_drift(self, default, override):
+        """Both routes resolve through the one helper, so the prompt the count
+        prices is the prompt generation renders."""
+        from routes.inference import _anthropic_preserve_thinking
+
+        payload = self._payload(preserve_thinking = override)
+        backend = self._backend(default)
+        resolved = _anthropic_preserve_thinking(backend, payload)
+
+        converted = anthropic_messages_to_openai(
+            [m.model_dump() for m in payload.messages],
+            payload.system,
+            preserve_thinking = resolved,
+        )
+        counted = anthropic_messages_to_openai(
+            [m.model_dump() for m in payload.messages],
+            payload.system,
+            preserve_thinking = _anthropic_preserve_thinking(backend, payload),
+        )
+        assert converted == counted
+
+        assistant = next(m for m in converted if m["role"] == "assistant")
+        expected_kept = override if override is not None else default
+        assert ("reasoning_content" in assistant) is expected_kept
+        if expected_kept:
+            assert assistant["reasoning_content"] == self.TRACE
+        # The answer text is never affected by the preserve decision.
+        assert assistant["content"] == "About 384,400 km."
+
+    @pytest.mark.parametrize(
+        "default, override, expect_block",
+        [(True, None, True), (False, None, False), (True, False, False), (False, True, True)],
+    )
+    def test_the_route_hands_the_block_to_the_generator(
+        self, monkeypatch, default, override, expect_block
+    ):
+        """End to end over /v1/messages and /v1/messages/count_tokens against a
+        deterministic backend double: what reaches the generator is what the
+        counter prices."""
+        import asyncio
+        from types import SimpleNamespace
+
+        import routes.inference as inf_mod
+        from routes.inference import anthropic_count_tokens, anthropic_messages
+
+        seen = {}
+
+        def _gen(**kwargs):
+            seen["messages"] = kwargs["messages"]
+            seen["preserve_thinking"] = kwargs.get("preserve_thinking")
+            yield "ok"
+
+        def _count(messages, system, tools, strict = False, chat_template_kwargs = None):
+            seen["count_messages"] = messages
+            return sum(len(str(m.get("reasoning_content") or "")) for m in messages) + 1
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            supports_tool_passthrough = False,
+            model_identifier = "unsloth/Qwen3.8-8B-GGUF",
+            context_length = 4096,
+            supports_reasoning = True,
+            reasoning_always_on = False,
+            reasoning_default = True,
+            supports_preserve_thinking = True,
+            preserve_thinking_default = default,
+            count_chat_tokens = _count,
+            generate_chat_completion = _gen,
+            generate_chat_completion_with_tools = _gen,
+            effective_parallel_slots = 4,
+            base_url = "http://llama.preserve.test:9999",
+            _request_reasoning_kwargs = lambda et, re_, pt: (
+                {k: v for k, v in (("enable_thinking", et), ("preserve_thinking", pt)) if v is not None}
+                or None
+            ),
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        class _Request:
+            def __init__(self):
+                self.state = SimpleNamespace()
+                self.url = SimpleNamespace(path = "/v1/messages")
+                self.method = "POST"
+
+            async def is_disconnected(self):
+                return False
+
+        payload = self._payload(preserve_thinking = override)
+        asyncio.run(anthropic_messages(payload, request = _Request(), current_subject = "t"))
+        gen_messages = seen["messages"]
+        assert any(m.get("reasoning_content") for m in gen_messages) is expect_block
+        # An omitted override must stay None on the wire so llama-server keeps
+        # falling back to the launch-time kwarg rather than being pinned here.
+        assert seen["preserve_thinking"] == override
+
+        asyncio.run(anthropic_count_tokens(payload, request = _Request(), current_subject = "t"))
+        assert seen["count_messages"] == gen_messages
