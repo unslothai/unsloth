@@ -206,16 +206,18 @@ export function ChatSkillsDialog({
                       onCheckedChange={(enabled) => toggleSkill(skill, enabled)}
                       aria-label={`Enable ${skill.name}`}
                     />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      disabled={busyName === skill.name}
-                      onClick={() => setConfirmingDelete(skill)}
-                      aria-label={`Delete ${skill.name}`}
-                    >
-                      <Trash2Icon size={14} />
-                    </Button>
+                    {skill.metadata?.bundled !== "true" ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        disabled={busyName === skill.name}
+                        onClick={() => setConfirmingDelete(skill)}
+                        aria-label={`Delete ${skill.name}`}
+                      >
+                        <Trash2Icon size={14} />
+                      </Button>
+                    ) : null}
                   </div>
                 </li>
               ))}

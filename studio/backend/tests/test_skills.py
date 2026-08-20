@@ -14,6 +14,8 @@ import pytest
 from core.inference import skills
 
 
+BUILTIN_SKILLS_ROOT = Path(skills.__file__).with_name("builtin_skills")
+
 SKILL_MD = """---
 name: unsloth
 description: Train and run models with Unsloth. Use for Unsloth workflows.
@@ -33,6 +35,7 @@ Read [the configuration reference](references/config-reference.md) when needed.
 @pytest.fixture(autouse = True)
 def isolated_skills_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(skills, "studio_root", lambda: tmp_path)
+    monkeypatch.setattr(skills, "_builtin_skills_root", lambda: tmp_path / "no-builtins")
 
 
 def _bundle(
@@ -50,6 +53,39 @@ def _bundle(
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
             archive.writestr(info, "SKILL.md")
     return path
+
+
+def test_bundled_skill_creator_is_discoverable_and_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(skills, "_builtin_skills_root", lambda: BUILTIN_SKILLS_ROOT)
+
+    bundled = skills.list_skills()
+
+    assert [skill["name"] for skill in bundled] == ["skill-creator"]
+    assert bundled[0]["metadata"]["bundled"] == "true"
+    assert "Code is enabled" in skills.read_skill_resource("skill-creator")
+    assert skills.set_skill_enabled("skill-creator", False)["enabled"] is False
+    with pytest.raises(skills.SkillError, match = "cannot be deleted"):
+        skills.delete_skill("skill-creator")
+
+
+def test_existing_skill_creator_keeps_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(skills, "_builtin_skills_root", lambda: BUILTIN_SKILLS_ROOT)
+    custom = SKILL_MD.replace("name: unsloth", "name: skill-creator").replace(
+        "Train and run models with Unsloth. Use for Unsloth workflows.",
+        "Keep my existing custom skill.",
+    )
+    skills.import_skill_archive(
+        _bundle(tmp_path / "custom.zip", {"skill-creator/SKILL.md": custom})
+    )
+
+    assert skills.list_skills()[0]["description"] == "Keep my existing custom skill."
+    skills.delete_skill("skill-creator")
+    assert skills.list_skills()[0]["metadata"]["bundled"] == "true"
 
 
 def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):

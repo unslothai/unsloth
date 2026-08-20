@@ -66,6 +66,31 @@ def _skills_root() -> Path:
     return ensure_dir(studio_root() / "skills")
 
 
+def _builtin_skills_root() -> Path:
+    return Path(__file__).with_name("builtin_skills")
+
+
+def _builtin_skills() -> dict[str, tuple[Path, dict]]:
+    root = _builtin_skills_root()
+    if not root.is_dir():
+        return {}
+    bundled: dict[str, tuple[Path, dict]] = {}
+    for candidate in root.iterdir():
+        if candidate.name.startswith("."):
+            continue
+        metadata = _validate_installed_skill(candidate)
+        bundled[metadata["name"]] = (candidate, metadata)
+    return bundled
+
+
+def _skill_directory(name: str) -> Path:
+    installed = _skills_root() / name
+    if installed.exists():
+        return installed
+    bundled = _builtin_skills().get(name)
+    return bundled[0] if bundled is not None else installed
+
+
 def _registry_path() -> Path:
     return _skills_root() / _REGISTRY_NAME
 
@@ -390,13 +415,17 @@ def list_skills() -> list[dict]:
             except SkillError:
                 continue
             skills.append({**metadata, "enabled": registry.get(metadata["name"], True)})
+        installed_names = {skill["name"] for skill in skills}
+        for name, (_, metadata) in _builtin_skills().items():
+            if name not in installed_names:
+                skills.append({**metadata, "enabled": registry.get(name, True)})
         return sorted(skills, key = lambda skill: skill["name"])
 
 
 def set_skill_enabled(name: str, enabled: bool) -> dict:
     name = _normalize_skill_name(name)
     with _LOCK:
-        metadata = _validate_installed_skill(_skills_root() / name)
+        metadata = _validate_installed_skill(_skill_directory(name))
         registry = _load_registry()
         if enabled:
             format_skill_catalog(
@@ -413,6 +442,8 @@ def delete_skill(name: str) -> None:
     with _LOCK:
         root = _skills_root()
         target = root / name
+        if not target.exists() and name in _builtin_skills():
+            raise SkillError(f"Skill '{name}' is bundled with Studio and cannot be deleted.")
         _validate_installed_skill(target)
         quarantine = Path(tempfile.mkdtemp(prefix = f".delete-{name}-", dir = root))
         backup = quarantine / name
@@ -462,7 +493,7 @@ def read_skill_resource(
             or any(part in ("", ".", "..") for part in path.parts)
         ):
             raise SkillError("Skill resource path must stay inside the skill directory.")
-        root = (_skills_root() / name).resolve()
+        root = _skill_directory(name).resolve()
         candidate = root.joinpath(*path.parts)
         try:
             resolved = candidate.resolve(strict = True)

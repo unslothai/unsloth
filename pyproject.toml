@@ -74,6 +74,7 @@ studio = [
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
+    "backend/core/inference/builtin_skills/**/*",
 ]
 
 [tool.setuptools.packages.find]
