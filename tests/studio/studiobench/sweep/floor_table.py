@@ -42,11 +42,13 @@ if __package__ in (None, ""):  # pragma: no cover
 from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     ACTION_SOURCES,
     FRAME_METRICS,
+    STREAM_METRICS,
     _actions_for,
     _frame_measures,
+    _stream_measures,
 )
 
-METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS
+METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
 
 
 def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
@@ -93,6 +95,13 @@ def cell_metrics(records: list[dict]) -> dict[str, dict[str, float]]:
         vals: dict[str, float] = _action_timings(records, cid)
         windows = [w for w in records if w.get("row_type") == "window" and w.get("cell_id") == cid]
         for key, m in _frame_measures(windows).items():
+            if m.value is not None:
+                vals[key] = float(m.value)
+        # The streaming phase on its own, per streamed character. Kept separate from the pooled
+        # frame metrics rather than replacing them: the pooled ones answer "was this film janky",
+        # which is still worth asking, and these answer "what did streaming one character cost",
+        # which nothing answered before.
+        for key, m in _stream_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
         out[cid] = vals

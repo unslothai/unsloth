@@ -54,6 +54,44 @@ SCROLL_SETTLE_NOTE = (
 
 FRAME_METRICS: tuple[str, ...] = ("time_in_jank_pct", "jank_index", "max_frame_ms")
 
+# ── the streaming phase, separated out and normalised per character ─────────────────────────
+#
+# The three metrics above are not blind to the stream. `_frame_measures` pools every window whose
+# kind is not `idle`, and the streaming windows are in that pool. What they cannot do is separate
+# it: one 57.3 s film collapses eighteen action windows and the streaming stretch into a single
+# number, and the action windows dominate. On a measured 100K null control, `reasoning_toggle`
+# alone contributed 2,865 ms of blocked time at 99.3% busy with a 1,866 ms worst frame while the
+# streaming stretch beside it ran at 3.6% busy with a 100 ms worst frame.
+#
+# THE WINDOW KIND CANNOT BE USED TO SEPARATE THEM, and the name is what misleads.
+# `SceneRunner._gap_window` opens every inter-slot gap as `kind = "stream"`, so on the standard
+# film eighteen windows are named `stream:gapN` and only the first four contain streaming;
+# `stream:drain` is opened after the film has finished and measured 7 ms on that same cell. The
+# phase is therefore taken from the `stream_cost` instrument, which detects it from the SSE
+# traffic, and never from the label.
+STREAM_METRICS: tuple[str, ...] = (
+    "stream_delta_cost_ms_per_kchar",
+    "stream_cost_ms_per_kchar",
+    "stream_busy_pct",
+    "stream_jank_index",
+    "stream_time_in_jank_pct",
+    "stream_max_frame_ms",
+)
+
+# A window has to carry at least this much streamed text before its cost is divided by it. Below
+# it the denominator is small enough that the ratio is dominated by whatever else shared the
+# window: on a measured cell an `action:send_turn` window grew the reply by 13 characters while
+# accumulating 475 ms of blocked time, which as a rate is 36,500 ms per thousand characters and is
+# a statement about opening a menu, not about streaming.
+MIN_STREAM_CHARS_PER_WINDOW = 100
+
+# More timer ticks than the clamp says are possible means the clamp is wrong, and every blocked
+# figure derived from it is a subtraction against the wrong floor. `clocks_agree` would be the
+# gate, but on a headless engine it is null by design (see instruments/pagejs.py: rAF has no vsync
+# to be checked against and the screencast is rate-limited), so `timer_clock_ratio` is the sound
+# availability signal and this is the bound it has to respect.
+MAX_TIMER_CLOCK_RATIO = 1.2
+
 # Windows that are deliberately quiet. Pooling these into the frame metrics would dilute every
 # jank share with idle time and make a bad build look average.
 IDLE_WINDOW_KINDS: frozenset[str] = frozenset({"idle"})
@@ -161,6 +199,169 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
     return out
 
 
+def _stream_windows(windows: Sequence[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], dict]:
+    """The windows that carried streaming, and why each rejected one was rejected.
+
+    A window qualifies when the `stream_cost` instrument SAW SSE traffic in it and the reply it was
+    feeding grew by a usable amount. Both halves are needed. Traffic alone admits the tail window
+    in which the stream ended after 400 ms and the remaining twelve seconds were idle; growth alone
+    admits `thread_reopen`, which rebuilds the whole thread and grows the character count by tens
+    of thousands without a byte of it having been streamed.
+    """
+    picked: list[Mapping[str, Any]] = []
+    rejected: dict[str, int] = {}
+
+    def reject(why: str) -> None:
+        rejected[why] = rejected.get(why, 0) + 1
+
+    for w in windows:
+        inst = w.get("instruments") or {}
+        sc = inst.get("stream_cost")
+        if not isinstance(sc, Mapping) or not sc.get("stream_cost_attempted"):
+            reject("the stream_cost instrument did not run in this window")
+            continue
+        if not sc.get("streaming_observed"):
+            reject("no SSE traffic reached the page during this window")
+            continue
+        delta = sc.get("reply_chars_delta")
+        if delta is None:
+            reject(str(sc.get("reply_chars_delta_reason") or "the reply's growth was not measurable"))
+            continue
+        if int(delta) < MIN_STREAM_CHARS_PER_WINDOW:
+            reject(f"the reply grew by fewer than {MIN_STREAM_CHARS_PER_WINDOW} characters")
+            continue
+        frames = inst.get("frames")
+        if isinstance(frames, Mapping):
+            if frames.get("clocks_agree") is False:
+                reject("the window's clocks disagreed, so it is not scoreable")
+                continue
+            ratio = frames.get("timer_clock_ratio")
+            if isinstance(ratio, (int, float)) and float(ratio) > MAX_TIMER_CLOCK_RATIO:
+                reject("more timer ticks than the calibrated clamp allows, so the clamp is wrong")
+                continue
+        picked.append(w)
+    return picked, rejected
+
+
+def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
+    """The streaming phase alone, integrated, and divided by the characters it streamed.
+
+    TWO NUMERATORS, deliberately, because they fail in opposite directions and a reader should be
+    able to see both:
+
+      `stream_delta_cost_ms_per_kchar` is TARGETED. It sums only the main-thread task chains that
+      SSE chunks start, so it excludes the background churn -- async highlighting, GC, the app's
+      own timers -- that a whole-window figure charges to the stream. It is the sharper of the two
+      and the one a change to the delta path should move.
+
+      `stream_cost_ms_per_kchar` is BROAD. It sums blocked time over the streaming stretch, so it
+      catches stream-driven cost that lands outside the delta's own task chain, which is most of
+      the asynchronous work. It is the honest total and the noisier of the two.
+
+    Both are `null` with a reason rather than zero when the timer clamp was never established:
+    blocked time is a subtraction against an idle floor, and without a floor the quantity does not
+    exist.
+    """
+    unit_by_key = {
+        "stream_delta_cost_ms_per_kchar": "ms/kchar",
+        "stream_cost_ms_per_kchar": "ms/kchar",
+        "stream_busy_pct": "%",
+        "stream_jank_index": "ms",
+        "stream_time_in_jank_pct": "%",
+        "stream_max_frame_ms": "ms",
+    }
+    picked, rejected = _stream_windows(windows)
+    if not picked:
+        why = (
+            "; ".join(f"{n} window(s): {r}" for r, n in sorted(rejected.items()))
+            or "this cell recorded no windows"
+        )
+        return {
+            k: Measure.not_attempted(u, f"no window in this cell carried streaming ({why})")
+            for k, u in unit_by_key.items()
+        }
+
+    chars = 0
+    delta_task_ms = 0.0
+    blocked_ms = 0.0
+    blocked_reason: str | None = None
+    streaming_ms = 0.0
+    deltas: list[float] = []
+    window_ms = 0.0
+    max_frame: float | None = None
+
+    for w in picked:
+        inst = w.get("instruments") or {}
+        sc = inst.get("stream_cost") or {}
+        chars += int(sc.get("reply_chars_delta") or 0)
+        delta_task_ms += float(sc.get("delta_task_ms") or 0.0)
+        streaming_ms += float(sc.get("streaming_ms") or 0.0)
+        blocked = sc.get("stream_blocked_ms")
+        if blocked is None:
+            blocked_reason = str(
+                sc.get("stream_blocked_ms_reason") or "blocked time was not measurable"
+            )
+        else:
+            blocked_ms += float(blocked)
+
+        frames = inst.get("frames")
+        if not isinstance(frames, Mapping) or not frames.get("frames_attempted"):
+            continue
+        mx = frames.get("max_frame_ms")
+        if mx is not None:
+            max_frame = float(mx) if max_frame is None else max(max_frame, float(mx))
+        if frames.get("frame_gaps_truncated"):
+            continue
+        gaps = frames.get("frame_gaps_ms")
+        if not gaps:
+            continue
+        deltas.extend(float(g) for g in gaps)
+        window_ms += float(w.get("duration_ms") or 0.0)
+
+    out: dict[str, Measure] = {}
+    note = f"{len(picked)} streaming window(s), {chars} streamed characters"
+
+    if chars <= 0:
+        for key in ("stream_delta_cost_ms_per_kchar", "stream_cost_ms_per_kchar"):
+            out[key] = Measure.failed(
+                unit_by_key[key], "the streaming windows recorded no streamed characters"
+            )
+    else:
+        out["stream_delta_cost_ms_per_kchar"] = Measure.read(
+            1000.0 * delta_task_ms / chars, "ms/kchar", note = note
+        )
+        out["stream_cost_ms_per_kchar"] = (
+            Measure.failed("ms/kchar", blocked_reason)
+            if blocked_reason
+            else Measure.read(1000.0 * blocked_ms / chars, "ms/kchar", note = note)
+        )
+
+    out["stream_busy_pct"] = (
+        Measure.failed("%", blocked_reason)
+        if blocked_reason
+        else (
+            Measure.read(100.0 * blocked_ms / streaming_ms, "%", note = note)
+            if streaming_ms > 0
+            else Measure.failed("%", "the instrument observed no streaming time in these windows")
+        )
+    )
+    out["stream_max_frame_ms"] = (
+        Measure.read(max_frame, "ms", note = "worst frame inside the streaming windows")
+        if max_frame is not None
+        else Measure.failed("ms", "the frame recorder observed no frames while streaming")
+    )
+
+    if deltas and window_ms > 0:
+        stats = compute_frame_stats(deltas, window_ms)
+        out["stream_time_in_jank_pct"] = stats.time_in_jank_pct
+        out["stream_jank_index"] = stats.jank_index
+    else:
+        reason = "the streaming windows exported no per-frame deltas"
+        out["stream_time_in_jank_pct"] = Measure.failed("%", reason)
+        out["stream_jank_index"] = Measure.failed("ms", reason)
+    return out
+
+
 def measures_from_records(
     records: Sequence[Mapping[str, Any]], metric_keys: Iterable[str] | None = None
 ) -> dict[int, dict[str, Measure]]:
@@ -189,6 +390,14 @@ def measures_from_records(
             and str(w.get("kind") or "") not in IDLE_WINDOW_KINDS
         ]
         frames = _frame_measures(windows)
+        # The streaming phase is NOT in METRIC_BY_KEY, and that is deliberate rather than an
+        # omission. The anchor table is hashed into `weights_id`, and a report that compares two
+        # runs with different `weights_id` values is refused; adding a seventh weighted metric
+        # would change every existing run's composite score and make it incomparable with every
+        # run this tool has already taken. So these are scored through the per-metric floor table,
+        # which judges a metric on its own floor, and the composite score is left alone. Giving
+        # them anchors and a weight is a separate decision that should be argued in anchors.py.
+        stream = _stream_measures(windows)
 
         readings: dict[str, Measure] = {}
         for key in keys:
@@ -196,6 +405,8 @@ def measures_from_records(
                 readings[key] = _action_measure(key, actions)
             elif key in frames:
                 readings[key] = frames[key]
+            elif key in stream:
+                readings[key] = stream[key]
             else:
                 readings[key] = Measure.not_attempted(
                     METRIC_BY_KEY[key].unit, f"no source is wired for {key}"
