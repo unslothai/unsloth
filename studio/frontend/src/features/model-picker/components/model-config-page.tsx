@@ -157,8 +157,8 @@ const SPECULATIVE_TYPE_LABELS: Record<
   off: "Off",
 };
 
-// Lower-case where the value is the flag's own spelling, so what is picked here
-// reads the same as what appears in the launch command.
+// Lower-case where the value is the flag's own spelling, so the pick reads the
+// same as the launch command.
 const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   auto: "Auto",
   none: "None",
@@ -168,19 +168,15 @@ const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   dio: "DirectIO",
 };
 
-// The picks "Don't reserve system RAM" vetoes. mmap maps and dio streams, so
-// neither holds a full host copy and both survive. Mirrors
-// _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
+// What "Don't reserve system RAM" vetoes: mmap maps and dio streams, so neither
+// holds a full host copy. Mirrors _LOAD_MODE_MLOCK_VALUES |
+// _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
 const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
 
 /**
  * What Model Memory does to this load mode, or null when the pick reaches the
- * command line untouched.
- *
- * apply_model_memory_policy runs before the extras and before this field, so a
- * row that showed the pick alone would name a flag the child never sees. Keep
- * resident is checked first because it wins outright: it emits its own mode and
- * strips every other load-mode-bearing token.
+ * command line untouched: a row showing the pick alone would name a flag the
+ * child never sees. Keep resident is first because it wins outright.
  */
 function loadModeOverrideNotice(
   mode: string | null,
@@ -967,11 +963,9 @@ function MlxAdvancedSettings({
 }
 
 /**
- * Mmap/Mlock, with the note that says when Settings wins.
- *
- * Its own component because it subscribes to the Model Memory settings, which the
- * rest of this section has no use for, and because the row must keep following
- * them while open: the settings page is reachable without unmounting this panel.
+ * Mmap/Mlock, with the note that says when Settings wins. Its own component
+ * because it subscribes to the Model Memory settings and must keep following
+ * them: the settings page is reachable without unmounting this panel.
  */
 function LoadModeRow({
   config,
@@ -1158,8 +1152,8 @@ function GgufAdvancedSettings({
               specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
                 ? config.specDraftNMax
                 : null,
-              // Dropped with the drafter it belongs to, like the depth above:
-              // the draft context only exists while a separate model is loaded.
+              // Dropped with the drafter, like the depth above: the draft
+              // context exists only while a separate model is loaded.
               specDraftCacheDtype: SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(v)
                 ? config.specDraftCacheDtype
                 : null,
@@ -2277,10 +2271,9 @@ export function ModelConfigPage({
   const showDraftTokens =
     config.speculativeType != null &&
     DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
-  // Narrower than the row above: the draft cache dtype needs a second context to
-  // apply to, and only the sidecar modes are guaranteed to load one. MTP may read
-  // baked-in heads out of the target GGUF, which is known to the loader and not
-  // to this panel, so the setting is not offered for it.
+  // Narrower than the row above: the dtype needs a second context, and only the
+  // sidecar modes always load one. MTP may read baked-in heads out of the target
+  // GGUF, which the loader knows and this panel does not.
   const showSpecDraftCacheDtype =
     config.speculativeType != null &&
     SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(config.speculativeType);

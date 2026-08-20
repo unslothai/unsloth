@@ -430,12 +430,11 @@ VALID_SPECULATIVE_TYPES = frozenset(
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
 )
-# Only these load a separate draft model, and so a draft context the draft KV
-# cache dtype applies to (mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI).
+# Only these load a separate draft model, and so a draft context for the dtype to
+# apply to (mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI).
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
-# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is llama.cpp's own
-# default, so it is not stored: an entry holding it would pin what a later build
-# is free to redefine.
+# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp
+# default and is not stored: an entry holding it would pin what a build may redefine.
 VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
 # Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
 CTX_CHECKPOINTS_MAX = 256
@@ -534,8 +533,8 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
-        # Same rule, narrower set: the dtype needs a separate draft model to have a
-        # context of its own, and only the sidecar modes always load one.
+        # Same rule, narrower set: the dtype needs a separate draft model, and only
+        # the sidecar modes always load one.
         if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
             spec_draft_cache_type = _clean_str(
                 payload.get("spec_draft_cache_type"), VALID_KV_CACHE_DTYPES
@@ -560,8 +559,8 @@ def normalize_model_override(
     if load_mode:
         entry["load_mode"] = load_mode
 
-    # 0 and -1 are both meaningful (no checkpoints; no cache limit), so these are
-    # stored on "is not None" rather than on truth, unlike the batch sizes above.
+    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on
+    # "is not None" rather than on truth, unlike the batch sizes above.
     ctx_checkpoints = _bounded_int(
         payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
     )

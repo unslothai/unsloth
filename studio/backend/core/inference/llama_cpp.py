@@ -4665,10 +4665,9 @@ class LlamaCppBackend:
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
-        # The llama-server tuning group the last load asked for; none = defaults,
-        # or left to extras / env. What was REQUESTED, not what ran: Model Memory
-        # can replace the load mode, and the Windows full-offload tuning has its
-        # own opinion about the two cache knobs.
+        # The tuning group the last load asked for; none = defaults, or left to
+        # extras / env. What was REQUESTED, not what ran: Model Memory can replace
+        # the load mode, and Windows full-offload tuning owns the two cache knobs.
         self._requested_load_mode: Optional[str] = None
         self._requested_spec_draft_cache_type: Optional[str] = None
         self._requested_ctx_checkpoints: Optional[int] = None
@@ -5478,14 +5477,11 @@ class LlamaCppBackend:
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
         ):
             return False
-        # Same rule for the tuning group: each is compared requested-against-
-        # requested, so a resident server launched with a different mode, draft
-        # cache dtype, checkpoint count or host cache size is a reload rather than
-        # a match. Every one of them is compared even when the intent leaves it
-        # blank, unlike spec_draft_n_max above: blank means the llama.cpp default,
-        # and both sides record what was REQUESTED, so a load that asked for
-        # nothing holds None and still matches. Guarding on "the intent names one"
-        # would mean clearing a knob back to its default never relaunched.
+        # Same rule for the tuning group: requested against requested, so a server
+        # launched with a different value is a reload. Compared even when the
+        # intent is blank, unlike spec_draft_n_max above: blank is the llama.cpp
+        # default and both sides hold what was requested, so two loads that asked
+        # for nothing still match, while clearing a knob relaunches.
         if not self._is_diffusion and (
             _normalized_load_mode(self._requested_load_mode)
             != _normalized_load_mode(intent.load_mode)
@@ -6343,11 +6339,10 @@ class LlamaCppBackend:
                 if _is_real(_alias):
                     spec_draft_ngl_flag = _alias
                     break
-            # Same alias dance for the draft KV cache pair: --spec-draft-type-*
-            # is the modern spelling and --cache-type-*-draft the older one, and a
-            # build exposing only one exits on the other. K and V are probed
-            # independently, since upstream renamed them together but a fork need
-            # not have. Long forms only, like the loop above.
+            # Same alias dance for the draft KV cache pair: --spec-draft-type-* is
+            # the modern spelling, --cache-type-*-draft the older, and a build with
+            # only one exits on the other. K and V probed independently (upstream
+            # renamed them together; a fork need not have). Long forms only.
             for _alias in ("--spec-draft-type-k", "--cache-type-k-draft"):
                 if _is_real(_alias):
                     spec_draft_cache_k_flag = _alias
@@ -15470,9 +15465,8 @@ class LlamaCppBackend:
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
                 # What the SWA checkpoint reserve is priced against. Only an explicit
-                # request counts: the estimator has always charged 0 here, and
-                # adopting llama.cpp's default of 32 for every load would move the
-                # fit for models nobody asked to change.
+                # request counts: the estimator has always charged 0, and adopting
+                # llama.cpp's default of 32 would move the fit for every model.
                 _effective_ctx_checkpoints = int(ctx_checkpoints or 0)
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
@@ -16190,9 +16184,8 @@ class LlamaCppBackend:
                             _mtp_draft_weights = 0
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
-                    # The first-class control underneath them: it is emitted BEFORE
-                    # the extras, so an extra still last-wins and keeps the value
-                    # parsed above, and the reserve is priced on what will run.
+                    # The control underneath them: emitted before the extras, so an
+                    # extra still last-wins and the reserve prices what will run.
                     if spec_draft_cache_type:
                         _mtp_draft_ck = _mtp_draft_ck or spec_draft_cache_type
                         _mtp_draft_cv = _mtp_draft_cv or spec_draft_cache_type
@@ -18180,12 +18173,10 @@ class LlamaCppBackend:
                 # Restore the requested view, or the spec-mode compare never matches.
                 if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
                     self._requested_spec_mode = None
-                # The draft KV cache dtype, which only means anything when a
-                # separate draft model is attached: the flags size the DRAFT
-                # context, and a launch with no --model-draft has none. Judged on
-                # the flags actually built rather than on the requested mode, so a
-                # mode that fell back to no drafter emits nothing and an MTP load
-                # that did attach a drafter file is covered.
+                # The draft KV cache dtype sizes the DRAFT context, so it means
+                # nothing without --model-draft. Judged on the flags actually built,
+                # not the requested mode: a mode that fell back to no drafter emits
+                # nothing, and an MTP load that did attach one is covered.
                 if spec_draft_cache_type and any(
                     _flag_name(tok) in _LOCAL_DRAFT_FLAGS for tok in spec_flags
                 ):
@@ -18380,10 +18371,9 @@ class LlamaCppBackend:
                 # a repeated prompt is not re-prefilled on every request. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
-                    # An explicit control wins over the platform tuning: the user
-                    # asked for this number on this host, and llama.cpp is
-                    # last-wins, so emitting a 0 after it would silently overrule
-                    # the panel while still showing the value it typed.
+                    # An explicit control wins over the platform tuning: llama.cpp
+                    # is last-wins, so a 0 emitted after it would overrule the panel
+                    # while the panel still showed the value that was typed.
                     if cache_ram is not None:
                         pass
                     elif server_caps.get("supports_cache_ram"):
@@ -19647,12 +19637,10 @@ class LlamaCppBackend:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
                                 supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                                # Deliberately not the requested load mode: the
-                                # first launch already emitted it, and this call
-                                # only ADDS to the command. A second copy would
-                                # land after the extras (overruling a flag the
-                                # user typed) and would make _memory_policy_active
-                                # true for a launch Model Memory never touched.
+                                # Not the requested load mode: the first launch
+                                # emitted it and this call only ADDS, so a second
+                                # copy would land after the extras and mark
+                                # _memory_policy_active for a launch it never touched.
                                 weights_in_host_memory = _retry_host_resident,
                             )
                             if _retry_managed:

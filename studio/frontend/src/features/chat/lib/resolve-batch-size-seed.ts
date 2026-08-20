@@ -4,11 +4,10 @@
 // what a fresh /api/inference/status does to one load control/baseline pair
 
 /**
- * Generic in the value type, because the rule is about the ECHO and not about
- * batch sizes: the llama-server tuning controls added alongside them (load mode,
- * draft cache dtype) are strings and follow the same steady-echo, dirty-control
- * and model-change logic. The parameter defaults to number so every existing
- * call site and its tests read unchanged.
+ * Generic in the value type because the rule is about the ECHO, not about batch
+ * sizes: the string tuning controls beside them (load mode, draft cache dtype)
+ * follow the same steady-echo, dirty-control and model-change logic. Defaults to
+ * number, so existing call sites read unchanged.
  */
 export interface BatchSizeSeedState<T extends number | string = number> {
   /** The editable control: what the next load or Apply would send. */

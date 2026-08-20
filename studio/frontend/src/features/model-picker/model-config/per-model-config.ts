@@ -23,20 +23,14 @@ export interface PerModelConfig {
   mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
-  /**
-   * KV cache dtype for the DRAFT model's context (--spec-draft-type-k/-v).
-   * Separate from kvCacheDtype: the drafter runs its own context, and the two
-   * are sized and quantized independently. Optional so older blobs still parse.
-   */
+  /** KV cache dtype for the DRAFT context (--spec-draft-type-k/-v), sized and
+   *  quantized independently of kvCacheDtype. Optional so older blobs parse. */
   specDraftCacheDtype?: string | null;
   nParallel: number | null;
   nBatch: number | null;
   nUbatch: number | null;
-  /**
-   * --load-mode. null follows llama.cpp's own `auto`, so a build that changes
-   * what auto picks is followed rather than pinned. Optional like the rest of
-   * the later additions.
-   */
+  /** --load-mode; null follows llama.cpp's own `auto`, so a build that redefines
+   *  auto is followed rather than pinned. */
   loadMode?: string | null;
   /** --ctx-checkpoints; null follows the llama.cpp default (32). */
   ctxCheckpoints?: number | null;
@@ -180,10 +174,9 @@ export const KV_CACHE_DTYPES = [
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-// llama-server's --load-mode enum, in the order its --help lists it. "auto" is
-// both a real value and the default, so the UI shows it while storage keeps it
-// as null: emitting nothing follows whatever auto means in the build that runs,
-// which is the point of the mode existing.
+// llama-server's --load-mode enum, in --help order. "auto" is both a real value
+// and the default, so the UI shows it while storage keeps null: emitting nothing
+// follows whatever auto means in the build that runs.
 export const LOAD_MODES = [
   "auto",
   "none",
@@ -195,16 +188,14 @@ export const LOAD_MODES = [
 export const LOAD_MODE_DEFAULT = "auto";
 const VALID_LOAD_MODES = new Set<string>(LOAD_MODES);
 
-// --ctx-checkpoints: SWA context checkpoints per slot. Each is a snapshot of the
-// sliding-window cache, so the count is small; the ceiling is a sanity bound, not
-// an upstream one. 0 disables checkpointing.
+// --ctx-checkpoints: per-slot snapshots of the sliding-window cache, so the count
+// is small. 0 disables them; the ceiling is a sanity bound, not an upstream one.
 export const CTX_CHECKPOINTS_MIN = 0;
 export const CTX_CHECKPOINTS_MAX = 256;
 export const CTX_CHECKPOINTS_LLAMA_DEFAULT = 32;
 
-// --cache-ram in MiB. -1 is "no limit" and 0 disables the host prompt cache, so
-// the floor is -1 rather than 0. The ceiling is 1 TiB, well past any host this
-// runs on, and exists so a stray keystroke fails here rather than in the child.
+// --cache-ram in MiB: -1 is "no limit" and 0 disables the host prompt cache, so
+// the floor is -1. The 1 TiB ceiling fails a stray keystroke before the child does.
 export const CACHE_RAM_MIN = -1;
 export const CACHE_RAM_MAX = 1024 * 1024;
 export const CACHE_RAM_LLAMA_DEFAULT = 8192;
@@ -365,16 +356,15 @@ function canonicalizeSpeculativeType(value: string): string | null {
 /**
  * Canonicalize a stored --load-mode, or null to follow the llama.cpp default.
  *
- * "auto" folds to null for the same reason Speculative Decoding's does: it IS the
- * default, so storing it would pin a value the build is free to redefine, and it
- * would read as an override in every "is this at default" check.
+ * "auto" folds to null like Speculative Decoding's: it IS the default, so storing
+ * it would pin a value the build may redefine and read as an override everywhere.
  */
 export function canonicalizeLoadMode(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }
-  // Whitespace and case only. "mmap + mlock" is not a spelling llama-server
-  // accepts, so it is refused rather than repaired into one.
+  // Whitespace and case only: "mmap + mlock" is not a spelling llama-server
+  // accepts, so it is refused rather than repaired.
   const mode = value.trim().toLowerCase();
   if (!mode || mode === LOAD_MODE_DEFAULT) {
     return null;
@@ -777,9 +767,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
       : null;
-  // Tied to the mode like specDraftNMax above: a stored draft dtype under a mode
-  // that launches no separate drafter would show a row for a context that never
-  // exists, and would read as a non-default advanced value.
+  // Tied to the mode like specDraftNMax: a dtype stored under a mode with no
+  // separate drafter shows a row for a context that never exists.
   const specDraftCacheDtype =
     speculativeType != null &&
     SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(speculativeType) &&

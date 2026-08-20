@@ -2,14 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The four llama-server tuning knobs that ride along with every GGUF load:
- * --load-mode, the draft context's KV cache dtype, --ctx-checkpoints and
- * --cache-ram.
+ * The four llama-server tuning knobs every GGUF load carries: --load-mode, the
+ * draft context's KV cache dtype, --ctx-checkpoints and --cache-ram.
  *
- * Together in one module because they are always sent, committed and cleared as
- * a group, and every load path in the adapter would otherwise repeat the same
- * four lines three times with three chances to forget one. The individual
- * spellings still live in the runtime store, so nothing here owns state.
+ * One module because they are always sent, committed and cleared as a group, and
+ * every load path would otherwise repeat the same four lines with three chances
+ * to forget one. State still lives in the runtime store.
  */
 
 /** The subset of a config these read; satisfied by PerModelConfig and the store. */
@@ -29,12 +27,9 @@ export interface ServerTuningPayload {
 }
 
 /**
- * What to send on /load, blank knobs omitted.
- *
- * Omitted rather than null for the same reason as n_batch: the route reads
- * ``model_fields_set`` to decide whether the control OWNS the flag, and a null
- * counts as set, which strips the matching flag out of any inherited extra
- * arguments. A blank control means "no opinion", so it must not be present.
+ * What to send on /load, blank knobs omitted rather than nulled: the route reads
+ * ``model_fields_set`` to decide whether the control owns the flag, and a null
+ * counts as set, stripping the flag out of any inherited extra arguments.
  */
 export function serverTuningLoadPayload(
   values: ServerTuningValues,
@@ -64,10 +59,9 @@ export interface ServerTuningState {
 }
 
 /**
- * What a launch just committed: the click-time values, not a backend echo, the
- * same rule the batch sizes follow. A diffusion load commits nothing, because it
- * launches no llama-server and a value recorded here would be carried onto the
- * next GGUF by a saved preset.
+ * What a launch committed: click-time values, not a backend echo, like the batch
+ * sizes. Diffusion commits nothing (it launches no llama-server, and a value
+ * recorded here would ride a saved preset onto the next GGUF).
  */
 export function committedServerTuningState(
   values: ServerTuningValues,
@@ -93,9 +87,8 @@ export function committedServerTuningState(
 }
 
 /**
- * The pairs a load that sent none of them leaves behind. Both halves are cleared:
- * a baseline kept from the model that just left would be re-sent by a rollback as
- * if this server were running it.
+ * The pairs a load that sent none of them leaves behind. Both halves, or a
+ * rollback re-sends the departed model's baseline as if this server ran it.
  */
 export function clearedServerTuningState(): ServerTuningState {
   return {

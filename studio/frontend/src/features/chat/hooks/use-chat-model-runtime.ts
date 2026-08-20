@@ -1088,8 +1088,8 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nUbatch ?? null)
               : useChatRuntimeStore.getState().nUbatch;
-          // The outgoing llama-server tuning intent, read the same way and for
-          // the same reason: the rollback restores the control, not the echo.
+          // The outgoing tuning intent, read the same way and for the same
+          // reason: a rollback restores the control, not the echo.
           const previousServerTuning: ServerTuningValues =
             typeof selection !== "string" && selection.previousConfig
               ? selection.previousConfig
@@ -1368,9 +1368,8 @@ export function useChatModelRuntime() {
                     ...(validateNUbatch != null
                       ? { n_ubatch: validateNUbatch }
                       : {}),
-                    // Same omit-when-blank rule: the draft cache dtype moves what
-                    // this preflight charges the drafter, so leaving it out would
-                    // approve a command the follow-up /load does not send.
+                    // Same omit-when-blank rule, and the same values: the preflight
+                    // has to approve the command the follow-up /load sends.
                     ...serverTuningLoadPayload(validateServerTuning),
                     // The same list the load below sends. A --ctx-size or cache
                     // override in here changes the memory this preflight estimates,

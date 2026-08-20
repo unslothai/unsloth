@@ -31,14 +31,10 @@ PARALLEL_MAX = 64
 BATCH_MIN = 1
 BATCH_MAX = 65536
 
-# --ctx-checkpoints ceiling. Upstream documents no maximum (the default is 32 and
-# each checkpoint is a sliding-window snapshot), so this is a sanity bound that
-# fails a stray keystroke here rather than in the child. Mirrored by
-# CTX_CHECKPOINTS_MAX in per-model-config.ts.
+# Sanity bounds, not upstream ones: a stray keystroke fails here rather than in the
+# child. --cache-ram floors at -1 ("no limit"); 0 disables the cache. Mirrored by
+# CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX in per-model-config.ts.
 CTX_CHECKPOINTS_MAX = 256
-# --cache-ram ceiling in MiB (1 TiB), well past any host this runs on. The floor is
-# -1 rather than 0, because -1 is "no limit" and 0 disables the cache; both are
-# meaningful. Mirrored by CACHE_RAM_MAX in per-model-config.ts.
 CACHE_RAM_MAX_MIB = 1024 * 1024
 
 # Each group = every alias (short + long) of one hard-denied flag.
@@ -540,9 +536,8 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         # deliberately NOT stripped: the VRAM budget reads them via the same parsers
         # the child honors, so they stay consistent on inherit, and stripping them
         # would silently move a CPU-offloaded drafter back onto the GPU. The draft
-        # cache dtype is in that group too and stays here for the same reason; it
-        # has its own strip toggle, used only when spec_draft_cache_type is set,
-        # which is the same rule the batch pair follows.
+        # cache dtype is in that group too, and has its own toggle used only when
+        # spec_draft_cache_type is set, the same rule the batch pair follows.
         "--model-draft",
         "-md",
         "--spec-draft-model",
@@ -592,15 +587,14 @@ _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-l
 # inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
 _BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
 _UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
-# Same rule for the llama-server tuning group: an inherited copy shadows the
-# first-class field, so each is stripped only when its field is supplied.
+# Same rule for the tuning group: stripped only when its field is supplied.
 # --swa-checkpoints is upstream's older spelling of --ctx-checkpoints.
 _CTX_CHECKPOINTS_FLAGS: frozenset[str] = frozenset(
     {"-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"}
 )
 _CACHE_RAM_FLAGS: frozenset[str] = frozenset({"-cram", "--cache-ram"})
-# Both halves of the draft KV cache, as one group: the control sets a single dtype
-# for the draft context, so an inherited pair that split K from V has to go whole.
+# One group: the control sets a single dtype, so an inherited pair that split K
+# from V has to go whole.
 _SPEC_DRAFT_CACHE_K_FLAGS: frozenset[str] = frozenset(
     {"-ctkd", "--cache-type-k-draft", "--spec-draft-type-k"}
 )
@@ -1183,19 +1177,14 @@ def apply_load_mode_policy(
     is meant to run straight after it on the extras that call returned.
 
     The Model Memory settings win, which is what the Run settings panel tells the
-    user, so changing the order here without changing ``loadModeOverrideNotice``
-    would make that note wrong:
-
-    * "Keep model in GPU memory" owns the mode outright while it applies. It emits
-      its own and strips every other load-mode-bearing token, because a trailing
-      one resets the whole mode and would drop the lock.
-    * "Don't reserve system RAM" vetoes the values that hold a full host copy
-      (``none``, ``mlock``, ``mmap+mlock``) and leaves ``mmap`` and ``dio`` alone.
+    user, so changing the order without changing ``loadModeOverrideNotice`` makes
+    that note wrong. "Keep model in GPU memory" owns the mode outright while it
+    applies; "Don't reserve system RAM" vetoes the values holding a full host copy
+    (``none``, ``mlock``, ``mmap+mlock``) and leaves ``mmap`` and ``dio`` alone.
 
     ``auto`` emits nothing: it IS llama.cpp's default, so pinning it would freeze
-    what a later build is free to redefine. An unrecognised value is dropped rather
-    than passed through, because llama-server exits on one and a bad stored setting
-    would become a failed load.
+    what a later build may redefine. An unknown value is dropped rather than passed
+    through, since llama-server exits on one.
     """
     tokens = list(extra_args or [])
     mode = _normalize_load_mode_value(requested_load_mode)
@@ -1221,8 +1210,8 @@ def apply_load_mode_policy(
         )
         return [], tokens
     if not supports_load_mode:
-        # A build predating the enum still understands the deprecated spellings it
-        # replaced, and only for the values that had one.
+        # A build predating the enum understands the spellings it replaced, and
+        # only for the values that had one.
         legacy = _LEGACY_LOAD_MODE_FLAGS.get(mode)
         if not legacy:
             logger.info("llama-server has no --load-mode; skipping the requested %r mode.", mode)
@@ -1237,9 +1226,8 @@ def apply_load_mode_policy(
             strip_mlock = True,
             strip_load_mode_aliases = True,
         )
-    # The control owns the group for this load, so an inherited alias cannot reset
-    # it the way one would reset the keep-resident lock. Emitted BEFORE the extras,
-    # so a flag typed by hand still last-wins over the control.
+    # The control owns the group, so an inherited alias cannot reset it. Emitted
+    # before the extras, so a hand-typed flag still last-wins over it.
     return ["--load-mode", mode], strip_shadowing_flags(
         tokens,
         strip_context = False,
