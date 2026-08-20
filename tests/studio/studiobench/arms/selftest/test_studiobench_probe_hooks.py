@@ -67,6 +67,23 @@ def test_the_hooks_are_off_unless_asked_for(main_src: str, monkeypatch):
         assert guarded in main_src, f"{guarded!r} is gone; the hook may no longer be opt-in"
 
 
+def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
+    """A path typo must not leave a detached Studio holding a port.
+
+    The source is not needed until the browser launches, but reading it there raises after Studio
+    and the pacer are up and before the cleanup `finally` around the cell loop is entered, so
+    nothing stops them. Reading it in the first second of the run fails while there is nothing to
+    clean up.
+    """
+
+    read_at = main_src.index("extra_init_source = Path(extra_init).read_text")
+    assert read_at < main_src.index("install_studio(ref, home)")
+    assert read_at < main_src.index("page_scripts.append(extra_init_source)")
+    assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
+    # Read once, used later. A second read at launch time would reintroduce the window.
+    assert main_src.count("Path(extra_init).read_text") == 1
+
+
 def test_the_probe_exists_and_is_not_a_stub(probe_src: str):
     assert PROBE.is_file()
     assert len(probe_src) > 4_000

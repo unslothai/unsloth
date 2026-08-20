@@ -214,6 +214,24 @@ def run(args, ab_ref = None) -> int:
     corpus = Corpus.load()
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
+    # READ NOW, BEFORE ANYTHING IS STARTED. The probe's source is not needed until the browser is
+    # launched, but reading it there means a path typo raises after Studio and the pacer are up
+    # and before the cleanup `finally` that would stop them is entered, so a detached Studio keeps
+    # running and holds its port. The cheapest correct fix is to fail while there is nothing to
+    # clean up: a missing, unreadable or non-UTF-8 file is a mistake in the invocation, and the
+    # right moment to say so is the first second of the run.
+    extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
+    extra_init_source = ""
+    if extra_init:
+        try:
+            extra_init_source = Path(extra_init).read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _log(
+                f"  FATAL: SBENCH_EXTRA_INIT_SCRIPT={extra_init} could not be read: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return 2
+
     # One spec per side. Without --ab there is exactly one and everything below is the old path.
     specs = [("base", args.branch, args.attach, args.port)]
     if ab_ref:
@@ -356,14 +374,13 @@ def run(args, ab_ref = None) -> int:
     # never runs on its own. Making the page's JS depend on a CLI flag would mean the flag changes
     # what is on the page during the FILM as well, and the film's numbers must not depend on
     # whether a later phase was asked for.
-    extra_init = os.environ.get("SBENCH_EXTRA_INIT_SCRIPT")
     page_scripts = [
         resources.read_text("scene/dom.js"),
         resources.read_text("scene/parity.js"),
         resources.read_text("scene/surfaces.js"),
     ]
     if extra_init:
-        page_scripts.append(Path(extra_init).read_text(encoding = "utf-8"))
+        page_scripts.append(extra_init_source)
         _log(
             f"  EXTRA INIT SCRIPT: {extra_init} -- this run carries an external probe and is NOT "
             f"a clean measurement of the build"
