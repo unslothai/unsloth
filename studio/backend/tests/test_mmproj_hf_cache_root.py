@@ -89,7 +89,9 @@ def test_projector_at_the_hf_repo_root_is_found(tmp_path):
         repo / "mmproj-kquant.gguf", {"general.type": "mmproj", "general.architecture": "qwen3vl"}
     )
 
-    found = detect_mmproj_file(str(weight), search_root = _local_gguf_companion_search_root(str(weight.parent), str(weight)))
+    found = detect_mmproj_file(
+        str(weight), search_root = _local_gguf_companion_search_root(str(weight.parent), str(weight))
+    )
     assert found is not None and Path(found).resolve() == projector.resolve()
 
 
@@ -101,5 +103,7 @@ def test_a_sibling_repo_s_projector_stays_invisible(tmp_path):
         other / "mmproj-F16.gguf", {"general.type": "mmproj", "general.architecture": "otherarch"}
     )
 
-    found = detect_mmproj_file(str(weight), search_root = _local_gguf_companion_search_root(str(weight.parent), str(weight)))
+    found = detect_mmproj_file(
+        str(weight), search_root = _local_gguf_companion_search_root(str(weight.parent), str(weight))
+    )
     assert found is None
