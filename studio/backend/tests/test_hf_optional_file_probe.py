@@ -36,6 +36,7 @@ def _http_error(name: str, *, fallback: str | None = None) -> Exception:
         # The plain-Exception base takes a message and nothing else.
         return cls(name)
 
+
 _BACKEND = Path(__file__).resolve().parents[1]
 
 # Optional-file readers and the guard each must call before downloading. The template reader
@@ -65,7 +66,6 @@ def _raise(exc):
 
 def _patch_metadata(monkeypatch, behavior):
     import huggingface_hub
-
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", behavior)
 
 
@@ -179,9 +179,7 @@ def test_a_present_adapter_config_still_resolves_its_base(monkeypatch, tmp_path)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *_a, **_k: str(cfg))
     _patch_metadata(monkeypatch, lambda *_a, **_k: object())
 
-    assert (
-        model_config.get_base_model_from_lora_identifier("Org/Adapter") == "unsloth/Qwen3-1.7B"
-    )
+    assert model_config.get_base_model_from_lora_identifier("Org/Adapter") == "unsloth/Qwen3-1.7B"
 
 
 def test_the_chat_template_search_skips_paths_the_listing_does_not_name(monkeypatch):
@@ -240,9 +238,9 @@ def test_every_optional_file_read_on_the_load_path_probes_first(rel):
     for name, guard in sorted(_GUARDED[rel].items()):
         assert name in defined, f"{rel}::{name} was renamed; update _GUARDED"
         called = _called_names(defined[name])
-        assert "hf_hub_download" in called, (
-            f"{rel}::{name} no longer downloads; drop it from _GUARDED"
-        )
+        assert (
+            "hf_hub_download" in called
+        ), f"{rel}::{name} no longer downloads; drop it from _GUARDED"
         assert guard in called, (
             f"{rel}::{name} downloads an optional file without asking {guard} first, so a 404 "
             "there rewrites refs/main and hides the repo from the Hub cached inventory"
