@@ -3530,7 +3530,6 @@ def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
         return False
     try:
         from utils.models.gguf_metadata import mmproj_capabilities
-
         has_audio, accepts_image = mmproj_capabilities(str(path))
     except Exception as e:
         logger.debug(f"inherited mmproj capability read failed: {e}")
