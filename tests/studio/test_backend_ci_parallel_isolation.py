@@ -486,51 +486,6 @@ def test_the_scan_finds_all_three_shapes():
     )
 
 
-def test_a_find_spec_probe_counts_as_checking_first():
-    """The scan must accept both spellings of the guard, or it mandates the broken one.
-
-    Requiring a literal `import name` is what forced test_llama_cpp_wait_for_vram_settle
-    to import the in-repo `loggers` package to prove it exists. That package imports
-    structlog at module scope and the structlog stub is installed after it, so with no
-    real structlog the probe raises and the except branch stubs over the real package --
-    the exact shadowing this file exists to stop. It also leaves an unused module-level
-    name, which scripts/verify_import_hoist.py blocks, so the two rules could not both be
-    satisfied until the scan learned find_spec.
-    """
-    probed = _probed_via_find_spec(
-        ast.parse(
-            "import importlib.util as _iu\n"
-            "try:\n"
-            "    _real = _iu.find_spec('loggers') is not None\n"
-            "except (ImportError, ValueError):\n"
-            "    _real = False\n"
-        )
-    )
-    assert probed == {"loggers"}, probed
-
-    # Submodule probes reduce to their top-level name, the way the import scan does.
-    assert _probed_via_find_spec(ast.parse("importlib.util.find_spec('a.b.c')")) == {"a"}
-
-    # A non-constant argument names nothing the scan can credit, so it must not be
-    # silently treated as a guard for whatever is stubbed nearby.
-    assert _probed_via_find_spec(ast.parse("importlib.util.find_spec(name)")) == set()
-
-    # And the real file must now pass the scan by that route rather than by importing.
-    tree = ast.parse(
-        (BACKEND_TESTS / "test_llama_cpp_wait_for_vram_settle.py").read_text(encoding = "utf-8")
-    )
-    imported = {
-        alias.name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    assert "loggers" not in imported, (
-        "the unused `import loggers` is back; verify_import_hoist.py blocks it"
-    )
-    assert "loggers" in _probed_via_find_spec(tree)
-
-
 def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():
     """A stub may stand in for a MISSING library, never for an installed one.
 
@@ -572,7 +527,6 @@ def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():
             if isinstance(node, ast.Import)
             for alias in node.names
         }
-        imported |= _probed_via_find_spec(tree)
         for stub in sorted(stubbed - imported):
             if _is_installed(stub):
                 offenders.setdefault(path.name, []).append(stub)
@@ -614,34 +568,6 @@ def _assigned_into_sys_modules(tree: ast.AST) -> set:
                 and isinstance(target.slice.value, str)
             ):
                 names.add(target.slice.value)
-    return names
-
-
-def _probed_via_find_spec(tree: ast.AST) -> set:
-    """Names checked with `importlib.util.find_spec("name")`, the other way to ask.
-
-    A bare `import name` is not the only honest guard, and for an in-repo package it is
-    the worse one. `loggers` imports structlog at module scope, so in the environment
-    these stubs exist for -- no real structlog -- `import loggers` fails on the missing
-    transitive dep and the except branch stubs over the real package, which is exactly
-    the shadowing this test is here to stop. find_spec answers "is it resolvable" without
-    executing the module, so a missing transitive dep cannot skew the answer.
-
-    It also leaves no unused module-level binding, which scripts/verify_import_hoist.py
-    reads as a botched hoist. Accepting both spellings is what lets a file satisfy this
-    test and that one at the same time.
-    """
-    names = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "find_spec"):
-            continue
-        if node.args and isinstance(node.args[0], ast.Constant):
-            value = node.args[0].value
-            if isinstance(value, str):
-                names.add(value.split(".")[0])
     return names
 
 
