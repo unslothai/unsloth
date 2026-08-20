@@ -315,7 +315,7 @@ def _ollama_tag_label(rel: Path) -> str:
     return f"{'/'.join(namespace)}:{parts[-1]}"
 
 
-def _plan_ollama(load_id: str, tag_file: Path) -> LocalDeletePlan:
+def _plan_ollama(load_id: str, tag_file: Path, ollama_dir: Path) -> LocalDeletePlan:
     """Plan an Ollama tag delete: the manifest, its unshared blobs, and Studio's own links.
 
     Blobs are content-addressed and shared, so what actually comes back is decided by counting
@@ -326,28 +326,12 @@ def _plan_ollama(load_id: str, tag_file: Path) -> LocalDeletePlan:
     """
     plan = LocalDeletePlan(load_id = load_id, source = "ollama")
 
-    ollama_dir = ollama.ollama_dir_for_manifest(tag_file)
-    if ollama_dir is None:
-        plan.blocked_by.append("This model is not inside a known Ollama models directory.")
-        return plan
-
     manifests_root = ollama_dir / "manifests"
     try:
         rel = tag_file.relative_to(manifests_root)
     except ValueError:
-        # Reachable when the reference resolves into the root through a symlink: same-or-child
-        # says yes on real paths while relative_to works on the spelled one.
-        real_tag = _safe_realpath(tag_file)
-        real_root = _safe_realpath(manifests_root)
-        if real_tag is None or real_root is None:
-            plan.blocked_by.append("Couldn't resolve this model's Ollama manifest.")
-            return plan
-        try:
-            rel = real_tag.relative_to(real_root)
-        except ValueError:
-            plan.blocked_by.append("Couldn't resolve this model's Ollama manifest.")
-            return plan
-        tag_file = real_tag
+        plan.blocked_by.append("Couldn't resolve this model's Ollama manifest.")
+        return plan
 
     if not tag_file.is_file():
         plan.blocked_by.append("This model's Ollama manifest is already gone.")
@@ -476,10 +460,16 @@ def plan_local_delete(load_id: str, source: Optional[str] = None) -> LocalDelete
         raise HTTPException(status_code = 400, detail = "load_id is required")
 
     if ollama.is_ollama_manifest_ref(identifier):
-        tag_file = ollama.ollama_manifest_ref_tag_file(identifier)
-        if tag_file is None:
-            raise HTTPException(status_code = 400, detail = "Invalid Ollama model reference")
-        return _plan_ollama(identifier, tag_file)
+        # The load path's own resolver: it canonicalizes the path and validates it against the
+        # discovered and registered Ollama roots. Two validations that could disagree about which
+        # references are in bounds is how a delete reaches somewhere it never should have.
+        try:
+            tag_file, ollama_dir = ollama.resolve_ollama_manifest_ref(identifier)
+        except ValueError as e:
+            plan = LocalDeletePlan(load_id = identifier, source = "ollama")
+            plan.blocked_by.append(f"This Ollama model cannot be located: {e}")
+            return plan
+        return _plan_ollama(identifier, tag_file, ollama_dir)
 
     if source == "hf_cache":
         raise HTTPException(
@@ -595,6 +585,33 @@ def local_delete_impact_blocking(load_id: str, source: Optional[str] = None) -> 
 
 
 def delete_local_model_blocking(load_id: str, source: Optional[str] = None) -> dict:
+    """Remove a discovered model, serializing an Ollama one against its own materialization.
+
+    An Ollama tag has a second writer: the load path materializes its ``.gguf`` links under a
+    per-manifest lock. Planning and removing under that same lock is what keeps the reference
+    count this delete acts on from going stale between counting and unlinking, and keeps a load
+    landing mid-delete from re-creating the links the delete just collected.
+    """
+    identifier = (load_id or "").strip()
+    if ollama.is_ollama_manifest_ref(identifier):
+        try:
+            tag_file, _ollama_dir = ollama.resolve_ollama_manifest_ref(identifier)
+        except ValueError as e:
+            raise HTTPException(status_code = 400, detail = f"This Ollama model cannot be located: {e}")
+        with ollama.ollama_manifest_write_guard(tag_file) as acquired:
+            if not acquired:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "This model is being loaded right now. Try deleting it once the load "
+                        "finishes."
+                    ),
+                )
+            return _delete_planned(identifier, source)
+    return _delete_planned(identifier, source)
+
+
+def _delete_planned(load_id: str, source: Optional[str] = None) -> dict:
     # Re-planned here rather than trusting a preview the client may have been sitting on for
     # minutes: an `ollama pull` in between can point another tag at these blobs, and a folder can
     # stop being a model. The plan the guards run against is the plan that executes.

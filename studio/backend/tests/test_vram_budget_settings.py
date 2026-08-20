@@ -470,7 +470,13 @@ class TestPendingOwnership:
         ]
         compact = "".join("".join(code).split())
         assert "withself._serial_load_lock:try:yieldfinally:" in compact
-        assert compact.endswith("self._vram_fraction_pending=None")
+        # In the finally, not necessarily last in it. The scope releases more than
+        # one pending marker now -- #9292 added _binary_revision_pending -- and
+        # pinning this to the END of the source made adding a sibling clear read as
+        # "the pending value is no longer released with the load lock", which is a
+        # different and much more alarming claim than the one that was true.
+        released = compact.split("finally:", 1)[1]
+        assert "self._vram_fraction_pending=None" in released
         # And the load has to go through it, or the scope guards nothing.
         load = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
         assert "withself._serial_load_scope():" in load

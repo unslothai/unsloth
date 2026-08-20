@@ -228,6 +228,33 @@ def test_ollama_delete_refuses_while_the_model_is_loaded(ollama_root, monkeypatc
     assert (ollama_root / "blobs" / "sha256-own").exists()
 
 
+def test_delete_waits_on_the_same_lock_a_load_materializes_under(ollama_root, monkeypatch):
+    """The load path holds a per-manifest lock while it materializes the .gguf links. A delete
+    running underneath it would unlink blobs mid-load, so it takes the same lock -- and answers
+    rather than hanging when a long load will not give it up."""
+    own = _blob(ollama_root, "own", 256)
+    tag = _manifest(ollama_root, "llama3", "8b", own)
+    ref = _ref(tag)
+    resolved_tag, _root = ollama.resolve_ollama_manifest_ref(ref)
+
+    # Stand in for a load holding its lease.
+    held = ollama._materialization_lock(resolved_tag)
+    monkeypatch.setattr(ollama, "_WRITE_GUARD_TIMEOUT_SECONDS", 0.05)
+    assert held.acquire(timeout = 1)
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            local_deletion.delete_local_model_blocking(ref, "ollama")
+        assert excinfo.value.status_code == 409
+        assert tag.exists()
+        assert (ollama_root / "blobs" / "sha256-own").exists()
+    finally:
+        held.release()
+
+    # Once the load lets go, the same delete goes through.
+    local_deletion.delete_local_model_blocking(ref, "ollama")
+    assert not tag.exists()
+
+
 def test_unverifiable_load_state_refuses_rather_than_deletes(ollama_root, monkeypatch):
     own = _blob(ollama_root, "own", 256)
     tag = _manifest(ollama_root, "llama3", "8b", own)
