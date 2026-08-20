@@ -791,6 +791,10 @@ def test_the_vision_switch_keeps_an_inherited_audio_only_encoder(tmp_path, monke
     # And the probe follows the scrub, so the composer is told what the child has.
     assert backend._mmproj_has_audio is True
     assert backend._mmproj_accepts_image is False
+    # --no-mmproj-auto does not unload it (server-context.cpp gates the load on a
+    # non-empty mmproj.path and never reads no_mmproj), but it does make the router
+    # advertise the model text-only, so a projector kept on purpose must not get it.
+    assert "--no-mmproj-auto" not in result["cmd"]
 
 
 def test_an_inherited_projector_that_reads_images_still_goes(tmp_path, monkeypatch):

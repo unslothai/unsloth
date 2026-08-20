@@ -18361,9 +18361,17 @@ class LlamaCppBackend:
                 # --mmproj-auto in the extras above, and that flag asks llama-server to
                 # rediscover the adjacent projector by itself. Vision would come back on
                 # a load that reports it off and whose fit budget never charged the
-                # projector's VRAM. Only when the projector was suppressed: an audio-only
-                # one is kept on purpose, and --no-mmproj-auto would take it away.
-                if disable_vision and not launch_mmproj_path:
+                # projector's VRAM. Only when the projector really was suppressed. Both
+                # ways of keeping an audio-only one are excluded: the resolved path keeps
+                # launch_mmproj_path set, and an inherited LLAMA_ARG_MMPROJ keeps neither
+                # that nor anything else this gate can see, so it needs the same predicate
+                # the env scrub used. --no-mmproj-auto does not actually unload either of
+                # them -- server-context.cpp gates the load on a non-empty mmproj.path and
+                # never reads no_mmproj, which only suppresses the HF auto-download and
+                # the router's capability report -- but advertising a model as text-only
+                # while loading its encoder is its own bug, and one flag away from a real
+                # one if that gate ever starts reading no_mmproj.
+                if disable_vision and not launch_mmproj_path and not _dv_env_mmproj_kept:
                     cmd.append("--no-mmproj-auto")
                 # Also last: _zero_offload_keeps_gpu_visible reads the finished cmd, so
                 # the override must be in it before the env block below judges this a
