@@ -65,7 +65,7 @@ class TestNoTorchBackendAutoInInstallSh:
         """
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
         block = _fallback_range(lines)
-        body = "\n".join(lines[block.start:block.stop])
+        body = "\n".join(lines[block.start : block.stop])
         # Both arms of the branch, so neither an early stop nor a runaway passes.
         assert "STUDIO_LOCAL_INSTALL" in body, "the fallback block stops before its own first if"
         assert body.count("--torch-backend=auto") == 2, (
