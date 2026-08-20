@@ -2218,7 +2218,14 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     # A swap under this tab resets the controls too, but through the seed, not a blanket
     # null after it: the batch echo is the REQUESTED size, so clearing it here would also
     # discard the value just adopted from the new model and revert it on the next Reload.
-    assert status.count("modelChanged: slotsModelChanged,") == 2
+    # EVERY seed is told the same thing from the same local, so none of them can drift
+    # apart. Counted against the number of resolveBatchSizeSeed call sites rather than
+    # hardcoded: the llama-server tuning knobs deliberately reuse this seed, so a fixed
+    # number here fails the next time the group grows while saying nothing about drift,
+    # which is the property actually under test.
+    seed_calls = len(re.findall(r"resolveBatchSizeSeed(?:<[^>]*>)?\(\{", status))
+    assert seed_calls >= 2, "the batch pair alone should be two seeds"
+    assert re.findall(r"modelChanged: (\w+)", status) == ["slotsModelChanged"] * seed_calls
     assert "{ nBatch: null, nUbatch: null }" not in status
     # The remembered override is re-adopted only when the echo proves it.
     assert (
