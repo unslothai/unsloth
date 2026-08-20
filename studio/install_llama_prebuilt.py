@@ -4451,6 +4451,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             ) from exc
         restore_attempted = False
         restored = False
+        recovery_error: BaseException | None = None
         try:
             if install_dir.exists():
                 failed_dir = unique_install_side_path(install_dir, "failed")
@@ -4530,6 +4531,10 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         except (BusyInstallConflict, PrebuiltFallback):
             raise
         except Exception as rollback_exc:
+            # Kept past the handler: `except` unbinds the name, and the raise
+            # below is chained from the activation error, so without this the
+            # recovery failure leaves the causal chain entirely.
+            recovery_error = rollback_exc
             if restore_attempted:
                 log(f"rollback after failed activation also failed: {rollback_exc}")
             else:
@@ -4570,15 +4575,30 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             log(f"cleanup after rollback failure also failed: {cleanup_exc}")
         details = textwrap.shorten(str(exc), width = 200, placeholder = "...")
         kept = f"; previous install kept at {rollback_dir}" if keep_rollback else ""
+        # The recovery is the first step here that needs free space -- everything
+        # before it renames or deletes -- so a disk-full it hits is not implied by
+        # the activation error and is often the only place the full disk shows up.
+        # _causal_chain follows __cause__ ahead of __context__, so chaining from
+        # the activation error alone hides that from _environment_fatal_reason and
+        # the caller starts a source build that needs far more room than the copy
+        # that just failed. Only the disk-full case swaps the cause; every other
+        # failure still surfaces the activation error the message already quotes.
+        cause: BaseException = exc
+        if (
+            recovery_error is not None
+            and _environment_fatal_reason(exc) is None
+            and _environment_fatal_reason(recovery_error) is not None
+        ):
+            cause = recovery_error
         if cleanup_error is not None:
             raise PrebuiltFallback(
                 "staged prebuilt validation passed but activation and rollback failed; "
                 f"cleanup also reported errors ({details}; cleanup={cleanup_error}){kept}"
-            ) from exc
+            ) from cause
         raise PrebuiltFallback(
             "staged prebuilt validation passed but activation and rollback failed; "
             f"cleaned install state for fresh source build ({details}){kept}"
-        ) from exc
+        ) from cause
     else:
         if rollback_dir:
             try:

@@ -851,6 +851,93 @@ def test_activate_install_tree_keeps_rollback_when_restore_fails(
     assert "removing rollback path" not in output
 
 
+def _fail_activation_then_restore_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, copy_error: Exception
+) -> tuple[Path, Path]:
+    """Activation fails for a reason that is *not* disk-related, the restore rename
+    then fails, and the copy back that follows raises ``copy_error``."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(copy_error),
+    )
+    return install_dir, staging_dir
+
+
+@pytest.mark.parametrize(
+    "make_copy_error",
+    [
+        # copytree propagates the raw OSError when the destination root itself
+        # cannot be created; per-file failures arrive as Error(list-of-strings)
+        # with errno and the chain already gone, which only the text carries.
+        lambda: OSError(errno.ENOSPC, "No space left on device"),
+        lambda: shutil.Error(
+            [("src", "dst", "[Errno 28] No space left on device: 'llama-server'")]
+        ),
+    ],
+    ids = ["oserror", "shutil_error"],
+)
+def test_activate_install_tree_reports_a_recovery_disk_full_as_out_of_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_copy_error
+):
+    """The copy back is the first step of this path that needs free space -- every
+    step before it renames or deletes -- so a full disk can show up there and
+    nowhere else. Dropping it would leave the caller starting a source build that
+    needs far more room than the copy that just failed."""
+    install_dir, staging_dir = _fail_activation_then_restore_rename(
+        tmp_path, monkeypatch, make_copy_error()
+    )
+
+    with pytest.raises(PrebuiltFallback) as excinfo:
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert INSTALL_LLAMA_PREBUILT._environment_fatal_reason(excinfo.value) == (
+        "no space left on device"
+    )
+    # The point of the retention is unchanged: the previous install still exists.
+    rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "old install\n"
+
+
+def test_activate_install_tree_keeps_the_activation_error_as_the_cause_when_not_out_of_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Only a disk-full recovery failure replaces the cause: an ordinary one still
+    reports the activation error, so the caller keeps its source build fallback."""
+    install_dir, staging_dir = _fail_activation_then_restore_rename(
+        tmp_path, monkeypatch, OSError(errno.EACCES, "Permission denied")
+    )
+
+    with pytest.raises(PrebuiltFallback) as excinfo:
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "activation confirm failed"
+    assert INSTALL_LLAMA_PREBUILT._environment_fatal_reason(excinfo.value) is None
+
+
 def test_activate_install_tree_copies_previous_install_back_when_restore_rename_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
