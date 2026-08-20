@@ -38,7 +38,7 @@ import { useChatArtifactsStore } from "./store";
 import type { ArtifactDownloadFormat, ChatArtifact } from "./types";
 import {
   ARTIFACT_DOWNLOAD_FORMATS,
-  buildArtifactDownloadPayload,
+  buildArtifactDownloadContent,
   buildArtifactHtmlFence,
   buildArtifactSourceKey,
   getArtifactDownloadExtension,
@@ -127,9 +127,8 @@ export function ArtifactSurface({
 
   const handleDownload = async (format: ArtifactDownloadFormat) => {
     try {
-      const payload = await buildArtifactDownloadPayload(artifact, format);
       await downloadFile(
-        payload,
+        buildArtifactDownloadContent(artifact.code, format),
         getArtifactFilename(artifact, format),
         getArtifactDownloadMimeType(format),
       );
