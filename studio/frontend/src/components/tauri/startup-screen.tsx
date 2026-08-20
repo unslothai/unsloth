@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SetupLogDetails } from "@/components/tauri/setup-log";
 import {
   installProgressMessage,
   startupWaitingMessage,
@@ -11,8 +12,6 @@ import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
-import { ChevronDown as ChevronDownIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useState } from "react";
 
@@ -218,23 +217,7 @@ function InstallingContent({
           {message.title}
         </p>
         <p className="text-sm text-muted-foreground">{message.subtitle}</p>
-        {detailLines.length > 0 && (
-          <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-              <span className="group-open:hidden">Show installation details</span>
-              <span className="hidden group-open:inline">Hide installation details</span>
-              <HugeiconsIcon
-                icon={ChevronDownIcon}
-                aria-hidden="true"
-                strokeWidth={1.5}
-                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
-              />
-            </summary>
-            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
-              {detailLines.join("\n")}
-            </pre>
-          </details>
-        )}
+        <SetupLogDetails label="installation" lines={detailLines} />
       </div>
     </div>
   );
@@ -260,23 +243,7 @@ function RepairingContent({
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground">Getting things ready...</p>
         <p className="text-sm text-muted-foreground">This won’t take long.</p>
-        {detailLines.length > 0 && (
-          <details className="group mt-2 w-full max-w-sm text-left">
-            <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-              <span className="group-open:hidden">Show setup details</span>
-              <span className="hidden group-open:inline">Hide setup details</span>
-              <HugeiconsIcon
-                icon={ChevronDownIcon}
-                aria-hidden="true"
-                strokeWidth={1.5}
-                className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
-              />
-            </summary>
-            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
-              {detailLines.join("\n")}
-            </pre>
-          </details>
-        )}
+        <SetupLogDetails label="setup" lines={detailLines} />
       </div>
     </div>
   );
