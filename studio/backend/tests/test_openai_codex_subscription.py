@@ -2614,13 +2614,22 @@ def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
     order = []
 
     class AlwaysRejecting:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             return httpx.Response(401, json = {"detail": "expired"})
 
         async def aclose(self):
             return None
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "fresh-token", "acct-1"
 
     @asynccontextmanager
