@@ -86,6 +86,42 @@ def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     assert native_grant_backed is False
 
 
+def test_retagged_manifest_materializes_a_new_load_path(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+    from types import SimpleNamespace
+
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+
+    root = tmp_path / "ollama-retagged"
+    tag_file = _write_ollama_store(root)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    first_path = ollama.materialize_ollama_model_ref(ref)
+    assert Path(first_path).read_bytes() == b"GGUF-not-really"
+
+    replacement_digest = "b" * 64
+    replacement_blob = root / "blobs" / f"sha256-{replacement_digest}"
+    replacement_blob.write_bytes(b"GGUF-replacement")
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["layers"][0]["digest"] = f"sha256:{replacement_digest}"
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    second_path = ollama.materialize_ollama_model_ref(ref)
+
+    assert second_path != first_path
+    assert Path(first_path).read_bytes() == b"GGUF-not-really"
+    assert Path(second_path).read_bytes() == b"GGUF-replacement"
+
+    resident = SimpleNamespace(
+        is_loaded = True,
+        _model_identifier = ref,
+        _gguf_path = first_path,
+    )
+    replacement_intent = GgufLoadIntent(model_identifier = ref, gguf_path = second_path)
+    assert not LlamaCppBackend.matches_load_source(resident, replacement_intent)
+
+
 def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
