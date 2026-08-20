@@ -24,6 +24,8 @@ import json
 import os
 from pathlib import Path
 
+from utils.paths.path_utils import is_appledouble_metadata
+
 _backend_root = Path(__file__).resolve().parent.parent
 _models_src = _backend_root / "routes" / "models.py"
 
@@ -45,7 +47,12 @@ def _load_has_downloaded_model():
     got = {n.name for n in body if isinstance(n, ast.FunctionDef)}
     assert got == wanted, f"helpers missing from source: {wanted - got}"
     module = ast.Module(body = body, type_ignores = [])
-    ns: dict = {"Path": Path, "os": os, "json": json}
+    ns: dict = {
+        "Path": Path,
+        "os": os,
+        "json": json,
+        "is_appledouble_metadata": is_appledouble_metadata,
+    }
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_dir_has_downloaded_model"]
 

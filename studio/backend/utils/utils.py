@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 import shutil
 import tempfile
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 logger = get_logger(__name__)
@@ -579,8 +580,11 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
         has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
         if not has_config:
             return False
+
         for path in snapshot.rglob("*"):
-            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES and path.is_file():
+            if path.suffix.lower() not in _LOADABLE_WEIGHT_SUFFIXES or not path.is_file():
+                continue
+            if not is_appledouble_metadata(path):
                 return True
     except OSError:
         return False
