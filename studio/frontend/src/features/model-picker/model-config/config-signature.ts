@@ -58,6 +58,7 @@ export function loadedConfigSignature(
     config.nBatch ?? "",
     config.nUbatch ?? "",
     config.tensorParallel ? "1" : "0",
+    config.disableVision ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,

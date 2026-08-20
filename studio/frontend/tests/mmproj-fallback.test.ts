@@ -121,6 +121,21 @@ test("attachment and send gates forward projector fallback state", () => {
   assert.match(interactiveLoad, /force_reload:\s*forceReload/);
 });
 
+// The cpu_offload reason now has two producers: the fit estimate predicting the
+// projector will not fit in VRAM, and a GPU startup failure recovered on CPU. The
+// wording therefore has to describe the outcome rather than the route -- "could not
+// start on the GPU" is untrue of the predicted case, which never attempts a GPU load.
+test("the CPU projector message describes the placement, not one route to it", () => {
+  const message = mmprojFallbackMessage("cpu_offload");
+  assert.match(message, IMAGE_INPUT_AVAILABLE);
+  assert.doesNotMatch(
+    message,
+    /could not start on the GPU/,
+    "the predicted pin never attempts a GPU load, so this route-specific wording is wrong for it",
+  );
+  assert.match(message, /does not fit in VRAM/);
+});
+
 // The combination neither load path handled. Both wrote
 // `mmproj ? mmprojMessage : cpu ? cpuMessage : undefined`, so a session that lost GPU
 // acceleration AND vision reported only the vision loss, and the user was never told

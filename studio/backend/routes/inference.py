@@ -6306,6 +6306,34 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     return load_in_4bit
 
 
+def _load_keeps_a_projector(config, *, disable_vision: bool) -> bool:
+    """Whether the launch will actually open a projector for *config*.
+
+    The Vision switch turns IMAGES off, and llama_cpp.py keeps an audio-only
+    projector regardless because there is no image tower in it to drop. Only the
+    file's own metadata distinguishes the two, so this answers precisely when the
+    file is already on disk. A projector that is not (a remote repo, nothing
+    downloaded yet) reads as kept: the callers use this to decide whether the load
+    needs the GPU, and over-claiming is recoverable where under-claiming is not.
+    """
+    if not getattr(config, "is_vision", False):
+        return False
+    if not disable_vision:
+        return True
+    mmproj = getattr(config, "gguf_mmproj_file", None)
+    if not mmproj:
+        return True
+    try:
+        from utils.models.gguf_metadata import mmproj_accepts_image
+
+        # Image-capable means the switch really does suppress it. Unreadable reads
+        # as image-capable upstream, which matches what the loader will do with it.
+        return not mmproj_accepts_image(str(mmproj))
+    except Exception as exc:
+        logger.debug(f"mmproj capability read failed: {exc}")
+        return False
+
+
 def _remote_gguf_companion_bytes(
     repo: str,
     *,
@@ -6848,6 +6876,7 @@ def _estimate_gguf_required_gb(
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    disable_vision: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -6970,7 +6999,33 @@ def _estimate_gguf_required_gb(
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
+        # Same gate as the remote branch's include_mmproj below, and for the same
+        # reason: llama_cpp.py resolves no projector when vision is switched off, so
+        # the file is never opened and the guard must not refuse a chat load over
+        # bytes it provably does not take. A constrained machine is exactly where the
+        # switch gets used and exactly where this guard bites.
+        # The switch turns VISION off, though, and the loader keeps an AUDIO-ONLY
+        # projector loaded despite it (there is no image tower to drop). So ask the
+        # same question the loader asks, on the same file, rather than assuming the
+        # switch always means no projector: dropping the bytes of one that does get
+        # opened would let this guard admit a load the running training job cannot
+        # afford. Locally the file is on disk, so the answer is readable here.
         _sized_attrs = ["gguf_mmproj_file"]
+        if disable_vision:
+            _dv_mmproj = getattr(config, "gguf_mmproj_file", None)
+            _dv_opens_projector = False
+            if _dv_mmproj:
+                try:
+                    from utils.models.gguf_metadata import mmproj_accepts_image
+
+                    # Kept for audio, so its bytes stay charged. An unreadable file
+                    # reads as image-capable upstream, hence suppressed and uncharged,
+                    # which matches what the loader will then do with it.
+                    _dv_opens_projector = not mmproj_accepts_image(str(_dv_mmproj))
+                except Exception as _dv_exc:
+                    logger.debug(f"mmproj capability read failed: {_dv_exc}")
+            if not _dv_opens_projector:
+                _sized_attrs = []
         if not _charge_no_drafter:
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
@@ -7065,6 +7120,14 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
+                # Charged whenever the repo ships one, switch or no switch. The load
+                # now fetches a remote projector either way, because only the file's
+                # own metadata says whether it is an image tower the switch drops or
+                # an audio encoder the loader keeps, and nothing here has the file to
+                # ask. Under-charging is the direction that lets this guard admit a
+                # chat load over VRAM a running training job needs, so a projector of
+                # unknown kind is charged; the local branch, where the file is on
+                # disk, asks it instead.
                 include_mmproj = bool(has_vision),
                 # Remote, so which sidecar the repo ships is unknown until the
                 # listing. Under Auto size both: a repo has one kind or the other,
@@ -7931,6 +7994,9 @@ def _guard_chat_load_against_training(
             n_devices = guard_n_devices,
             # a confirmed diffusion runner ignores the batch flags, so no reserve for it
             is_diffusion = diffusion_kind is True,
+            # getattr for the same reason as the batch flags above: an older caller
+            # hands this guard a bare request double that does not carry the field.
+            disable_vision = bool(getattr(request, "disable_vision", False)),
         )
         if is_gguf
         else None
@@ -9090,6 +9156,11 @@ async def _load_model_impl(
                 _hub_download_blocks_gguf_load,
                 config.gguf_hf_repo,
                 config.gguf_variant,
+                # Same predicate as the marker's own check, and as the loader's
+                # download gate: the projector is fetched whenever the repo ships one
+                # and the extras have not opted out, so the switch must not relax this
+                # interlock. Relaxing it let a vision-off load bypass the 409 and then
+                # download into the shared Hub cache beside a running download job.
                 require_mmproj = bool(
                     config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
                 ),
@@ -9117,7 +9188,22 @@ async def _load_model_impl(
                 request.gpu_memory_mode,
                 request.gpu_layers,
                 extra_llama_args,
-                bool(config.is_vision and not extra_args_disable_mmproj(extra_llama_args)),
+                # Vision off suppresses the projector, so it keeps no GPU visible and
+                # this load must not take the arbiter: acquire_for evicts a resident
+                # image/video pipeline and the confirmation cancels its running
+                # generations, both before the launch would have revealed it needed
+                # nothing. An audio-only projector is kept, and a kept projector does
+                # keep the GPUs visible, so ask the file when it is already on disk.
+                # A remote one is not, and claiming the GPU is the safe way to be
+                # wrong here: the stale claim is released right after the load.
+                bool(
+                    config.is_vision
+                    and not extra_args_disable_mmproj(extra_llama_args)
+                    and _load_keeps_a_projector(
+                        config,
+                        disable_vision = bool(getattr(request, "disable_vision", False)),
+                    )
+                ),
                 request.speculative_type,
             )
         )

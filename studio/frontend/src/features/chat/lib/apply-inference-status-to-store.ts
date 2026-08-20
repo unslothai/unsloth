@@ -402,6 +402,31 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    // A load knob like tensorParallel above, so the same reseed and the same
+    // "unseeded" guard. Without it a tab that never performed the load shows
+    // Vision ON over a model running with its projector off, and the next Reload
+    // silently puts the projector back. Seeded from disable_vision -- the request
+    // the load ran with -- not vision_disabled_by_user, which is also gated on the
+    // model HAVING a projector and so cannot round-trip a text-only GGUF.
+    ...(seedLoadParams &&
+      status.disable_vision !== undefined &&
+      (prevState.loadedVisionDisabledByUser === null ||
+        hydratingExistingModel) && {
+        disableVision: status.disable_vision,
+      }),
+    // The rollback baseline, and unguarded like the mirror below rather than
+    // seeded once: it has to track the RUNNING server, or a switch that fails
+    // after a poll restores whatever the last seed happened to see.
+    ...(seedLoadParams &&
+      status.disable_vision !== undefined && {
+        loadedDisableVision: status.disable_vision,
+      }),
+    // Unguarded, unlike the seed above: this mirrors the live load for the
+    // composer's image gate, not a user setting, so every poll must land.
+    ...(seedLoadParams &&
+      status.vision_disabled_by_user !== undefined && {
+        loadedVisionDisabledByUser: status.vision_disabled_by_user,
+      }),
     // Hydration only, so a steady poll never rewrites settings the store owns.
     // Width, verdict and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&

@@ -62,6 +62,11 @@ export function applyPerModelConfigToRuntime(
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
+    // The diffusion runner has no projector to skip, so the toggle is inert
+    // there for the same reason tensorParallel is.
+    disableVision: options.isDiffusion
+      ? false
+      : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
     // a standing preference so an absent mode falls back to the persisted one.
@@ -111,6 +116,7 @@ export function currentRuntimePerModelConfig(
     nBatch: s.nBatch ?? null,
     nUbatch: s.nUbatch ?? null,
     tensorParallel: s.tensorParallel ?? false,
+    disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
     // model's GPU Memory settings back (see applyPerModelConfigToRuntime). The
@@ -140,6 +146,7 @@ export function perModelConfigsEqual(
     (a.nBatch ?? null) === (b.nBatch ?? null) &&
     (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
+    Boolean(a.disableVision) === Boolean(b.disableVision) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
