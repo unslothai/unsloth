@@ -57,8 +57,12 @@ grep -q '^_uv_venv_requested()' "$_FN" || { echo "  FAIL: _uv_venv_requested not
 _FEDORA_HINT="hint: A managed Python download is available for Python >=3.13, !=3.13.8, <3.14, but Python downloads are set to 'manual', use \`uv python install >=3.13, !=3.13.8, <3.14\` to install the required version"
 
 # $1 = shell, $2 = first-venv mode (clean|fedora|other), $3 = python-install rc
+# The hint travels in the environment: interpolated into the program text its
+# backticks stay live, so the nested shell would run uv's own example command,
+# leave the file its `>=3.13,` redirection creates in the working directory, and
+# then assert against a hint with that part already substituted away.
 _run() {
-    "$1" -c '
+    FEDORA_HINT="$_FEDORA_HINT" "$1" -c '
         . "'"$_FN"'"
         VENV_DIR=/tmp/venv; PYTHON_VERSION=3.13
         _uvvr_n=0
@@ -69,7 +73,7 @@ _run() {
                 clean) return 0 ;;
                 fedora)
                     if [ "$_uvvr_n" -eq 1 ]; then
-                        echo "'"$_FEDORA_HINT"'" >&2
+                        printf "%s\n" "$FEDORA_HINT" >&2
                         return 2
                     fi
                     return 0
@@ -97,6 +101,8 @@ for _sh in sh bash; do
     assert_not_contains "clean host: no uv python install" "$_out" "python-install:"
 
     _out=$(_run "$_sh" fedora 0)
+    assert_contains "fedora: hint reaches the helper verbatim" "$_out" \
+        'use `uv python install >=3.13, !=3.13.8, <3.14`'
     assert_contains "fedora: first venv fails then retries" "$_out" "venv-1 python=>=3.13,<3.14,!=3.13.8"
     assert_contains "fedora: uv python install uses the same request" "$_out" \
         "python-install:>=3.13,<3.14,!=3.13.8"
