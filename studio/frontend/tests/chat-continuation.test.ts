@@ -9,8 +9,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  AUTO_CONTINUE_LEASE_KEY,
+  AUTO_CONTINUE_LEASE_TTL_MS,
   AUTO_CONTINUE_LIMIT,
   autoContinueCount,
+  createAutoContinueTab,
   budgetImpliesTruncation,
   incompleteLabel,
   isContinuableContent,
@@ -492,4 +495,204 @@ test("a claimed message still honours the gates the turn itself fails", () => {
     shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
     false,
   );
+});
+
+// --- cross-tab claim ------------------------------------------------------------------
+// The module claim above is per TAB: each one loads its own copy of the module with its
+// own empty set. Open the same saved thread twice with a `length` reply last and both
+// tabs claim it, both start a run, and the user pays for two continuations and gets two
+// sibling branches. A tab here is a second `createAutoContinueTab` over one shared store,
+// which is what two browser tabs are.
+
+/** An in-memory `localStorage`. `onSet` runs after a write, to interleave another tab. */
+function storageFake(onSet?: (store: Map<string, string>) => void) {
+  const store = new Map<string, string>();
+  return {
+    store,
+    storage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+        onSet?.(store);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+    },
+  };
+}
+
+test("a second tab with the same thread open does not start its own continuation", () => {
+  const { storage } = storageFake();
+  const first = createAutoContinueTab({ storage });
+  const second = createAutoContinueTab({ storage });
+  const now = 1_000;
+
+  assert.equal(first.claim("m1", { now }), true);
+  // Fresh module scope, empty claim set, same truncated reply on screen. Before the lease
+  // this said true and the second tab fired a second paid request.
+  assert.equal(second.claim("m1", { now }), false);
+  // And it reports the message as being continued, so it shows no spinner of its own.
+  assert.equal(second.claimed("m1", { now }), true);
+});
+
+test("a lease covers only the message it was taken for", () => {
+  const { storage } = storageFake();
+  const first = createAutoContinueTab({ storage });
+  const second = createAutoContinueTab({ storage });
+  const now = 1_000;
+
+  assert.equal(first.claim("m1", { now }), true);
+  // The next round of the same turn is a different message and is nobody's yet.
+  assert.equal(second.claim("m2", { now }), true);
+});
+
+test("two tabs writing in the same tick leave exactly one winner", () => {
+  // The window the free check alone cannot close: both tabs read the slot free, so both
+  // write, and the write that lands second is the one still in storage. The other tab
+  // reads its own token back, does not find it, and stands down. Written here as a tab
+  // whose record appears between this one's write and its read-back.
+  const now = 1_000;
+  let interleave = true;
+  const { storage } = storageFake((store) => {
+    if (!interleave) {
+      return;
+    }
+    interleave = false;
+    store.set(
+      AUTO_CONTINUE_LEASE_KEY,
+      JSON.stringify({
+        m1: { token: "other-tab", expires: now + AUTO_CONTINUE_LEASE_TTL_MS },
+      }),
+    );
+  });
+  const first = createAutoContinueTab({ storage });
+
+  assert.equal(first.claim("m1", { now }), false);
+  // Nothing recorded locally either, so once that lease lapses this tab can take over.
+  assert.equal(
+    first.claim("m1", { now: now + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    true,
+  );
+});
+
+test("a tab with no storage keeps the claim it always had", () => {
+  // Private mode, an embedded webview, or the test runner: no seam to share. Falling back
+  // to module scope is what shipped before the lease, and it must never refuse a
+  // continuation the single tab in front of the user is waiting for.
+  const only = createAutoContinueTab({ storage: null });
+  assert.equal(only.claim("m1"), true);
+  assert.equal(only.claim("m1"), false);
+  assert.equal(only.claimed("m1"), true);
+});
+
+test("storage that throws is no worse than no storage", () => {
+  // A quota-exceeded write, or a getItem that throws before it returns anything.
+  const angry = {
+    getItem(): string | null {
+      throw new Error("SecurityError");
+    },
+    setItem(): void {
+      throw new Error("QuotaExceededError");
+    },
+    removeItem(): void {
+      throw new Error("SecurityError");
+    },
+  };
+  const tab = createAutoContinueTab({ storage: angry });
+  assert.equal(tab.claim("m1"), true);
+  assert.equal(tab.claim("m1"), false);
+  // A second tab cannot see through a broken seam either, so it behaves as it did before
+  // the lease: module-only. Duplicates are not made worse, and nothing crashes.
+  assert.equal(createAutoContinueTab({ storage: angry }).claim("m1"), true);
+});
+
+test("a lease lapses, so a tab that died mid-run does not wedge the message", () => {
+  const { storage } = storageFake();
+  const winner = createAutoContinueTab({ storage });
+  const later = createAutoContinueTab({ storage });
+  const start = 1_000;
+
+  assert.equal(winner.claim("m1", { now: start }), true);
+  // Still inside the lease: the run is presumed live and nobody else touches it.
+  assert.equal(
+    later.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS - 1 }),
+    false,
+  );
+  // Past it: a permanent flag would have left this message unresumable for the life of
+  // the profile, because the tab that owned it is gone and can never clear it.
+  assert.equal(
+    later.claim("m1", { now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1 }),
+    true,
+  );
+});
+
+test("lapsed leases are pruned rather than accumulating", () => {
+  const { storage, store } = storageFake();
+  const tab = createAutoContinueTab({ storage });
+  const start = 1_000;
+
+  tab.claim("m1", { now: start });
+  createAutoContinueTab({ storage }).claim("m2", {
+    now: start + AUTO_CONTINUE_LEASE_TTL_MS + 1,
+  });
+  const leases = JSON.parse(store.get(AUTO_CONTINUE_LEASE_KEY) ?? "{}");
+  assert.deepEqual(Object.keys(leases), ["m2"]);
+});
+
+test("reloading one tab does not fire a second continuation", () => {
+  // What stops this today is branch selection: the continuation runs as a sibling and
+  // becomes the selected branch, so the truncated reply is no longer last and the effect
+  // never asks. The lease is the belt to that pair of braces -- a reload lands on the
+  // truncated branch, its module scope is empty, and storage is the only thing that
+  // remembers. Nothing here changes what selection already refuses.
+  const { storage } = storageFake();
+  const before = createAutoContinueTab({ storage });
+  const start = 1_000;
+  assert.equal(before.claim("m1", { now: start }), true);
+
+  // The reload: same tab, same profile, brand new module scope.
+  const after = createAutoContinueTab({ storage });
+  assert.equal(after.claim("m1", { now: start + 5_000 }), false);
+  assert.equal(after.claimed("m1", { now: start + 5_000 }), true);
+});
+
+test("a reset gives back this tab's lease and leaves other tabs alone", () => {
+  const { storage } = storageFake();
+  const mine = createAutoContinueTab({ storage });
+  const theirs = createAutoContinueTab({ storage });
+  const now = 1_000;
+
+  assert.equal(mine.claim("m1", { now }), true);
+  mine.reset();
+  // Cleared in both places, so "start from zero" means what it did before the lease.
+  assert.equal(mine.claim("m1", { now }), true);
+
+  assert.equal(theirs.claim("m2", { now }), true);
+  mine.reset();
+  // Not mine to release: a run another tab is driving is still going.
+  assert.equal(createAutoContinueTab({ storage }).claim("m2", { now }), false);
+});
+
+test("a stored lease survives a full reset by the module, being another tab's", () => {
+  // `resetAutoContinue()` clears the module claim and the round budget. It cannot know
+  // about a lease it never wrote, and must not stamp on one.
+  const { storage, store } = storageFake();
+  createAutoContinueTab({ storage }).claim("m1", { now: 1_000 });
+  resetAutoContinue();
+  assert.equal(
+    createAutoContinueTab({ storage }).claim("m1", { now: 1_000 }),
+    false,
+  );
+  assert.equal(store.has(AUTO_CONTINUE_LEASE_KEY), true);
+});
+
+test("a malformed lease record is ignored rather than blocking", () => {
+  const { storage, store } = storageFake();
+  store.set(AUTO_CONTINUE_LEASE_KEY, "not json at all");
+  assert.equal(createAutoContinueTab({ storage }).claim("m1"), true);
+
+  const { storage: other, store: otherStore } = storageFake();
+  otherStore.set(AUTO_CONTINUE_LEASE_KEY, JSON.stringify({ m1: { token: 7 } }));
+  assert.equal(createAutoContinueTab({ storage: other }).claim("m1"), true);
 });

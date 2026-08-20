@@ -374,30 +374,244 @@ export function autoContinueCount(key: string | null | undefined): number {
 }
 
 /**
- * Messages this session has already continued automatically, by message id.
+ * How long a claim written to shared storage keeps other tabs off a message.
  *
- * Separate from `spent`, which counts rounds per logical turn and is what bounds a
- * runaway loop. This answers a different question: has THIS message already been
- * resumed once. A component-local ref cannot, because it dies with the component.
- * Leave the chat with a truncated branch selected and come back, and the ref is fresh
- * while the parent still has budget, so the effect fires again and creates another
- * sibling and another paid request. Module scope outlives the remount; the ids are
- * short and bounded by how many replies a session truncates.
+ * A lease, not a permanent flag: the tab that wins can be closed or crash mid-run, and a
+ * flag it never gets to clear would leave the message unresumable for the life of the
+ * profile. Two minutes covers a whole round -- prompt processing plus a full Max Tokens
+ * generation on a local model -- so a tab opened while the winner is still streaming stays
+ * out, while a tab that died takes the message back after one pause the user is likely
+ * still sitting through. Erring longer wedges a live message; erring shorter buys the
+ * duplicate request back.
  */
-const continued = new Set<string>();
+export const AUTO_CONTINUE_LEASE_TTL_MS = 120_000;
 
-/** Whether `messageId` still needs continuing. False once it has been claimed. */
-export function claimAutoContinue(messageId: string | null | undefined): boolean {
-  if (!messageId || continued.has(messageId)) {
-    return false;
+/** The `localStorage` key holding the leases, one record per claimed message id. */
+export const AUTO_CONTINUE_LEASE_KEY = "unsloth_chat_auto_continue_leases";
+
+/** The slice of `Storage` the lease needs. Narrow so a test can hand over a fake. */
+export type AutoContinueLeaseStorage = {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+};
+
+type Lease = { token: string; expires: number };
+
+/**
+ * The browser's own storage, or nothing when there is not one to read.
+ *
+ * Resolved per call rather than once at import: `localStorage` is absent under the test
+ * runner and in SSR, and Safari's private mode throws on the property itself, not just on
+ * a write. Every caller treats null as "no cross-tab seam" and falls back to the module
+ * claim below, which is exactly what shipped before the lease existed.
+ */
+function browserLeaseStorage(): AutoContinueLeaseStorage | null {
+  try {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    return (window.localStorage as AutoContinueLeaseStorage | undefined) ?? null;
+  } catch {
+    return null;
   }
-  continued.add(messageId);
-  return true;
 }
 
-/** Whether `messageId` was already continued automatically this session. */
+function readLeases(storage: AutoContinueLeaseStorage): Record<string, Lease> {
+  const raw = storage.getItem(AUTO_CONTINUE_LEASE_KEY);
+  if (!raw) {
+    return {};
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {};
+  }
+  const out: Record<string, Lease> = {};
+  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const token = (value as Lease | undefined)?.token;
+    const expires = (value as Lease | undefined)?.expires;
+    if (typeof token === "string" && typeof expires === "number") {
+      out[id] = { token, expires };
+    }
+  }
+  return out;
+}
+
+function newLeaseToken(): string {
+  const uuid = (globalThis.crypto as Crypto | undefined)?.randomUUID;
+  if (typeof uuid === "function") {
+    return uuid.call(globalThis.crypto);
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * One tab's view of which messages have been continued.
+ *
+ * Constructible because a second instance is precisely what a second browser tab is: its
+ * own module scope, its own empty claim set, the same saved thread and the same shared
+ * storage underneath. That is the case the lease exists for, and the only way to write it
+ * down as a test.
+ */
+export function createAutoContinueTab(
+  {
+    storage,
+  }: {
+    /** Omit for the browser's `localStorage`; pass null for a tab with no seam. */
+    storage?: AutoContinueLeaseStorage | null;
+  } = {},
+): {
+  claim: (
+    messageId: string | null | undefined,
+    options?: { now?: number },
+  ) => boolean;
+  claimed: (
+    messageId: string | null | undefined,
+    options?: { now?: number },
+  ) => boolean;
+  reset: () => void;
+} {
+  /**
+   * Messages this tab has already continued automatically, by message id.
+   *
+   * Separate from `spent`, which counts rounds per logical turn and is what bounds a
+   * runaway loop. This answers a different question: has THIS message already been
+   * resumed once. A component-local ref cannot, because it dies with the component.
+   * Leave the chat with a truncated branch selected and come back, and the ref is fresh
+   * while the parent still has budget, so the effect fires again and creates another
+   * sibling and another paid request. Module scope outlives the remount; the ids are
+   * short and bounded by how many replies a session truncates.
+   */
+  const continued = new Set<string>();
+
+  /** Lease tokens this tab wrote, so a reset clears its own and nobody else's. */
+  const ownTokens = new Map<string, string>();
+
+  const seam = (): AutoContinueLeaseStorage | null =>
+    storage === undefined ? browserLeaseStorage() : storage;
+
+  /** A lease held by ANY tab, this one included, or null. Expired reads as free. */
+  function liveLease(messageId: string, now: number): Lease | null {
+    const store = seam();
+    if (!store) {
+      return null;
+    }
+    try {
+      const lease = readLeases(store)[messageId];
+      return lease && lease.expires > now ? lease : null;
+    } catch {
+      // Unreadable storage is no worse than no storage: fall back to module scope.
+      return null;
+    }
+  }
+
+  /**
+   * Take the lease for `messageId`, or report that someone else holds it.
+   *
+   * Written then read back, because two tabs can pass the free check in the same tick;
+   * whichever `setItem` lands second is the token still in storage afterwards, so the
+   * other tab reads a token that is not its own and stands down. A storage that cannot be
+   * written is not an error: the tab keeps the module-only claim, which is what single-tab
+   * use has always relied on, rather than refusing a continuation the user is waiting for.
+   */
+  function takeLease(messageId: string, now: number): boolean {
+    const store = seam();
+    if (!store) {
+      return true;
+    }
+    try {
+      const token = newLeaseToken();
+      const leases = readLeases(store);
+      const held = leases[messageId];
+      if (held && held.expires > now && held.token !== ownTokens.get(messageId)) {
+        // Landed between the check above and this write. Never overwrite a live lease.
+        return false;
+      }
+      const next: Record<string, Lease> = {};
+      for (const [id, lease] of Object.entries(leases)) {
+        // Drop what has lapsed, so the key cannot grow with every truncated reply.
+        if (lease.expires > now) {
+          next[id] = lease;
+        }
+      }
+      next[messageId] = { token, expires: now + AUTO_CONTINUE_LEASE_TTL_MS };
+      store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(next));
+      if (readLeases(store)[messageId]?.token !== token) {
+        return false;
+      }
+      ownTokens.set(messageId, token);
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
+  return {
+    claim(messageId, { now = Date.now() } = {}) {
+      if (!messageId || continued.has(messageId)) {
+        return false;
+      }
+      if (liveLease(messageId, now)) {
+        // Another tab is running this one. Not recorded locally: if that tab dies, this
+        // one takes the message back when the lease lapses.
+        return false;
+      }
+      if (!takeLease(messageId, now)) {
+        return false;
+      }
+      continued.add(messageId);
+      return true;
+    },
+    claimed(messageId, { now = Date.now() } = {}) {
+      if (!messageId) {
+        return false;
+      }
+      return continued.has(messageId) || Boolean(liveLease(messageId, now));
+    },
+    reset() {
+      continued.clear();
+      const store = seam();
+      if (!store || ownTokens.size === 0) {
+        ownTokens.clear();
+        return;
+      }
+      try {
+        const leases = readLeases(store);
+        for (const [id, token] of ownTokens) {
+          if (leases[id]?.token === token) {
+            delete leases[id];
+          }
+        }
+        store.setItem(AUTO_CONTINUE_LEASE_KEY, JSON.stringify(leases));
+      } catch {
+        // Nothing to undo: an unwritable seam held no lease of ours either.
+      }
+      ownTokens.clear();
+    },
+  };
+}
+
+/** This tab. */
+const tab = createAutoContinueTab();
+
+/**
+ * Whether `messageId` still needs continuing. False once it has been claimed, here or in
+ * another tab holding a live lease on it.
+ */
+export function claimAutoContinue(messageId: string | null | undefined): boolean {
+  return tab.claim(messageId);
+}
+
+/**
+ * Whether `messageId` is already being continued automatically -- by this tab, or by
+ * another one whose lease is still live.
+ *
+ * Asked at render time, so the answer has to match what `claimAutoContinue` will do a tick
+ * later. A tab that reported "continuing" and then found the message claimed would show a
+ * spinner nothing is going to resolve, over the manual Continue button it hides.
+ */
 export function wasAutoContinued(messageId: string | null | undefined): boolean {
-  return Boolean(messageId && continued.has(messageId));
+  return tab.claimed(messageId);
 }
 
 /**
@@ -427,11 +641,17 @@ export function shouldAutoContinueMessage(
   return shouldAutoContinue(reason, key, options);
 }
 
-/** Test seam; also lets a new thread start from zero. */
+/**
+ * Test seam; also lets a new thread start from zero.
+ *
+ * A full reset gives back the leases this tab wrote as well, so "start from zero" means
+ * the same thing it did before the lease existed. Leases other tabs hold are left alone:
+ * they are not this tab's to release, and a run they are driving is still going.
+ */
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
-    continued.clear();
+    tab.reset();
   } else {
     spent.delete(key);
   }
