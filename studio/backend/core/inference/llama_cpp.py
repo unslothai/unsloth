@@ -83,6 +83,49 @@ from core.inference.llama_server_args import (
     strip_split_mode_only,
 )
 
+
+def _fit_with_instruction_pins(
+    messages,
+    *,
+    anchor_ids = None,
+    **kwargs,
+):
+    """`fit_rolling_context`, plus the user's standing instructions held back from eviction.
+
+    Applied through the existing `protected_message_ids` seam rather than by changing the
+    evictor, so the rolling-window layer is untouched and this ships as an addition to it.
+
+    Three things this must never do, each of which the code below is shaped by:
+
+    * mutate the caller's anchor set. It is also the recall-anchor set and it is carried
+      across tool-loop iterations, so a pin id leaking into it would outlive the message
+      the id belonged to.
+    * hold pins computed against an older copy of the conversation. Inline recall REPLACES
+      the latest user message with a new dict, so ids go stale; recomputing per fit is the
+      only version that stays true.
+    * turn a servable request into a refusal. If pinning is what made the prompt not fit,
+      the pins are dropped and the fit is redone without them. One extra fit, only on a
+      path that was already failing.
+    """
+    anchors = set(anchor_ids or ())
+    try:
+        from core.inference import instruction_pin
+        pins = instruction_pin.pinned_instruction_ids(
+            messages,
+            prompt_target = prompt_budget(
+                kwargs.get("context_length") or 0, kwargs.get("max_tokens") or 0
+            ),
+        )
+    except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
+        pins = set()
+    fitted, truncation = fit_rolling_context(
+        messages, protected_message_ids = (anchors | pins) or None, **kwargs
+    )
+    if pins and truncation and not truncation.get("fits"):
+        return fit_rolling_context(messages, protected_message_ids = anchors or None, **kwargs)
+    return fitted, truncation
+
+
 # Share strip / signal constants with the multi-format parser so BUFFERING also
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
@@ -808,7 +851,16 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
-        archived = conversation_archive.archive_turns(thread_id, gone) if gone else 0
+        # `conversation` is the fitted prompt, so it says which repeats of a turn the model
+        # can still read. Without it a twice-said turn is archived twice and spends two
+        # recall slots on text already in the prompt.
+        archived = (
+            conversation_archive.archive_turns(
+                thread_id, gone, live = conversation, branch = branch_messages or conversation
+            )
+            if gone
+            else 0
+        )
         counts = {"archived_messages": archived}
 
         if recall_done:
@@ -21872,7 +21924,7 @@ class LlamaCppBackend:
         ):
             try:
                 _before_fit = openai_messages
-                openai_messages, truncation = fit_rolling_context(
+                openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
@@ -22487,7 +22539,7 @@ class LlamaCppBackend:
                 _preflight_context_length = self._effective_context_length
                 try:
                     _before_fit = conversation
-                    conversation, truncation = fit_rolling_context(
+                    conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
                         max_tokens = max_tokens,
@@ -22504,7 +22556,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
-                        protected_message_ids = _rolling_anchor_ids,
+                        anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = (
@@ -22637,7 +22689,7 @@ class LlamaCppBackend:
                 if max_tokens is None:
                     payload["max_tokens"] = self._effective_context_length
                 try:
-                    conversation, truncation = fit_rolling_context(
+                    conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
                         max_tokens = max_tokens,
@@ -22654,7 +22706,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
-                        protected_message_ids = _rolling_anchor_ids,
+                        anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                     )
                     if truncation and truncation["fits"]:
@@ -23992,7 +24044,7 @@ class LlamaCppBackend:
             _final_preflight_context_length = self._effective_context_length
             try:
                 _before_final_fit = conversation
-                conversation, truncation = fit_rolling_context(
+                conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
@@ -24004,7 +24056,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    protected_message_ids = _rolling_anchor_ids,
+                    anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
@@ -24106,7 +24158,7 @@ class LlamaCppBackend:
             if max_tokens is None:
                 stream_payload["max_tokens"] = self._effective_context_length
             try:
-                conversation, truncation = fit_rolling_context(
+                conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
@@ -24118,7 +24170,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
-                    protected_message_ids = _rolling_anchor_ids,
+                    anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                 )
                 if truncation and truncation["fits"]:

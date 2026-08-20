@@ -41,6 +41,13 @@ CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K"
 CONVERSATION_RECALL_RESERVE_TOKENS = int(
     os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
 )
+# Shape the archive's lexical query: require identifier-like tokens first, drop function
+# words from the fallback. Off restores the plain OR-of-every-token other scopes use.
+CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
+# "chronological" presents recalled turns oldest first, labelled, with later superseding
+# earlier; "relevance" restores the previous rendering. Presentation only: neither changes
+# which turns are selected.
+CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # Reject uploads larger than this, so one pathological file can't drive unbounded parse
