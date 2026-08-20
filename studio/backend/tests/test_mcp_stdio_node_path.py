@@ -524,9 +524,7 @@ def test_npx_server_still_needs_npx_on_a_node_only_path(
     )
 
 
-def test_npx_server_keeps_a_path_with_npx_but_no_npm(
-    managed_node_install, monkeypatch, tmp_path
-):
+def test_npx_server_keeps_a_path_with_npx_but_no_npm(managed_node_install, monkeypatch, tmp_path):
     """A curated PATH exposing node and npx without a separate npm launcher runs npx fine:
     npx-cli.js delegates in-process to the npm it ships with and never looks up an ``npm``
     executable. Demanding one would prepend the managed dir and silently swap the
@@ -538,14 +536,12 @@ def test_npx_server_keeps_a_path_with_npx_but_no_npm(
     _patch_floors(monkeypatch, lambda executable, path = None: True)
     monkeypatch.setenv("PATH", str(curated))
     assert mcp_client._stdio_env(None, "npx")["PATH"] == str(curated)
-    assert mcp_client._stdio_argv(
-        ["npx", "-y", "server"], {"PATH": str(curated)}
-    )[0].startswith(str(curated))
+    assert mcp_client._stdio_argv(["npx", "-y", "server"], {"PATH": str(curated)})[0].startswith(
+        str(curated)
+    )
 
 
-def test_npx_only_path_is_still_held_to_the_npm_floor(
-    managed_node_install, monkeypatch, tmp_path
-):
+def test_npx_only_path_is_still_held_to_the_npm_floor(managed_node_install, monkeypatch, tmp_path):
     """``npx -v`` reports the bundled npm's version, so an npx-only PATH is floor-checked
     through npx rather than waved through."""
     curated = tmp_path / "curated"
