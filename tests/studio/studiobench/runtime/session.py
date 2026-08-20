@@ -579,8 +579,7 @@ class CellRunner:
         self.log(
             "  click attribution: "
             + ", ".join(
-                f"{k.replace('_ms', '')}={v:,.0f}ms" for k, v in out.items()
-                if k.endswith("_ms")
+                f"{k.replace('_ms', '')}={v:,.0f}ms" for k, v in out.items() if k.endswith("_ms")
             )
             + f", code token spans={out['code_token_spans']:,}"
         )
