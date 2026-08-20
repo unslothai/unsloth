@@ -8766,6 +8766,7 @@ class LlamaCppBackend:
         split_extra_bytes: int = 0,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
         mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
+        include_requested: bool = False,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
@@ -8775,7 +8776,7 @@ class LlamaCppBackend:
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
         (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
-        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps.
+        n_parallel). ``include_requested`` also tests ``n_parallel`` itself.
         ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
@@ -8788,7 +8789,7 @@ class LlamaCppBackend:
         count, since a reduced candidate lowers the batch floor and so the ubatch too;
         pricing the reserve at the requested pair over-charged every candidate, so one that
         fits could be rejected and the load kept --fit."""
-        for slots in range(n_parallel - 1, 0, -1):
+        for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
@@ -16205,9 +16206,68 @@ class LlamaCppBackend:
                             # smaller micro-batch than the one this was sized at. Re-derive
                             # it, or the recorded _n_ubatch describes a graph never built.
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
+                            # Re-fit with the final slot count. KV and context-compute
+                            # closures read the rebound slot and micro-batch values; the
+                            # helper re-prices flat compute and MTP per candidate.
 
-                    # MTP reserve at the final context, for the logs below.
-                    _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
+                            def _slots_hold(ctx: int) -> Optional[list[int]]:
+                                """Return the GPU subset if the final slot count fits."""
+                                _gi, _uf, _got = self._slots_that_fit_on_gpu(
+                                    n_parallel,
+                                    ctx,
+                                    gpus,
+                                    total_by_idx,
+                                    model_size_fit - _compute_buffer_pipeline + _cc_bytes(ctx),
+                                    cache_type_kv,
+                                    _pin_fraction,
+                                    _pipeline_overhead_bytes + _cc_bytes(ctx),
+                                    _layer_min_gpus,
+                                    _effective_ubatch,
+                                    swa_full = swa_full,
+                                    kv_unified = planned_kv_unified,
+                                    flash_attn = planned_flash_attn,
+                                    split_extra_bytes = _cc_split_extra(ctx),
+                                    ubatch_for_slots = _ubatch_for_slots,
+                                    mtp_bytes_for_slots = (
+                                        lambda s, ub, c = ctx: _mtp_bytes(c, s, ub)
+                                    ),
+                                    include_requested = True,
+                                )
+                                return _gi if not _uf and _got == n_parallel else None
+
+                            # Find the largest 256-aligned context that still fits. The
+                            # footprint grows monotonically with context.
+                            _lo = max(1, min(4096, native_ctx_for_cap) // 256)
+                            _hi = native_ctx_for_cap // 256
+                            _refit = None
+                            while _lo <= _hi:
+                                _mid = (_lo + _hi) // 2
+                                _held = _slots_hold(_mid * 256)
+                                if _held is None:
+                                    _hi = _mid - 1
+                                else:
+                                    _refit = (_mid * 256, _held)
+                                    _lo = _mid + 1
+                            if _refit is not None:
+                                # Explicit contexts are never rewritten.
+                                if not explicit_ctx and _refit[0] > effective_ctx:
+                                    logger.info(
+                                        "Context re-fitted %d -> %d for %d serving slot(s).",
+                                        effective_ctx,
+                                        _refit[0],
+                                        n_parallel,
+                                    )
+                                    effective_ctx, gpu_indices = _refit
+                                # Publish the ceiling measured at the final slot count.
+                                max_available_ctx = max(max_available_ctx, _refit[0])
+
+                    # Pass the final slot and micro-batch values instead of the defaults
+                    # captured before slot reduction.
+                    _mtp_reserve_bytes = (
+                        _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                        if _mtp_will_engage
+                        else 0
+                    )
                     if _mtp_will_engage:
                         _mtp_note = (
                             f"MTP reserve: {_mtp_reserve_bytes / (1024**3):.2f} GB "
