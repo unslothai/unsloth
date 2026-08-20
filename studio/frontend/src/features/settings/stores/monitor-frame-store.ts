@@ -262,14 +262,11 @@ function cardFloorRoom(squeezed: number, natural: number): number {
 }
 
 /**
- * A card's height as the layout has it, not as it is painted.
- *
- * `offsetHeight` and not a bounding rect, for the reason `use-panel-anchor` has
- * it: the update cards animate in from `scale: 0.96`, and a rect read through
- * that transform is 4% short. Finishing a transform resizes nothing, so no
- * observer comes back with the settled figure and the short one is the floor
- * the placement keeps. It is also the measurement the sum is checked against,
- * since `scrollHeight` is a layout reading too.
+ * A card's height as the layout has it, not as it is painted. `offsetHeight`
+ * and not a rect, for the reason `use-panel-anchor` has it: the update cards
+ * animate in from `scale: 0.96`, a rect is read through that transform, and
+ * finishing a transform resizes nothing, so no observer comes back with the
+ * settled figure. It also matches `scrollHeight`, the total it is summed for.
  */
 function cardHeight(child: Element): number {
   return (child as HTMLElement).offsetHeight;
@@ -278,12 +275,11 @@ function cardHeight(child: Element): number {
 /**
  * How short the rail can be and still show every card in it.
  *
- * Per card, never over their sum. The update banner carries a min-height of its
- * own -- 189px at the default font scale -- so it answers any minimum asked of
- * the rail as a whole while the min-h-0 download panel beside it still measures
- * its borders. A rail floored as one number therefore accepted the 200px band
- * the welcome composer leaves at 1366x640, and the panel came back as an 8px
- * strip: the same hairline as the docked case below.
+ * Per card, never over their sum. The update banner's own min-height, 189px,
+ * answers any minimum asked of the rail as a whole while the min-h-0 download
+ * panel beside it still measures its borders: floored as one number the rail
+ * accepted the 200px band the welcome composer leaves at 1366x640, and the
+ * panel came back an 8px strip, the same hairline as the docked case below.
  *
  * Bounded by the rail's natural height, so a card shorter than the minimum is
  * asked for what it has rather than for room it would not fill.
@@ -463,10 +459,9 @@ export function useStackGeometry(): StackPlacement {
   }));
   const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [floorRoom, setFloorRoom] = useState(ASSUMED_STACK_HEIGHT);
-  // How far the rail can actually be squeezed, which is not the same question as
-  // how far it may be: a card clipped inside its own min-h-0 box takes the cap
-  // without the rail overflowing, so the placement asks `floorRoom` and the
-  // scroll reading below asks this.
+  // How far the rail can be squeezed, as opposed to how far it may be: a card
+  // clipped inside its own min-h-0 box takes the cap without the rail
+  // overflowing. The placement asks `floorRoom`, the scroll reading asks this.
   const [collapsedRoom, setCollapsedRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [persistentTail, setPersistentTail] = useState(0);
   // Whether the rail is ACTUALLY scrolling, read off the node at its real cap.
@@ -680,11 +675,9 @@ export function useStackGeometry(): StackPlacement {
     // a cap below that is exactly when the rail has to scroll. A pixel of slack,
     // since the reading is a rounded scrollHeight and the cap is not.
     //
-    // `collapsedRoom` and not `floorRoom`: the floor is the room the cards need
-    // to stay readable, and a card that gives up more than that is clipped
-    // rather than scrolled. Asking the floor here would hand the rail pointer
-    // input, and with it the clicks passing over its gutter, for a fold that
-    // does not exist.
+    // `collapsedRoom` and not `floorRoom`: a card that gives up more than its
+    // floor is clipped, not scrolled, so asking the floor here would hand the
+    // rail pointer input, and the clicks crossing its gutter, for no fold.
     //
     // Or the box is simply scrolling, whatever the prediction says. The two
     // agree wherever the cards do collapse to the height they measured, so this

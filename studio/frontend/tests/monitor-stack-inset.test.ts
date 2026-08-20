@@ -381,9 +381,9 @@ test("the floor is a card the reader can see, not what the rail can shrink to", 
   assert.ok(alone(2, 480) < 480);
 });
 
-// The same window with the app update card up as well. Its min-height is its
-// own floor, so a rail floored as one number is already past the minimum while
-// the panel beside it is still measuring its borders.
+// The same window with the app update card up. Its min-height is its own floor,
+// so a rail floored as one number is already past the minimum while the panel
+// beside it is still measuring its borders.
 const BANNER_FLOOR = 189;
 const BANNER_NATURAL = 196;
 const PANEL_BORDERS = 2;
@@ -487,12 +487,9 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
 });
 
-// The update cards animate in from scale 0.96 and a bounding rect is read
-// through that transform, 4% short. A finished transform resizes nothing, so
-// no observer comes back with the settled figure: the short reading is the
-// floor the placement keeps, and a band a few pixels under the real one is
-// accepted. The rail's own two readings are scrollHeight, a layout figure, so
-// the per-card ones have to be layout figures to be summed against them.
+// A rect is read through the update cards' scale 0.96 enter transform, and a
+// finished transform resizes nothing, so the short reading is the floor the
+// placement keeps. See cardHeight.
 test("the card floors are read off the layout box, not the painted one", async () => {
   const source = await readFile(
     new URL(
