@@ -32,5 +32,4 @@ def test_powershell_setup_distinguishes_release_skew_from_install_failure():
 def test_setup_sh_exports_ggml_sycl_on_intel_xpu():
     script = (ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     assert 'if [ "$_setup_xpu_ready" = true ] || _has_intel_xpu_gpu; then' in script
-    assert 'export GGML_SYCL=1' in script
-
+    assert "export GGML_SYCL=1" in script
