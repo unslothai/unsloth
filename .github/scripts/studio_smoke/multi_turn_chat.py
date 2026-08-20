@@ -89,8 +89,11 @@ def run_anthropic() -> list[str]:
             model = "default",
             max_tokens = MAX_TOKENS,
             messages = history,
-            temperature = 0.0,
-            extra_body = {"seed": SEED, "enable_thinking": False},
+            # temperature goes in extra_body, not the signature: anthropic 1.0.0
+            # dropped the sampling parameters from messages.create() and raises a
+            # TypeError on them. The wire format is unchanged, and this smoke needs
+            # the greedy setting to compare two runs for equality.
+            extra_body = {"temperature": 0.0, "seed": SEED, "enable_thinking": False},
         )
         text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
         replies.append(text)
