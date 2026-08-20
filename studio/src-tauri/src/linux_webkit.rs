@@ -14,7 +14,8 @@ const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // both the proprietary and open nvidia modules publish this; nouveau does not and is unaffected
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
 
-const NVIDIA_REASON: &str = "NVIDIA driver loaded";
+const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
+const NVIDIA_WAYLAND_REASON: &str = "NVIDIA driver loaded (Wayland session)";
 const WAYLAND_REASON: &str = "Wayland session";
 const APPIMAGE_GLES_REASON: &str = "AppImage without a usable GLES library";
 
@@ -57,55 +58,73 @@ fn rendering_plan(
     gles_usable: bool,
     nvidia_driver_loaded: bool,
 ) -> RenderingPlan {
-    // DISABLE_DMABUF is the explicit operator override, including `=0` and an
-    // empty value. It also disambiguates a deliberate FORCE_SHM=1 on NVIDIA.
+    // Presence is an operator override, `=0` and an empty value included. It is also the
+    // only variable WebKit accepts as "keep the DMA-BUF renderer", so on NVIDIA it is how
+    // an operator asks for shared memory instead of the empty transport set below.
     if env(DISABLE_DMABUF).is_some() {
         return RenderingPlan::PreserveEnvironment;
     }
 
-    let force_shared_memory = env(FORCE_SHARED_MEMORY);
-
-    // webkit's isNVIDIA fix (bug 262607) is session-independent, so x11 needs this too
-    if nvidia_driver_loaded {
-        // Previous Wayland builds injected exactly FORCE_SHM=1. Tauri relaunches
-        // inherit it, so treating that lone value as an override leaves the first
-        // post-update process on the old workaround. Other values remain operator
-        // overrides; use DISABLE_DMABUF=0 alongside FORCE_SHM=1 to preserve an
-        // intentional shared-memory choice on NVIDIA.
-        if force_shared_memory.is_some() && force_shared_memory.as_deref() != Some(OsStr::new("1"))
-        {
-            return RenderingPlan::PreserveEnvironment;
-        }
-        return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON);
-    }
-
-    if force_shared_memory.is_some() {
-        return RenderingPlan::PreserveEnvironment;
-    }
-
     let is_appimage = env(APPIMAGE).is_some();
-    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy (#8343).
-    if is_appimage && !gles_usable {
-        return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
-    }
-
     let configured_backends = env(GDK_BACKEND);
     let explicit_wayland = configured_backends
         .as_deref()
         .map(backend_allows_wayland)
         .unwrap_or(false);
-    let wayland_display = env(WAYLAND_DISPLAY)
-        .map(|display| !display.is_empty())
-        .unwrap_or(false);
+    // GDK can connect to the default wayland-0 socket when its backend is explicitly
+    // Wayland even if WAYLAND_DISPLAY is absent. Conversely, WAYLAND_DISPLAY is inherited
+    // by XWayland apps, so an X11-only GDK_BACKEND must take precedence.
+    let wayland_session = explicit_wayland
+        || (configured_backends.is_none()
+            && env(WAYLAND_DISPLAY)
+                .map(|display| !display.is_empty())
+                .unwrap_or(false));
 
-    // GDK can connect to the default wayland-0 socket when its backend is
-    // explicitly Wayland even if WAYLAND_DISPLAY is absent. Conversely,
-    // WAYLAND_DISPLAY is inherited by XWayland apps, so an X11-only GDK_BACKEND
-    // must take precedence.
-    if configured_backends.is_some() && !explicit_wayland {
+    // The DMA-BUF transport breaks on the proprietary NVIDIA driver on either display
+    // server, so this cannot be gated on a Wayland session. Upstream declined the fix
+    // (bug 262607 is WONTFIX, WebKit PR 18614 closed unmerged), so Debian and Ubuntu
+    // carry disable-nvidia-dmabuf.patch while Fedora, Arch and the upstream tarballs do
+    // not. Where it is present it already empties the transport set on NVIDIA by itself:
+    // isNVIDIA() sits before mode.add(SharedMemory) in 2.50.4 and 2.52.6, and 2.53.90
+    // moved it after, leaving {SharedMemory}. So this branch is what protects the
+    // unpatched hosts, and on 2.54 it will be stronger than the library's own choice.
+    //
+    // Stronger, because DISABLE_DMABUF is not a transport tweak. WebKit reads it before
+    // the SharedMemory add, so the set stays empty, checkRequirements() is false and
+    // accelerated compositing is off for the process. FORCE_SHM leaves compositing on and
+    // only degrades the buffer transport (#9393). The heavier switch is used anyway
+    // because it is the one with reports of fixing this crash.
+    //
+    // The probe is kernel-module presence, not the GPU that will render. A PRIME or
+    // Optimus laptop presenting on the integrated GPU reads as NVIDIA here and takes a
+    // workaround it does not need. That is deliberate: reading the rendering GPU needs a
+    // GL context, and this runs before GTK is initialized precisely so that no GL state
+    // exists yet. Those hosts opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0.
+    if nvidia_driver_loaded {
+        let reason = if wayland_session {
+            NVIDIA_WAYLAND_REASON
+        } else {
+            NVIDIA_REASON
+        };
+        return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, reason);
+    }
+
+    // Presence is an operator override off NVIDIA, `=0` and an empty value included: do
+    // not combine the modern shared-memory switch with legacy instructions a user may
+    // already carry in a launcher or environment.d file. On NVIDIA it is not consulted at
+    // all, because neither value states an intent worth honouring there. WebKit ignores
+    // `=0` outright (`forceSHM && g_strcmp0(forceSHM, "0")`), and `=1` is what a previous
+    // Wayland build set, which a Tauri relaunch inherits.
+    if env(FORCE_SHARED_MEMORY).is_some() {
         return RenderingPlan::PreserveEnvironment;
     }
-    if !wayland_display && !explicit_wayland {
+
+    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy (#8343).
+    if is_appimage && !gles_usable {
+        return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
+    }
+
+    if !wayland_session {
         return RenderingPlan::PreserveEnvironment;
     }
 
@@ -164,10 +183,6 @@ pub fn configure_renderer() -> Option<(&'static str, &'static str)> {
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variable = workaround.variable();
-
-            if workaround == RenderingWorkaround::DisableDmabuf {
-                std::env::remove_var(FORCE_SHARED_MEMORY);
-            }
             std::env::set_var(variable, "1");
             Some((variable, reason))
         }
@@ -258,34 +273,62 @@ mod tests {
 
     #[test]
     fn nvidia_on_wayland_takes_the_stronger_switch_over_shared_memory() {
-        // isNVIDIA returns before SharedMemory is added, so FORCE_SHM is not equivalent
         assert_eq!(
             plan_on_nvidia(&[(WAYLAND_DISPLAY, "wayland-0")]),
-            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
         );
+    }
+
+    #[test]
+    fn no_force_shm_value_suppresses_the_nvidia_workaround() {
+        // WebKit reads `=0` as unset and `=1` is what a previous build left behind, so
+        // neither is an operator override. DISABLE_DMABUF=0 is the one that is.
+        for value in ["0", "1", "", "true"] {
+            assert_eq!(
+                plan_on_nvidia(&[(FORCE_SHARED_MEMORY, value)]),
+                RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON),
+                "FORCE_SHM={value} must not suppress the NVIDIA workaround"
+            );
+        }
     }
 
     #[test]
     fn nvidia_relaunch_replaces_inherited_force_shm() {
         assert_eq!(
-            plan_on_nvidia(&[(WAYLAND_DISPLAY, "wayland-0"), (FORCE_SHARED_MEMORY, "1"),]),
-            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+            plan_on_nvidia(&[(WAYLAND_DISPLAY, "wayland-0"), (FORCE_SHARED_MEMORY, "1")]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
         );
     }
 
     #[test]
     fn explicit_disable_override_preserves_force_shm_on_nvidia() {
         assert_eq!(
-            plan_on_nvidia(&[(FORCE_SHARED_MEMORY, "1"), (DISABLE_DMABUF, "0"),]),
+            plan_on_nvidia(&[(FORCE_SHARED_MEMORY, "1"), (DISABLE_DMABUF, "0")]),
             RenderingPlan::PreserveEnvironment
         );
     }
 
     #[test]
-    fn an_operator_override_outranks_the_nvidia_default() {
+    fn an_empty_wayland_display_is_not_a_wayland_session() {
         assert_eq!(
-            plan_on_nvidia(&[(FORCE_SHARED_MEMORY, "0")]),
+            plan(&[(WAYLAND_DISPLAY, "")]),
             RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn an_explicit_x11_gdk_backend_wins() {
+        assert_eq!(
+            plan(&[(WAYLAND_DISPLAY, "wayland-0"), (GDK_BACKEND, "x11")]),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn a_gdk_wildcard_can_select_wayland_without_a_display_variable() {
+        assert_eq!(
+            plan(&[(GDK_BACKEND, "*")]),
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
     }
 
@@ -317,30 +360,6 @@ mod tests {
                 (WAYLAND_DISPLAY, "wayland-0")
             ]),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, WAYLAND_REASON)
-        );
-    }
-
-    #[test]
-    fn an_empty_wayland_display_is_not_a_wayland_session() {
-        assert_eq!(
-            plan(&[(WAYLAND_DISPLAY, "")]),
-            RenderingPlan::PreserveEnvironment
-        );
-    }
-
-    #[test]
-    fn an_explicit_x11_gdk_backend_wins() {
-        assert_eq!(
-            plan(&[(WAYLAND_DISPLAY, "wayland-0"), (GDK_BACKEND, "x11")]),
-            RenderingPlan::PreserveEnvironment
-        );
-    }
-
-    #[test]
-    fn a_gdk_wildcard_can_select_wayland_without_a_display_variable() {
-        assert_eq!(
-            plan(&[(GDK_BACKEND, "*")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
         );
     }
 

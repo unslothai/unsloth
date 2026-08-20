@@ -1803,7 +1803,9 @@ fn main() {
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
-    // webkitgtk's dmabuf path breaks on nvidia on either display server; pick a fallback pre-gtk
+    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
+    // either display server, and on an AppImage that cannot load GLES. Select a
+    // compatible fallback before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
     let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
