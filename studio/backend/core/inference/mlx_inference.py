@@ -1413,6 +1413,112 @@ class MLXInferenceBackend:
         logger.info("Model %s unloaded", model_name)
         return True
 
+    def _render_text_chat_prompt(
+        self,
+        messages,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+    ):
+        """Render the exact text prompt used by MLX generation.
+
+        Token preflight must share this path with generation: native-template
+        fallback can materially change both the tool catalogue and token count.
+        """
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+            render_with_native_template_fallback,
+        )
+
+        prompt = apply_chat_template_for_generation(
+            self._tokenizer,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+        )
+        if prompt is None:
+            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
+
+        model_info = self.models.get(self.active_model_name, {})
+        return render_with_native_template_fallback(
+            formatted_prompt = prompt,
+            tokenizer = self._tokenizer,
+            model_info = model_info,
+            active_model_name = self.active_model_name,
+            messages = messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+            hf_token = model_info.get("hf_token"),
+            return_metadata = True,
+        )
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        tools = None,
+        *,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+    ) -> int:
+        """Count the prompt with the loaded MLX model's real chat renderer.
+
+        This runs in the inference worker, beside the tokenizer. It deliberately
+        excludes media prompts: image/audio token expansion happens in the model
+        processor and context compaction refuses those requests.
+        """
+        if self._model is None or self._tokenizer is None:
+            raise RuntimeError("No model loaded")
+
+        full_messages = []
+        if system_prompt:
+            full_messages.append({"role": "system", "content": system_prompt})
+        full_messages.extend(messages)
+
+        if self._is_vlm:
+            from core.inference.chat_template_helpers import (
+                apply_chat_template_for_generation,
+                chat_render_target,
+            )
+
+            if any(_count_vlm_images(message.get("content")) for message in full_messages):
+                raise ValueError("Cannot count an MLX prompt containing images")
+            prompt = apply_chat_template_for_generation(
+                chat_render_target(self._processor),
+                full_messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+            )
+            if prompt is None:
+                raise RuntimeError("apply_chat_template returned None — processor may be incompatible")
+        else:
+            prompt = self._render_text_chat_prompt(
+                full_messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+            ).prompt
+
+        bos = getattr(self._tokenizer, "bos_token", None)
+        add_special_tokens = bos is None or not prompt.startswith(bos)
+        return len(self._tokenizer.encode(prompt, add_special_tokens = add_special_tokens))
+
     def generate_chat_response(
         self,
         messages,
@@ -1522,43 +1628,17 @@ class MLXInferenceBackend:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
-        from core.inference.chat_template_helpers import (
-            apply_chat_template_for_generation,
-            detect_think_prefill,
-            render_with_native_template_fallback,
-        )
+        from core.inference.chat_template_helpers import detect_think_prefill
 
-        prompt = apply_chat_template_for_generation(
-            self._tokenizer,
+        # Shared with count_chat_tokens so context preflight measures the exact
+        # native-template fallback generation will use.
+        render_result = self._render_text_chat_prompt(
             messages,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
-        )
-        if prompt is None:
-            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
-
-        # Parity with the transformers backend: if the template dropped the
-        # requested tools, fall back to the native template so MLX text models
-        # keep advertising them. self._tokenizer is this entry's tokenizer, so
-        # probe and native render share a renderer. (VLM renders via the
-        # processor for image tokens and is not wired here.)
-        model_info = self.models.get(self.active_model_name, {})
-        render_result = render_with_native_template_fallback(
-            formatted_prompt = prompt,
-            tokenizer = self._tokenizer,
-            model_info = model_info,
-            active_model_name = self.active_model_name,
-            messages = messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-            hf_token = model_info.get("hf_token"),
-            return_metadata = True,
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
