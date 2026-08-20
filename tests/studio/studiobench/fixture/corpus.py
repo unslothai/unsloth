@@ -390,7 +390,12 @@ def _inline_math(rng: random.Random, salt: str) -> str:
     return f"$ {body} $" if rng.random() < 0.65 else f"\\( {body} \\)"
 
 
-def _sentence(rng: random.Random, salt: str, *, math: bool = False) -> str:
+def _sentence(
+    rng: random.Random,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
     tail = f" where {_inline_math(rng, salt)} holds" if math else ""
     return (
         f"The {rng.choice(_ADJS)} {rng.choice(_NOUNS)} {rng.choice(_VERBS)} the "
@@ -399,7 +404,13 @@ def _sentence(rng: random.Random, salt: str, *, math: bool = False) -> str:
     )
 
 
-def _prose(rng: random.Random, target: int, salt: str, *, math: bool = False) -> str:
+def _prose(
+    rng: random.Random,
+    target: int,
+    salt: str,
+    *,
+    math: bool = False,
+) -> str:
     """`target` characters of fence-free prose. No Shiki span will be built over any of it.
 
     With `math`, a share of the sentences carry an inline expression. Those characters are spent
@@ -433,9 +444,7 @@ def _math_block(rng: random.Random, target: int, salt: str) -> str:
     i = 0
     while size < target:
         body = _expression(rng, f"{salt}m{i}", rng.randint(3, 6))
-        block = (
-            f"$$\n{body}\n$$" if rng.random() < 0.65 else f"\\[\n{body}\n\\]"
-        )
+        block = f"$$\n{body}\n$$" if rng.random() < 0.65 else f"\\[\n{body}\n\\]"
         out.append(block)
         size += len(block) + 2
         i += 1
