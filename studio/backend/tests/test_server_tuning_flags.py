@@ -299,7 +299,7 @@ def test_the_checkpoint_flag_falls_back_to_the_legacy_spelling():
     assert "supports_ctx_checkpoints = ctx_checkpoints_flag is not None" in probe
     # and the emission uses the recorded name, not a hard-coded one
     load = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
-    assert 'cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])' in load
+    assert "cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])" in load
     assert 'cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
 
 
