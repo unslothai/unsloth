@@ -28,6 +28,8 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
       - 'tests/studio_setup_ps1/**'
       # The PowerShell unit tests this workflow runs live here. Without this a
@@ -191,6 +193,18 @@ jobs:
       # jobs. Gating it on `!cancelled()` would install onto a runner whose
       # pinned Python or Node never materialised, and every phase below gates on
       # assert-prebuilt, which would then pass and hide the real failure.
+
+      # 96s of a ~257s install on Windows (`[72s] building frontend...` -> `[168s]
+      # frontend built`, 37% of it), spent in five Windows jobs on every commit to
+      # produce byte-identical output. The key hashes exactly the paths
+      # studio/setup.ps1:3526-3549 checks before rebuilding, so a hit means the build
+      # inputs are byte-identical; the action's own reasoning, and the assertion that
+      # a hit was actually REUSED rather than rebuilt, live in
+      # .github/actions/frontend-dist-restore and -save.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Unsloth (--local, --no-torch)
         id: install
         timeout-minutes: 25
@@ -221,6 +235,15 @@ jobs:
             Tee-Object -FilePath logs/install.log |
             ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: asserts the hit was reused (a `building
+      # frontend` line after a hit fails the job -- otherwise the cache costs a
+      # download, saves nothing, and still reports a hit), then saves on main only.
+      - name: Save the built frontend
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         id: assert-prebuilt

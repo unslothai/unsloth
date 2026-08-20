@@ -726,6 +726,8 @@ async def delete_threads(
 ):
     from starlette.concurrency import run_in_threadpool
 
+    # Before the rows go, so a thread id that comes back in the gap is cut here.
+    cutoff = _archive_cutoff()
     deleted_research_run_ids, deleted_chat_run_ids = await run_in_threadpool(
         delete_chat_threads_with_active_runs,
         payload.ids,
@@ -738,7 +740,41 @@ async def delete_threads(
     # In a worker: right after an upgrade this also runs the legacy move, and a
     # cross-filesystem copy on the event loop stops every other request.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
+    # drop them rather than leaking a scope per deleted chat.
+    await run_in_threadpool(_remove_conversation_archives, payload.ids, cutoff = cutoff)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _archive_cutoff() -> str:
+    """The instant a delete was accepted, as an ISO-8601 UTC string. See below."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _remove_conversation_archives(thread_ids, *, cutoff: "str | None" = None) -> None:
+    """Drop each deleted thread's archived turns. Never raises."""
+    try:
+        from core.rag import conversation_archive
+    except Exception:
+        return
+    for thread_id in thread_ids or []:
+        # As next to the sandbox removal: the rows went first and the sandbox pass ran in
+        # between, so another tab can have recreated this id and already be archiving
+        # turns under it. That chat is alive, and its memory is not this delete's to take
+        # -- but the conversation the user DID delete is, and skipping the scope kept it
+        # too, recallable under the live id with nothing left to sweep it. So cut at the
+        # instant the delete was accepted instead of skipping: everything archived before
+        # it belongs to the deleted conversation, everything after to the new one.
+        recreated = get_chat_thread(str(thread_id)) is not None
+        if recreated and not cutoff:
+            continue
+        try:
+            conversation_archive.delete_for_thread(
+                str(thread_id), created_before = cutoff if recreated else None
+            )
+        except Exception:
+            logger.warning("Could not remove the conversation archive for %s", thread_id)
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
@@ -1031,6 +1067,7 @@ async def delete_project(
     # Rows first, files last: a member chat can still be running a tool in the
     # workspace, and its cwd disappearing mid-call either kills the call or
     # leaves what it writes next in a directory no project owns.
+    cutoff = _archive_cutoff()
     try:
         project = await run_in_threadpool(
             lambda: delete_chat_project(project_id, delete_files = False)
@@ -1066,6 +1103,8 @@ async def delete_project(
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
+    # The project's chats go with it, so their archives have to as well.
+    await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1323,6 +1362,7 @@ async def clear_history(
 ):
     from starlette.concurrency import run_in_threadpool
 
+    cutoff = _archive_cutoff()
     # Admission is already closed in the frontend. Include its pending and legacy ids in the
     # transaction's fence so a delayed POST cannot recreate a chat after this returns.
     thread_ids = (
@@ -1359,6 +1399,11 @@ async def clear_history(
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
+    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
+    # conversation searchable in rag.db, and a reused thread id reads the old archive.
+    await run_in_threadpool(
+        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+    )
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are

@@ -39,6 +39,7 @@ from hub.utils.gguf import (
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
     pick_best_gguf,
+    merge_sibling_snapshot_variants,
     select_gguf_cache_snapshot,
 )
 from hub.utils.paths import (
@@ -1053,6 +1054,31 @@ async def get_gguf_variants_answer(
         hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
         snapshot_scope = _snapshot_scope_for_request(repo_id, local_path)
 
+        def _merge_when_the_repo_id_loads(response_repo_id, cached, root):
+            """*cached* widened, but only where the repo id is the load target.
+
+            ``cached_gguf_for_load`` searches the revisions only for such a row; one naming a
+            snapshot dir loads from it alone. Sufficient, not complete -- other shapes load by id
+            and keep listing one revision, since reconstructing the inventory's answer here from
+            less than it uses would offer quants the row cannot resolve.
+            """
+            variants, has_vision, complete, snapshot = cached
+            if not complete:
+                return cached
+            try:
+                from hub.utils.hf_cache_state import same_existing_path
+                from utils.hf_cache_settings import get_hf_cache_paths
+
+                repo_dir = snapshot.parent.parent
+                if not same_existing_path(repo_dir.parent, get_hf_cache_paths().hub_cache):
+                    return cached
+                default_snapshot = hf_cache_scan.default_ref_snapshot(repo_dir)
+                if default_snapshot is None or not same_existing_path(default_snapshot, snapshot):
+                    return cached
+            except (OSError, RuntimeError, ValueError):
+                return cached
+            return merge_sibling_snapshot_variants(response_repo_id, cached, root = root)
+
         def _local_response(
             response_repo_id: str,
             variants,
@@ -1264,7 +1290,9 @@ async def get_gguf_variants_answer(
                 return scoped_response
             cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete, snapshot = cached
+                variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
+                    repo_id, cached, hub_cache
+                )
                 # Name the answering snapshot: a repo-wide walk could read a different cache's
                 # context length, and a repo-dir walk a sibling revision's.
                 answered_from[0] = str(snapshot)
@@ -1308,7 +1336,9 @@ async def get_gguf_variants_answer(
                 return scoped_response
             cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete, snapshot = cached
+                variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
+                    repo_id, cached, hub_cache
+                )
                 answered_from[0] = str(snapshot)
                 # Same reason as the local_only branch above, state partials included:
                 # an unreachable Hub is exactly when a resume has nowhere else to surface.
