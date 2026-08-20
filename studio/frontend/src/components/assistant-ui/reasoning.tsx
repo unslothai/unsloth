@@ -11,6 +11,12 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { GRID_COLLAPSE_REASONING_ENABLED } from "@/components/assistant-ui/thread-feature-flags";
+import {
+  UnmeasuredCollapsible,
+  UnmeasuredCollapsibleContent,
+  UnmeasuredCollapsibleTrigger,
+} from "@/components/ui/unmeasured-collapsible";
 import {
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
@@ -95,26 +101,25 @@ function ReasoningRoot({
     [lockScroll, isControlled, controlledOnOpenChange],
   );
 
-  return (
-    <Collapsible
-      ref={collapsibleRef}
-      data-slot="reasoning-root"
-      data-variant={variant}
-      open={isOpen}
-      onOpenChange={handleOpenChange}
-      className={cn(
-        "group/reasoning-root",
-        reasoningVariants({ variant, className }),
-      )}
-      style={
-        {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
-        } as CSSProperties
-      }
-      {...props}
-    >
-      {children}
-    </Collapsible>
+  const rootProps = {
+    ref: collapsibleRef,
+    "data-slot": "reasoning-root",
+    "data-variant": variant,
+    open: isOpen,
+    onOpenChange: handleOpenChange,
+    className: cn("group/reasoning-root", reasoningVariants({ variant, className })),
+    style: {
+      "--animation-duration": `${ANIMATION_DURATION}ms`,
+    } as CSSProperties,
+    ...props,
+  };
+
+  // Same props either way. The only difference is which primitive receives them, and the
+  // unmeasured one is a drop-in for the subset of Radix's surface this pane uses.
+  return GRID_COLLAPSE_REASONING_ENABLED ? (
+    <UnmeasuredCollapsible {...rootProps}>{children}</UnmeasuredCollapsible>
+  ) : (
+    <Collapsible {...rootProps}>{children}</Collapsible>
   );
 }
 
@@ -127,8 +132,12 @@ function ReasoningTrigger({
   active?: boolean;
   duration?: number;
 }) {
+  const Trigger = GRID_COLLAPSE_REASONING_ENABLED
+    ? UnmeasuredCollapsibleTrigger
+    : CollapsibleTrigger;
+
   return (
-    <CollapsibleTrigger
+    <Trigger
       data-slot="reasoning-trigger"
       className={cn(
         "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
@@ -156,7 +165,7 @@ function ReasoningTrigger({
           "group-data-[state=open]/trigger:rotate-0",
         )}
       />
-    </CollapsibleTrigger>
+    </Trigger>
   );
 }
 
@@ -166,16 +175,47 @@ function ReasoningContent({
   streaming,
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
+  const shared = cn(
+    "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
+    "group/collapsible-content ease-out",
+    "data-[state=closed]:pointer-events-none",
+  );
+
+  if (GRID_COLLAPSE_REASONING_ENABLED) {
+    return (
+      <UnmeasuredCollapsibleContent
+        data-slot="reasoning-content"
+        closeDurationMs={ANIMATION_DURATION}
+        className={cn(
+          shared,
+          // No `animate-collapsible-*`, so nothing consumes
+          // `--radix-collapsible-content-height` and nothing needs to know the content's height.
+          // `1fr` resolves against the content on every frame, which is also what makes this
+          // correct while reasoning is still streaming into an open pane: the row simply tracks
+          // the growing content instead of holding a height captured at toggle time.
+          //
+          // The duration is unconditional here. The height keyframes needed a per-state duration
+          // because they were two different animations; this is one transition run in both
+          // directions. `prefers-reduced-motion` still reaches it: index.css forces
+          // `transition-duration: 0.01ms !important` on every element, and this is a transition.
+          "duration-(--animation-duration)",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </UnmeasuredCollapsibleContent>
+    );
+  }
+
   return (
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
-        "group/collapsible-content ease-out",
+        shared,
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
         "data-[state=closed]:fill-mode-forwards",
-        "data-[state=closed]:pointer-events-none",
         "data-[state=open]:duration-(--animation-duration)",
         "data-[state=closed]:duration-(--animation-duration)",
         className,
