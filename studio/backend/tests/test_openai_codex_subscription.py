@@ -2684,9 +2684,7 @@ def test_one_malformed_entry_does_not_cost_the_whole_catalog(monkeypatch):
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: fake)
     forget_subscription_models("provider-malformed")
     try:
-        models = asyncio.run(
-            list_subscription_models("provider-malformed", "token", "acct-1")
-        )
+        models = asyncio.run(list_subscription_models("provider-malformed", "token", "acct-1"))
         assert [model["id"] for model in models] == ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol"]
         assert [model["reasoning_efforts"] for model in models] == [[], [], ["high"]]
         assert offered_subscription_model_ids("provider-malformed") == {
@@ -2745,11 +2743,14 @@ def _gated_models_client(gate, slug):
     import httpx
 
     class Gated:
-        async def get(self, _url, headers = None, params = None):
+        async def get(
+            self,
+            _url,
+            headers = None,
+            params = None,
+        ):
             await gate.wait()
-            return httpx.Response(
-                200, json = {"models": [{"slug": slug, "visibility": "list"}]}
-            )
+            return httpx.Response(200, json = {"models": [{"slug": slug, "visibility": "list"}]})
 
         async def aclose(self):
             return None
@@ -2770,7 +2771,11 @@ def test_a_disconnect_mid_read_retires_that_read_and_releases_its_ticket(monkeyp
         codex_client, "_create_http_client", lambda: _gated_models_client(gate, "gpt-5.4")
     )
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "token", "acct-1"
 
     monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
@@ -2812,7 +2817,11 @@ def test_a_read_started_after_a_release_cannot_be_matched_by_the_older_one(monke
     ]
     monkeypatch.setattr(codex_client, "_create_http_client", lambda: clients.pop(0))
 
-    async def _resolve(_provider_id, force_refresh = False, expected_access_token = None):
+    async def _resolve(
+        _provider_id,
+        force_refresh = False,
+        expected_access_token = None,
+    ):
         return "token", "acct-1"
 
     monkeypatch.setattr(codex_auth, "resolve_access", _resolve)
