@@ -99,6 +99,7 @@ import {
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
+  resolveExternalMaxTokensClamp,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
@@ -425,6 +426,20 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "mtp_partial_offload":
+      // Not the default copy: this build does support MTP, so telling the user to
+      // update llama.cpp would name the wrong cause and the wrong remedy. Says
+      // what the placement IS rather than that the model could not fit: a Manual
+      // layer count is a partial placement the user picked, on a card that may
+      // have room for all of it, and there the useful remedy is more layers.
+      //
+      // Describes the placement MTP WOULD need, not the one that ends up running.
+      // The partial verdict is priced with MTP's rollback reserve still in it, so
+      // on the fit path llama.cpp can put every layer on the GPU once MTP is off
+      // -- claiming "only part of this model is on the GPU" would then describe a
+      // placement the load does not have and recommend one it already has. This
+      // wording stays true both there and at a fixed partial layer count.
+      return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
       // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
       // in the drafter's place where the build has it, so only the drafter is off.
@@ -501,6 +516,8 @@ export function ChatSettingsPanel({
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
+  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
@@ -524,6 +541,7 @@ export function ChatSettingsPanel({
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
@@ -663,6 +681,7 @@ export function ChatSettingsPanel({
     gpuLayers,
     nCpuMoe,
     tensorParallel,
+    disableVision,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -685,6 +704,7 @@ export function ChatSettingsPanel({
       gpuLayers,
       nCpuMoe,
       tensorParallel,
+      disableVision,
       speculativeType,
       specDraftNMax,
       nParallel,
@@ -725,6 +745,7 @@ export function ChatSettingsPanel({
       ? getExternalMaxOutputTokens(
           externalProviderType,
           externalSelection?.modelId,
+          activeExternalProvider?.maxOutputTokens,
         )
       : isGguf && baseContext
         ? baseContext
@@ -760,15 +781,58 @@ export function ChatSettingsPanel({
     };
   }
 
+  // Lower a live Max Tokens that no longer fits the connection's cap.
+  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
+  // read as the 32,768 fallback.
+  useEffect(() => {
+    const clampedMaxTokens = resolveExternalMaxTokensClamp({
+      settingsHydrated,
+      hasActiveExternalProvider: activeExternalProvider != null,
+      isExternalModel,
+      maxTokens: params.maxTokens,
+      maxTokensMax,
+    });
+    if (clampedMaxTokens == null) {
+      return;
+    }
+    const nextParams = { ...params, maxTokens: clampedMaxTokens };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
+  }, [
+    activeExternalProvider,
+    activePreset,
+    activePresetBaseline,
+    isExternalModel,
+    maxTokensMax,
+    onParamsChange,
+    params,
+    settingsHydrated,
+    setActivePresetSource,
+  ]);
+
+  function applyPresetParamsWithinCurrentLimits(
+    presetParams: Parameters<typeof applyPresetParams>[1],
+  ): InferenceParams {
+    const nextParams = applyPresetParams(params, presetParams);
+    // Same reason the effect waits for a provider: without one `maxTokensMax` is the
+    // fallback, so applying a preset here would lower the value for good.
+    if (!isExternalModel || activeExternalProvider == null) return nextParams;
+    return {
+      ...nextParams,
+      maxTokens: Math.min(nextParams.maxTokens, maxTokensMax),
+    };
+  }
+
   function applyPreset(name: string) {
     if (!settingsHydrated) {
       return;
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange({
-        ...applyPresetParams(params, p.params),
-      });
+      onParamsChange(applyPresetParamsWithinCurrentLimits(p.params));
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
       }
@@ -828,9 +892,9 @@ export function ChatSettingsPanel({
     setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
-        onParamsChange({
-          ...        applyPresetParams(params, fallbackPreset.params),
-        });
+        onParamsChange(
+          applyPresetParamsWithinCurrentLimits(fallbackPreset.params),
+        );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
         }
@@ -1003,9 +1067,21 @@ export function ChatSettingsPanel({
               )}
               {showContextVramWarning && (
                 <p className="text-ui-11 text-amber-500">
-                  Context length exceeds the estimated VRAM capacity (
+                  {isUnifiedMemory ? (
+                    <>
+                      Context length exceeds what fits in unified memory (
+                      {ggufMaxContextLength?.toLocaleString()} tokens). The GPU
+                      and the rest of the system share one pool here, so there
+                      is nothing to offload to. Lower the context, leave it on
+                      Auto, or set the KV cache to q8_0.
+                    </>
+                  ) : (
+                    <>
+                      Context length exceeds the estimated VRAM capacity (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
+                    </>
+                  )}
                 </p>
               )}
             </div>

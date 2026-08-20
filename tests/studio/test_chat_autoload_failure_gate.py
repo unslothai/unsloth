@@ -70,6 +70,30 @@ export type Scenario = {
   download: (request: any) => string;
 };
 
+// The stored-arguments hydration the auto-load runs before it calls /load. Neutral
+// here on purpose: these scenarios are about the failure gate, not about which flags
+// a model launches with, and a stub that invented some would change the /load payload
+// every scenario asserts on. fetchLoadExtraArgs answers "nothing stored", which is
+// what a fresh install has, and the sanitizer is identity so a scenario that does set
+// llamaExtraArgs still sends exactly what it set.
+export async function loadManagedLlamaFlags(): Promise<any> {
+  return null;
+}
+export async function fetchLoadExtraArgs(
+  _loadId: string,
+  _aliasId?: string | null,
+  _variant?: string | null,
+): Promise<{ tokens: string[]; explicit: boolean }> {
+  return { tokens: [], explicit: false };
+}
+export function sanitizeStoredExtraArgs(
+  tokens: readonly string[],
+  _managed: ReadonlySet<string>,
+  _limits?: any,
+): string[] {
+  return [...tokens];
+}
+
 export const EVENTS: any[] = [];
 let SCENARIO: Scenario;
 export function setScenario(scenario: Scenario) {
@@ -94,6 +118,17 @@ async function getInferenceStatus() {
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
 }
+// chat-runtime-store.ts:
+//   return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
+// No scenario here sets a stored preference, so the stub is the model-family
+// default the backend resolves, verbatim from resolve-preserve-thinking-default.ts:
+//   Boolean(resp.supports_preserve_thinking && resp.preserve_thinking_default)
+// Present because the sliced region calls it; without it every scenario in this
+// file fails on the harness guard rather than on anything it means to test.
+function resolvePreserveThinkingOnLoad(resp: any) {
+  return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
+}
+
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
     ? (status.model_identifier ?? status.active_model)
@@ -150,6 +185,31 @@ function mlxRuntimeStateFrom(resp: any) {
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
     chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
+  };
+}
+// Imported by chat-adapter.ts from ../utils/mmproj-fallback, and used by the auto-load
+// success toast to say how a load was degraded. Without a stub it is a bare
+// ReferenceError inside the retry loop, which scores as a failed load and fails every
+// scenario as a wrong-model assertion -- the exact shape the guard below exists to
+// catch, and the third time it has happened (see #7699).
+//
+// Mirrors the real composition rather than returning a fixed string: these scenarios do
+// not assert on toast copy, but a stub that ignored its arguments would let a call site
+// stop passing one of the two reasons without anything here noticing, which is the bug
+// this helper was introduced to fix. The exact wording lives in mmproj-fallback.ts and
+// is tested in studio/frontend/tests/mmproj-fallback.test.ts.
+function loadFallbackNotice(
+  baseTitle: string,
+  cpuFallbackReason: any,
+  mmprojFallbackReason: any,
+) {
+  const parts: string[] = [];
+  if (cpuFallbackReason) parts.push(`cpu:${cpuFallbackReason}`);
+  if (mmprojFallbackReason) parts.push(`mmproj:${mmprojFallbackReason}`);
+  return {
+    title: parts.length > 0 ? `${baseTitle} (${parts.join(", ")})` : baseTitle,
+    description: parts.length > 0 ? parts.join(" ") : undefined,
+    degraded: parts.length > 0,
   };
 }
 async function prepareHfTokenForUse(token: any) {
@@ -218,6 +278,10 @@ const toast: any = Object.assign(
     info: (msg: string) => EVENTS.push({ kind: "toast.info", msg }),
   },
 );
+
+function mmprojFallbackMessage(reason: string) {
+  return `mmproj fallback: ${reason}`;
+}
 
 async function tryAdoptServerActiveModel() { return false; }
 function resolveSpeculativeSettingsForLoad() {

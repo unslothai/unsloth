@@ -100,6 +100,7 @@ function useResearchActivityScroll(runId: string) {
     let animationFrame: number | null = null;
     let settleTimer: number | null = null;
     let settleCheckDue = false;
+    // Layout signal since the last frame. True so the first frame after mount follows.
     let layoutChanged = true;
 
     const distanceFromBottom = () =>
@@ -155,8 +156,14 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
-      // A settle check queued by the last quiet frame would otherwise fire mid-scroll and reconcile
-      // isAtBottom back to true whenever the user has moved less than the bottom threshold.
+      // Cancel every pending follow step, not just the settle check. A frame queued before the
+      // detach still runs, falls through to the reconcile below, and reads a flick shorter than
+      // the bottom threshold as still-at-bottom: "Latest" never appears and nothing corrects it,
+      // since followLayout returns early from here on.
+      if (animationFrame !== null) {
+        cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
       if (settleTimer !== null) {
         window.clearTimeout(settleTimer);
         settleTimer = null;
@@ -876,10 +883,16 @@ export function ResearchActivityPanel({
       style={
         variant === "panel"
           ? {
+              // The chat-model notice is an opaque absolute bar spanning the whole
+              // chat content area, the panel column included, directly under the
+              // header. Clear it the same way the header itself is cleared, or its
+              // first 2.25rem -- the telescope, the title, the status pill and the
+              // close button -- is painted over and unclickable. 0px whenever no
+              // notice is on screen, so this is the geometry it always had.
               height:
-                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px))",
+                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px) - var(--studio-chat-notice-height, 0px))",
               marginTop:
-                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
+                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px) + var(--studio-chat-notice-height, 0px))",
             }
           : undefined
       }

@@ -91,6 +91,24 @@ pub(crate) enum OwnedBackendProbe {
     Verified(VerifiedOwnedBackend),
 }
 
+/// `NotVerified` reason for a port that answered the probe in full and named an owner that is
+/// not this app's.
+///
+/// Kept apart from `owned_backend_not_found`, which also covers a port that said nothing at
+/// all. The health watchdog needs the difference: silence from a port an Unsloth backend just
+/// answered on is a stall and earns the wide busy budget, while a complete answer carrying a
+/// different root id, a different token or no desktop owner at all is proof that the backend
+/// this app adopted is gone and something else has the port.
+pub(crate) const OWNED_BACKEND_OWNER_MISMATCH: &str = "owned_backend_owner_mismatch";
+
+/// Whether a failed probe answered with a different owner rather than falling silent.
+pub(crate) fn probe_saw_a_different_owner(probe: &OwnedBackendProbe) -> bool {
+    matches!(
+        probe,
+        OwnedBackendProbe::NotVerified { reason } if reason == OWNED_BACKEND_OWNER_MISMATCH
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreviousAppPidStatus {
     Dead,
@@ -940,6 +958,9 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
         None => desktop_candidate_ports().collect(),
     };
     let mut verified = Vec::new();
+    // Set only by a complete, parsed answer that names someone else. A transport error or a
+    // non-success status leaves it alone, so silence never reads as a takeover.
+    let mut answered_with_a_different_owner = false;
     for port in ports {
         let liveness = match fetch_liveness(port, timeout).await {
             Ok(Some(liveness)) => liveness,
@@ -953,6 +974,7 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
             }
         };
         if !liveness_verifies_metadata(&liveness, &owner.metadata) {
+            answered_with_a_different_owner = true;
             continue;
         }
         if let Some(reason) = lifecycle_control_block_reason(&liveness) {
@@ -990,10 +1012,12 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
 
     if verified.len() != 1 {
         return OwnedBackendProbe::NotVerified {
-            reason: if verified.is_empty() {
-                "owned_backend_not_found".to_string()
-            } else {
+            reason: if !verified.is_empty() {
                 "owned_backend_ambiguous".to_string()
+            } else if answered_with_a_different_owner {
+                OWNED_BACKEND_OWNER_MISMATCH.to_string()
+            } else {
+                "owned_backend_not_found".to_string()
             },
         };
     }
@@ -1509,6 +1533,139 @@ mod tests {
                 token_sha256: Some(token_sha256(TOKEN)),
             }),
         }
+    }
+
+    /// A backend that answers the ownership probe's first request and then goes quiet, the
+    /// way a saturated one does. The later connections are parked, not closed: closing them
+    /// would answer with a reset, which is a different failure entirely.
+    async fn owned_backend_that_stalls_after_the_first_request() -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = format!(
+            r#"{{"status":"alive","service":"Unsloth UI Backend","desktop_protocol_version":{},"desktop_manageability_version":{},"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{}","desktop_owner":{{"kind":"{}","token_sha256":"{}"}},"inference_active":true}}"#,
+            crate::preflight::DESKTOP_PROTOCOL_VERSION,
+            crate::preflight::DESKTOP_MANAGEABILITY_VERSION,
+            ROOT_ID,
+            OWNER_KIND_TAURI,
+            token_sha256(TOKEN),
+        );
+        tokio::spawn(async move {
+            let mut answered = false;
+            let mut parked = Vec::new();
+            while let Ok((mut socket, _)) = listener.accept().await {
+                if answered {
+                    parked.push(socket);
+                    continue;
+                }
+                answered = true;
+                let mut chunk = [0u8; 2048];
+                let _ = socket.read(&mut chunk).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_stall_after_the_first_request_is_indistinguishable_from_a_foreign_port() {
+        // Why the health watchdog cannot ask this probe whether a failure was a stall: the
+        // liveness GET succeeds and verifies ownership, then the desktop-login POST runs out
+        // of budget, and the answer that comes back carries no trace of which it was. The
+        // watchdog has to classify the failure from its own read instead, which is what
+        // `commands::adopted_failure_is_a_stall` does. Only the opposite case is decidable
+        // here, and is reported as `OWNED_BACKEND_OWNER_MISMATCH`: a port that answered in
+        // full for somebody else did not fall silent, so it is not a stall.
+        let port = owned_backend_that_stalls_after_the_first_request().await;
+        // The probe never touches the file, so nothing has to exist on disk for this.
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-stall-after-first-request.json"),
+            metadata(std::process::id(), Some(port)),
+        );
+
+        let probe = probe_owned_backend_state_with_timeout(
+            owner,
+            Some(port),
+            false,
+            Duration::from_millis(400),
+        )
+        .await;
+
+        match probe {
+            OwnedBackendProbe::Unmanageable { reason, .. } => {
+                assert_eq!(reason, "desktop_login_probe_failed");
+            }
+            OwnedBackendProbe::NotVerified { reason } => {
+                assert_eq!(reason, "owned_backend_not_found");
+            }
+            other => panic!("a stalled owned backend should not verify: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_taken_over_by_another_backend_is_reported_as_an_owner_mismatch() {
+        // The other half of the classification above. A backend the app adopted can exit and
+        // have its port rebound by the next Unsloth backend the user starts, which answers
+        // the watchdog's pre-probe exactly as the old one did. The probe gets a complete
+        // reply here, not silence, so it must say so: the watchdog reads this to keep the
+        // dead adopted backend on the normal three-strike budget instead of the busy one.
+        //
+        // A backend started outside the app omits `desktop_owner` entirely (main.py only
+        // emits the key when one is loaded), and a second app instance sends a different
+        // token hash. Both are takeovers.
+        for body in [
+            // Same install, so the root id matches; no desktop owner at all.
+            r#"{"status":"alive","service":"Unsloth UI Backend","studio_root_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","supports_desktop_auth":true,"supports_desktop_backend_ownership":true}"#,
+            // A desktop-owned backend, but not the one this app is holding.
+            r#"{"status":"alive","service":"Unsloth UI Backend","studio_root_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"desktop_owner":{"kind":"tauri","token_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        ] {
+            let (port, _, server) = http_sequence_server(vec![("200 OK", body)]).await;
+            let owner = BackendOwnerState::from_metadata(
+                std::env::temp_dir().join("unsloth-port-taken-over.json"),
+                metadata(std::process::id(), Some(port)),
+            );
+
+            let probe = probe_owned_backend_state_with_timeout(
+                owner,
+                Some(port),
+                false,
+                Duration::from_secs(5),
+            )
+            .await;
+            server.await.unwrap();
+
+            assert!(
+                probe_saw_a_different_owner(&probe),
+                "a port answering for a different owner read as silence: {probe:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_that_says_nothing_is_not_reported_as_an_owner_mismatch() {
+        // The guard on the above: a closed port and a stalled one both fail to verify, and
+        // neither is evidence that someone else took the port. Only a parsed answer is.
+        let port = closed_port();
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-silent-port.json"),
+            metadata(std::process::id(), Some(port)),
+        );
+
+        let probe =
+            probe_owned_backend_state_with_timeout(owner, Some(port), false, Duration::from_secs(5))
+                .await;
+
+        assert!(!probe_saw_a_different_owner(&probe), "{probe:?}");
+        assert!(matches!(
+            probe,
+            OwnedBackendProbe::NotVerified { ref reason } if reason == "owned_backend_not_found"
+        ));
     }
 
     #[test]

@@ -12,7 +12,7 @@ The same three tables are hand-copied into up to seven places each:
 
   GPU name -> gfx           install.sh (_infer_amd_gfx_arch_from_gpu_name)
                             install.sh (case "$_gpu_disp_mkt", detection banner + env tip)
-                            studio/setup.sh (case "$_setup_mkt")
+                            studio/setup.sh (_setup_supported_gfx_from_name)
                             install.ps1 ($nameArchTable)
                             studio/setup.ps1 ($nameArchTable)
                             studio/install_python_stack.py (_WIN_GPU_NAME_ARCH_TABLE)
@@ -378,7 +378,7 @@ def _name_tables() -> dict[str, object]:
             install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
         ),
         "studio/setup.sh": _name_table_sh_case(
-            _SETUP_SH.read_text(encoding = "utf-8"), '"$_setup_mkt"', "_setup_gfx"
+            _SETUP_SH.read_text(encoding = "utf-8"), '"$_sup_gfx_in"', "_sup_gfx_out"
         ),
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),

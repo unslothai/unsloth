@@ -2715,6 +2715,89 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
+    def test_gguf_gated_tool_start_gets_a_separate_prompt_flush(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            stopped = threading.Event()
+
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                yield {"type": "status", "text": "Waiting for approval: Python"}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "arguments": {"code": "print(1)"},
+                    "awaiting_confirmation": True,
+                    "approval_id": "approval_0",
+                }
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                stopped.set()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+            monkeypatch.setattr(inf_mod, "TOOL_APPROVAL_FLUSH_DELAY_S", 0.01)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "run python"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            try:
+                for _ in range(8):
+                    chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                    if '"tool_start"' in chunk:
+                        break
+                else:
+                    pytest.fail("gated tool_start was not emitted")
+
+                next_turn = [False]
+                asyncio.get_running_loop().call_soon(next_turn.__setitem__, 0, True)
+                flush = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert flush == ": keep-alive\n\n"
+                assert next_turn[0] is True
+            finally:
+                await iterator.aclose()
+
+            assert stopped.is_set()
+
+        asyncio.run(_run())
+
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -3542,8 +3625,18 @@ class TestGgufVisionToolRouting:
 
         calls = {"count": 0}
 
-        def _generate(**_kwargs):
+        def _generate(**kwargs):
             calls["count"] += 1
+            callback = kwargs.get("perf_callback")
+            if callback is not None:
+                callback(
+                    {
+                        "prompt_ms": 100.0,
+                        "prompt_per_second": 30.0,
+                        "predicted_ms": 20.0,
+                        "predicted_per_second": 50.0,
+                    }
+                )
             text = f"reply {calls['count']}"
             yield text
             yield {
@@ -3588,6 +3681,49 @@ class TestGgufVisionToolRouting:
         assert entry["reply"] == "Choice 1:\nreply 1\n\nChoice 2:\nreply 2"
         assert entry["completion_tokens"] == 3
         assert monitor.active_count() == 0
+
+        assert entry["prompt_tok_per_sec"] is None
+        assert entry["tok_per_sec"] is None
+        assert entry["decode_ms"] is None
+
+    def test_disabled_monitor_does_not_install_gguf_perf_callback(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _generate(**kwargs):
+            captured.update(kwargs)
+            yield "reply"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3, enabled = False))
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        response = self._drive(
+            openai_chat_completions(
+                ChatCompletionRequest(
+                    model = "default",
+                    messages = [{"role": "user", "content": "hi"}],
+                ),
+                request = self._Request(),
+                current_subject = "test",
+            )
+        )
+
+        assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
+        assert captured["perf_callback"] is None
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
@@ -6579,6 +6715,75 @@ class TestApiMonitorSafetensorsUsage:
         url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
+    def test_non_streaming_safetensors_keeps_event_loop_responsive(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            generation_started = threading.Event()
+            generation_finished = threading.Event()
+            generation_threads = []
+
+            class DummyBackend:
+                active_model_name = "safe-model"
+                models = {"safe-model": {"context_length": 2048}}
+
+                def generate_chat_response(self, **_kwargs):
+                    generation_threads.append(threading.current_thread())
+                    generation_started.set()
+                    try:
+                        time.sleep(0.08)
+                        yield "safe reply"
+                    finally:
+                        generation_finished.set()
+
+                def reset_generation_state(self, caller_cancel_event = None):
+                    pass
+
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
+            monkeypatch.setattr(
+                inf_mod,
+                "_detect_safetensors_features",
+                lambda *_args, **_kwargs: {"supports_tools": False},
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+            heartbeat_ticks = 0
+
+            async def _heartbeat():
+                nonlocal heartbeat_ticks
+                while not generation_finished.is_set():
+                    await asyncio.sleep(0.005)
+                    if generation_started.is_set() and not generation_finished.is_set():
+                        heartbeat_ticks += 1
+
+            heartbeat = asyncio.create_task(_heartbeat())
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            await heartbeat
+
+            assert response.status_code == 200
+            assert heartbeat_ticks > 0
+            assert len(generation_threads) == 1
+            assert generation_threads[0] is not threading.current_thread()
+
+        asyncio.run(_run())
+
     def test_non_streaming_safetensors_records_usage(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6851,6 +7056,57 @@ class TestApiMonitorAudioInput:
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_audio_input_non_streaming_keeps_event_loop_responsive(self, monkeypatch):
+        async def _run():
+            generation_started = threading.Event()
+            generation_finished = threading.Event()
+            generation_threads = []
+
+            def _chunks():
+                generation_threads.append(threading.current_thread())
+                generation_started.set()
+                try:
+                    time.sleep(0.08)
+                    yield "hello"
+                finally:
+                    generation_finished.set()
+
+            inf_mod = self._patch_audio_backend(monkeypatch, _chunks())
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "describe this audio")],
+                audio_base64 = "ZmFrZQ==",
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            heartbeat_ticks = 0
+
+            async def _heartbeat():
+                nonlocal heartbeat_ticks
+                while not generation_finished.is_set():
+                    await asyncio.sleep(0.005)
+                    if generation_started.is_set() and not generation_finished.is_set():
+                        heartbeat_ticks += 1
+
+            heartbeat = asyncio.create_task(_heartbeat())
+            response = await openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            await heartbeat
+
+            assert response.status_code == 200
+            assert heartbeat_ticks > 0
+            assert len(generation_threads) == 1
+            assert generation_threads[0] is not threading.current_thread()
 
         asyncio.run(_run())
 

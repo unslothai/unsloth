@@ -282,3 +282,157 @@ export function readContinuationRequest(
   }
   return null;
 }
+
+/**
+ * Resuming a Max Tokens cut WITHOUT asking.
+ *
+ * Hitting the cap is not a decision the user made; it is the reply running out of room
+ * mid-sentence, and the only sensible answer to "the answer is not finished" is to finish
+ * it. Every other reason is left alone: `cancelled` is the user pressing Stop, so
+ * resuming would restart the thing they just stopped, and `interrupted` means the
+ * connection dropped, where a silent retry can hide a broken link.
+ *
+ * Bounded, because a model that will not stop would otherwise loop forever, and each
+ * round grows the transcript and drives compaction harder. After the budget is spent the
+ * bar comes back and the user decides.
+ */
+export const AUTO_CONTINUE_LIMIT = 3;
+
+/**
+ * Rounds already spent per logical turn, keyed by the parent the continuation hangs off.
+ *
+ * Keyed on the PARENT, not the message: a continuation runs as a sibling of the turn it
+ * resumes, so each round produces a new message id and a per-message counter would reset
+ * every time and never reach its limit. The parent is the one id every round of the same
+ * turn shares. In memory only; a reload is a fresh decision by a present user.
+ */
+const spent = new Map<string, number>();
+
+/**
+ * Whether this cut should resume on its own.
+ *
+ * `fits` and `promptTarget` come from the resumed turn's own truncation metadata, and
+ * both exist because resuming FIGHTS the context window. A continuation replays the
+ * partial as the final assistant turn, and the fit protects the final group, so the
+ * partial is the one thing compaction may not evict. Once it is large enough that the
+ * system turn plus the carried-forward block will not fit beside it, the request is
+ * irreducible and every further round produces the same refusal.
+ *
+ * Measured at a 4,864-token context: a 3,217-token partial plus system and X came to
+ * 4,218 against a 3,648-token target, so the answer could not be resumed at all -- and
+ * three automatic rounds each asked anyway and each failed identically.
+ */
+export function shouldAutoContinue(
+  reason: IncompleteReason | null | undefined,
+  key: string | null | undefined,
+  {
+    limit = AUTO_CONTINUE_LIMIT,
+    fits,
+    partialTokens,
+    promptTarget,
+  }: {
+    limit?: number;
+    /** `contextTruncation.fits` of the turn being resumed. */
+    fits?: boolean;
+    /** Estimated size of the partial that would be replayed. */
+    partialTokens?: number;
+    /** `contextTruncation.prompt_target`: what the window leaves for the prompt. */
+    promptTarget?: number;
+  } = {},
+): boolean {
+  if (reason !== "length" || !key) {
+    return false;
+  }
+  if (fits === false) {
+    // This turn's own fit was already refused. Resuming re-sends a partial that is only
+    // ever longer, so the next round cannot fit either.
+    return false;
+  }
+  if (
+    typeof partialTokens === "number" &&
+    typeof promptTarget === "number" &&
+    promptTarget > 0 &&
+    partialTokens >= promptTarget
+  ) {
+    // The partial alone meets the budget, so nothing can be sent beside it -- not the
+    // system prompt, not the user's own question. Raising Context Length is the only
+    // remedy and the bar says so.
+    return false;
+  }
+  return (spent.get(key) ?? 0) < limit;
+}
+
+/** Record a round against `key`. Called before the run starts, so a run that fails to
+ * produce anything still consumes its budget rather than retrying forever. */
+export function recordAutoContinue(key: string): void {
+  spent.set(key, (spent.get(key) ?? 0) + 1);
+}
+
+/** Rounds spent so far, for the indicator and for tests. */
+export function autoContinueCount(key: string | null | undefined): number {
+  return key ? (spent.get(key) ?? 0) : 0;
+}
+
+/**
+ * Messages this session has already continued automatically, by message id.
+ *
+ * Separate from `spent`, which counts rounds per logical turn and is what bounds a
+ * runaway loop. This answers a different question: has THIS message already been
+ * resumed once. A component-local ref cannot, because it dies with the component.
+ * Leave the chat with a truncated branch selected and come back, and the ref is fresh
+ * while the parent still has budget, so the effect fires again and creates another
+ * sibling and another paid request. Module scope outlives the remount; the ids are
+ * short and bounded by how many replies a session truncates.
+ */
+const continued = new Set<string>();
+
+/** Whether `messageId` still needs continuing. False once it has been claimed. */
+export function claimAutoContinue(messageId: string | null | undefined): boolean {
+  if (!messageId || continued.has(messageId)) {
+    return false;
+  }
+  continued.add(messageId);
+  return true;
+}
+
+/** Whether `messageId` was already continued automatically this session. */
+export function wasAutoContinued(messageId: string | null | undefined): boolean {
+  return Boolean(messageId && continued.has(messageId));
+}
+
+/**
+ * Whether THIS message is the one to continue automatically.
+ *
+ * `shouldAutoContinue` answers about the turn: is the reason right, does the partial
+ * still fit, is the round budget unspent. It keeps saying yes after a message has been
+ * claimed, because the budget is per turn and one spent round out of three leaves the
+ * turn resumable, while the claim is per message and is what actually decides whether a
+ * run starts. Anything rendering off the turn's answer alone therefore reports an
+ * already-claimed message as continuing while `claimAutoContinue` refuses to start
+ * anything: a spinner that never resolves, over the manual Continue button it replaces.
+ *
+ * Reachable without a reload. The continuation runs as a sibling and the branch picker
+ * leads straight back to the truncated partial, and leaving the chat and returning lands
+ * on it too whenever it is still the selected branch.
+ */
+export function shouldAutoContinueMessage(
+  messageId: string | null | undefined,
+  reason: IncompleteReason | null | undefined,
+  key: string | null | undefined,
+  options: Parameters<typeof shouldAutoContinue>[2] = {},
+): boolean {
+  if (wasAutoContinued(messageId)) {
+    return false;
+  }
+  return shouldAutoContinue(reason, key, options);
+}
+
+/** Test seam; also lets a new thread start from zero. */
+export function resetAutoContinue(key?: string): void {
+  if (key === undefined) {
+    spent.clear();
+    continued.clear();
+  } else {
+    spent.delete(key);
+  }
+}

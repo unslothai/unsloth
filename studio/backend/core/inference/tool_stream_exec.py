@@ -32,25 +32,32 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-def accepts_output_callback(func: Callable[..., str]) -> bool:
-    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+def accepts_kwarg(func: Callable[..., str], name: str) -> bool:
+    """Whether an injectable ``execute_tool`` supports the keyword ``name``.
 
     ``execute_tool`` is replaceable (tests inject fakes / the pre-PR signature),
-    so forward the kwarg only when the callable declares it or takes ``**kwargs``
+    so forward a kwarg only when the callable declares it or takes ``**kwargs``
     (passing it unconditionally would ``TypeError`` on an old signature).
     """
     try:
         params = inspect.signature(func).parameters
     except (TypeError, ValueError):
         return False
-    if "output_callback" in params:
+    if name in params:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def accepts_output_callback(func: Callable[..., str]) -> bool:
+    return accepts_kwarg(func, "output_callback")
 
 
 # Cadence of heartbeat events while a tool blocks with no output. Well under
 # common proxy idle caps (Cloudflare ~100 s, nginx default 60 s).
 TOOL_HEARTBEAT_INTERVAL_S = 10.0
+
+# delay before the first approval keepalive so it cannot coalesce with the gated card.
+TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 
 # How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25

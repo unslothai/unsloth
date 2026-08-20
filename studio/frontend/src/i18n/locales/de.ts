@@ -17,7 +17,6 @@ export const de = {
     searchAriaLabel: "Suche: {noun}",
     modelSourceAriaLabel: "Modellquelle",
     hubSectionAriaLabel: "Hub-Bereich",
-    pickModelFile: "Modelldatei vom Datenträger auswählen",
     modelDropped: "Nicht mehr angeboten",
     modelDroppedByProvider: "{provider} · nicht mehr angeboten",
     modelDisabled: "Nicht aktiviert",
@@ -98,6 +97,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      showMore: "Mehr anzeigen",
+      showLess: "Weniger anzeigen",
       settings: "Einstellungen",
       api: "API",
       lightMode: "Heller Modus",
@@ -111,6 +112,44 @@ export const de = {
       title: "Seite nicht gefunden",
       description: "{path} existiert nicht.",
       backToChat: "Zurück zum Chat",
+    },
+    selection: {
+      pinProjects: "Projekte anheften",
+      unpinProjects: "Projekte lösen",
+      deleteProjects: "Projekte löschen",
+      deleteProjectsTitle: "Projekte löschen",
+      deleteProjectsDescription:
+        "{count} Projekte löschen? Ihre Chats werden dauerhaft gelöscht.",
+      deleteProjectsFilesDescription:
+        "Der Arbeitsbereich-Ordner jedes Projekts wird von der Festplatte entfernt.",
+      countSelected: "{count} ausgewählt",
+      pinChats: "Chats anheften",
+      unpinChats: "Chats lösen",
+      archiveChats: "Chats archivieren",
+      markUnread: "Als ungelesen markieren",
+      deleteChats: "Chats löschen",
+      deleteTitle: "Chats löschen",
+      deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
+      deleteFilesDescription:
+        "Der eigene Sandbox-Ordner jedes Chats wird von der Festplatte entfernt. Dateien, die sie in einem Projekt erstellt haben, bleiben im Arbeitsbereich dieses Projekts.",
+      deleteFilesLabel: "Dateien und Sandbox-Ordner löschen",
+      deleteChatFilesDescription:
+        "Der eigene Sandbox-Ordner dieses Chats wird von der Festplatte entfernt. Dateien, die er in einem Projekt geschrieben hat, bleiben im Arbeitsbereich des Projekts.",
+    },
+    organize: {
+      sidebarHeading: "Seitenleiste organisieren",
+      byProject: "Nach Projekt",
+      inOneList: "In einer Liste",
+      sortChatsBy: "Chats sortieren nach",
+      sortPinnedBy: "Angeheftete sortieren nach",
+      priority: "Priorität",
+      lastUpdated: "Zuletzt aktualisiert",
+      manualOrder: "Manuelle Reihenfolge",
+      moveUp: "Nach oben",
+      moveDown: "Nach unten",
+      organizeChats: "Chats organisieren",
+      organizeProjects: "Projekte organisieren",
+      sortPinnedChats: "Angeheftete Chats sortieren",
     },
     dialog: {
       deleteChat: {
@@ -147,6 +186,8 @@ export const de = {
       closeAriaLabel: "Einstellungen schließen",
       searchPlaceholder: "Einstellungen durchsuchen…",
       searchNoResults: "Keine Einstellungen gefunden.",
+      panelFailed: "Dieser Bereich konnte nicht geladen werden.",
+      panelReload: "Neu laden",
     },
     tabs: {
       general: "Allgemein",
@@ -156,10 +197,80 @@ export const de = {
       chat: "Chat",
       connections: "Verbindungen",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       about: "Info",
       data: "Daten",
       agents: "Agenten",
+      debugging: "Protokolle",
       voice: "Sprachfunktionen",
+      keyboardShortcuts: "Kürzel",
+    },
+    keyboardShortcuts: {
+      title: "Tastenkürzel",
+      description:
+        "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
+      searchPlaceholder: "Kürzel suchen…",
+      noResults: "Keine Kürzel passen zu dieser Suche.",
+      unassigned: "Nicht zugewiesen",
+      recording: "Tasten drücken…",
+      recordingHint: "Neue Tastenkombination drücken oder Esc zum Abbrechen.",
+      needsModifier: "⌘, Strg oder Alt hinzufügen. Eine einzelne Taste würde die Eingabe verschlucken.",
+      conflict: "Wird auch von einem anderen Kürzel verwendet",
+      conflictShadowed: "Ein anderes Kürzel belegt diese Kombination und läuft stattdessen",
+      edit: "Kürzel ändern",
+      clear: "Kürzel entfernen",
+      reset: "Standard wiederherstellen",
+      resetAll: "Alle auf Standard zurücksetzen",
+      groups: {
+        general: "Allgemein",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "Neuer Chat",
+          description: "Einen neuen Chat starten",
+        },
+        searchChats: {
+          label: "Chats durchsuchen",
+          description: "Die Chat-Suche öffnen",
+        },
+        toggleSidebar: {
+          label: "Seitenleiste umschalten",
+          description: "Seitenleiste ein- oder ausblenden",
+        },
+        openSettings: {
+          label: "Einstellungen öffnen",
+          description: "Den Einstellungsdialog öffnen",
+        },
+        openKeyboardShortcuts: {
+          label: "Tastenkürzel",
+          description: "Diese Kürzelliste öffnen",
+        },
+      },
+    },
+    debugging: {
+      logSection: "Protokolldatei",
+      source: "Protokolldatei",
+      sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
+      path: "Speicherort",
+      pathCopy: "Pfad kopieren",
+      refreshSection: "Aktualisierung",
+      mode: "Modus",
+      modeLive: "Live",
+      modeInterval: "Alle 3 Sekunden",
+      modeManual: "Manuell",
+      refreshNow: "Jetzt aktualisieren",
+      privacyNote: "Zugangsdaten werden in dieser Ansicht maskiert. In der Datei auf dem Datenträger sind sie nicht maskiert.",
+      copyVisible: "Sichtbares Protokoll kopieren",
+      empty: "Es wurde noch nichts protokolliert.",
+      disabled: "Die Protokollierung in eine Datei ist deaktiviert (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Es wurde keine Protokolldatei gefunden.",
+      unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
+      timeout: "Die Protokollanfrage hat das Zeitlimit uberschritten. Der Server ist moglicherweise nicht erreichbar.",
+      droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
+      morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
+      staleSession: "Die Protokollierung in Dateien ist deaktiviert, daher ist dies eine fruhere Sitzung und wird nicht aktualisiert.",
+      keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
       title: "Sprachfunktionen",
@@ -227,6 +338,8 @@ export const de = {
         allowMicrophone: "Mikrofonzugriff erlauben",
         micAccessBlocked:
           "Der Mikrofonzugriff wurde blockiert. Erlauben Sie den Mikrofonzugriff für diese Unsloth-Seite und versuchen Sie es erneut.",
+        micAccessBlockedDesktop:
+          "Der Mikrofonzugriff wurde blockiert. Versuchen Sie es erneut und wählen Sie Zulassen, oder aktivieren Sie das Mikrofon in den Datenschutzeinstellungen des Systems.",
         micAccessUnsupported:
           "Der Mikrofonzugriff wird in diesem Browser oder Kontext nicht unterstützt.",
         systemDefault: "Systemstandard",
@@ -301,6 +414,7 @@ export const de = {
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
+        openAudioAction: "Audio öffnen",
         voiceLabel: "Stimme",
         voiceDescription: "Beste Stimmen auf diesem Gerät",
         speedLabel: "Geschwindigkeit",
@@ -310,6 +424,7 @@ export const de = {
         previewDescription: "Eine kurze Hörprobe abspielen",
         previewFailed: "Die TTS-Vorschau ist fehlgeschlagen",
         previewAction: "Anhören",
+        preparingAction: "Wird erzeugt…",
         stopAction: "Stopp",
         ttsLabel: "Sprachausgabe",
         notSupported: "In diesem Browser nicht unterstützt",
@@ -383,6 +498,17 @@ export const de = {
           "Gibt VRAM nach der angegebenen Anzahl von Sekunden ohne Aktivität frei. Bei 0 bleibt das Modell geladen; der Mindestwert ist 60.",
         idleSecondsAriaLabel:
           "Inaktivitätsdauer bis zum automatischen Entladen in Sekunden",
+        mediaEnable: "Bild- und Videomodell je Anfrage wechseln",
+        mediaEnableDescription:
+          "Lädt vor der Generierung ein darin angegebenes, bereits heruntergeladenes Bild- oder Videomodell aus einer API-Anfrage. Eine eigene Einstellung: Die Einstellung darüber gilt nur für das Chat-Modell. Standardmäßig deaktiviert.",
+        mediaIdleUnload:
+          "Automatisches Entladen bei Inaktivität für Bild und Video",
+        mediaIdleUnloadDescription:
+          "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Eine eigene Einstellung: Die Einstellung darüber gilt nur für das Chat-Modell. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
+        mediaIdleSecondsAriaLabel:
+          "Inaktivitätsdauer bis zum automatischen Entladen von Bild und Video in Sekunden",
+        mediaIdlePaused:
+          "Pausiert, solange „Modell im GPU-Speicher behalten“ aktiv ist.",
         idleNeedsEnable: "Aktivieren Sie zuerst „Modell je Anfrage wechseln“.",
         idleActiveViaEnv:
           "Automatisches Entladen bei Inaktivität ist über die Umgebungsvariable UNSLOTH_MODEL_IDLE_TTL aktiv.",
@@ -436,6 +562,12 @@ export const de = {
         launchAtLogin: "Unsloth bei der Anmeldung starten",
         launchAtLoginDescription:
           "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+
+        closeToTray: "In den Infobereich schließen",
+        closeToTrayDescription:
+          "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
+        closeToTraySaveError:
+          "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -740,6 +872,58 @@ export const de = {
         free: "{value} frei",
         total: "{value} gesamt",
       },
+      llamaBackend: {
+        title: "GGUF-Inferenz-Engine",
+        label: "Compute-Backend",
+        description: "Das Backend, mit dem llama.cpp GGUF-Modelle ausführt.",
+        runningOn: "llama.cpp läuft derzeit mit {backend}.",
+        hint: "Installiert den llama.cpp-Build für dieses Backend und behält ihn über Updates hinweg bei. Nützlich, wenn die automatische Wahl abstürzt oder dein GPU-Treiber sie nicht unterstützt. Es werden nur Backends aufgeführt, für die es einen Build für diesen Rechner gibt; das Training bleibt unberührt.",
+        autoWith: "Automatisch ({backend})",
+        apply: "Anwenden",
+        applying: "Wird installiert ...",
+        applyHint: "Lädt den neuen Build herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
+        applyHintWithSize: "Lädt {size} herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
+        switchedTo: "llama.cpp läuft jetzt mit {backend}.",
+        switchFailed: "Das llama.cpp-Backend konnte nicht geändert werden.",
+        switchInterrupted: "Der Wechsel wurde vor dem Abschluss unterbrochen.",
+        envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_CPP_BACKEND auf {backend} festgelegt; sie überschreibt diese Einstellung.",
+        customPath: {
+          label: "Benutzerdefinierter llama.cpp-Ordner",
+          description: "Verwende deinen eigenen llama-server-Build.",
+          hint: "Wähle den llama.cpp-Ordner mit llama-server oder einen Build, in dem er unter build/bin liegt. Die benutzerdefinierte Laufzeit wird für GGUF-Chat, Einbettungen und unterstützte Sprachmodelle verwendet. Umgebungsvariablen haben weiterhin Vorrang.",
+          automatic: "Automatisch (mitgeliefert)",
+          bundled: "Verwendet die von Unsloth installierte llama.cpp-Laufzeit.",
+          active: "Dein eigener llama-server wird beim nächsten Laden eines Modells verwendet.",
+          environmentManaged: "Wird durch die Umgebungsvariable {variable} verwaltet.",
+          missingBinary: "llama-server ist in diesem Ordner nicht mehr verfügbar. Wähle einen anderen Ordner oder verwende die mitgelieferte Laufzeit.",
+          reloadRequired: "Lade das Modell neu, um den ausgewählten llama-server zu verwenden.",
+          change: "Ändern",
+          saving: "Speichern...",
+          useBundled: "Mitgelieferte Version verwenden",
+          chooseTitle: "llama.cpp-Ordner auswählen",
+          chooseAction: "Diesen Ordner verwenden",
+          saved: "llama.cpp-Ordner aktualisiert",
+          saveError: "Der llama.cpp-Ordner konnte nicht aktualisiert werden",
+        },
+        backends: {
+          auto: "Automatisch",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Es wurde keine von Unsloth verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
+          localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das Unsloth nicht ersetzt.",
+          sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
+          customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
+          unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+        },
+        // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
+      },
       modelMemory: {
         title: "Modellspeicher",
         keepResident: "Modell im GPU-Speicher behalten",
@@ -900,6 +1084,9 @@ export const de = {
       },
     },
     chat: {
+      projectsSection: "Projektbereich anzeigen",
+      projectsSectionDescription:
+        "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       title: "Chat",
       description: "Passen Sie an, wie sich der Chat auf diesem Gerät verhält.",
       modelSelection: {
@@ -921,12 +1108,21 @@ export const de = {
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
       },
+      pastedTextThreshold: "Lange Einfügungen verdichten",
+      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen.",
+      pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
+      projectAttachments: "Dateien projektweit teilen",
+      projectAttachmentsDescription:
+        "Standard für Dateien, die in einem Chat innerhalb eines Projekts angehängt werden: für das gesamte Projekt indizieren, damit jeder Chat darin sie nutzen kann. Jeder Chat kann dies im Anhangsmenü überschreiben.",
+      rememberParamsPerModel: "Einstellungen pro Modell merken",
+      rememberParamsPerModelDescription:
+        "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
       thinking: {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:
@@ -960,12 +1156,14 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in „Zuletzt verwendet“.",
+        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
       importedChatCount:
         "{count} Konversationen in „Zuletzt verwendet“ importiert.",
+      importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
+      importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",
@@ -1018,6 +1216,9 @@ export const de = {
       archivedVideos: "Archivierte Videos",
       archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
+      manageChats: "Chats verwalten",
+      manageChatsDescription:
+        "Wählen Sie mehrere Chats aus, um sie zu verschieben, anzupinnen, zu archivieren, zu exportieren oder zu löschen.",
       exportArchivedChats: "Exportieren",
       exportingArchivedChats: "Wird exportiert...",
       exportedOneArchivedChat: "1 archivierter Chat exportiert",
@@ -1041,6 +1242,9 @@ export const de = {
       confirmBeforeDeleting: "Vor dem Löschen bestätigen",
       confirmBeforeDeletingDescription:
         "Fragt vor dem Löschen eines Chats nach einer Bestätigung. Deaktivieren, um sofort zu löschen.",
+      alwaysDeleteFiles: "Dateien immer löschen",
+      alwaysDeleteFilesDescription:
+        "Beim Löschen eines Chats wird auch dessen eigener Sandbox-Ordner von der Festplatte entfernt. Dateien, die er in einem Projekt erstellt hat, bleiben im Arbeitsbereich dieses Projekts.",
       filesSection: "Dateien",
       uploadedFiles: "Hochgeladene Dateien",
       uploadedFilesDescription:
@@ -1063,6 +1267,11 @@ export const de = {
     connections: {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     apiKeys: {
       title: "API",
@@ -1298,6 +1507,12 @@ export const de = {
         "Dieser Datensatz befindet sich noch nicht auf dem Gerät. Beim Start des Trainings wird er automatisch heruntergeladen.",
       noticeDatasetPartial:
         "Vor dem Einlesen wird der unvollständige Datensatz-Download abgeschlossen.",
+      noticeTransformersUpgrade:
+        "Keine installierte transformers-Version unterstützt diese Architektur bereits. Beim Start wird zuerst die Installation von transformers {version} angeboten.",
+      noticeSixteenBitOnly:
+        "Diese Architektur trainiert als 16-Bit-LoRA: 4 Bit ist dafür nicht verfügbar, der Lauf braucht also deutlich mehr VRAM als QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Wird diese Version installiert, statt den modelleigenen Code zu behalten, wechselt dieser Lauf zu 16-Bit-LoRA und braucht deutlich mehr VRAM als QLoRA.",
       advancedSettings: "Erweiterte Einstellungen",
       defaultAdvancedSettings: "Standardwerte",
       nonDefaultAdvancedSettings: "{count} abweichend",

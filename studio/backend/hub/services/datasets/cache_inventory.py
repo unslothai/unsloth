@@ -309,6 +309,15 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                     if snapshot_partial
                     else None
                 ),
+                "partial_resumable": (
+                    hf_cache_scan.partial_resume_available(
+                        "dataset",
+                        repo_id,
+                        repo_cache_dir = entry,
+                    )
+                    if snapshot_partial
+                    else False
+                ),
             }
             if _prefer_dataset_cache_row(row, existing):
                 seen_lower[key] = row
@@ -461,6 +470,15 @@ def _scan_hf_dataset_caches() -> list[dict]:
                         if snapshot_partial
                         else None
                     ),
+                    "partial_resumable": (
+                        hf_cache_scan.partial_resume_available(
+                            "dataset",
+                            repo_info.repo_id,
+                            repo_cache_dir = cache_dir,
+                        )
+                        if snapshot_partial
+                        else False
+                    ),
                 }
                 if _prefer_dataset_cache_row(row, existing):
                     seen_lower[key] = row
@@ -481,6 +499,8 @@ def _scan_hf_dataset_caches() -> list[dict]:
                 and row.get("partial_transport")
             ):
                 existing["partial_transport"] = row["partial_transport"]
+                # The resume verdict belongs to the transport it was measured against.
+                existing["partial_resumable"] = bool(row.get("partial_resumable"))
     for row in _scan_processed_dataset_caches():
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)
@@ -496,6 +516,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
         if existing.get("partial") and not row.get("partial"):
             existing["partial"] = False
             existing["partial_transport"] = None
+            existing["partial_resumable"] = False
     for row in _scan_app_processed_dataset_caches():
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)

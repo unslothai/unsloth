@@ -13,6 +13,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+// From the keys module, not the barrel or the store: both are in an import cycle with this file,
+// so the key was still in its temporal dead zone when the module-scope list below read it, killing
+// the module graph. The keys module imports nothing, so it is always evaluated first.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-keys";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
@@ -60,6 +64,7 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import {
@@ -71,7 +76,10 @@ import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
+import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
+import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
+import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
@@ -87,9 +95,16 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  // Grouping, sort and the manual row order.
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
+  // Rebound chords. Without this a reset leaves the user on shortcuts they
+  // asked to throw away, and a chord bound to something unusable has no
+  // escape hatch from this button.
+  KEYBOARD_SHORTCUTS_STORAGE_KEY,
   // Chat runtime prefs
+  CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
@@ -190,11 +205,20 @@ export function GeneralTab() {
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
-  const [launchAtLogin, setLaunchAtLogin] = useState<boolean | null>(null);
-  const [launchAtLoginError, setLaunchAtLoginError] = useState<string | null>(
-    null,
-  );
-  const [isSavingLaunchAtLogin, setIsSavingLaunchAtLogin] = useState(false);
+  const launchAtLoginSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadLaunchAtLogin,
+    save: updateLaunchAtLogin,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.saveError"),
+  });
+  const closeToTraySetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadCloseToTray,
+    save: updateCloseToTray,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
   const [embeddingModel, setEmbeddingModel] =
     useState<EmbeddingModelSettings | null>(null);
   const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
@@ -325,44 +349,6 @@ export function GeneralTab() {
       cancelled = true;
     };
   }, [t]);
-
-  useEffect(() => {
-    if (!isTauri) return;
-    let cancelled = false;
-    void loadLaunchAtLogin()
-      .then((enabled) => {
-        if (cancelled) return;
-        setLaunchAtLogin(enabled);
-        setLaunchAtLoginError(null);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setLaunchAtLoginError(
-          error instanceof Error
-            ? error.message
-            : t("settings.general.startup.loadError"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [t]);
-
-  const saveLaunchAtLogin = async (enabled: boolean) => {
-    setIsSavingLaunchAtLogin(true);
-    setLaunchAtLoginError(null);
-    try {
-      setLaunchAtLogin(await updateLaunchAtLogin(enabled));
-    } catch (error) {
-      setLaunchAtLoginError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.startup.saveError"),
-      );
-    } finally {
-      setIsSavingLaunchAtLogin(false);
-    }
-  };
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -636,17 +622,41 @@ export function GeneralTab() {
           >
             <div className="flex flex-col items-end gap-1">
               <Switch
-                checked={launchAtLogin ?? false}
-                disabled={launchAtLogin === null || isSavingLaunchAtLogin}
-                onCheckedChange={(enabled) => void saveLaunchAtLogin(enabled)}
+                checked={launchAtLoginSetting.value ?? false}
+                disabled={
+                  launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+                }
+                onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
               />
-              {launchAtLoginError ? (
+              {launchAtLoginSetting.error ? (
                 <span className="max-w-[260px] text-right text-xs text-destructive">
-                  {launchAtLoginError}
+                  {launchAtLoginSetting.error}
                 </span>
               ) : null}
             </div>
           </SettingsRow>
+
+          {closeToTraySetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.closeToTray")}
+              description={t("settings.general.startup.closeToTrayDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={closeToTraySetting.value ?? false}
+                  disabled={
+                    closeToTraySetting.value === null || closeToTraySetting.saving
+                  }
+                  onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+                />
+                {closeToTraySetting.error ? (
+                  <span className="max-w-[260px] text-right text-xs text-destructive">
+                    {closeToTraySetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
         </SettingsSection>
       ) : null}
 

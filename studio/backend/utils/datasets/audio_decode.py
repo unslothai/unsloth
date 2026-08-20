@@ -154,6 +154,11 @@ def ensure_audio_decoding() -> bool:
         from datasets.features.audio import Audio
     except ImportError:
         return False
+    # `datasets` < 4 (pyproject still allows >=3.4.1) decodes through soundfile itself and
+    # defines no TORCHCODEC_AVAILABLE, so the read below raised AttributeError at the
+    # unguarded call site. Nothing to install there, so say so.
+    if not hasattr(config, "TORCHCODEC_AVAILABLE"):
+        return True
     if config.TORCHCODEC_AVAILABLE and not _installed:
         try:
             # config only ran find_spec, and an installed torchcodec whose native libraries

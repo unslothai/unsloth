@@ -454,16 +454,33 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces():
     prefix = '`x` <tool_call>{"name": "search", "arguments": {}}</tool_call> '
 
     def elapsed(fn, count):
+        # process_time, not perf_counter: this compares how much work two code paths do,
+        # and wall clock also measures whatever else the machine is running. A 10% margin
+        # does not survive that. On a 4-vCPU CI runner with other test workers in flight
+        # the wall-clock version failed outright (1.451s against 1.316s) while the code
+        # under test had not changed. CPU time of this process is the quantity the
+        # assertion is actually about, and it is unaffected by neighbours.
         text = prefix
-        start = time.perf_counter()
+        start = time.process_time()
         for _ in range(count):
             text += "word "
             fn(text)
-        return time.perf_counter() - start
+        return time.process_time() - start
 
     count = 1500
     reference = min(elapsed(_reference_strip, count) for _ in range(3))
     incremental = min(elapsed(StreamingMarkupStripper(ENABLED).strip, count) for _ in range(3))
+
+    # process_time has coarser granularity than perf_counter, and `0.0 <= 0.0 * 1.10` is
+    # true. Without a floor a clock that stopped reporting, or a `count` someone lowered,
+    # turns this into an assertion that cannot fail. 0.05s is far below the ~1.3s each arm
+    # actually takes and far above the clock's resolution.
+    assert (
+        reference > 0.05
+    ), f"reference arm measured {reference:.4f}s; too small to compare against"
+    assert (
+        incremental > 0.05
+    ), f"incremental arm measured {incremental:.4f}s; too small to compare against"
 
     assert (
         incremental <= reference * 1.10

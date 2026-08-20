@@ -6,7 +6,7 @@
   </picture></a>
 </h1>
 <h3 align="center" style="margin: 0; margin-top: 0;">
-Unsloth lets you run and train models locally.
+Unsloth is the first desktop app to run and train models.
 </h3>
 
 <p align="center">
@@ -14,6 +14,12 @@ Unsloth lets you run and train models locally.
   <a href="#-install">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
   <a href="https://unsloth.ai/docs">Documentation</a>
+</p>
+
+<p align="center">
+  <a href="https://unsloth.ai/docs/desktop">
+    <img height="400" alt="unsloth desktop" src="https://unsloth.ai/cgi/image/unsloth_qwen3.8_final_ut2eqWnYJ-SLmu0s7x522.png?format=raw" />
+  </a>
 </p>
 
 ## ⚡ Get started
@@ -25,23 +31,23 @@ Download the native Unsloth Desktop app for your operating system:
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-Ubuntu.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
@@ -71,18 +77,18 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
 * **Search & RAG:** Use private and unlimited web search, deep research, and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
-* **Audio:** Use private and unlimited web search, deep research, and RAG.
-* **Hardware:** Supports CPU, NVIDIA, AMD, Intel, macOS, and multi GPU setups.
-* **Remote Access:** Access your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
+* **Search:** Use private and unlimited web search, deep research, and RAG.
+* **Hardware:** Supports CPU, Apple, NVIDIA, AMD, Intel, and multi GPU setups.
+* **Remote Access:** Serve your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
+* **Connect:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Also connect your ChatGPT/Codex subscription and [cloud providers](https://unsloth.ai/docs/integrations/connections)
 
 
 ### Train & Deploy
-* **Fine-tuning:** Train LLMs, diffusion, TTS, and embedding models 2× faster with 70% less VRAM
+* **Fine-tuning:** Train LLMs, diffusion, TTS, and embedding models 2× faster with 70% less VRAM with [no accuracy loss](https://unsloth.ai/blog#training)
 * **Complete support:** Supports [reinforcement learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide), LoRA, QLoRA, full fine tuning, pretraining, RL, GRPO, DPO, and FP8.
 * **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models with including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
 * **Datasets:** Build datasets from PDFs, CSVs, DOCX files, and more with [Data Recipes](https://unsloth.ai/docs/new/studio/data-recipe).
-* **OpenAI Compatible API:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api) and also connect to [cloud providers](https://unsloth.ai/docs/integrations/connections)
-
+  
 ## 🚀 Unsloth Start
 
 [Unsloth Start](https://unsloth.ai/docs/integrations/unsloth-start) connects [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex) and other agents to local models with one command.
@@ -124,23 +130,23 @@ The Tauri based desktop app is the easiest way to use Unsloth and needs no setup
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-Linux.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.701-beta/Unsloth-Desktop-0_1_701_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.801-beta/Unsloth-Desktop-0_1_801_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
@@ -151,6 +157,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
 * **AMD:** Training, RL, chat and deployment work on Windows, WSL and Linux. [Read the AMD guide](https://unsloth.ai/docs/basics/amd).
+* **Intel:** Training and GGUF inference are supported on Intel GPUs (XPU).
 * **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819). Vulkan accelerates GGUF inference only; training still requires a supported PyTorch or MLX backend.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
@@ -160,12 +167,18 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 Use the same command to update.
 
-To force the Vulkan llama.cpp backend, set `UNSLOTH_FORCE_VULKAN=1` **before installing or updating**. The setting selects the llama.cpp binary bundle, so setting it only when launching Studio cannot replace an existing CPU bundle:
+The GGUF inference backend can be changed from **Settings > System > GGUF inference engine** once Studio is running: pick CPU, CUDA, ROCm or Vulkan (only the ones with a build for your machine are listed) and Apply. The choice is recorded with the install, so updates keep it, and Automatic returns to hardware detection.
+
+To pick it before the first launch instead, set `UNSLOTH_LLAMA_CPP_BACKEND` **before installing or updating**. It selects the llama.cpp binary bundle, so setting it only when launching Studio cannot replace an existing one, and it overrides whatever was chosen in Settings:
 
 ```bash
-export UNSLOTH_FORCE_VULKAN=1
+export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+
+On Linux and WSL this is the path for the AMD GPUs Unsloth has no ROCm PyTorch wheels for: Polaris (RX 470/480/570/580/590) and RDNA 1 (RX 5500/5600/5700). torch stays on CPU there, so training and GPU inference are unavailable, but GGUF chat runs on the GPU through Vulkan. Not every pre-RDNA 2 card is in this group: Vega 20 (Radeon VII, MI50, `gfx906`) keeps a ROCm PyTorch path and the installer routes it there. The older `UNSLOTH_FORCE_VULKAN=1` still works and is read when `UNSLOTH_LLAMA_CPP_BACKEND` is unset.
+
+macOS has no Vulkan llama.cpp bundle and does not need one: the installer always uses the Metal build, which covers Apple Silicon and the AMD GPUs in Intel Macs, and it says so and carries on if the variable is set.
 
 #### Windows:
 ```powershell
@@ -173,20 +186,20 @@ irm https://unsloth.ai/install.ps1 | iex
 ```
 Use the same command to update.
 
-To force the Vulkan llama.cpp backend, set the environment variable before running the installer or updater:
+To pick the GGUF inference backend before the first launch, set the environment variable before running the installer or updater (or change it later in **Settings > System > GGUF inference engine**):
 
 ```powershell
-$env:UNSLOTH_FORCE_VULKAN=1
+$env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
 ```
 
-Re-running the current installer replaces a previously selected CPU bundle when the backend differs. A separate Vulkan SDK is not required; the GPU driver must provide a working Vulkan runtime.
+Re-running the current installer replaces a previously selected bundle when the backend differs. A separate Vulkan SDK is not required; the GPU driver must provide a working Vulkan runtime.
 
 #### Launch
 ```bash
 unsloth studio -p 8888
 ```
-For LAN or cloud access, add `-H 0.0.0.0` (raw port only; add `--cloudflare` for a public URL). By default, Unsloth is accessible only locally.
+For LAN or cloud access, add `-H 0.0.0.0` (raw port only; add `--cloudflare` for a public URL), or turn it on later in Settings > API keys > LAN access. By default, Unsloth is accessible only locally.
 
 To reach Unsloth over HTTPS, use `unsloth studio --secure`. Unsloth stays bound to localhost and is reached only through a free Cloudflare tunnel, which publishes it at a public `https://*.trycloudflare.com` URL (it fails closed if the tunnel can't start, so the raw port is never exposed). This makes Unsloth reachable from the internet, so anyone with the link and API key can use it and run code: keep your API key private (see Remote access below).
 
@@ -325,6 +338,8 @@ unsloth studio --secure -p 8888
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
+- Settings > API keys > **LAN access**: put Unsloth on the local network from the UI, without relaunching. It adds a listener on this machine's own addresses at the same port and shows each `http://<address>:<port>`, with a QR code to open the first on a phone; Stop returns it to loopback only, and **Start automatically** turns it on at every launch. Blocked until the admin password has been changed.
+
 The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port only, not a public internet URL. Pair the wildcard bind with `--cloudflare` (`unsloth studio -H 0.0.0.0 --cloudflare`) to also publish a public `https://*.trycloudflare.com` link, or prefer `--secure` (above), which keeps the raw port private. `--cloudflare` has no effect on a loopback bind.
 
 On a wildcard bind Unsloth works out the address to share by asking `ifconfig.me` for the public IP, then asks `check-host.net` whether that port is reachable so it can tell you if a firewall is in the way. Both contact a third party. Set `UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK=1` to skip them; the banner then shows the LAN address and no reachability line.

@@ -23,6 +23,7 @@ from core.inference.stt_sidecar import (
     SttAudioTooLongError,
     SttLanguageError,
     SttLoadCancelledError,
+    SttModelBusyError,
     SttModelCompatibilityError,
     SttModelIdError,
     SttModelNotDownloadedError,
@@ -311,36 +312,20 @@ def test_english_only_model_rejects_non_english_before_decode(monkeypatch, tmp_p
 def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     calls = []
 
-    class FakeTensor:
-        def to(self, *_args):
-            return self
-
-    class FakeProcessor:
-        def __call__(self, *_args, **_kwargs):
-            return SimpleNamespace(input_features = FakeTensor())
-
-        def batch_decode(self, *_args, **_kwargs):
-            return ["hello"]
-
-    class FakeModel:
-        dtype = None
-        device = "cpu"
+    class FakeWorker:
         generation_config = SimpleNamespace(is_multilingual = False)
 
-        def generate(self, _features, **kwargs):
-            calls.append(kwargs)
-            return [[1]]
+        def transcribe_window(
+            self,
+            _pcm,
+            generate_kwargs,
+            _cancel_event = None,
+        ):
+            calls.append(generate_kwargs)
+            return "hello"
 
-    class NoGrad:
-        def __enter__(self):
-            return None
-
-        def __exit__(self, *_args):
-            return False
-
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(no_grad = NoGrad))
     sidecar = WhisperSttSidecar()
-    monkeypatch.setattr(sidecar, "load", lambda _model: (FakeModel(), FakeProcessor()))
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
 
     text = sidecar._transcribe_decoded(
         "owner/whisper-small.en",
@@ -453,45 +438,622 @@ def _install_fake_torch(monkeypatch):
     return fake_torch
 
 
-def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
-    calls = []
-    _install_fake_torch(monkeypatch)
+def _install_fake_worker(monkeypatch, start = None):
+    """Replace the spawn child with a handle that records how it was started."""
+    started = []
 
-    class FakeWhisperForConditionalGeneration:
-        @classmethod
-        def from_pretrained(cls, repo, **kwargs):
-            calls.append(("model", repo, kwargs))
-            return _FakeModel()
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closed = False
+            self.alive = True
 
-    class FakeWhisperProcessor:
-        @classmethod
-        def from_pretrained(cls, repo, **kwargs):
-            calls.append(("processor", repo, kwargs))
-            return object()
+        def start(
+            self,
+            snapshot_path,
+            device,
+            dtype_name,
+            cancel_event = None,
+        ):
+            started.append((snapshot_path, device, dtype_name))
+            if start is not None:
+                start(snapshot_path, device, dtype_name, cancel_event)
+            self.device = device
 
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            WhisperForConditionalGeneration = FakeWhisperForConditionalGeneration,
-            WhisperProcessor = FakeWhisperProcessor,
-        ),
+        def is_alive(self):
+            return self.alive
+
+        def close(self):
+            self.closed = True
+            self.alive = False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", FakeWorker, raising = True
     )
+    return started
+
+
+def test_load_hands_the_cached_snapshot_to_the_worker_process(monkeypatch):
+    # The model never enters this process: an accelerator context taken here is
+    # never given back, which is the whole reason the engine is out of process.
+    _install_fake_torch(monkeypatch)
+    started = _install_fake_worker(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    # str(Path(...)), so the separator is the platform's.
+    assert started == [(str(Path("/cached/model")), "cpu", "float32")]
+    assert sidecar.loaded_model == "small"
+
+
+def test_load_sends_the_dtype_by_name_so_torch_stays_out_of_the_command(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    fake_torch.float16 = "torch.float16"
+    started = _install_fake_worker(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", fake_torch.float16))
 
     WhisperSttSidecar(keep_alive_seconds = 0).load("small")
 
-    # str(Path(...)), so the separator is the platform's.
-    cached = str(Path("/cached/model"))
-    assert {(kind, repo) for kind, repo, _ in calls} == {
-        ("processor", cached),
-        ("model", cached),
-    }
-    # Never fetch weights implicitly; the Model Hub owns downloads.
-    assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
-    # The weight load forces safetensors so a pickle checkpoint cannot execute.
-    model_kwargs = next(kwargs for kind, _, kwargs in calls if kind == "model")
-    assert model_kwargs.get("use_safetensors") is True
+    assert started == [(str(Path("/cached/model")), "cuda", "float16")]
+
+
+def test_a_worker_that_died_is_not_resident_and_is_replaced_on_the_next_load(monkeypatch):
+    _install_fake_torch(monkeypatch)
+    started = _install_fake_worker(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    worker = sidecar.load("small")
+    worker.alive = False
+
+    assert sidecar.loaded_model is None
+
+    replacement = sidecar.load("small")
+
+    assert replacement is not worker
+    assert len(started) == 2
+    assert sidecar.loaded_model == "small"
+
+
+def test_unload_stops_the_worker_process(monkeypatch):
+    # empty_cache cannot return the context; ending the process is what does.
+    _install_fake_torch(monkeypatch)
+    _install_fake_worker(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    worker = sidecar.load("small")
+    sidecar.unload()
+
+    assert worker.closed is True
+    assert sidecar.loaded_model is None
+
+
+def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkeypatch):
+    # cancel_pending_load() does not wait for the model lock, so it can land after
+    # start() came back with a live child. Nothing installed that child, and dropping
+    # the handle does not end the process holding the context training waits for.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    workers = []
+
+    class LateCancelWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closed = False
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            # The load succeeded; the cancel arrives a moment later.
+            self.device = device
+            assert sidecar.cancel_pending_load() is True
+
+        def is_alive(self):
+            return not self.closed
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", LateCancelWorker, raising = True
+    )
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert workers[0].closed is True
+    assert sidecar.loaded_model is None
+    assert sidecar.is_loading() is False
+
+
+def test_a_late_cancelled_worker_that_outlived_the_kill_stays_resident(monkeypatch):
+    # The same late cancel, against a child that answers False: it survived terminate
+    # and kill and still holds its accelerator memory, so reporting nothing resident
+    # would let training be admitted against memory that is not free.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    workers = []
+
+    class UnkillableLateCancelWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closes = 0
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+            assert sidecar.cancel_pending_load() is True
+
+        def is_alive(self):
+            return True
+
+        def close(self):
+            self.closes += 1
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker",
+        UnkillableLateCancelWorker,
+        raising = True,
+    )
+
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    # Once. A second terminate-and-kill round on the way out would only spend
+    # another wait on a child that just proved it does not answer them.
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cpu"
+    assert sidecar.is_loading() is False
+
+
+def _install_unkillable_worker(monkeypatch):
+    """A worker whose child outlived terminate and kill, so close() answers False."""
+    workers = []
+
+    class UnkillableWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closes = 0
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+
+        def is_alive(self):
+            return True
+
+        def close(self):
+            self.closes += 1
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", UnkillableWorker, raising = True
+    )
+    return workers
+
+
+def test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unloaded(monkeypatch):
+    # close() answers False for a child wedged in a driver call that outlives SIGKILL. It
+    # still holds its memory, so reporting the model unloaded would let training be
+    # admitted against memory that is not free.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cpu"
+
+
+def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(monkeypatch):
+    # Starting a second child over one that never exited doubles the memory the
+    # first was unloaded to release, so refuse and let the caller retry.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("base")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.is_loading() is False
+
+
+def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
+    # It is held for its memory, not for its answers: it already had its shutdown, a
+    # terminate and a kill, so handing it to a transcription costs the caller the whole
+    # command timeout under the model lock. Refuse, and let the retry kill it again.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+
+
+def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_dictation(
+    monkeypatch,
+):
+    # A cancel that outruns the grace closes the worker from inside the handle, so
+    # close() answers False to nobody and the sidecar never learns the child outlived
+    # both signals. Handing it on spends the whole command timeout under the model lock.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = []
+
+    class WedgedByCancelWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.survived_kill = False
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+
+        def is_alive(self):
+            return True
+
+        def transcribe_window(
+            self,
+            _pcm,
+            _generate_kwargs,
+            _cancel_event = None,
+        ):
+            # What _await does once the cancel grace expires: close() terminates and
+            # kills, the child answers neither, and the cancel is raised over its False.
+            self.survived_kill = True
+            raise stt_sidecar_module.SttTranscriptionCancelledError("Transcription cancelled.")
+
+        def close(self):
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker",
+        WedgedByCancelWorker,
+        raising = True,
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    cancel_event = threading.Event()
+    with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
+        sidecar.transcribe(b"audio", "small", cancel_event = cancel_event)
+
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    # Still accounted for: it holds its memory until the kill finally takes.
+    assert sidecar.loaded_model == "small"
+
+
+def _install_worker_that_survives_its_own_start(monkeypatch, error):
+    """A worker whose start() fails over a child that outlived its own kill.
+
+    start() ends its child on every failure, so a handle still reporting a live
+    process is one holding memory nothing else knows about.
+    """
+    workers = []
+
+    class SurvivingStartWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            # start() never got as far as naming the device it loaded on.
+            self.device = None
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            _device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            raise error
+
+        def is_alive(self):
+            return True
+
+        def close(self):
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker",
+        SurvivingStartWorker,
+        raising = True,
+    )
+    return workers
+
+
+def test_a_child_that_outlived_the_kill_inside_start_stays_accounted(monkeypatch):
+    # The cancel lands while the child is inside from_pretrained, which never reads it,
+    # so the load kills the child on the way out and the child outlives it. Nothing
+    # installed that handle and it is the only one on the process: dropping it reports
+    # nothing resident while the context is taken, admitting training against it.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = _install_worker_that_survives_its_own_start(
+        monkeypatch, SttLoadCancelledError("STT model loading was cancelled so training can start.")
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    with pytest.raises(SttLoadCancelledError):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+    # The child never named a device, so the one the attempt was made on stands in.
+    assert sidecar.device == "cpu"
+    assert sidecar.is_loading() is False
+
+
+def test_a_load_whose_child_outlived_the_kill_is_not_retried_onto_a_second_child(monkeypatch):
+    # The accelerator attempt failed leaving a live child, so the CPU retry would
+    # put a second child beside it and, installing that one, forget the first.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", "float16"))
+    workers = _install_worker_that_survives_its_own_start(
+        monkeypatch, RuntimeError("the dictation worker stopped responding")
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cuda"
+    assert sidecar.is_loading() is False
+
+
+def test_an_idle_unload_retries_a_worker_that_outlived_the_kill(monkeypatch):
+    # Keeping the survivor resident must not strand it: the idle timer is rearmed
+    # so the release is tried again once the child finally goes.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    monkeypatch.setattr(stt_sidecar_module.threading, "Timer", _FakeTimer)
+    workers = _install_unkillable_worker(monkeypatch)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 60)
+    sidecar.load("small")
+    sidecar._idle_timer.fire()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar._idle_timer.started is True
+
+
+def _install_worker(monkeypatch, *, is_alive, close):
+    """Install a worker handle whose liveness and close behaviour a test chooses."""
+    workers = []
+
+    class _ScriptedWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closes = 0
+            self.alive = True
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+
+        def is_alive(self):
+            return is_alive(self)
+
+        def close(self):
+            self.closes += 1
+            return close(self)
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", _ScriptedWorker, raising = True
+    )
+    return workers
+
+
+def _closed(worker):
+    worker.alive = False
+    return True
+
+
+def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
+    # An unanswerable probe is not evidence that the context was released, so reporting
+    # nothing resident would let training be admitted against memory still held.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    def unreadable(_worker):
+        raise OSError("the process handle cannot be inspected")
+
+    workers = _install_worker(monkeypatch, is_alive = unreadable, close = _closed)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    assert stt_sidecar_module._engine_is_alive(workers[0]) is True
+    assert sidecar.loaded_model == "small"
+    assert workers[0].closes == 0
+
+
+def test_a_close_that_raises_is_a_failed_release(monkeypatch):
+    # close() raising out of join/terminate/kill confirms nothing dead, so discarding
+    # the only handle would advertise memory the child is still holding as free.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    def raising(_worker):
+        raise OSError("the worker could not be joined")
+
+    workers = _install_worker(monkeypatch, is_alive = lambda worker: True, close = raising)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cpu"
+
+
+def test_a_close_that_raises_over_a_child_already_gone_still_releases(monkeypatch):
+    # The other direction: bookkeeping that raised over a confirmed dead child
+    # holds no memory, and keeping it would refuse every later load.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    def raising_after_death(worker):
+        worker.alive = False
+        raise OSError("the worker pid could not be forgotten")
+
+    workers = _install_worker(
+        monkeypatch, is_alive = lambda worker: worker.alive, close = raising_after_death
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model is None
+    assert sidecar.device is None
+
+
+def test_a_worker_being_reaped_stays_visible_to_training_admission(monkeypatch):
+    # loaded_model and summarize_resident_stt() read the fields without the model
+    # lock, so clearing them before the reap would report nothing resident for the
+    # whole close, and training would start into the child's accelerator memory.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    release = threading.Event()
+
+    def slow_close(worker):
+        release.wait(timeout = 10)
+        worker.alive = False
+        return True
+
+    _install_worker(monkeypatch, is_alive = lambda worker: worker.alive, close = slow_close)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    seen = {}
+    unloading = threading.Thread(target = sidecar.unload, daemon = True)
+    unloading.start()
+    try:
+        time.sleep(0.2)  # inside the close
+        seen["model"] = sidecar.loaded_model
+        seen["device"] = sidecar.device
+    finally:
+        release.set()
+        unloading.join(timeout = 10)
+
+    assert seen["model"] == "small", "the reaping worker read as gone; training would miss its VRAM"
+    assert seen["device"] == "cpu"
+    # Only once the child is confirmed dead does it read as unloaded.
+    assert sidecar.loaded_model is None
+    assert sidecar.device is None
+
+
+def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch):
+    # Moving the engine out of process may not take dictation away from a host that
+    # cannot create a child. The accelerator attempt goes through the usual CPU retry
+    # first, so nobody is downgraded before that has run.
+    import core.inference.stt_transformers_worker as worker_module
+
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", "float16"))
+    spawned = []
+    loaded = []
+
+    class RefusedWorker:
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            spawned.append(device)
+            raise worker_module.SttWorkerSpawnError("spawn is not permitted here")
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", RefusedWorker, raising = True
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_whisper",
+        lambda path, device, dtype, _cancel = None: (
+            loaded.append((path, device, dtype)) or (_FakeModel(), object())
+        ),
+    )
+    monkeypatch.setattr(worker_module, "transcribe_window", lambda *_args, **_kwargs: "hello")
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    engine = sidecar.load("small")
+
+    assert spawned == ["cuda", "cpu"]
+    # In process only after both spawns failed, and only ever on the CPU.
+    assert loaded == [(str(Path("/cached/model")), "cpu", "float32")]
+    assert sidecar.device == "cpu"
+    assert sidecar.loaded_model == "small"
+    assert engine.transcribe_window(b"", {}) == "hello"
 
 
 def test_model_cache_preflight_uses_shared_offline_resolver(monkeypatch):
@@ -517,25 +1079,14 @@ def test_model_cache_preflight_reports_missing_snapshot(monkeypatch):
 def test_load_reports_model_hub_cache_miss(monkeypatch):
     _install_fake_torch(monkeypatch)
 
-    class LocalEntryNotFoundError(RuntimeError):
-        pass
+    def missing(*_args, **_kwargs):
+        # What the worker reports for a cache miss it hit inside from_pretrained.
+        raise SttModelNotDownloadedError("The dictation model is not downloaded.")
 
-    class MissingWhisperProcessor:
-        @classmethod
-        def from_pretrained(cls, *_args, **_kwargs):
-            raise LocalEntryNotFoundError("not cached")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            WhisperForConditionalGeneration = object,
-            WhisperProcessor = MissingWhisperProcessor,
-        ),
-    )
+    _install_fake_worker(monkeypatch, start = missing)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
-    with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
+    with pytest.raises(SttModelNotDownloadedError, match = "large-v3"):
         WhisperSttSidecar(keep_alive_seconds = 0).load("large-v3")
 
 

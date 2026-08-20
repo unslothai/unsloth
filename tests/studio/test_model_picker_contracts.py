@@ -49,6 +49,49 @@ def _read_backend(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _brace_matched_body(text: str, declaration: str) -> str:
+    """The body of `declaration`, ending at ITS closing brace rather than at end of file.
+
+    Splitting on a declaration and keeping the remainder looks like scoping but is not: the slice
+    runs to EOF, so an ordering assertion inside it is still satisfied by code that has been moved
+    out of the callback entirely. Match braces from the `{` that opens the body.
+    """
+    start = text.index(declaration)
+    open_brace = text.index("{", text.index("=>", start))
+    depth = 0
+    for i in range(open_brace, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace : i + 1]
+    raise AssertionError(f"unbalanced braces reading {declaration!r}")
+
+
+def _override_lookup_candidates(*args, **kwargs) -> list[str]:
+    """The real override-key ladder, imported rather than grepped out of inference.py: #8702 moved
+    it to another module unchanged and took four contract tests red with it. The module is
+    import-cheap (stdlib only at import time)."""
+    import sys
+
+    backend = str(WORKDIR / "studio" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from utils.openai_auto_switch_settings import override_lookup_candidates
+
+    try:
+        return override_lookup_candidates(*args, **kwargs)
+    except ModuleNotFoundError as missing:
+        # The standalone-.gguf branch lazily imports hub.utils.gguf, which reaches structlog. CI
+        # installs studio.txt; a bare `pytest tests/studio/...` does not. Skip on a missing
+        # third-party package only -- a missing first-party module is a real break.
+        if (missing.name or "").split(".")[0] in {"hub", "loggers", "utils", "core", "models"}:
+            raise
+        import pytest as _pytest
+        _pytest.skip(f"needs the studio backend environment: {missing.name} is not installed")
+
+
 def test_models_api_sends_token_via_header_not_query():
     """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
     token through hubTokenHeader, never as a ?hf_token= query param (which leaks
@@ -124,13 +167,41 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
-    # No description on the ordinary path. It stopped being the literal
-    # `description: undefined` when the CPU-fallback branch was added, so pin the
-    # branch and its undefined arm rather than one spelling of the old constant.
+    # How a degraded load is described belongs to one helper, not to this call site.
+    #
+    # This assertion has moved three times: it was `description: undefined`, then
+    # `description: cpuFallbackReason` when the CPU-fallback branch appeared, then the
+    # mmproj branch went in front of that. Each rewrite pinned a fresh spelling of an
+    # inline conditional, and the third one shipped a real bug that no spelling-based
+    # check could have caught: `mmproj ? ... : cpu ? ...` drops the CPU message when
+    # both are set, so a session that lost GPU acceleration AND vision reported only
+    # the vision loss.
+    #
+    # So this no longer describes the conditional at all. It requires the call site to
+    # delegate, and the composition itself is tested where it lives, in
+    # studio/frontend/tests/mmproj-fallback.test.ts, against both reasons together.
+    # Sliced to the end of the helper body, not to the first `};`. That earlier bound
+    # stopped at the `options` object literal, so anything declared after it -- the
+    # toast severity, which is the half that decides whether a degraded load looks
+    # like a plain success -- was silently outside the text being asserted on.
     success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
-    success_toast = success_toast.split("};", 1)[0]
-    assert "description: cpuFallbackReason" in success_toast
-    assert ": undefined," in success_toast
+    success_toast = success_toast.split("if (autoLoadToastDismissed)", 1)[0]
+    assert "loadFallbackNotice(" in success_toast, (
+        "the auto-load success toast no longer builds its notice through "
+        "loadFallbackNotice. Inlining the conditional here is how the CPU-fallback "
+        "message got dropped when the mmproj branch was added.\n" + success_toast
+    )
+    assert "description: notice.description" in success_toast, success_toast
+    assert "notice.degraded ? toast.warning : toast.success" in success_toast, (
+        "a degraded load must not raise a plain success toast:\n" + success_toast
+    )
+    # And the reasons still reach the helper, or it composes nothing.
+    call = success_toast.split("loadFallbackNotice(", 1)[1].split(");", 1)[0]
+    for reason in ("cpuFallbackReason", "mmprojFallbackReason"):
+        assert reason in call, (
+            f"{reason} is no longer passed to loadFallbackNotice, so that half of the "
+            f"degradation is invisible:\n{call}"
+        )
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
@@ -1322,18 +1393,26 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
     the label leaves a distilled model's low-step, guidance-0 recipe pointed at a non-distilled
     model, and the next generation silently runs with the wrong settings.
 
-    So the rollback token carries the recipe and every rollback path puts all of it back."""
+    So the rollback token carries the recipe and every rollback path puts all of it back.
+
+    The token may carry more than the recipe (a preset claim, what the pick applied), so the
+    fields are matched inside the declaration rather than against one exact line."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        assert (
-            "type PickRevert = { prev: string | null; steps: number; guidance: number };" in src
-        ), f"{rel}: the rollback token does not carry the generation recipe"
+        token = re.search(r"type PickRevert = \{(.*?)\n\};", src, re.S) or re.search(
+            r"type PickRevert = \{(.*?)\};", src, re.S
+        )
+        assert token, f"{rel}: no PickRevert rollback token"
+        for field in ("prev: string | null", "steps: number", "guidance: number"):
+            assert field in token.group(1), f"{rel}: the rollback token does not carry {field}"
         revert = re.search(
             r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S
         )
         assert revert, f"{rel}: no shared rollback helper"
         body = revert.group(1)
-        for setter in ("setQuant(r.prev)", "setSteps(r.steps)", "setGuidance(r.guidance)"):
+        # The recipe may be restored conditionally (a preset chosen after the pick owns those
+        # fields), but the rollback still has to read it off the token.
+        for setter in ("setQuant(r.prev)", "setSteps(", "r.steps", "setGuidance(", "r.guidance"):
             assert setter in body, f"{rel}: rollback does not restore {setter}"
         # No rollback path may still put back the label alone.
         assert (
@@ -1693,14 +1772,43 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     fn = src[src.index("async function settleLostGeneration") :]
     fn = fn[: fn.index("\n}\n")]
     assert "sawActive" in fn
+    assert "did not reach the server" in fn
     # The proof used to be an inline knownIds set; it is now a baseline handed
     # to hasUnknownRecord in lib/gallery-flags.ts. Same proof, named helper, so
     # the assertion follows it rather than pinning the old spelling.
     assert "hasUnknownRecord(" in fn
-    assert "baseline" in fn
-    assert "did not reach the server" in fn
+    assert "hasUnknownRecord(\n        baseline," in fn
+    # The caller still snapshots the ids BEFORE the POST and passes THAT SET in.
+    # Pin the argument, not the mere presence of the snapshot expression: with a
+    # fresh `new Set()` in the knownIds slot the snapshot still exists, is still
+    # taken before the POST and `probeBaseline` still reaches the probe, yet every
+    # record already on the page reads as unknown and a POST that never landed is
+    # reported as a finished image. Whitespace is normalised first, so reformatting
+    # the call cannot break the pin.
+    snapshot_pattern = (
+        r"const (\w+) = new Set\(galleryCache\.images\.map\(\(image\) => image\.id\)\);"
+    )
+    assert len(re.findall(snapshot_pattern, src)) == 1, "the pre-POST id snapshot is not unique"
+    snapshot = re.search(snapshot_pattern, src)
+    known_ids = snapshot.group(1)
+    flat = " ".join(src.split())
+    call = re.search(r"const probeBaseline = newRecordProbeBaseline\(\s*(.*?)\s*\);", flat)
+    assert call, "probeBaseline is no longer built by newRecordProbeBaseline"
+    args = [arg.strip() for arg in call.group(1).split(",") if arg.strip()]
+    assert args == ["galleryCache.images", "galleryCache.hasMore", known_ids], args
+    baseline = src.index("const probeBaseline = newRecordProbeBaseline(")
+    # Snapshot, then baseline, then the POST -- in that order.
+    assert snapshot.start() < baseline
+    assert baseline < src.index("await generateDiffusionImage(", baseline)
+    assert "settleLostGeneration(() => isMounted.current, probeBaseline)" in src
+
     flags = _read("lib/gallery-flags.ts")
     assert "export async function hasUnknownRecord" in flags
+    # An unknown row is the proof, and only an unpinned one counts.
+    assert "return !baseline.knownIds.has(record.id);" in flags
+    # Inconclusive listings must refuse to claim proof, else a submission that
+    # never landed reads as a finished image, which is the bug this guards.
+    assert "if (!baseline.canJudgeUnpinned) return false;" in flags
 
 
 def test_parallel_slots_setting_wired_end_to_end():
@@ -1822,40 +1930,53 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     assert "status.requested_parallel_slots !== null && {" not in src
 
 
-def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
-    """`hydratingExistingModel` is true whenever the incoming status disagrees with what
-    this tab last recorded, which includes RE-ADOPTING a model the tab never lost: the
-    resident-adopt branch restores the model's own per-model config and only then
-    hydrates, passing the EXTERNAL id as `previousCheckpoint`."""
+def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
+    """The controls in the store belong to the model that just LEFT, so adoption reseeds them.
+
+    This test used to assert the opposite, through a `readoptingSameModel` option that
+    suppressed the reseed on re-adoption. #8943 removed the option deliberately and said
+    why: the adopt path rolls the outgoing model's config back into the store before it
+    hydrates, so the slot and batch controls sitting there describe the model the tab
+    just left. Suppressing the reseed left a resident model running 4 slots showing the
+    outgoing count, and the next Apply saved that over it.
+
+    So `slotsModelChanged` is `hydratingExistingModel` with nothing subtracted, which is
+    how every other load param at this call site already treats a changed checkpoint or
+    variant.
+
+    Reseeding is only safe because the same flag gates the remembered lookup: it does
+    not blank the control, it re-reads THIS model's own saved config through
+    resolveResidentInitialConfig. That is what makes #8943 right rather than merely
+    different, so it is asserted here too -- a future change that reseeds without
+    re-reading would take the user's saved slot count away for real.
+    """
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    assert (
-        "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
-        in status
-    )
+    assert "const slotsModelChanged = hydratingExistingModel;" in status
+    # Nothing may reintroduce a same-model exemption without this test being rewritten.
+    assert "readoptingSameModel" not in status
     assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
     # Never a slot-count proxy for "same model".
     assert "prevState.loadedNParallel === (status.requested_parallel_slots" not in status
     # The baseline seed stays ungated, or a rollback after a tab reload restores
     # the model at the server default slots.
     assert "loadedNParallel: status.requested_parallel_slots," in status
+    # The batch pair is told the same thing, from the same local, so the two cannot drift.
+    assert "modelChanged: slotsModelChanged," in status
+    # And the reseed re-reads this model's remembered config rather than blanking.
+    assert (
+        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged) "
+        "? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    ), "the model-change reseed must feed the remembered lookup, or it discards the saved config"
 
-    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
-    resident = runtime.split("if (!forceReload && isExternalModelId(selectedCheckpoint)) {", 1)[
-        1
-    ].split("const stopDecision", 1)[0]
-    # What makes the scenario reachable: the branch restores the model's own
-    # config, then hydrates against the external id.
-    assert "applyPerModelConfigToRuntime(selection.previousConfig);" in resident
-    assert "previousCheckpoint: selectedCheckpoint," in resident
-    # Only reachable because the branch matched the id AND the variant first.
-    assert "resolveInferenceCheckpointId(residentStatus) === modelId" in resident
-    assert "readoptingSameModel: true," in resident
-    # The refresh() hydrate must NOT claim it: there the model really can change.
-    poll = runtime.split("setModels(listRes.models.map(toChatModelSummary));", 1)[1].split(
-        "} else if (!statusRes.active_model", 1
-    )[0]
-    assert "applyActiveModelStatusToStore(statusRes, {" in poll
-    assert "readoptingSameModel" not in poll
+    # And the rollback that makes the reseed necessary is still ordered before the
+    # hydration it protects, in the adopt path.
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
+    adopt = adopt[: adopt.index("void refreshContextUsage(")]
+    assert (
+        adopt.index("restorePreviousConfig();")
+        < adopt.index("applyActiveModelStatusToStore(confirmedStatus, {")
+    ), "the rollback must precede the hydration, or the staged snapshot wins over the resident status"
 
 
 def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
@@ -1934,13 +2055,15 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     assert "resolveInitialConfig(checkpointId" not in status
 
     # The backend applies the same model's override by the same alias, which is why the
-    # echo the adoption gate compares against carries the saved count at all.
-    route = _read_backend("routes/inference.py")
-    overrides = route.split("Apply the saved launch config so an API swap loads as the picker", 1)[
-        1
-    ].split("load_kwargs = {", 1)[0]
-    assert 'f"{override_id}:{variant}" if variant else None,' in overrides
-    assert "override_id," in overrides
+    # echo the adoption gate compares against carries the saved count at all. Driven through the
+    # real ladder rather than grepped, for the reason in
+    # test_a_standalone_gguf_has_one_settings_identity_everywhere.
+    candidates = _override_lookup_candidates("/models/m.gguf", "org/repo", "Q8_0")
+    assert candidates[:2] == [
+        "/models/m.gguf:Q8_0",
+        "org/repo:Q8_0",
+    ], "the variant-qualified keys come first, load path before advertised alias"
+    assert "org/repo" in candidates, "the alias is still read, as the cached-alias path relies on"
 
 
 def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
@@ -1960,10 +2083,18 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     assert runtime.index("const previousNParallel") < runtime.index(
         "applyPerModelConfigToRuntime(pendingLoadConfig,"
     ), "a config staged on the selection must not replace it either"
+    # Ordering, not adjacency: the concatenated form required the two statements to be neighbours,
+    # so #8702 broke it by inserting a line between them without changing the contract.
+    # Scoped to selectWithConfig, because the hub auto-load path takes the same snapshot above the
+    # only applyModelLoadConfigToRuntime call and would satisfy a whole-file comparison on its own.
     picker = " ".join(_read("features/chat/chat-page.tsx").split())
+    handoff = _brace_matched_body(picker, "const selectWithConfig = async (")
     assert (
-        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, }); "
-        "const hasAppliedConfig = applyModelLoadConfigToRuntime(" in picker
+        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, });"
+        in handoff
+    )
+    assert handoff.index("const previousConfig = currentRuntimePerModelConfig(") < handoff.index(
+        "applyModelLoadConfigToRuntime("
     ), "the snapshot must be taken before the target's config is applied"
     rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
     assert "nParallel: previousNParallel," in rollback
@@ -2108,7 +2239,14 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The Vulkan inventory is authoritative even while its probe is temporarily
     # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
     # picker and make DiffusionGemma offer a selection the route rejects.
-    assert "const inference = data?.inference_gpu; " 'if (inference?.backend === "vulkan") {' in src
+    # Scoped to the GGUF picker: an image or video load runs on torch, not llama-server, so it
+    # reads the torch inventory even here. A Vulkan chat build says nothing about the CUDA / ROCm
+    # devices a diffusion load can be pinned to.
+    vulkan_gate = (
+        "const inference = data?.inference_gpu; "
+        'if (!forDiffusion && inference?.backend === "vulkan") {'
+    )
+    assert vulkan_gate in src
     # A confirmed-Vulkan backend with no enumerated devices yet must return no
     # devices, not fall through to the torch/CUDA inventory below.
     assert "if (!(inference.devices ?? []).length) return [];" in src
@@ -2188,19 +2326,24 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     assert "throw asTransportFailure(err);" in first
 
 
-def test_external_readoption_drops_a_pin_taken_for_another_model():
+def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     """Status polling skips its own pin clearing while an external provider is selected, so the
-    re-adoption branch can adopt a resident the pin was never taken for and Apply would reload the
-    old model. The branch has to clear it itself."""
+    adoption branch can adopt a resident the pin was never taken for and Apply would reload the
+    old model. The branch has to write the pin itself.
+
+    It used to clear the pin to null. #8943 replaced that with adopting THIS pick's pin by
+    the rule a completed load writes it -- the load path, or null where that is just the id
+    -- which drops a stale pin the same way and additionally keeps a pinned cached row
+    loadable. The ordering requirement is unchanged and is what this still pins.
+    """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
-    branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]
-    assert "activeLoadId !== modelId" in branch
-    assert "setState({ activeLoadId: null })" in branch
-    # Clearing must land before the checkpoint moves, so nothing reads the pair half updated.
-    assert branch.index("activeLoadId: null") < branch.index(
-        ".setCheckpoint(modelId, residentStatus.gguf_variant)"
-    ), "the pin must be cleared before the checkpoint is adopted"
+    branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
+    branch = branch[: branch.index("void refreshContextUsage(")]
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
+    # Landing before the checkpoint moves, so nothing reads the pair half updated.
+    assert branch.index("activeLoadId: loadPath === modelId ? null : loadPath,") < branch.index(
+        ".setCheckpoint(modelId, confirmedStatus.gguf_variant)"
+    ), "the pin must be written before the checkpoint is adopted"
 
 
 def test_only_gguf_configs_are_mirrored_to_the_server():
@@ -2666,12 +2809,15 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     row_identity = _read("features/hub/inventory/settings-identity.ts")
     assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
 
-    # The precedence that makes the bare path the one that wins.
-    route = _read_backend("routes/inference.py")
-    assert 'f"{target_id}:{file_variant}" if file_variant else None,' in route
-    bare = route.index("\n                            target_id,\n")
-    labelled = route.index('f"{target_id}:{file_variant}"')
-    assert bare < labelled, "the bare path must be read before the filename label"
+    # The precedence that makes the bare path win, asserted on the real function rather than on
+    # inference.py's text: #8702 moved this ladder to utils/openai_auto_switch_settings.py
+    # unchanged, and the grep that used to live here went red for a pure refactor.
+    candidates = _override_lookup_candidates("/models/m-Q4_K_M.gguf", "org/repo", None)
+    assert candidates == [
+        "/models/m-Q4_K_M.gguf",
+        "/models/m-Q4_K_M.gguf:Q4_K_M",
+        "org/repo",
+    ], "the bare path must be read before the filename label, and both before the alias"
 
 
 def test_monitor_unload_clears_only_the_model_it_freed():
@@ -2928,10 +3074,16 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # The button, not the word: "Reset" also appears in this file's own comments, so a
     # raw source search passes with the control deleted and the Playwright reset gate
     # only finds out 25 minutes later.
-    assert re.search(
-        r"onClick=\{\(\) => setConfig\(\{ \.\.\.DEFAULT_PER_MODEL_CONFIG \}\)\}\s*>\s*Reset\s*</Button>",
-        page,
-    ), "the Reset button's JSX is gone or no longer named Reset"
+    # Whole elements, like test_the_primary_action_keeps_its_four_labels. The old single-line regex
+    # pinned the handler body exactly, so #8702 broke it by reflowing that call across lines while
+    # the button itself stayed untouched.
+    reset = any(
+        "DEFAULT_PER_MODEL_CONFIG" in el.group(0)
+        and ">\n          Reset\n        <" in el.group(0)
+        or ("DEFAULT_PER_MODEL_CONFIG" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0)))
+        for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
+    )
+    assert reset, "the Reset button's JSX is gone or no longer named Reset"
 
 
 def test_the_primary_action_keeps_its_four_labels():
@@ -3363,15 +3515,37 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     )
     # Representatives are derived per key, not once for the listing.
     group = src.split("const footprintVariants = useMemo(", 1)[1]
-    group = group.split("}, [displayVariants, effectiveRecommended]);", 1)[0]
+    group = group.split("}, [displayVariants, recommendedQuantForVariant]);", 1)[0]
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
-    # The recommended quant still wins, but only inside its own group.
-    # effectiveRecommended went from a single quant to a SET of them, so the
-    # representative test is membership rather than equality. The contract is
-    # unchanged: the recommended quant represents its own group when it has one.
-    assert "effectiveRecommended.has(variant.quant)" in group
-    assert "!effectiveRecommended.has(current.quant)" in group
+    # The recommended quant still wins, and only inside its own group. Main
+    # tracked the source through effectiveRecommended becoming a SET and
+    # asserted membership in it; but that set is flattened across groups, so it
+    # blesses the other group's pick when two families in one repo share quant
+    # names.
+    #
+    # Group-scoping it is right, but this block buckets by the BACKEND's
+    # dependency_key ("flux.2-klein:<digest>") while the recommendation map is
+    # keyed by PRESENTATION group ("quantizations", "text-frames",
+    # "reference-media"). Joining those two key spaces makes every lookup
+    # undefined and the recommended-quant branch dead, leaving whichever row
+    # tier ordering put first to speak for the group. So ask through the
+    # variant, and pin that neither the flattened set nor the crossed-key
+    # lookup is what stands here.
+    assert "const recommended = recommendedQuantForVariant.get(variant);" in group
+    assert "variant.quant === recommended" in group
+    assert "current.quant !== recommended" in group
+    assert "recommended !== undefined" in group
+    assert "effectiveRecommended.has(" not in group
+    assert "effectiveRecommendedByGroup.get(key)" not in group
+
+    # And the map it asks is built from the presentation groups, keyed by the
+    # variant objects those groups hold.
+    builder = src.split("const recommendedQuantForVariant = useMemo(", 1)[1]
+    builder = builder.split("}, [variantGroups, effectiveRecommendedByGroup]);", 1)[0]
+    assert "new Map<GgufVariantDetail, string>()" in builder
+    assert "effectiveRecommendedByGroup.get(group.key)" in builder
+    assert "byVariant.set(variant, recommended)" in builder
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():
@@ -3487,3 +3661,36 @@ def test_the_backend_keys_the_footprint_on_family_and_text_encoders():
     assert answer.count("dependency_key = _variant_dependency_key(") >= 4
     schema = _read_backend("hub/schemas/inventory.py")
     assert "dependency_key: Optional[str] = Field(" in schema
+
+
+def test_the_diffusion_gpu_choices_are_memoized():
+    """An unstable array here reaches the GGUF picker as a new footprint resolver on every render.
+
+    ImagesPage feeds the choices into its load-advanced snapshot, that snapshot into
+    resolveDownloadFootprint, and the picker's effect depends on the resolver: a fresh identity per
+    render clears the companion sizes it had resolved and re-POSTs /images/download-plan for every
+    variant, on every status poll, discarding the in-flight answers.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    choices = src[src.index("export function useDiffusionGpuChoices") :]
+    choices = choices[: choices.index("/** Whether device discovery")]
+    assert "return useMemo(() => {" in choices
+    # Keyed on the device list, which useGpuDevices only replaces when the inventory changes.
+    assert "}, [devices]);" in choices
+
+
+def test_the_media_gpu_pick_survives_a_reload():
+    """Every other Advanced select is reseeded from the loaded build; this one cannot be, because
+    the status reports the device a pipeline is on and not which physical card. Without persistence
+    a refresh silently reset the pick to Auto while the model stayed put, and the next Reapply
+    moved it to the default GPU -- on a mixed box, potentially onto the card that cannot hold it."""
+    for page, key in (
+        ("features/images/images-page.tsx", "unsloth_image_gpu_choice"),
+        ("features/video/video-page.tsx", "unsloth_video_gpu_choice"),
+    ):
+        src = " ".join(_read(page).split())
+        assert f'usePersistedChoice( "{key}", "auto", )' in src, page
+        # A stored id is only a hint: a card that has gone falls back to automatic.
+        assert "gpuChoices.some((d) => String(d.index) === selectedGpu)" in src or (
+            "controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)" in src
+        ), page

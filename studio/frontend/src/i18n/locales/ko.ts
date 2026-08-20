@@ -16,7 +16,6 @@ export const ko = {
     searchAriaLabel: "{noun} 검색",
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
-    pickModelFile: "디스크에서 모델 파일 선택",
     modelDropped: "더 이상 제공되지 않음",
     modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
     modelDisabled: "사용 안 함",
@@ -95,6 +94,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
+      showMore: "더 보기",
+      showLess: "간략히 보기",
       settings: "설정",
       api: "API",
       lightMode: "라이트 모드",
@@ -108,6 +109,44 @@ export const ko = {
       title: "페이지를 찾을 수 없습니다",
       description: "{path} 경로가 존재하지 않습니다.",
       backToChat: "채팅으로 돌아가기",
+    },
+    selection: {
+      pinProjects: "프로젝트 고정",
+      unpinProjects: "프로젝트 고정 해제",
+      deleteProjects: "프로젝트 삭제",
+      deleteProjectsTitle: "프로젝트 삭제",
+      deleteProjectsDescription:
+        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+      deleteProjectsFilesDescription:
+        "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
+      countSelected: "{count}개 선택됨",
+      pinChats: "채팅 고정",
+      unpinChats: "채팅 고정 해제",
+      archiveChats: "채팅 보관",
+      markUnread: "읽지 않음으로 표시",
+      deleteChats: "채팅 삭제",
+      deleteTitle: "채팅 삭제",
+      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteFilesDescription:
+        "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
+      deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
+      deleteChatFilesDescription:
+        "이 채팅 전용 샌드박스 폴더가 디스크에서 제거됩니다. 프로젝트 안에 기록한 파일은 해당 프로젝트 작업 공간에 남습니다.",
+    },
+    organize: {
+      sidebarHeading: "사이드바 정리",
+      byProject: "프로젝트별",
+      inOneList: "하나의 목록으로",
+      sortChatsBy: "채팅 정렬 기준",
+      sortPinnedBy: "고정됨 정렬 기준",
+      priority: "우선순위",
+      lastUpdated: "최근 업데이트",
+      manualOrder: "수동 정렬",
+      moveUp: "위로 이동",
+      moveDown: "아래로 이동",
+      organizeChats: "채팅 정리",
+      organizeProjects: "프로젝트 정리",
+      sortPinnedChats: "고정된 채팅 정렬",
     },
     dialog: {
       deleteChat: {
@@ -143,6 +182,8 @@ export const ko = {
       closeAriaLabel: "설정 닫기",
       searchPlaceholder: "설정 검색…",
       searchNoResults: "설정을 찾을 수 없습니다.",
+      panelFailed: "이 섹션을 불러오지 못했습니다.",
+      panelReload: "새로고침",
     },
     tabs: {
       general: "일반",
@@ -152,10 +193,80 @@ export const ko = {
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
+      remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
       agents: "에이전트",
+      debugging: "로그",
       voice: "음성",
+      keyboardShortcuts: "단축키",
+    },
+    keyboardShortcuts: {
+      title: "키보드 단축키",
+      description:
+        "단축키를 바꾸거나, 지워서 해당 조합을 브라우저나 운영체제에 넘길 수 있습니다.",
+      searchPlaceholder: "단축키 검색…",
+      noResults: "검색과 일치하는 단축키가 없습니다.",
+      unassigned: "지정 안 됨",
+      recording: "키를 누르세요…",
+      recordingHint: "새 조합을 누르거나 Esc로 취소하세요.",
+      needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
+      conflict: "다른 단축키도 이 조합을 사용합니다",
+      conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",
+      edit: "단축키 변경",
+      clear: "단축키 제거",
+      reset: "기본값 복원",
+      resetAll: "모두 기본값으로 초기화",
+      groups: {
+        general: "일반",
+        chat: "채팅",
+      },
+      actions: {
+        newChat: {
+          label: "새 채팅",
+          description: "새 채팅을 시작합니다",
+        },
+        searchChats: {
+          label: "채팅 검색",
+          description: "채팅 검색 창을 엽니다",
+        },
+        toggleSidebar: {
+          label: "사이드바 토글",
+          description: "사이드바를 표시하거나 숨깁니다",
+        },
+        openSettings: {
+          label: "설정 열기",
+          description: "설정 창을 엽니다",
+        },
+        openKeyboardShortcuts: {
+          label: "키보드 단축키",
+          description: "이 단축키 목록을 엽니다",
+        },
+      },
+    },
+    debugging: {
+      logSection: "로그 파일",
+      source: "로그 파일",
+      sourceHint: "모델 러너는 각자 자체 로그를 기록하므로, 로드나 생성이 실패한 이유는 서버 로그가 아니라 그쪽에 남아 있는 경우가 많습니다.",
+      path: "위치",
+      pathCopy: "경로 복사",
+      refreshSection: "새로 고침",
+      mode: "모드",
+      modeLive: "실시간",
+      modeInterval: "3초마다",
+      modeManual: "수동",
+      refreshNow: "지금 새로 고침",
+      privacyNote: "이 화면에서는 자격 증명이 가려집니다. 디스크에 저장된 파일에서는 가려지지 않습니다.",
+      copyVisible: "표시된 로그 복사",
+      empty: "아직 기록된 내용이 없습니다.",
+      disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "로그 파일을 찾을 수 없습니다.",
+      unreadable: "로그 파일을 읽을 수 없습니다.",
+      timeout: "로그 요청 시간이 초과되었습니다. 서버에 연결할 수 없을 수 있습니다.",
+      droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
+      morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",
+      staleSession: "파일 로깅이 꺼져 있으므로 이것은 이전 세션이며 업데이트되지 않습니다.",
+      keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {
       title: "음성",
@@ -218,6 +329,8 @@ export const ko = {
         allowMicrophone: "마이크 허용",
         micAccessBlocked:
           "마이크 접근이 차단되었습니다. 이 Unsloth 페이지에 마이크 접근을 허용한 뒤 다시 시도하세요.",
+        micAccessBlockedDesktop:
+          "마이크 접근이 차단되었습니다. 다시 시도하여 허용을 선택하거나 시스템 개인 정보 보호 설정에서 마이크를 켜세요.",
         micAccessUnsupported:
           "이 브라우저나 환경에서는 마이크 접근을 지원하지 않습니다.",
         systemDefault: "시스템 기본값",
@@ -290,6 +403,7 @@ export const ko = {
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
+        openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "이 기기에서 가장 좋은 음성",
         speedLabel: "속도",
@@ -298,6 +412,7 @@ export const ko = {
         previewLabel: "음성 미리 듣기",
         previewDescription: "짧은 샘플을 재생합니다",
         previewAction: "미리 듣기",
+        preparingAction: "생성 중…",
         previewFailed: "TTS 미리 듣기에 실패했습니다",
         stopAction: "정지",
         ttsLabel: "텍스트 음성 변환",
@@ -367,6 +482,16 @@ export const ko = {
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        mediaEnable: "요청에 따라 이미지·동영상 모델 전환",
+        mediaEnableDescription:
+          "API 요청에 지정된 이미지 또는 동영상 모델이 다운로드되어 있으면 생성 전에 불러옵니다. 위 설정은 채팅 모델에만 적용되는 별개의 설정입니다. 기본값은 꺼짐입니다.",
+        mediaIdleUnload: "이미지와 동영상의 유휴 시 자동 해제",
+        mediaIdleUnloadDescription:
+          "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 별도의 설정입니다. 위 설정은 채팅 모델에만 적용됩니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
+        mediaIdleSecondsAriaLabel:
+          "이미지와 동영상의 유휴 시 자동 해제까지의 시간(초)",
+        mediaIdlePaused:
+          "‘모델을 GPU 메모리에 유지’가 켜져 있는 동안 일시 중지됩니다.",
         idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
@@ -416,6 +541,11 @@ export const ko = {
         launchAtLogin: "로그인 시 Unsloth 실행",
         launchAtLoginDescription:
           "로그인하면 Unsloth를 백그라운드에서 시작합니다. 열기 전까지 메뉴 막대 또는 시스템 트레이에 남아 있습니다.",
+
+        closeToTray: "시스템 트레이로 닫기",
+        closeToTrayDescription:
+          "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
+        closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
@@ -713,6 +843,58 @@ export const ko = {
         free: "{value} 여유",
         total: "총 {value}",
       },
+      llamaBackend: {
+        title: "GGUF 추론 엔진",
+        label: "연산 백엔드",
+        description: "llama.cpp가 GGUF 모델을 실행할 때 사용하는 백엔드입니다.",
+        runningOn: "llama.cpp가 현재 {backend}에서 실행 중입니다.",
+        hint: "이 백엔드용 llama.cpp 빌드를 설치하고 업데이트 후에도 유지합니다. 자동 선택이 충돌하거나 GPU 드라이버가 지원하지 않을 때 유용합니다. 이 컴퓨터용 빌드가 있는 백엔드만 표시되며 학습에는 영향이 없습니다.",
+        autoWith: "자동 ({backend})",
+        apply: "적용",
+        applying: "설치 중...",
+        applyHint: "새 빌드를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",
+        applyHintWithSize: "{size}를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",
+        switchedTo: "이제 llama.cpp가 {backend}에서 실행됩니다.",
+        switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
+        switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",
+        envLocked: "환경 변수 UNSLOTH_LLAMA_CPP_BACKEND가 {backend}(으)로 고정했으며, 이 설정보다 우선합니다.",
+        customPath: {
+          label: "사용자 지정 llama.cpp 폴더",
+          description: "직접 빌드한 llama-server를 사용합니다.",
+          hint: "llama-server가 들어 있는 llama.cpp 폴더 또는 build/bin 아래에 있는 빌드를 선택하세요. 사용자 지정 런타임은 GGUF 채팅, 임베딩, 지원되는 음성 모델에 사용됩니다. 환경 변수가 계속 우선합니다.",
+          automatic: "자동(번들)",
+          bundled: "Unsloth가 설치한 llama.cpp 런타임을 사용합니다.",
+          active: "다음 모델 로드부터 사용자 지정 llama-server를 사용합니다.",
+          environmentManaged: "{variable} 환경 변수로 관리됩니다.",
+          missingBinary: "이 폴더에서 llama-server를 더 이상 사용할 수 없습니다. 다른 폴더를 선택하거나 번들 런타임을 사용하세요.",
+          reloadRequired: "선택한 llama-server를 사용하려면 모델을 다시 로드하세요.",
+          change: "변경",
+          saving: "저장 중...",
+          useBundled: "번들 사용",
+          chooseTitle: "llama.cpp 폴더 선택",
+          chooseAction: "이 폴더 사용",
+          saved: "llama.cpp 폴더가 업데이트되었습니다",
+          saveError: "llama.cpp 폴더를 업데이트하지 못했습니다",
+        },
+        backends: {
+          auto: "자동",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "관리되는 llama.cpp 설치를 찾을 수 없어 전환할 백엔드가 없습니다.",
+          localLink: "llama.cpp는 직접 연결한 로컬 디렉터리이므로 Unsloth가 교체하지 않습니다.",
+          sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
+          customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
+          unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
+        },
+        // 표시되지 않음: 설정 검색용 추가 키워드.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
+      },
       modelMemory: {
         title: "모델 메모리",
         keepResident: "모델을 GPU 메모리에 유지",
@@ -865,6 +1047,9 @@ export const ko = {
       },
     },
     chat: {
+      projectsSection: "프로젝트 섹션 표시",
+      projectsSectionDescription:
+        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {
@@ -886,12 +1071,21 @@ export const ko = {
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
       },
+      pastedTextThreshold: "긴 붙여넣기 압축",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      projectAttachments: "프로젝트 전체에서 파일 공유",
+      projectAttachmentsDescription:
+        "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 색인하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
+      rememberParamsPerModel: "모델별로 설정 기억",
+      rememberParamsPerModelDescription:
+        "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
@@ -925,11 +1119,13 @@ export const ko = {
       exportPerChatSuffix: "(채팅별)",
       importChats: "채팅 가져오기",
       importChatsDescription:
-        "JSONL, NDJSON 또는 CSV 내보내기 파일을 최근 항목으로 가져옵니다.",
+        "Open WebUI, JSONL, NDJSON 또는 CSV 내보내기 파일을 최근 항목으로 가져옵니다.",
       importChatsAction: "가져오기",
       importNoConversations: "파일에서 대화를 찾을 수 없습니다.",
       importedOneChat: "1개의 대화를 최근 항목으로 가져왔습니다.",
       importedChatCount: "{count}개의 대화를 최근 항목으로 가져왔습니다.",
+      importingChats: "채팅 가져오는 중: 현재 {count}개({percent}%)...",
+      importedChatCountPartial: "{count}개의 대화를 최근 항목으로 가져왔습니다. {failed}개는 저장하지 못했습니다.",
       importFailed: "가져오기에 실패했습니다.",
       clearHistory: "채팅 기록 지우기",
       clearHistoryDescription: "이 기기에서 채팅 기록을 삭제합니다.",
@@ -980,6 +1176,9 @@ export const ko = {
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
       manageAction: "관리",
+      manageChats: "채팅 관리",
+      manageChatsDescription:
+        "여러 채팅을 선택해 이동, 고정, 보관, 내보내기 또는 삭제할 수 있습니다.",
       exportArchivedChats: "내보내기",
       exportingArchivedChats: "내보내는 중...",
       exportedOneArchivedChat: "보관된 채팅 1개를 내보냈습니다",
@@ -1002,6 +1201,9 @@ export const ko = {
       confirmBeforeDeleting: "삭제 전 확인",
       confirmBeforeDeletingDescription:
         "채팅을 삭제하기 전에 확인을 요청합니다. 끄면 즉시 삭제합니다.",
+      alwaysDeleteFiles: "항상 파일 삭제",
+      alwaysDeleteFilesDescription:
+        "채팅을 삭제하면 해당 채팅 전용 샌드박스 폴더도 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       filesSection: "파일",
       uploadedFiles: "업로드한 파일",
       uploadedFilesDescription:
@@ -1023,6 +1225,11 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+    },
+    remoteLan: {
+      title: "원격 및 LAN",
+      description:
+        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",
@@ -1253,6 +1460,12 @@ export const ko = {
         "이 데이터셋은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
       noticeDatasetPartial:
         "데이터셋을 읽기 전에 완료되지 않은 다운로드를 마칩니다.",
+      noticeTransformersUpgrade:
+        "설치된 transformers 중 이 아키텍처를 지원하는 버전이 없습니다. 실행을 시작하면 먼저 transformers {version} 설치를 제안합니다.",
+      noticeSixteenBitOnly:
+        "이 아키텍처는 16비트 LoRA로 학습합니다. 4비트를 사용할 수 없어 QLoRA보다 훨씬 많은 VRAM이 필요합니다.",
+      noticeInstallSwitchesSixteenBit:
+        "모델 자체 코드를 유지하는 대신 해당 릴리스를 설치하면 이 실행은 16비트 LoRA로 전환되어 QLoRA보다 훨씬 많은 VRAM이 필요합니다.",
       advancedSettings: "고급 설정",
       defaultAdvancedSettings: "기본값",
       nonDefaultAdvancedSettings: "기본값이 아닌 설정 {count}개",

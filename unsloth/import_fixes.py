@@ -359,6 +359,145 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
+# flash-attn 4 ships `flash_attn/cute/` with NO `flash_attn/__init__.py`, so `flash_attn`
+# resolves as a namespace package with no `flash_attn.flash_attn_interface`. xformers gates on
+# `find_spec("flash_attn")` and then imports that submodule unguarded, so `import xformers.ops`
+# raises, `models/_utils.py` swallows it into `xformers = None`, HAS_XFORMERS goes False and
+# every fast-path model silently drops to SDPA. Measured on a B200 at seq_len 8192 with
+# Qwen3-0.6B + LoRA: 547 ms/step / 2.69 GB peak with xformers versus 2154 ms/step / 19.02 GB
+# peak on SDPA -- 3.9x slower, 7x memory, no message. flash-attn 2 has no wheel for torch 2.9 /
+# cp313, so flash-attn 4 is what a Blackwell user reaches for.
+#
+# The repair imports xformers ONCE with `flash_attn` hidden from `find_spec`, so xformers takes
+# the next branch of its own elif chain exactly as it would with no flash-attn at all, and the
+# working module is cached in `sys.modules`. Nothing is written to any third-party package.
+_FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
+_FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
+_FA4_NAMESPACE_WARNED = [False]
+
+
+def _flash_attn_submodule_exists(name):
+    """True iff `flash_attn.<name>` exists on disk, WITHOUT importing `flash_attn`.
+
+    `importlib.util.find_spec("flash_attn.x")` looks cheap but is not: resolving a dotted name
+    IMPORTS the parent package first, so on every machine with a real flash-attn 2 it would run
+    `flash_attn/__init__.py` (and load `flash_attn_2_cuda`) during `import unsloth`, for users
+    who never asked for flash attention. Probing the package's own search locations answers the
+    same question with a stat() and no side effects.
+    """
+    try:
+        spec = importlib.util.find_spec("flash_attn")
+        if spec is None:
+            return False
+        locations = list(spec.submodule_search_locations or ())
+    except Exception:
+        return False
+    for location in locations:
+        base = os.path.join(location, name)
+        if os.path.isdir(base):
+            return True
+        for suffix in importlib.machinery.all_suffixes():
+            if os.path.isfile(base + suffix):
+                return True
+    return False
+
+
+def _flash_attn_layout():
+    """Classify the installed `flash_attn` module tree.
+
+    Returns ``"absent"`` (no `flash_attn` at all), ``"flash_attn_2"`` (a real flash-attn 2/3
+    layout -- `flash_attn.flash_attn_interface` is present, which is precisely what xformers
+    imports, so it works whether or not flash-attn 4 is installed ALONGSIDE it), or
+    ``"flash_attn_4_only"`` (importable `flash_attn` with no FA2 entry points).
+
+    Never imports `flash_attn`. A real flash-attn 2 whose extension fails to load is still
+    classified as FA2 here and is left completely alone -- that breakage is separate and
+    already reported by `models/_utils.py`.
+    """
+    try:
+        if importlib.util.find_spec("flash_attn") is None:
+            return "absent"
+    except Exception:
+        # A parent package that explodes on import is not something to second-guess.
+        return "absent"
+    if _flash_attn_submodule_exists(_FLASH_ATTN_INTERFACE_NAME):
+        return "flash_attn_2"
+    return "flash_attn_4_only"
+
+
+def _flash_attn_4_present():
+    return _flash_attn_submodule_exists("cute")
+
+
+def _warn_flash_attn_4_shadow_once(detail):
+    if _FA4_NAMESPACE_WARNED[0]:
+        return
+    _FA4_NAMESPACE_WARNED[0] = True
+    if _flash_attn_4_present():
+        head = (
+            "Unsloth: flash-attn 4 is installed as the namespace package `flash_attn` (only "
+            "`flash_attn.cute`), which has no `flash_attn_func` / `flash_attn_varlen_func` and "
+            "no `flash_attn.flash_attn_interface`."
+        )
+    else:
+        head = (
+            "Unsloth: `flash_attn` resolves to a namespace package with no "
+            "`flash_attn.flash_attn_interface` (a partial or shadowed flash-attn install)."
+        )
+    logger.warning(
+        head + "\n"
+        f"xFormers imports that module unconditionally, so it is unusable here ({detail}), and "
+        "Unsloth has fallen back to PyTorch SDPA. Measured cost on a B200 at seq_len 8192 "
+        "(Qwen3-0.6B + LoRA): 547 ms/step -> 2154 ms/step (3.9x slower) and 2.69 GB -> 19.02 GB "
+        "peak (7x more memory).\n"
+        "Unsloth cannot use flash-attn 4 either: its entry point is "
+        "`from flash_attn.cute import flash_attn_func` and it returns a (out, softmax_lse) "
+        "tuple rather than a tensor.\n"
+        "To get the fast path back, install a flash-attn 2 that xFormers accepts (it enforces "
+        '>=2.7.1: `pip install --no-build-isolation "flash-attn>=2.7.1"`) or uninstall '
+        "flash-attn 4 (`pip uninstall flash-attn-4`) so xFormers can load."
+    )
+
+
+def fix_flash_attn_4_namespace_shadow():
+    """Keep xFormers importable when only flash-attn 4 is installed."""
+    if _flash_attn_layout() != "flash_attn_4_only":
+        return
+    if importlib.util.find_spec("xformers") is None:
+        # Nothing to protect: no xformers means SDPA regardless, and transformers'
+        # `is_flash_attn_2_available()` is False here (the distribution is `flash-attn-4`, so
+        # the metadata lookup for `flash_attn` misses).
+        return
+    if "xformers.ops.fmha.flash" in sys.modules:
+        # Already imported successfully. A FAILED import leaves nothing in sys.modules, so this
+        # does not mask the case we are here to fix.
+        return
+
+    real_find_spec = importlib.util.find_spec
+
+    def _find_spec_without_flash_attn(name, package = None):
+        if name == "flash_attn" or name.startswith("flash_attn."):
+            return None
+        return real_find_spec(name, package)
+
+    # Process-global swap, scoped to this one import and restored in `finally`. Any other thread
+    # calling find_spec("flash_attn*") in the ~1.0s window is told the package is absent, which
+    # is the honest answer for the FA2 namespace xformers is asking about anyway.
+    importlib.util.find_spec = _find_spec_without_flash_attn
+    try:
+        import xformers.ops  # noqa: F401
+    except Exception as error:
+        _warn_flash_attn_4_shadow_once(f"xFormers still failed to import: {error}")
+        return
+    finally:
+        importlib.util.find_spec = real_find_spec
+
+    logger.info(
+        "Unsloth: Hid the flash-attn 4 namespace package from xFormers' import so xFormers "
+        "keeps working. Unsloth cannot use flash-attn 4 itself."
+    )
+
+
 def patch_vllm_for_notebooks():
     import sys
 
@@ -2291,6 +2430,100 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
+
+
+def disable_torchaudio_if_cuda_mismatched():
+    """Make a CUDA-mismatched torchaudio behave as if uninstalled.
+
+    `torchaudio._extension.utils._check_cuda_version` compares the CUDA
+    version torchaudio was BUILT against with torch's, and raises on any
+    difference:
+
+        RuntimeError: Detected that PyTorch and TorchAudio were compiled with
+        different CUDA versions.
+
+    That check runs at extension init, so it takes down the whole import --
+    including for callers that only ever wanted CPU-side audio I/O, and
+    including callers that never asked for torchaudio at all and merely
+    imported something that does. Measured on a Kaggle 2xT4 session running
+    `Kaggle-Muse_Glimmer_(30B)-GRPO`, a text model: it died at cell 4 on this,
+    having never reached anything to do with audio.
+
+    Same shape as `disable_torchcodec_if_broken` and for the same reason: the
+    package is present, `find_spec` says so, and the failure is at native
+    init rather than at resolution, so downstream `except ImportError`
+    handlers never get their chance. Seating the sentinel gives them one.
+
+    What this deliberately does NOT do is patch out `_check_cuda_version`.
+    The check is right -- torchaudio's CUDA ops really are unusable against a
+    different runtime -- and silencing it in place would leave those ops
+    reachable and wrong. Making the package absent is the honest version of
+    the same repair, and it is loud: the warning names both versions and the
+    wheel that would fix it.
+    """
+    try:
+        import importlib.util
+        if importlib.util.find_spec("torchaudio") is None:
+            return
+        import torchaudio  # noqa: F401
+    except ImportError:
+        return
+    except (RuntimeError, OSError) as exc:
+        if "different CUDA versions" not in str(exc) and "torchaudio" not in str(exc).lower():
+            # Some other failure. Not this function's business, and swallowing
+            # it would hide a real one behind a message about CUDA versions.
+            raise
+        try:
+            import warnings
+            warnings.warn(
+                f"Unsloth: torchaudio cannot initialise against this torch and has been "
+                f"disabled for this process, so anything that needs it will report it as "
+                f"missing rather than crash at import. Install the matching wheel to "
+                f"restore it. Original error: {exc}",
+                stacklevel = 2,
+            )
+        except Exception:
+            # Warning filters promoted to errors must not abort the repair.
+            pass
+
+        try:
+            import transformers.utils.import_utils as tf_import_utils
+            try:
+                tf_import_utils._torchaudio_available = False
+            except AttributeError:
+                pass
+            # `speech` is transformers' composite backend and it is nothing but
+            # torchaudio (`is_speech_available` returns `is_torchaudio_available()`).
+            # On 4.x both read one module global, so setting the flag above covers
+            # them. On 5.x each is separately `@lru_cache`d, so a `speech` answer
+            # computed before this repair stays True and `requires_backends(...,
+            # "speech")` waves callers on into a torchaudio that is now a None
+            # sentinel -- a raw crash instead of the unavailable-backend path this
+            # whole function exists to restore. Clear both caches.
+            for _name in ("is_torchaudio_available", "is_speech_available"):
+                is_avail = getattr(tf_import_utils, _name, None)
+                if is_avail is None:
+                    continue
+                try:
+                    is_avail.cache_clear()
+                except AttributeError:
+                    pass
+                setattr(tf_import_utils, _name, lambda: False)
+        except ImportError:
+            pass
+
+        try:
+            import datasets.config as datasets_config
+            if hasattr(datasets_config, "TORCHAUDIO_AVAILABLE"):
+                datasets_config.TORCHAUDIO_AVAILABLE = False
+        except ImportError:
+            pass
+
+        for _stale in [
+            n for n in list(sys.modules) if n == "torchaudio" or n.startswith("torchaudio.")
+        ]:
+            sys.modules.pop(_stale, None)
+        sys.modules["torchaudio"] = None
 
 
 def disable_broken_wandb():
