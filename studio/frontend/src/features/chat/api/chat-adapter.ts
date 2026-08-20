@@ -2193,8 +2193,11 @@ const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
   "image-diffusion-unsupported",
 ]);
 
-// Scan folders the picker exposes. hf_cache is already in the cached lists,
-// and ollama links are not loadable.
+// Scan folders the picker exposes. hf_cache is already in the cached lists.
+// ollama stays out by policy: its rows load through the picker, but the API
+// auto-switch index never resolves them (local_model_resolver.py skips the
+// Ollama scanner), so auto-loading one would promise an API identity that
+// cannot be reached.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
