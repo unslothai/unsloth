@@ -9,10 +9,6 @@ interface LlamaJob {
   operation: LlamaJobOperation;
 }
 
-interface TimestampedLlamaJob extends LlamaJob {
-  started_at: string | null;
-}
-
 interface IdentifiedLlamaJob extends LlamaJob {
   startedAt: string | null;
 }
@@ -72,21 +68,38 @@ export function llamaUpdatePresentation(
   };
 }
 
-/**
- * A poll that left while the job was still running can return after a later
- * poll already observed success or error. Adopting that running snapshot
- * re-pins the "Updating..." toast after the completion poller has stopped.
- */
-export function llamaUpdateSnapshotIsStale(
-  adopted: TimestampedLlamaJob,
-  incoming: TimestampedLlamaJob,
+/** A status read may probe the host or wait on a local backend request. */
+export const LLAMA_JOB_STATUS_TIMEOUT_MS = 15_000;
+
+/** Older requests must not overwrite a status read that started later. */
+export function llamaStatusRequestIsStale(
+  latestAppliedRequest: number,
+  incomingRequest: number,
 ): boolean {
-  if (adopted.state !== "success" && adopted.state !== "error") {
-    return false;
+  return incomingRequest < latestAppliedRequest;
+}
+
+/** Bound one status read so a serialized poll can always hand its guard back. */
+export async function boundedLlamaStatusRequest<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = LLAMA_JOB_STATUS_TIMEOUT_MS,
+): Promise<T | null> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timeout = globalThis.setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      request(controller.signal).catch(() => null),
+      deadline,
+    ]);
+  } finally {
+    if (timeout !== undefined) {
+      globalThis.clearTimeout(timeout);
+    }
   }
-  return (
-    incoming.state === "running" &&
-    adopted.started_at != null &&
-    adopted.started_at === incoming.started_at
-  );
 }

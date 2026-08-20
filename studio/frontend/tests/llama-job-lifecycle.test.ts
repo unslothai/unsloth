@@ -4,9 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  boundedLlamaStatusRequest,
+  llamaStatusRequestIsStale,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
-  llamaUpdateSnapshotIsStale,
   ownedLlamaSwitchOutcome,
 } from "../src/lib/llama-job-lifecycle.ts";
 
@@ -79,51 +80,20 @@ test("a completed update stays hidden when no update remains", () => {
   );
 });
 
-test("a late running poll for a finished job is stale", () => {
-  const startedAt = "2026-08-18T13:02:21Z";
-  assert.equal(
-    llamaUpdateSnapshotIsStale(
-      { state: "success", operation: "update", started_at: startedAt },
-      { state: "running", operation: "update", started_at: startedAt },
-    ),
-    true,
-  );
-  assert.equal(
-    llamaUpdateSnapshotIsStale(
-      { state: "error", operation: "update", started_at: startedAt },
-      { state: "running", operation: "update", started_at: startedAt },
-    ),
-    true,
-  );
+test("status responses are ordered by request rather than second-precision job timestamps", () => {
+  assert.equal(llamaStatusRequestIsStale(2, 1), true);
+  assert.equal(llamaStatusRequestIsStale(2, 2), false);
+  assert.equal(llamaStatusRequestIsStale(2, 3), false);
 });
 
-test("a running poll is kept when it is a different job or the current one is still running", () => {
-  const startedAt = "2026-08-18T13:02:21Z";
-  assert.equal(
-    llamaUpdateSnapshotIsStale(
-      { state: "success", operation: "update", started_at: startedAt },
-      {
-        state: "running",
-        operation: "update",
-        started_at: "2026-08-18T14:00:00Z",
-      },
-    ),
-    false,
+test("a serialized status request releases after its deadline", async () => {
+  const started = Date.now();
+  const result = await boundedLlamaStatusRequest(
+    () => new Promise<string>(() => undefined),
+    10,
   );
-  assert.equal(
-    llamaUpdateSnapshotIsStale(
-      { state: "running", operation: "update", started_at: startedAt },
-      { state: "running", operation: "update", started_at: startedAt },
-    ),
-    false,
-  );
-  assert.equal(
-    llamaUpdateSnapshotIsStale(
-      { state: "success", operation: "update", started_at: startedAt },
-      { state: "success", operation: "update", started_at: startedAt },
-    ),
-    false,
-  );
+  assert.equal(result, null);
+  assert.ok(Date.now() - started < 1000, "the bounded request never released");
 });
 
 test("an apply adopts an already-running update but never a switch", () => {
