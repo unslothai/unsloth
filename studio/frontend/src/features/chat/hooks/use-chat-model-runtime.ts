@@ -54,6 +54,7 @@ import {
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -1707,6 +1708,8 @@ export function useChatModelRuntime() {
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
+            const supportsPreserveThinking =
+              loadResponse.supports_preserve_thinking ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
             // GLM-5.2-style models report their own effort levels (e.g.
             // high|max); everything else keeps the default low/medium/high.
@@ -1743,7 +1746,11 @@ export function useChatModelRuntime() {
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
               reasoningEffortLevels,
               reasoningEffort: clampedReasoningEffort,
-              supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
+              supportsPreserveThinking,
+              preserveThinking:
+                reloadingSameModel && supportsPreserveThinking
+                  ? stateBeforeUnload.preserveThinking
+                  : resolvePreserveThinkingOnLoad(loadResponse),
               supportsTools,
               ...(reloadingSameModel && supportsTools
                 ? {

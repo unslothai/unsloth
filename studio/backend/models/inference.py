@@ -732,7 +732,11 @@ class _InferenceRuntimeFields(BaseModel):
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
+        description = "Whether the template understands the optional preserve_thinking kwarg",
+    )
+    preserve_thinking_default: bool = Field(
+        False,
+        description = "Default preserve_thinking value resolved for the active model family",
     )
     supports_tools: bool = Field(
         False,
@@ -1601,7 +1605,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
-            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. External "
             "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
             "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
             "OpenAI Responses. If None, all local tools are enabled and no "
@@ -1618,7 +1622,7 @@ class ChatCompletionRequest(BaseModel):
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     permission_mode: Optional[str] = Field(
         None,
@@ -1649,14 +1653,15 @@ class ChatCompletionRequest(BaseModel):
             "the process default."
         ),
     )
-    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
-            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
-            "context window. 'error' (default) returns a 400 with "
-            "code=context_length_exceeded. 'truncate_middle' drops middle "
-            "turn-groups (system prompt, first turn, and recent turns kept; "
-            "tool calls stay paired with their results) and retries."
+            "[x-unsloth] Local GGUF context-overflow behavior. 'error' (default) "
+            "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
+            "limited to client-tool or response_format passthrough and retries after "
+            "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
+            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
@@ -2200,6 +2205,7 @@ class ChatCompletionChunk(BaseModel):
     choices: list[ChunkChoice]
     usage: Optional[CompletionUsage] = None
     timings: Optional[dict] = None
+    context_truncated: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────

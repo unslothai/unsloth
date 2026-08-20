@@ -124,6 +124,7 @@ import {
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   awaitThreadScopedPairing,
@@ -151,6 +152,7 @@ import type {
   CpuFallbackReason,
   MmprojFallbackReason,
   GgufVariantDetail,
+  OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
   OpenAIMessageContent,
@@ -175,6 +177,7 @@ import {
 } from "../utils/last-local-model-load";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
+import { mergeContextTruncation } from "../utils/context-truncation";
 import {
   createThinkTagTracker,
   extractDeltaText,
@@ -355,6 +358,7 @@ function isServerSideBuiltinToolPart(
 }
 
 const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
+const rollingContextNoticeThreads = new Set<string>();
 
 type ThreadAutosaveHandle = {
   registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
@@ -1742,7 +1746,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -2019,6 +2023,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   loadedContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
@@ -2045,6 +2050,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "supportsReasoningOff",
   "reasoningEffortLevels",
   "supportsPreserveThinking",
+  "preserveThinking",
   "supportsTools",
   "toolsEnabled",
   "codeToolsEnabled",
@@ -2151,6 +2157,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
+    preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
@@ -3161,6 +3168,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3206,6 +3214,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3537,6 +3546,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3636,6 +3646,7 @@ async function resolveQueuedEmptyLocalModel(
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
+            preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
@@ -3868,6 +3879,9 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
+                preserveThinking:
+                  queuedEmptyModelRuntime?.preserveThinking ??
+                  liveRuntime.preserveThinking,
                 loadedContextLength:
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.loadedContextLength
@@ -4212,6 +4226,9 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
+              preserveThinking:
+                queuedEmptyModelRuntime?.preserveThinking ??
+                liveRuntime.preserveThinking,
               loadedContextLength:
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedContextLength
@@ -4867,6 +4884,7 @@ export function createOpenAIStreamAdapter(
       // STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
+      let contextTruncation: OpenAIChatChunk["context_truncated"];
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -4876,6 +4894,7 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
+        contextTruncation,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5543,6 +5562,9 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
+            ...(activeModel?.isGguf === true
+              ? { context_overflow: "truncate_oldest" as const }
+              : {}),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -5609,7 +5631,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(codeToolsEnabled
+                      ? ["python", "terminal", "edit_file"]
+                      : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
@@ -5697,6 +5721,41 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.context_truncated) {
+                contextTruncation = mergeContextTruncation(
+                  contextTruncation,
+                  chunk.context_truncated,
+                );
+                const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                // fits:false means the fitter could NOT make the request fit and returned
+                // the original messages. Toasting "older turns were removed" is untrue
+                // there, and burns the once-per-thread flag so a real one is silent.
+                const reallyCompacted =
+                  chunk.context_truncated.fits === true &&
+                  (chunk.context_truncated.dropped_messages ?? 0) > 0;
+                if (
+                  reallyCompacted &&
+                  resolvedThreadId &&
+                  activeThreadId === resolvedThreadId &&
+                  !rollingContextNoticeThreads.has(resolvedThreadId)
+                ) {
+                  rollingContextNoticeThreads.add(resolvedThreadId);
+                  // Once per thread per page load; the persistent record is the notice on
+                  // the assistant turn that compacted.
+                  const archived = contextTruncation?.archived_messages ?? 0;
+                  toast.info("This conversation was compacted", {
+                    description: archived
+                      ? "It got long, so older turns were removed from the model's " +
+                        "context. They are saved and searchable, and relevant parts are " +
+                        "brought back automatically."
+                      : "The full conversation is still visible and saved. " +
+                        "Studio removed complete older turns from this request so the chat can continue.",
+                    duration: 8000,
+                  });
+                }
                 continue;
               }
 
@@ -6741,6 +6800,7 @@ export function createOpenAIStreamAdapter(
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
+              contextTruncation,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
@@ -6784,14 +6844,45 @@ export function createOpenAIStreamAdapter(
               duration: 8000,
             });
           } else if (isContextLimitError(msg)) {
-            // llama-server runs with --no-context-shift, returning a hard
-            // error instead of silently dropping old KV-cache turns. Point
-            // the user at the control that raises the ceiling.
+            // `fits: false` means everything evictable was evicted and the request STILL
+            // does not fit, so the message just sent is the problem and the usual advice
+            // is wrong: the history is already gone. Say which part is too long.
+            const irreducible =
+              contextTruncation?.fits === false ? contextTruncation : null;
+            // Against prompt_target, not context_length: the fit reserves up to a quarter
+            // of the window for the reply, so a 3,500-token message cannot fit a 4,096
+            // context, and comparing with the raw window would blame the conversation and
+            // send the user to a new chat that fails identically.
+            const budget =
+              irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
+            const oneTurnIsTheProblem =
+              irreducible != null && (irreducible.latest_turn_tokens ?? 0) > budget;
+            // Whose turn it is decides the advice: in a tool loop the offending turn is
+            // often output the user never wrote and cannot edit, so "shorten this
+            // message" names the wrong thing and offers no remedy.
+            const userCanShortenIt =
+              (irreducible?.latest_turn_role ?? "user") === "user";
+            const tooLong =
+              `${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
+              `against the ${budget.toLocaleString()} tokens this ` +
+              `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
+              "The earlier turns were already removed and it still does not fit, so " +
+              "shortening the conversation will not help. ";
             toast.error("Context limit reached", {
-              description:
-                "The conversation has filled the model's context window. " +
-                'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
-                "or start a new chat.",
+              description: oneTurnIsTheProblem
+                ? userCanShortenIt
+                  ? `This message is ${tooLong}` +
+                    'Shorten this message, or raise "Context Length" ' +
+                    "in the chat Settings panel (⚙ in the top-right)."
+                  : `The last tool result is ${tooLong}` +
+                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or ask for less output from that tool."
+                : // llama-server runs with --no-context-shift, returning a hard
+                  // error instead of silently dropping old KV-cache turns. Point
+                  // the user at the control that raises the ceiling.
+                  "The conversation has filled the model's context window. " +
+                  'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                  "or start a new chat.",
               duration: 8000,
             });
           } else {
@@ -6819,6 +6910,7 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 custom: {
                   ...reasoningDurationTracker.metadata(),
+                  contextTruncation,
                   // This partial is unfinished too, so it also offers Continue.
                   incomplete: {
                     reason:

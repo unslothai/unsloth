@@ -368,6 +368,38 @@ for _candidate in ("pwsh", "powershell"):
         continue
 
 
+# The banner pwsh prints when the interpreter itself dies rather than the script failing.
+# Seen on a hosted ubuntu runner mid-run, with completely empty stdout: no "RC=" at all,
+# not a wrong one. Read as a normal failure it accuses the pipeline of losing
+# $LASTEXITCODE, which is a claim about install.ps1, so a runner hiccup arrives looking
+# like a product regression. Distinguish the two.
+_PWSH_CRASHED = "The PowerShell process will exit"
+
+
+def _run_pwsh(script: str, attempts: int = 2):
+    """Run `script` under pwsh, retrying only an interpreter crash.
+
+    A crash yields no verdict either way, so retrying it is not papering over a failure:
+    there is nothing to paper over yet. A run that reaches `RC=` is returned as-is on the
+    first attempt, whatever the value, so a real regression is never retried into green.
+    """
+    proc = None
+    for _ in range(attempts):
+        proc = subprocess.run(
+            [PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True
+        )
+        if "RC=" in proc.stdout:
+            return proc
+        if _PWSH_CRASHED not in (proc.stdout + proc.stderr):
+            return proc
+    raise AssertionError(
+        f"pwsh itself terminated abnormally on all {attempts} attempts and never reached "
+        f"the `RC=` line, so this run says nothing about whether $LASTEXITCODE survives "
+        f"the pipeline. That is the interpreter dying, not install.ps1 losing its exit "
+        f"code.\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    )
+
+
 @pytest.mark.skipif(PWSH is None, reason = "no PowerShell on this platform")
 def test_the_pwsh_filter_keeps_the_log_clean_and_the_exit_code_intact(tmp_path):
     """Same two claims for the Windows dialect, which is where the 291s actually is.
@@ -387,7 +419,7 @@ def test_the_pwsh_filter_keeps_the_log_clean_and_the_exit_code_intact(tmp_path):
         Write-Output "RC=$LASTEXITCODE"
         """
     )
-    proc = subprocess.run([PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True)
+    proc = _run_pwsh(script)
     assert "RC=7" in proc.stdout, (
         f"$LASTEXITCODE did not survive the added pipeline stages, so a failing "
         f"install.ps1 would leave its step green:\n{proc.stdout}\n{proc.stderr}"

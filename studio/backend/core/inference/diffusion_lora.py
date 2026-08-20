@@ -27,6 +27,7 @@ from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import studio_root
 
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
+from utils.paths.path_utils import is_appledouble_metadata
 
 # Accepted LoRA formats. safetensors + gguf only (.pt is pickled -> excluded for safety).
 _NATIVE_EXTS = (".safetensors", ".gguf")
@@ -121,7 +122,12 @@ def _scan_local() -> list[LoraCatalogEntry]:
         children = sorted(root.iterdir())
     except OSError:
         return []
-    files = [p for p in children if p.is_file() and p.suffix.lower() in _ALL_EXTS]
+
+    files = [
+        p
+        for p in children
+        if p.is_file() and p.suffix.lower() in _ALL_EXTS and not is_appledouble_metadata(p)
+    ]
     # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full filename.
     stem_counts: dict[str, int] = {}
     for p in files:
@@ -268,7 +274,9 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
     from huggingface_hub import HfApi
 
-    files = HfApi(token = hf_token).list_repo_files(repo_id)
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
+    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
