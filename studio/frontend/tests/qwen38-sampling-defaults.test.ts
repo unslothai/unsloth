@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -49,6 +50,20 @@ test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
 
     assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
   }
+});
+
+test("status adoption is wired to the active Qwen thinking table", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/chat/lib/apply-inference-status-to-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /resolveQwenThinkingParams\(\s*checkpointId,\s*reasoningAlwaysOn \|\| current\.reasoningEnabled,\s*\)/,
+  );
 });
 
 test("Qwen3.8 does not change the generic Qwen3 presence penalty", () => {

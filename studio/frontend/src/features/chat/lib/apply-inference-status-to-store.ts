@@ -28,6 +28,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
@@ -568,6 +569,27 @@ export function applyActiveModelStatusToStore(
       }
     }
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
+  }
+
+  // A resident model can arrive through startup hydration, a CLI load, or an
+  // external switch instead of performLoad. Status carries the base family
+  // recommendation, so layer the active Qwen mode over it just as performLoad
+  // does. Model memory still wins because this remains a defaults update.
+  if (status.inference && supportsReasoning && hydratingExistingModel) {
+    const current = useChatRuntimeStore.getState();
+    const qwenParams = resolveQwenThinkingParams(
+      checkpointId,
+      reasoningAlwaysOn || current.reasoningEnabled,
+    );
+    if (qwenParams !== null && current.activePresetSource === "builtin-default") {
+      current.setParams(
+        { ...current.params, ...qwenParams },
+        {
+          fromModelDefaults: true,
+          maxTokensCap: status.context_length ?? undefined,
+        },
+      );
+    }
   }
 }
 
