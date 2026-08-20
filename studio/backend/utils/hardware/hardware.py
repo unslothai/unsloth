@@ -867,6 +867,9 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
     """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
     if hip_ids is None or not hip_ids:
         return hip_ids
+    if os.environ.get("GPU_DEVICE_ORDINAL", "").strip():
+        logger.debug("Skipping amd-smi VRAM query: GPU_DEVICE_ORDINAL filters HIP devices")
+        return None
     if _rocm_visibility_masks_are_stacked():
         logger.debug("Skipping amd-smi VRAM query: ROCr and HIP visibility masks are stacked")
         return None
@@ -879,6 +882,18 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
         if hip_ids == [0] and amd.get_physical_gpu_count() == 1:
             return [0]
         logger.debug("Skipping amd-smi VRAM query: HIP GPU mapping is unavailable")
+        return None
+
+    torch_visible_count = _torch_get_physical_gpu_count()
+    if torch_visible_count is None or torch_visible_count != len(hip_ids):
+        logger.debug("Skipping amd-smi VRAM query: amd-smi and HIP visible counts differ")
+        return None
+    has_standard_mask = any(
+        os.environ.get(name) is not None
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    )
+    if not has_standard_mask and len(smi_to_hip) != torch_visible_count:
+        logger.debug("Skipping amd-smi VRAM query: amd-smi and HIP inventories differ")
         return None
 
     hip_to_smi = {hip_id: smi_id for smi_id, hip_id in smi_to_hip.items()}

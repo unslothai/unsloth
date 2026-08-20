@@ -246,6 +246,7 @@ def test_context_free_rocm_smi_translates_hip_ordinals(monkeypatch):
         lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
     )
     monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 1, 1: 0})
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 2)
 
     # amd-smi GPU 1 is HIP 0 and owns the 96 GiB pool. Passing HIP ids through
     # unchanged would instead publish GPU 0's 1 GiB free for torch device 0.
@@ -314,6 +315,62 @@ def test_context_free_rocm_smi_declines_stacked_visibility_masks(monkeypatch):
         hw,
         "_smi_query",
         lambda *a, **k: pytest.fail("stacked masks must decline amd-smi telemetry"),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
+
+
+def test_context_free_rocm_smi_declines_gpu_device_ordinal(monkeypatch):
+    from utils.hardware import amd
+
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        amd,
+        "get_hip_id_by_gpu_index",
+        lambda: pytest.fail("GPU_DEVICE_ORDINAL makes the global mapping unusable"),
+    )
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("an external GPU ordinal filter must decline amd-smi"),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
+
+
+def test_context_free_rocm_smi_declines_inventory_count_mismatch(monkeypatch):
+    from utils.hardware import amd
+
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    for name in (
+        "GPU_DEVICE_ORDINAL",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 0, 1: 1})
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("amd-smi and HIP inventory counts must agree"),
     )
 
     assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
