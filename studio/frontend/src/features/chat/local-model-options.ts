@@ -58,6 +58,8 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
+      isGguf: model.source === "ollama" || model.model_format === "gguf",
+      isDirectGguf: model.source === "ollama" ? true : undefined,
     });
   }
   return options;
