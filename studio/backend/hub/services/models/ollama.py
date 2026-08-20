@@ -245,14 +245,24 @@ def _ollama_model_info_from_manifest(
     if not repo_name:
         return None
 
+    def invalid_manifest(reason: str) -> Optional[LocalModelInfo]:
+        message = f"Invalid Ollama manifest: {reason}"
+        if reject_unsupported_layers:
+            raise ValueError(message)
+        logger.debug("Skipping %s (%s)", tag_file, message)
+        return None
+
     try:
         manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-        logger.debug("Skipping unreadable/invalid Ollama manifest %s: %s", tag_file, e)
-        return None
+        return invalid_manifest(str(e))
+    if not isinstance(manifest, dict):
+        return invalid_manifest("top level must be a JSON object")
 
     config = manifest.get("config", {})
-    config_digest = config.get("digest", "") if isinstance(config, dict) else ""
+    if not isinstance(config, dict):
+        return invalid_manifest("config must be a JSON object")
+    config_digest = config.get("digest", "")
     model_type = ""
     file_type = ""
     if config_digest and blobs_dir.is_dir():
@@ -260,10 +270,12 @@ def _ollama_model_info_from_manifest(
         if config_blob is not None and _safe_is_file(config_blob):
             try:
                 cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
-                model_type = cfg.get("model_type", "")
-                file_type = cfg.get("file_type", "")
             except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-                logger.debug("Could not parse Ollama config blob %s: %s", config_blob, e)
+                return invalid_manifest(f"config blob could not be parsed: {e}")
+            if not isinstance(cfg, dict):
+                return invalid_manifest("config blob must be a JSON object")
+            model_type = cfg.get("model_type", "")
+            file_type = cfg.get("file_type", "")
 
     layers = manifest.get("layers") or []
     if not isinstance(layers, list):

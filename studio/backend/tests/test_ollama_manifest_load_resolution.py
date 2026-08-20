@@ -86,6 +86,57 @@ def test_load_resolves_a_manifest_ref_to_a_gguf_link(tmp_path, monkeypatch):
     assert native_grant_backed is False
 
 
+def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from models.inference import LoadRequest
+    from routes.inference import (
+        _LoadPlacement,
+        _llama_status_model_ids,
+        _resolve_gguf_load_intent,
+        _resolve_model_identifier_for_request,
+    )
+
+    ref = _manifest_ref(tmp_path, monkeypatch)
+    resolved, _, _ = _resolve_model_identifier_for_request(
+        LoadRequest(model_path = ref), operation = "load-model"
+    )
+    config = SimpleNamespace(
+        identifier = resolved,
+        gguf_hf_repo = None,
+        gguf_file = resolved,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_variant = None,
+        is_vision = False,
+    )
+
+    intent = _resolve_gguf_load_intent(
+        config,
+        LoadRequest(model_path = ref),
+        native_grant_backed = False,
+        chat_template_override = None,
+        extra_args = None,
+        placement = _LoadPlacement(None, None, False, None),
+        n_parallel = 1,
+    )
+
+    assert intent.gguf_path == resolved
+    assert intent.model_identifier == ref
+
+    backend = SimpleNamespace(
+        model_identifier = intent.model_identifier,
+        _native_grant_backed = False,
+        _native_display_label = None,
+        _openai_advertised_id = None,
+    )
+    assert _llama_status_model_ids(backend) == (ref, ref)
+
+
 _UNSUPPORTED_RUNTIME_LAYERS = (
     "application/vnd.ollama.image.params",
     "application/vnd.ollama.image.template",
@@ -144,6 +195,46 @@ def test_license_metadata_does_not_hide_a_plain_manifest(tmp_path, monkeypatch):
     rows = ollama.scan_ollama_dir(root)
     assert len(rows) == 1
     assert ollama.is_ollama_manifest_ref(rows[0].load_id)
+
+
+def test_non_object_manifest_ref_is_a_400(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+    from models.inference import LoadRequest
+    from routes.inference import _resolve_model_identifier_for_request
+
+    root = tmp_path / "ollama-non-object-manifest"
+    tag_file = _write_ollama_store(root)
+    tag_file.write_text("[]", encoding = "utf-8")
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    assert ollama.scan_ollama_dir(root) == []
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_model_identifier_for_request(LoadRequest(model_path = ref), operation = "load-model")
+    assert excinfo.value.status_code == 400
+    assert "manifest" in str(excinfo.value.detail).lower()
+
+
+def test_non_object_config_blob_ref_is_a_400(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+    from models.inference import LoadRequest
+    from routes.inference import _resolve_model_identifier_for_request
+
+    root = tmp_path / "ollama-non-object-config"
+    tag_file = _write_ollama_store(root)
+    config_digest = "b" * 64
+    (root / "blobs" / f"sha256-{config_digest}").write_text("[]", encoding = "utf-8")
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["config"] = {"digest": f"sha256:{config_digest}"}
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    assert ollama.scan_ollama_dir(root) == []
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_model_identifier_for_request(LoadRequest(model_path = ref), operation = "load-model")
+    assert excinfo.value.status_code == 400
+    assert "config blob" in str(excinfo.value.detail).lower()
 
 
 def test_a_ref_outside_known_ollama_dirs_is_a_400(tmp_path, monkeypatch):

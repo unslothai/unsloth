@@ -7250,9 +7250,13 @@ def _resolve_gguf_load_intent(
     n_parallel: int,
 ) -> GgufLoadIntent:
     """Resolve source, companions, settings, and placement into one load value."""
+
+    public_model_identifier = (
+        request.model_path if is_ollama_manifest_ref(request.model_path) else config.identifier
+    )
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
-            model_identifier = config.identifier,
+            model_identifier = public_model_identifier,
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
@@ -7283,7 +7287,7 @@ def _resolve_gguf_load_intent(
                     log_native_fallback = True,
                 )
         source = GgufLoadIntent(
-            model_identifier = config.identifier,
+            model_identifier = public_model_identifier,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
@@ -8305,6 +8309,14 @@ async def _load_model_impl(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
+
+        # Materialization is only the load artifact. Keep the inventory ref as
+        # the backend/client identity so status, dedupe, and unload round-trip it.
+        public_model_identifier = (
+            request.model_path
+            if is_ollama_manifest_ref(request.model_path)
+            else model_identifier
+        )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -8348,6 +8360,7 @@ async def _load_model_impl(
                 is_local_model = _loaded_is_local_model(
                     llama_backend, native_grant_backed, llama_backend.model_identifier
                 ),
+                inference_identifier = model_identifier,
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
@@ -8356,7 +8369,7 @@ async def _load_model_impl(
                 _active_gguf_intent(
                     request,
                     llama_backend,
-                    model_identifier = model_identifier,
+                    model_identifier = public_model_identifier,
                     chat_template_override = effective_chat_template_override,
                     n_parallel = _n_parallel,
                     native_grant_backed = native_grant_backed,
@@ -8461,7 +8474,7 @@ async def _load_model_impl(
         extra_llama_args = _resolve_inherited_extra_args(
             request,
             config,
-            model_identifier,
+            public_model_identifier,
             extra_llama_args,
             effective_chat_template_override,
         )
@@ -8790,7 +8803,7 @@ async def _load_model_impl(
             )
             _close_load_event(
                 _load_event,
-                model_log_label if native_grant_backed else config.identifier,
+                model_log_label if native_grant_backed else public_model_identifier,
                 request.gguf_variant or getattr(llama_backend, "hf_variant", None),
             )
             # Clear any idle-unload reload stash now, not only on the next poll.
@@ -8816,7 +8829,7 @@ async def _load_model_impl(
             return _gguf_load_response(
                 llama_backend,
                 "loaded",
-                model_log_label if native_grant_backed else config.identifier,
+                model_log_label if native_grant_backed else public_model_identifier,
                 display_name = model_log_label if native_grant_backed else config.display_name,
                 is_local_model = config.is_local,
                 inference_identifier = config.identifier,
