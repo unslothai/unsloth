@@ -7562,9 +7562,7 @@ def test_cancel_spares_a_request_only_serialized_behind_the_active_one(
     active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
     active.start()
     assert denoising.wait(5), "the first generation never started denoising"
-    serialized = threading.Thread(
-        target = generate, args = ("serialized", "serialized"), daemon = True
-    )
+    serialized = threading.Thread(target = generate, args = ("serialized", "serialized"), daemon = True)
     serialized.start()
     assert contended.wait(5), "the second request never queued on the generation lock"
 
