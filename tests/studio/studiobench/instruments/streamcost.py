@@ -83,7 +83,13 @@ class StreamCostInstrument(_PageInstrument):
                 "unavailable": self.unavailable or "the page did not answer",
                 "stream_cost_attempted": False,
             }
-        chars_close = self._eval("() => window.__sb.streamcost.replyChars()")
+        # Forced when the window carried SSE traffic: the open-read is skipped on windows long
+        # past the stream, and a window that unexpectedly streamed must not be scored from a
+        # half-taken pair.
+        saw_traffic = bool(out.get("streaming_observed"))
+        chars_close = self._eval(
+            "(f) => window.__sb.streamcost.replyChars(f)", saw_traffic
+        )
         out["stream_cost_attempted"] = True
         out["reply_chars_open"] = self._chars_open
         out["reply_chars_close"] = chars_close
@@ -91,8 +97,9 @@ class StreamCostInstrument(_PageInstrument):
         if self._chars_open is None or chars_close is None:
             out["reply_chars_delta"] = None
             out["reply_chars_delta_reason"] = (
-                "no assistant message was on screen at one end of this window, so there is no "
-                "reply whose growth could be measured"
+                "the reply's length was not read at one end of this window, either because no "
+                "assistant message was on screen or because the stream had been finished longer "
+                "than the idle gap when the window opened"
             )
         elif chars_close < self._chars_open:
             # THE REPLY WAS REPLACED, NOT EXTENDED. `send_turn` starts a new assistant message and
@@ -121,8 +128,10 @@ class StreamCostInstrument(_PageInstrument):
             "overhead_ms": round(self._overhead_ms, 2),
             "overhead_attempted": True,
             "overhead_note": (
-                "measured inside the decode hook and the window drain, not estimated. It is "
-                "O(1) per SSE chunk and O(the streamed reply) per window boundary, never "
-                "O(the thread)"
+                "measured inside the decode hook and at the window boundaries, not estimated. "
+                "O(1) per SSE chunk, but the reply-length read is a querySelectorAll and so is "
+                "O(the whole DOM): 38.8 ms per cell at 10K and 289.6 ms at 100K before the "
+                "post-stream windows were skipped. It is identical on both arms of an A/B and "
+                "cancels in a paired ratio; it does NOT cancel across rungs"
             ),
         }

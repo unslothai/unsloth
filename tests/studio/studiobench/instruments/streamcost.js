@@ -116,7 +116,8 @@
   //
   // The app reads the relay's response through its own TextDecoder, so decode() is the first
   // main-thread code that sees a chunk. Wrapping it costs one call per chunk and is O(1) in the
-  // thread's size, which is what keeps this instrument's overhead flat as the rung climbs.
+  // thread's size. This hook is the flat part of the instrument; the reply-length read below is
+  // the part that is not, and its measured cost is recorded there rather than claimed away here.
   const nativeDecode = TextDecoder.prototype.decode;
   TextDecoder.prototype.decode = function (input, options) {
     const out = nativeDecode.call(this, input, options);
@@ -160,7 +161,18 @@
   // It is also the only reading that survives the end of the film. `thread_reopen` and
   // `delete_message` rebuild and then cut the thread, so a whole-thread character count jumps and
   // then falls for reasons that have nothing to do with streaming.
-  const replyChars = () => {
+  // MEASURED, and it is not free. `querySelectorAll` is O(the whole DOM), not O(the reply), so
+  // this is the one part of the instrument whose cost grows with the rung. Called at both ends of
+  // every window it totalled 38.8 ms per cell at 10K and 289.6 ms at 100K -- about 3.9 ms per
+  // call against 42,000 elements.
+  //
+  // Most of that was spent on windows with no stream in them. The standard film opens about
+  // thirty-seven windows and only eight carry streaming, so the read is skipped once the stream
+  // has been finished for longer than the idle gap. `null` is returned rather than a stale count,
+  // and a window that then turns out to have carried traffic reports its growth as unmeasurable
+  // with a reason instead of inventing a delta from a reading that was never taken.
+  const replyChars = (force) => {
+    if (!force && S.lastSseAt > 0 && now() - S.lastSseAt >= IDLE_GAP_MS) return null;
     const all = document.querySelectorAll('[data-role="assistant"]');
     if (all.length === 0) return null;
     const el = all[all.length - 1];
@@ -211,9 +223,11 @@
 
     // Read the streamed reply's length WITHOUT draining anything. Called at window open and
     // window close, so the denominator is the growth across the window.
-    replyChars() {
+    // `force` is passed at window CLOSE when the window turned out to carry traffic, so a
+    // window whose open-read was skipped is not silently given a null close-read as well.
+    replyChars(force) {
       const t = now();
-      const n = replyChars();
+      const n = replyChars(Boolean(force));
       S.overheadMs += now() - t;
       return n;
     },
