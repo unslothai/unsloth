@@ -16393,9 +16393,8 @@ class LlamaCppBackend:
                     # discrete card with an APU enumerates both, and demanding every one
                     # be discrete refused the pin there, keeping a projector the discrete
                     # card could have been rid of.
-                    # Applied here or, when tensor parallelism is still requested,
-                    # after the pooled weight-budget check gives it up. One body either
-                    # way, so the two application points cannot drift.
+                    # Applied here, or after the pooled weight-budget check gives
+                    # tensor mode up. One body, so the two sites cannot drift.
                     _mm_pin_deferred = False
 
                     def _apply_mmproj_cpu_pin(floor_ctx: int) -> None:
@@ -16434,15 +16433,13 @@ class LlamaCppBackend:
                         and _discrete_vram
                         and not _mmproj_cpu_pinned
                         and gpu_memory_mode != "manual"
-                        # NOT gated on tensor_parallel any more. The numbers below are
-                        # layer-split numbers and cannot answer for a per-device tensor
-                        # buffer, so the ANSWER is still never applied to a tensor load
-                        # -- but the pooled weight-budget check further down can end one,
-                        # and it prices weights + projector, so it downgrades exactly the
-                        # loads this probe would have rescued by moving the encoder.
-                        # Asking here and applying after that downgrade is the
-                        # non-circular order; making the check itself pin-aware would
-                        # decide TP from a pin decided from TP.
+                        # Not gated on tensor_parallel: these are layer-split numbers,
+                        # so the ANSWER is still never applied to a tensor load, but the
+                        # pooled weight-budget check below can end one, and it prices
+                        # weights + projector -- it downgrades exactly the loads moving
+                        # the encoder would have rescued. Asking here and applying after
+                        # that downgrade is the non-circular order; making the check
+                        # pin-aware would decide TP from a pin decided from TP.
                         and _paravirtual_mmproj_pinnable(server_caps)
                         # Last-wins on the placement pair, so whoever named either
                         # spelling owns it. The environment counts: arg.cpp applies
@@ -16909,19 +16906,14 @@ class LlamaCppBackend:
                             # Restore the dropped quantized KV + cache extras (minus
                             # --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
-                            # This load is layer split now, so the projector probe's
-                            # verdict finally applies: it was withheld only because
-                            # layer-split numbers cannot answer for a tensor load. The
-                            # check just above is what makes this reachable, and it
-                            # priced weights + projector, so the encoder moving is very
-                            # often the difference between a resident model and a
-                            # --fit on that spills layers around a projector.
+                            # Layer split now, so the withheld verdict applies. The
+                            # check just above is what makes this reachable at all.
                             if _mm_pin_deferred:
                                 _apply_mmproj_cpu_pin(_mm_floor_ctx)
                                 _mm_pin_deferred = False
-                                # The three values built from model_size before the pin.
-                                # _subset_model_size closes over model_size_fit by name,
-                                # so rebinding it here is enough for the fit below.
+                                # Rebuild what was derived from model_size before the
+                                # pin. _subset_model_size closes over model_size_fit by
+                                # name, so rebinding it carries to the fit below.
                                 _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
                                 if _mtp_reserves_gpu:
                                     _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
