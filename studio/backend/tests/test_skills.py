@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import stat
 import zipfile
 from pathlib import Path
@@ -174,6 +175,52 @@ def test_rejects_resource_paths_over_filesystem_component_limit(tmp_path: Path):
     )
 
     with pytest.raises(skills.SkillError, match = "255 UTF-8 bytes"):
+        skills.import_skill_archive(archive)
+
+
+def test_rejects_archive_paths_over_filesystem_path_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(skills.os, "pathconf", lambda *_args: 256)
+    nested_resource = "/".join(["segment"] * 40)
+    archive = _bundle(
+        tmp_path / "long-path.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            f"unsloth/references/{nested_resource}/resource.txt": "resource",
+        },
+    )
+
+    with pytest.raises(skills.SkillError, match = "filesystem path limit"):
+        skills.import_skill_archive(archive)
+
+
+def test_translates_filesystem_path_length_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    archive_path = _bundle(
+        tmp_path / "filesystem-limit.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "unsloth/references/resource.txt": "resource",
+        },
+    )
+    original_open = zipfile.ZipFile.open
+
+    def open_member(archive, name, *args, **kwargs):
+        filename = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if filename.endswith("resource.txt"):
+            raise OSError(errno.ENAMETOOLONG, "path too long")
+        return original_open(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", open_member)
+    with pytest.raises(skills.SkillError, match = "filesystem path limit"):
+        skills.import_skill_archive(archive_path)
+
+
+def test_rejects_windows_reserved_frontmatter_only_skill_names(tmp_path: Path):
+    manifest = SKILL_MD.replace("name: unsloth", "name: con")
+    archive = _bundle(tmp_path / "reserved.zip", {"SKILL.md": manifest})
+
+    with pytest.raises(skills.SkillError, match = "Windows reserved"):
         skills.import_skill_archive(archive)
 
 

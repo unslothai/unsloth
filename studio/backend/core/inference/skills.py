@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -61,6 +62,8 @@ def _normalize_skill_name(name: str) -> str:
         raise SkillError("Skill name must be 1-64 lowercase letters, numbers, or single hyphens.")
     if len(normalized.encode("utf-8")) > 255:
         raise SkillError("Skill name must fit in 255 UTF-8 bytes.")
+    if normalized.casefold() in _WINDOWS_RESERVED_STEMS:
+        raise SkillError("Skill name cannot use a Windows reserved device name.")
     return normalized
 
 
@@ -267,6 +270,17 @@ def _portable_archive_key(path: PurePosixPath) -> str:
     )
 
 
+def _validate_extraction_paths(root: Path, destinations: list[Path]) -> None:
+    try:
+        path_limit = os.pathconf(root, "PC_PATH_MAX")
+    except (AttributeError, OSError, ValueError):
+        return
+    if path_limit > 0 and any(
+        len(os.fsencode(destination)) >= path_limit for destination in destinations
+    ):
+        raise SkillError("Archive paths exceed the filesystem path limit.")
+
+
 def _archive_source(
     archive: zipfile.ZipFile,
 ) -> tuple[dict, list[tuple[zipfile.ZipInfo, PurePosixPath]]]:
@@ -357,9 +371,13 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                 with zipfile.ZipFile(archive_path) as archive:
                     metadata, selected_files = _archive_source(archive)
                     skill_dir = temporary / metadata["name"]
+                    destinations = [
+                        skill_dir.joinpath(*relative_path.parts)
+                        for _, relative_path in selected_files
+                    ]
+                    _validate_extraction_paths(temporary, destinations)
                     skill_dir.mkdir()
-                    for entry, relative_path in selected_files:
-                        destination = skill_dir.joinpath(*relative_path.parts)
+                    for (entry, _), destination in zip(selected_files, destinations):
                         destination.parent.mkdir(parents = True, exist_ok = True)
                         with archive.open(entry) as source, destination.open("wb") as output:
                             shutil.copyfileobj(source, output)
@@ -369,6 +387,10 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                 raise SkillError("Skill bundle must be a valid ZIP archive.") from exc
             except NotImplementedError as exc:
                 raise SkillError("Skill archive uses unsupported compression.") from exc
+            except OSError as exc:
+                if exc.errno == errno.ENAMETOOLONG or getattr(exc, "winerror", None) == 206:
+                    raise SkillError("Archive paths exceed the filesystem path limit.") from exc
+                raise
 
             metadata = _validate_installed_skill(skill_dir)
             target = root / metadata["name"]
