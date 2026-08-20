@@ -63,6 +63,7 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -1396,6 +1397,30 @@ export async function awaitThreadScopedSettingsWrite(
   return landed !== false;
 }
 
+/**
+ * Every row write that has already been started, landed.
+ *
+ * Not a flush: a debounce that has not fired yet is left where it is, so a caller cannot
+ * use this to make a write happen earlier than the store would have. It is for a caller
+ * that has just let the debounce fire and now needs the rows before it reads them back,
+ * and does not know which chats the store decided to write.
+ *
+ * The chain a write runs on ends in `await import("../utils/chat-history-storage")`. How
+ * many event-loop turns that costs is a property of the machine -- the specifier has no
+ * extension, so it resolves through a hook, which means filesystem work under a test
+ * runner and a chunk fetch in a browser. A caller that instead spins a fixed number of
+ * turns, or races the loader with an import of its own, is asserting something about the
+ * machine rather than about the store. Awaiting the chains asserts the thing itself.
+ */
+export async function awaitStartedThreadScopedSettingsWrites(): Promise<void> {
+  // A chain that settles can leave a newer one behind it for the same chat, so this
+  // repeats until the map is empty rather than awaiting one snapshot of it. Bounded, so a
+  // write that keeps rescheduling itself surfaces as a failed assertion, not as a hang.
+  for (let pass = 0; pass < 20 && threadSettingsWriteChains.size > 0; pass += 1) {
+    await Promise.allSettled([...threadSettingsWriteChains.values()]);
+  }
+}
+
 function flushThreadScopedSettingsWrite(keepalive = false): void {
   if (threadSettingsWriteTimer !== null) {
     clearTimeout(threadSettingsWriteTimer);
@@ -1883,6 +1908,32 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 
 function saveBool(key: string, value: boolean): void {
   persistSetting(key, value ? "true" : "false");
+}
+
+// The installation's own answer to the preserve-thinking switch, or null while it has
+// never given one. Hydration records the stored preference and the composer toggle
+// records the click; nothing else writes it.
+let storedPreserveThinking: boolean | null = null;
+
+/** Record the preference a stored value or a toggle just expressed. */
+function notePreserveThinkingPreference(value: boolean): void {
+  storedPreserveThinking = value;
+}
+
+/**
+ * The preserve-thinking value a model load or a status adoption should publish. The
+ * family default the backend resolves (on for Qwen3.8, off everywhere else) is a
+ * DEFAULT: it seeds the switch where the installation has never answered, and never
+ * replaces an answer it gave, the same rule resolveToolsEnabledOnLoad applies to the
+ * tool pills. That is also what makes a cold boot deterministic -- the settings GET and
+ * the inference status race each other, and a load write that cannot overwrite a stored
+ * preference leaves the same result whichever lands first.
+ */
+export function resolvePreserveThinkingOnLoad(resp: {
+  supports_preserve_thinking?: boolean | null;
+  preserve_thinking_default?: boolean | null;
+}): boolean {
+  return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
 }
 
 // The visibility flag shipped after the menu pins, so when it is absent,
@@ -3417,6 +3468,17 @@ function getHydratedSettingsState(
       nextState.paramsByModel = { ...byModel, [left]: inherited };
     }
   }
+  // Under the same fence as the scalar loop below, and for the same reason: a click
+  // made while this response was out is the newer answer. Recording the stored value
+  // over it would leave the switch visibly on -- the fence keeps the store field --
+  // while the next model load quietly resolved to the value the user just replaced.
+  if (
+    settings.preserveThinking !== undefined &&
+    scalarSettingMutationVersions.preserveThinking ===
+      versions.scalarSettings.preserveThinking
+  ) {
+    notePreserveThinkingPreference(settings.preserveThinking);
+  }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
     // Full access is session-only, so a stored level must not silently drop the
@@ -4480,6 +4542,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
+      notePreserveThinkingPreference(preserveThinking);
       return {
         preserveThinking,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,

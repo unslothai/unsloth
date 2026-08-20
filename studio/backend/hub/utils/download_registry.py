@@ -80,6 +80,7 @@ from hub.utils.hf_cache_state import (
     target_dir_name,
     hf_cache_root,
     ABANDONED_PARTIAL_SECONDS,
+    blob_bytes_present,
     blob_download_lock_held,
     hf_cache_roots,
     incomplete_blob_hash,
@@ -1162,19 +1163,31 @@ def completed_blob_bytes(
     return total
 
 
-def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
-    """Bytes a download will NOT have to fetch again for *blob_hashes*, in the active HF cache
-    root: finalized blobs, plus partials something can still resume from. A blob is in exactly
-    one state, so summing both candidate names never double-counts. Used to size what a
-    (possibly resumed) download still needs to write before the run starts."""
+def existing_blob_bytes(
+    repo_type: str,
+    repo_id: str,
+    blob_hashes: frozenset[str],
+    *,
+    root: Optional[Path] = None,
+) -> int:
+    """Bytes a download will NOT have to fetch again for *blob_hashes*, in *root* or, when it is
+    None, the active HF cache root: finalized blobs, plus partials something can still resume
+    from. A row pinned to another root must pass it, since a resume writes into the root the row
+    names and blobs in the active one are not bytes it can reuse. A blob is in exactly one state,
+    so summing both candidate names never double-counts. Used to size what a (possibly resumed)
+    download still needs to write before the run starts."""
     if not blob_hashes:
         return 0
-    total = 0
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+    # One tally for ALL the repo dirs the root holds, not one per dir. The Hub resolves repo ids
+    # case-insensitively while huggingface_hub keeps the caller's casing in the folder name, so
+    # a case-sensitive filesystem really does end up with models--Org--Model beside
+    # models--org--model, each holding its own copy of the same blob. Summing the dirs counted
+    # that shard twice, and the caller's max(0, total - have) then clamped to zero.
+    present = {blob_hash: 0 for blob_hash in blob_hashes}
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
-        present = {blob_hash: 0 for blob_hash in blob_hashes}
         try:
             entries = list(blobs_dir.iterdir())
         except OSError:
@@ -1200,13 +1213,24 @@ def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str
                     # on that lock and reuse the result, so those bytes are not ours to find
                     # room for. Two GGUF variants sharing an mmproj hit this every time.
                     continue
+                # A partial is measured by the bytes actually ON DISK, not by its logical
+                # length: hf_transfer's parallel Range writer leaves a sparse file whose
+                # st_size runs ahead of what has been written -- observed at 1.2 GB reported
+                # against 112 MB present, and once st_size reached the declared size the
+                # remainder read as zero for a file barely started. A finalized blob is whole
+                # by construction, so it keeps st_size: st_blocks is smaller than the file on
+                # a compressing filesystem.
+                bytes_here = (
+                    blob_bytes_present(blob)
+                    if partial_hash is not None
+                    else max(0, int(blob.stat().st_size))
+                )
                 # Broken advisory locks can leave several process-unique writers for one etag.
                 # They are duplicate attempts, not additive completion, so keep the largest.
-                present[blob_hash] = max(present[blob_hash], max(0, int(blob.stat().st_size)))
+                present[blob_hash] = max(present[blob_hash], max(0, int(bytes_here)))
             except OSError:
                 continue
-        total += sum(present.values())
-    return total
+    return sum(present.values())
 
 
 JobState = Literal["idle", "running", "cancelling", "cancelled", "complete", "error"]

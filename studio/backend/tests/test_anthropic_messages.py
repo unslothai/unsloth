@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import threading
+import time
 
 import httpx
 import pytest
@@ -41,6 +42,7 @@ from routes.inference import (
     _select_anthropic_server_tools,
     _anthropic_requested_studio_tools,
     _anthropic_passthrough_stream,
+    _anthropic_plain_non_streaming,
     _anthropic_tool_non_streaming,
     _monitor_anthropic_sse_line,
     anthropic_messages,
@@ -936,6 +938,108 @@ class TestAnthropicStreamEmitter:
 
 
 class TestAnthropicToolNonStreaming:
+    @pytest.mark.parametrize(
+        ("helper", "event"),
+        [
+            pytest.param(
+                _anthropic_tool_non_streaming,
+                {"type": "content", "text": "ok"},
+                id = "tools",
+            ),
+            pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
+        ],
+    )
+    def test_complete_response_build_keeps_event_loop_responsive(self, helper, event):
+        loop_thread = threading.current_thread()
+        generator_threads = []
+
+        def _run_gen():
+            generator_threads.append(threading.current_thread())
+            time.sleep(0.08)
+            yield event
+
+        async def _run():
+            task = asyncio.create_task(helper(_run_gen, "msg_1", "m"))
+            await asyncio.sleep(0)
+            heartbeat_ticks = 0
+            while not task.done():
+                heartbeat_ticks += 1
+                await asyncio.sleep(0.005)
+            return await task, heartbeat_ticks
+
+        response, heartbeat_ticks = asyncio.run(_run())
+
+        assert response.status_code == 200
+        assert heartbeat_ticks > 0
+        assert len(generator_threads) == 1
+        assert generator_threads[0] is not loop_thread
+
+    def test_tool_event_reduction_keeps_event_loop_responsive(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reduction_threads = []
+        real_strip = inf_mod._strip_tool_xml_for_display
+
+        def _slow_strip(*args, **kwargs):
+            reduction_threads.append(threading.current_thread())
+            time.sleep(0.08)
+            return real_strip(*args, **kwargs)
+
+        monkeypatch.setattr(inf_mod, "_strip_tool_xml_for_display", _slow_strip)
+
+        def _run_gen():
+            yield {"type": "content", "text": "ok"}
+
+        async def _run():
+            task = asyncio.create_task(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+            await asyncio.sleep(0)
+            heartbeat_ticks = 0
+            while not task.done():
+                heartbeat_ticks += 1
+                await asyncio.sleep(0.005)
+            return await task, heartbeat_ticks
+
+        response, heartbeat_ticks = asyncio.run(_run())
+
+        assert response.status_code == 200
+        assert heartbeat_ticks > 0
+        assert len(reduction_threads) == 1
+        assert reduction_threads[0] is not threading.current_thread()
+        assert reduction_threads[0].daemon is True
+
+    @pytest.mark.parametrize(
+        ("helper", "event"),
+        [
+            pytest.param(
+                _anthropic_tool_non_streaming,
+                {"type": "content", "text": "ok"},
+                id = "tools",
+            ),
+            pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
+        ],
+    )
+    def test_cancellation_waits_for_generator_worker(self, helper, event):
+        generator_started = threading.Event()
+        generator_stopped = threading.Event()
+        cancel_event = threading.Event()
+
+        def _run_gen():
+            generator_started.set()
+            assert cancel_event.wait(1.0)
+            generator_stopped.set()
+            yield event
+
+        async def _cancel_generation():
+            task = asyncio.create_task(helper(_run_gen, "msg_1", "m", cancel_event = cancel_event))
+            assert await asyncio.to_thread(generator_started.wait, 1.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert cancel_event.is_set()
+            assert generator_stopped.is_set()
+
+        asyncio.run(_cancel_generation())
+
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
             yield {
@@ -2025,6 +2129,19 @@ class TestAnthropicMessagesToolRouting:
         for extra in ({"permission_mode": "auto"}, {}):
             backend = _mock_backend(monkeypatch)
             payload = _basic_payload(tools = safe_tools, **extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+        # Reading this conversation's own archive is as read-only as the other two, and
+        # is_potentially_unsafe_tool_call says so, so selecting it must not trip the gate.
+        # Adding the schema to ALL_TOOLS without adding the name here made the Anthropic
+        # selector pick it and the pre-switch guard reject the whole request with the
+        # terminal/python message, on auto and on the omitted default alike.
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(
+                enable_tools = True, enabled_tools = ["search_conversation"], **extra
+            )
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
