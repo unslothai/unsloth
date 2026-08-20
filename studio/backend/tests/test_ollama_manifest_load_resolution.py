@@ -141,11 +141,54 @@ def test_retagged_manifest_replaces_one_hardlink_and_invalidates_loaded_identity
     assert not LlamaCppBackend.matches_load_source(resident, replacement_intent)
 
 
+def test_projector_only_retag_invalidates_loaded_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-projector-retagged"
+    tag_file = _write_ollama_store(
+        root,
+        extra_layers = ("application/vnd.ollama.image.projector",),
+    )
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
+
+    model_path = ollama.materialize_ollama_model_ref(ref)
+    projector_path = next(Path(model_path).parent.glob("*-mmproj.gguf"))
+    first_identity = LlamaCppBackend._gguf_load_source_identity(model_path, str(projector_path))
+
+    replacement_digest = "c" * 64
+    replacement_blob = root / "blobs" / f"sha256-{replacement_digest}"
+    replacement_blob.write_bytes(b"GGUF-projector-replacement")
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+    manifest["layers"][1]["digest"] = f"sha256:{replacement_digest}"
+    tag_file.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    assert ollama.materialize_ollama_model_ref(ref) == model_path
+    assert Path(projector_path).read_bytes() == b"GGUF-projector-replacement"
+
+    resident = SimpleNamespace(
+        is_loaded = True,
+        _model_identifier = ref,
+        _gguf_path = model_path,
+        _gguf_load_identity = first_identity,
+    )
+    replacement_intent = GgufLoadIntent(
+        model_identifier = ref,
+        gguf_path = model_path,
+        mmproj_path = str(projector_path),
+    )
+    assert not LlamaCppBackend.matches_load_source(resident, replacement_intent)
+
+
 def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from models.inference import LoadRequest
     from routes.inference import (
+        _active_gguf_intent,
         _LoadPlacement,
         _llama_status_model_ids,
         _resolve_gguf_load_intent,
@@ -188,6 +231,25 @@ def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, 
         _openai_advertised_id = None,
     )
     assert _llama_status_model_ids(backend) == (ref, ref)
+
+    active_backend = SimpleNamespace(
+        extra_args = None,
+        last_load_intent = intent,
+        hf_repo = None,
+        gguf_path = resolved,
+        hf_variant = None,
+        layer_preserves_tensor_intent = False,
+    )
+    active_intent = _active_gguf_intent(
+        LoadRequest(model_path = ref),
+        active_backend,
+        model_identifier = ref,
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    assert active_intent.model_identifier == ref
+    assert active_intent.gguf_path == resolved
 
 
 _UNSUPPORTED_RUNTIME_LAYERS = (

@@ -18636,7 +18636,7 @@ class LlamaCppBackend:
                 # set BEFORE the spawn: load_progress() reads _gguf_path for
                 # the mmap progress total while the health wait runs.
                 self._gguf_path = model_path
-                self._gguf_load_identity = self._gguf_load_source_identity(model_path)
+                self._gguf_load_identity = self._gguf_load_source_identity(model_path, mmproj_path)
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
                 self._mtp_draft_suppressed_path = _pv_suppressed_draft_path
@@ -20139,7 +20139,9 @@ class LlamaCppBackend:
         if intent.gguf_path is not None and self._gguf_path:
             resident_identity = getattr(self, "_gguf_load_identity", None)
             if resident_identity is not None:
-                candidate_identity = LlamaCppBackend._gguf_load_source_identity(intent.gguf_path)
+                candidate_identity = LlamaCppBackend._gguf_load_source_identity(
+                    intent.gguf_path, intent.mmproj_path
+                )
                 return candidate_identity == resident_identity
             try:
                 return Path(self._gguf_path).resolve() == Path(intent.gguf_path).resolve()
@@ -21074,7 +21076,7 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _gguf_load_source_identity(path: str) -> Optional[tuple]:
+    def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
         """Identity of the exact GGUF inode(s) handed to the resident process."""
         p = Path(path)
         paths = [p]
@@ -21092,6 +21094,20 @@ class LlamaCppBackend:
                 stat = shard.stat()
                 identity.append(
                     (
+                        str(resolved),
+                        stat.st_dev,
+                        stat.st_ino,
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                    )
+                )
+            if mmproj_path:
+                projector = Path(mmproj_path)
+                resolved = projector.resolve()
+                stat = projector.stat()
+                identity.append(
+                    (
+                        "mmproj",
                         str(resolved),
                         stat.st_dev,
                         stat.st_ino,

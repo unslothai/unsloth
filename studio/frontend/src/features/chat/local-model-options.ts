@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { LocalModelInfo } from "@/features/hub/inventory/api";
-import type { LoraModelOption } from "@/features/model-picker/components/model-selector/types";
+import type { LocalModelInfo } from "@/features/hub";
+import type { LoraModelOption } from "@/features/model-picker";
 
 /** The device-inventory sources Chat lists as local models.
  *
@@ -58,7 +58,10 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
-      isGguf: model.source === "ollama" || model.model_format === "gguf",
+      isGguf:
+        model.source === "ollama" || model.path.toLowerCase().endsWith(".gguf")
+          ? true
+          : undefined,
       isDirectGguf: model.source === "ollama" ? true : undefined,
     });
   }
