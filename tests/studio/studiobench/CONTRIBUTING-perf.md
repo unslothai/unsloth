@@ -335,7 +335,9 @@ the failure everyone anticipates. It is not the one that happens here.
 A message root is mounted **before its content arrives**, so the remembered size is recorded while
 the root is empty, and it is recorded as zero. The root is then skipped and frozen at zero forever.
 Measured at rest on a freshly loaded 100K thread, 13 of 18 roots reported their **padding alone**
-(18 px and 40 px) rather than the declared 300 px or 60 px fallback, and the thread's scroll height
+(18 px and 40 px), and the raw height list carried no root at 318 px or 100 px, which is where the
+declared 300 px and 60 px fallbacks would have put one: `getBoundingClientRect()` is the border box,
+so a fallback-sized root measures the fallback *plus* the root's padding. The thread's scroll height
 read **58,355 px on the control against 11,949 px armed** (min 5,101). The concurrent null control
 read 58,355 against 58,355, to the pixel.
 

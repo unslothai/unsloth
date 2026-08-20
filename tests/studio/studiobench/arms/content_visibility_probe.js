@@ -68,14 +68,22 @@
 	 *             recorded while the root was mounted and still empty. That is the trap.
 	 *
 	 * They have to be told apart or the probe attributes one to the other, and on this app they
-	 * are close enough to collide: the user root's fallback is 60px and its padding is 40px. So
-	 * the fallback is matched FIRST and to the pixel, the padding second, and a root that is
-	 * neither is counted as neither. A single `height <= 64` bucket put a user root sitting
-	 * exactly on its fallback into both counters at once. */
+	 * are close enough to collide: the user root's fallback is 60px against 40px of padding. So
+	 * each is matched against its OWN target height, the fallback first so that it wins ties, and
+	 * a root that is neither is counted as neither. A single `height <= 64` bucket put a user root
+	 * sitting exactly on its fallback into both counters at once. */
 	var ROLE_PX = {
 		assistant: { fallback: 300, padding: 18 },
 		user: { fallback: 60, padding: 40 }
 	};
+	/* `getBoundingClientRect().height` is the BORDER BOX, so both targets carry the root's own
+	 * padding: an assistant root on its 300px fallback measures 318, and one whose remembered
+	 * size is zero measures 18. Comparing the rect against the bare declared length instead left
+	 * `fallbackBite` structurally pinned at zero, which reads as "the fallback is never used" no
+	 * matter what the browser did. */
+	function targetHeight(px, which) {
+		return (which === "fallback" ? px.fallback : 0) + px.padding;
+	}
 	/* Half the gap between the two smallest interesting heights, so neither test can reach the
 	 * other's target. Sub-pixel layout means an exact equality test would miss. */
 	var PX_EPS = 2;
@@ -275,9 +283,9 @@
 				 * trap. Anything else is counted as neither. */
 				var px = ROLE_PX[roleOf(el)];
 				if (cv === "auto" && px) {
-					if (Math.abs(r.height - px.fallback) <= PX_EPS) {
+					if (Math.abs(r.height - targetHeight(px, "fallback")) <= PX_EPS) {
 						out.fallbackBite += 1;
-					} else if (Math.abs(r.height - px.padding) <= PX_EPS) {
+					} else if (Math.abs(r.height - targetHeight(px, "padding")) <= PX_EPS) {
 						out.paddingOnly += 1;
 					}
 				}
@@ -369,11 +377,17 @@
 	 * void, `ev_skip` stays at zero, and the probe reports precisely the false NOT RUN it was
 	 * written to prevent. A whole thread can mount inside two seconds; a seeded one does.
 	 *
-	 * So roots are adopted at INSERTION, from a MutationObserver installed before the app boots
-	 * (this file is an init script, so `document.documentElement` is the only thing that exists
-	 * yet). The observer callback runs in a microtask after the mutation and before the next
-	 * lifecycle update, which is early enough. The interval is kept, because a root can also
-	 * acquire the property later without being re-inserted, and `adoptAll` is idempotent. */
+	 * So roots are adopted at INSERTION, from a MutationObserver installed before the app boots.
+	 * The observer callback runs in a microtask after the mutation and before the next lifecycle
+	 * update, which is early enough. The interval is kept, because a root can also acquire the
+	 * property later without being re-inserted, and `adoptAll` is idempotent.
+	 *
+	 * OBSERVE THE DOCUMENT, NOT `documentElement`. An init script is evaluated after the Document
+	 * exists but before the page's own scripts run, and at that instant the parser may not have
+	 * created the root element yet. `observe(null, ...)` throws, the catch below would swallow it,
+	 * and adoption would silently fall back to the two-second tick: the exact false zero this
+	 * whole arrangement exists to prevent, reintroduced by the fix for it. A Document node is a
+	 * valid target and it always exists here. */
 	function adoptAll() {
 		var roots = all(MESSAGE_SELECTOR);
 		for (var i = 0; i < roots.length; i++) {
@@ -410,7 +424,7 @@
 
 	try {
 		if (typeof window.MutationObserver === "function") {
-			new window.MutationObserver(adoptAdded).observe(doc.documentElement, {
+			new window.MutationObserver(adoptAdded).observe(doc, {
 				childList: true,
 				subtree: true
 			});

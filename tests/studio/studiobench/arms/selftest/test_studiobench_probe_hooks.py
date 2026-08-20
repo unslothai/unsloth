@@ -98,6 +98,9 @@ def test_roots_are_adopted_at_insertion_not_on_the_sample_tick(probe_src: str):
 
     assert "MutationObserver" in probe_src
     assert "adoptAdded" in probe_src
+    # The DOCUMENT, not documentElement. An init script can run before the parser has created
+    # the root element, and `observe(null, ...)` throws into the catch that hides it.
+    assert "observe(doc, {" in probe_src
     # Added nodes only. A document-wide re-scan per mutation would make the probe the load.
     assert "addedNodes" in probe_src
     assert "adoptAll();" in probe_src
@@ -113,7 +116,11 @@ def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: 
 
     assert "ROLE_PX" in probe_src
     assert "out.fallbackBite += 1;" in probe_src
-    assert "} else if (Math.abs(r.height - px.padding) <= PX_EPS) {" in probe_src
+    assert 'targetHeight(px, "padding")' in probe_src
+    # getBoundingClientRect() is the border box, so BOTH targets carry the root's own padding.
+    # Comparing against the bare declared length pinned fallbackBite at zero whatever happened.
+    assert 'targetHeight(px, "fallback")' in probe_src
+    assert "return (which === \"fallback\" ? px.fallback : 0) + px.padding;" in probe_src
 
 
 def test_the_page_scripts_are_installed_as_one_ordered_script(main_src: str):
