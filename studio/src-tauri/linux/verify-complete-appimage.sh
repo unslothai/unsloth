@@ -32,6 +32,43 @@ fi
 [[ -d "$appdir" ]] || { echo "AppDir does not exist: $appdir" >&2; exit 1; }
 [[ -x "$appdir/AppRun" ]] || { echo "Complete AppImage has no executable AppRun" >&2; exit 1; }
 
+require_basename() {
+  local pattern="$1"
+  if ! find "$appdir" \( -type f -o -type l \) -name "$pattern" -print -quit | grep -q .; then
+    echo "Complete AppImage is missing required runtime component: $pattern" >&2
+    return 1
+  fi
+}
+
+# FIRST, before the launcher-hygiene checks below. Those ask whether a bundle that
+# ships a runtime scopes it correctly; this asks whether it ships one at all, and a
+# bundle that ships none fails them too -- for a reason that reads like an env-var
+# bug. A pre-#9113 thin AppImage, which resolves webkit2gtk from the host, reported
+# "does not clear an inherited LD_LIBRARY_PATH" and sent the reader after the wrong
+# defect; the honest answer is the soname list below.
+#
+# Report every miss rather than exiting on the first: the AppRun host-preflight
+# names all four missing sonames at once, and a verifier that names one per CI run
+# turns one diagnosis into as many red runs as there are absent components.
+missing_components=()
+required_components=()
+for component in \
+  'libglib-2.0.so*' 'libgobject-2.0.so*' 'libgio-2.0.so*' \
+  'libgtk-3.so*' 'libgdk-3.so*' 'libgdk_pixbuf-2.0.so*' \
+  'libwebkit2gtk-4.1.so*' 'libjavascriptcoregtk-4.1.so*' 'libsoup-3.0.so*' \
+  'libappindicator3.so*' 'WebKitNetworkProcess' 'WebKitWebProcess' \
+  'libwebkit2gtkinjectedbundle.so' \
+  'libgiognutls.so' \
+  'libgstcoreelements.so' 'libgstplayback.so' 'libgstpulseaudio.so' \
+  'libgstisomp4.so' 'libgstvideoparsersbad.so' 'libgstlibav.so' \
+  'gst-plugin-scanner'; do
+  required_components+=("$component")
+  require_basename "$component" || missing_components+=("$component")
+done
+if ((${#missing_components[@]} > 0)); then
+  echo "Complete AppImage is missing ${#missing_components[@]} of ${#required_components[@]} required runtime components; it resolves them from the host" >&2
+  exit 1
+fi
 
 launchers=("$appdir/AppRun")
 [[ ! -e "$appdir/AppRun.wrapped" ]] || launchers+=("$appdir/AppRun.wrapped")
@@ -94,27 +131,6 @@ machine="$(readelf -h "$binary" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p
   echo "Complete AppImage has the wrong architecture: ${machine:-unknown}" >&2
   exit 1
 }
-
-require_basename() {
-  local pattern="$1"
-  if ! find "$appdir" \( -type f -o -type l \) -name "$pattern" -print -quit | grep -q .; then
-    echo "Complete AppImage is missing required runtime component: $pattern" >&2
-    return 1
-  fi
-}
-
-for component in \
-  'libglib-2.0.so*' 'libgobject-2.0.so*' 'libgio-2.0.so*' \
-  'libgtk-3.so*' 'libgdk-3.so*' 'libgdk_pixbuf-2.0.so*' \
-  'libwebkit2gtk-4.1.so*' 'libjavascriptcoregtk-4.1.so*' 'libsoup-3.0.so*' \
-  'libappindicator3.so*' 'WebKitNetworkProcess' 'WebKitWebProcess' \
-  'libwebkit2gtkinjectedbundle.so' \
-  'libgiognutls.so' \
-  'libgstcoreelements.so' 'libgstplayback.so' 'libgstpulseaudio.so' \
-  'libgstisomp4.so' 'libgstvideoparsersbad.so' 'libgstlibav.so' \
-  'gst-plugin-scanner'; do
-  require_basename "$component"
-done
 
 # Require the media plugins that must match the bundled GStreamer core.
 gst_plugin_count="$(find "$appdir/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -name '*.so' 2>/dev/null | wc -l)"

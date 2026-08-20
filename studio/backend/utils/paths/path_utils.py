@@ -69,7 +69,12 @@ def _shadowed_name(path: str) -> str:
 
 
 def drop_shadowed_appledouble_names(
-    files: list[str], *, subject_key: Callable[[str], object] | None = None
+    # Optional[...] rather than `| None`: this module has no `from __future__ import
+    # annotations`, so its annotations are evaluated at import, and PEP 604 unions are a
+    # TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
+    files: list[str],
+    *,
+    subject_key: Optional[Callable[[str], object]] = None,
 ) -> list[str]:
     """*files* without the ``._`` entries whose subject is present in the same listing.
 

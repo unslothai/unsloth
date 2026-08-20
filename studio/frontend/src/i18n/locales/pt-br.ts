@@ -195,6 +195,7 @@ export const ptBR = {
       chat: "Chat",
       connections: "Conexões",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       about: "Sobre",
       voice: "Voz",
       data: "Dados",
@@ -1239,6 +1240,11 @@ export const ptBR = {
     connections: {
       title: "Conexões",
       description: "Gerencie provedores e conexões externas.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Acesse este Unsloth dos seus outros dispositivos, pela rede local ou por uma URL pública temporária.",
     },
     apiKeys: {
       title: "API",
