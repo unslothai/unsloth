@@ -557,8 +557,13 @@ def build_cells(
 ) -> list[tuple[Cell, RungPlan]]:
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
-        plan = plan_rung(corpus, rung, chars_per_token,
-                         stream_tail_chars = stream_tail_chars, dollars = corpus_dollars)
+        plan = plan_rung(
+            corpus,
+            rung,
+            chars_per_token,
+            stream_tail_chars = stream_tail_chars,
+            dollars = corpus_dollars,
+        )
         for rep in range(reps):
             cell = Cell(
                 cell_id = make_cell_id(rung, "A0", rep),

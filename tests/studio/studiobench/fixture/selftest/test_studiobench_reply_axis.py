@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from studiobench.fixture.corpus import (            # noqa: E402
+from studiobench.fixture.corpus import (  # noqa: E402
     STREAM_TAIL_CHARS,
     Corpus,
     dollarise,
@@ -80,12 +80,17 @@ def test_the_tail_override_moves_the_reply_and_not_the_thread(corpus: Corpus):
         # Within a few percent: the seeded prefix is trimmed to compensate, so the cell measures
         # a different SPLIT of the same total rather than a bigger thread.
         assert abs(plan.total_chars - base.total_chars) < base.total_chars * 0.05, (
-            tail, plan.total_chars, base.total_chars)
+            tail,
+            plan.total_chars,
+            base.total_chars,
+        )
 
 
 def test_the_tail_override_grows_monotonically(corpus: Corpus):
-    seen = [plan_rung(corpus, "100K", stream_tail_chars = t).streamed_chars
-            for t in (6_000, 12_000, 24_000, 48_000, 96_000)]
+    seen = [
+        plan_rung(corpus, "100K", stream_tail_chars = t).streamed_chars
+        for t in (6_000, 12_000, 24_000, 48_000, 96_000)
+    ]
     assert seen == sorted(seen), seen
     assert seen[-1] > seen[0] * 10, seen
 
@@ -132,9 +137,9 @@ def test_dollars_reach_the_streamed_turn_and_nothing_else(corpus: Corpus):
     # would change the corpus without changing what the per-frame path is asked to do. v2's own
     # math is expected there; what must not appear is anything THIS added, so the prefix has to
     # be byte-identical with the flag on and off.
-    assert [
-        (u.reasoning, u.content) for u in salted.seeded_units
-    ] == [(u.reasoning, u.content) for u in plain.seeded_units]
+    assert [(u.reasoning, u.content) for u in salted.seeded_units] == [
+        (u.reasoning, u.content) for u in plain.seeded_units
+    ]
 
 
 def test_the_flag_is_not_a_no_op_under_corpus_v2(corpus: Corpus):
@@ -146,9 +151,7 @@ def test_the_flag_is_not_a_no_op_under_corpus_v2(corpus: Corpus):
     corpus makes even that indistinguishable, this fails and the flag should be deleted.
     """
     plain = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars = 24_000))
-    salted = _streamed_text(
-        plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True)
-    )
+    salted = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True))
     assert salted != plain
     # Shell-shaped and price-shaped, which is what makes them false positives rather than math.
     added = salted.count("$") - plain.count("$")
@@ -169,8 +172,15 @@ def test_dollarise_keeps_shell_dollars_inside_the_fence(corpus: Corpus):
     escaped by the currency pass. A generator that only produced one of them would exercise half
     the function while looking like it exercised all of it.
     """
-    source = "\n".join(["```bash", *[f"line {i}" for i in range(30)], "```",
-                        "", *[f"prose line {i}" for i in range(30)]])
+    source = "\n".join(
+        [
+            "```bash",
+            *[f"line {i}" for i in range(30)],
+            "```",
+            "",
+            *[f"prose line {i}" for i in range(30)],
+        ]
+    )
     out = dollarise(source, "x")
     fenced, prose = [], []
     inside = False

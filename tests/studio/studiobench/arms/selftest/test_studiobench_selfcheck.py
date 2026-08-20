@@ -235,9 +235,13 @@ def test_the_abort_message_says_why_reporting_nothing_is_better():
 # ── the streaming-cost recovery gate ─────────────────────────────────────────────────────────
 
 
-def _recovery(base, injected, total_ms = 600.0, chars = 6_000):
+def _recovery(
+    base,
+    injected,
+    total_ms = 600.0,
+    chars = 6_000,
+):
     from studiobench.instruments.selfcheck import evaluate_stream_cost_recovery_gate
-
     return evaluate_stream_cost_recovery_gate(base, injected, total_ms, chars)
 
 

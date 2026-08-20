@@ -225,7 +225,9 @@ def _stream_windows(windows: Sequence[Mapping[str, Any]]) -> tuple[list[Mapping[
             continue
         delta = sc.get("reply_chars_delta")
         if delta is None:
-            reject(str(sc.get("reply_chars_delta_reason") or "the reply's growth was not measurable"))
+            reject(
+                str(sc.get("reply_chars_delta_reason") or "the reply's growth was not measurable")
+            )
             continue
         if int(delta) < MIN_STREAM_CHARS_PER_WINDOW:
             reject(f"the reply grew by fewer than {MIN_STREAM_CHARS_PER_WINDOW} characters")
@@ -365,9 +367,7 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
     out["stream_delta_cost_ms_per_kchar"] = (
         Measure.read(1000.0 * delta_task_ms / chars, "ms/kchar", note = note)
         if chars > 0
-        else Measure.failed(
-            "ms/kchar", "the streaming windows recorded no streamed characters"
-        )
+        else Measure.failed("ms/kchar", "the streaming windows recorded no streamed characters")
     )
     if blocked_reason:
         out["stream_cost_ms_per_kchar"] = Measure.failed("ms/kchar", blocked_reason)

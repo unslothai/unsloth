@@ -87,9 +87,7 @@ class StreamCostInstrument(_PageInstrument):
         # past the stream, and a window that unexpectedly streamed must not be scored from a
         # half-taken pair.
         saw_traffic = bool(out.get("streaming_observed"))
-        chars_close = self._eval(
-            "(f) => window.__sb.streamcost.replyChars(f)", saw_traffic
-        )
+        chars_close = self._eval("(f) => window.__sb.streamcost.replyChars(f)", saw_traffic)
         out["stream_cost_attempted"] = True
         out["reply_chars_open"] = self._chars_open
         out["reply_chars_close"] = chars_close

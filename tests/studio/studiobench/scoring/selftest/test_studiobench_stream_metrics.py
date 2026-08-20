@@ -204,8 +204,7 @@ def test_doubling_the_per_frame_cost_doubles_the_metric():
     base = _stream_measures([_window("stream:gap1", delta_task_ms = 900.0)])
     heavy = _stream_measures([_window("stream:gap1", delta_task_ms = 1_800.0)])
     ratio = (
-        heavy["stream_delta_cost_ms_per_kchar"].value
-        / base["stream_delta_cost_ms_per_kchar"].value
+        heavy["stream_delta_cost_ms_per_kchar"].value / base["stream_delta_cost_ms_per_kchar"].value
     )
     assert ratio == pytest.approx(2.0)
 

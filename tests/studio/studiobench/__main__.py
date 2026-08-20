@@ -323,7 +323,6 @@ def run(args, ab_ref = None) -> int:
             # init script fires on every document and burning on both sides would inject the cost
             # into the control as well and read back a recovery of zero.
             from .instruments.selfcheck import stream_cost_injection_init_script
-
             init_scripts.append(
                 origin_scoped(
                     side["base_url"],

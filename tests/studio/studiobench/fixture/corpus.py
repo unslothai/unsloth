@@ -943,7 +943,7 @@ def dollarise(text: str, salt: str) -> str:
         # answer contains, and they exercise different branches: the code-region scan has to
         # EXCLUDE the first and the currency heuristic has to escape the second.
         if fenced and index % 11 == 0:
-            out.append(f'{line}  # $HOME/{salt}{index} costs $1{index % 10}.99')
+            out.append(f"{line}  # $HOME/{salt}{index} costs $1{index % 10}.99")
         elif not fenced and line and index % 17 == 0:
             out.append(f"{line} It costs ${index % 9}{index % 10}.99 or ${index % 7},200 a year.")
         else:
@@ -951,10 +951,13 @@ def dollarise(text: str, salt: str) -> str:
     return "\n".join(out)
 
 
-def plan_rung(corpus: Corpus, rung: str,
-              chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
-              stream_tail_chars: Optional[int] = None,
-              dollars: bool = False) -> RungPlan:
+def plan_rung(
+    corpus: Corpus,
+    rung: str,
+    chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
+    stream_tail_chars: Optional[int] = None,
+    dollars: bool = False,
+) -> RungPlan:
     """Which units are SEEDED and which one STREAMS.
 
     Only the last reply streams. At the field's own cadence, 24 characters every 73ms, a million
@@ -1042,13 +1045,10 @@ def plan_rung(corpus: Corpus, rung: str,
         )
         streamed = replace(streamed, chars = len(streamed.reasoning) + len(streamed.content))
         follow_ups = [
-            replace(u, reasoning = dollarise(u.reasoning, "r"),
-                    content = dollarise(u.content, "c"))
+            replace(u, reasoning = dollarise(u.reasoning, "r"), content = dollarise(u.content, "c"))
             for u in follow_ups
         ]
-        follow_ups = [
-            replace(u, chars = len(u.reasoning) + len(u.content)) for u in follow_ups
-        ]
+        follow_ups = [replace(u, chars = len(u.reasoning) + len(u.content)) for u in follow_ups]
 
     return RungPlan(
         rung = rung,
