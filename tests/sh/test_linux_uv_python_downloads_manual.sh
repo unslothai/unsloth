@@ -300,6 +300,130 @@ _out=$(_emit install-fail)
 assert_contains "python install stream failure: attempted install" "$_out" "python install"
 assert_contains "python install stream failure: non-zero" "$_out" "RC=1"
 
+echo "=== capture fallback ==="
+
+# The capture is only how uv's hint is read. A host that cannot provide one must
+# still get the venv it got before this fallback existed, not a failed install.
+rm -f "$_STUB_STATE/fail_manual" "$_STUB_STATE/fail_other"
+
+_sd=$(mktemp -d)
+_NOFIFO=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "$_NOFIFO/mkfifo"
+chmod +x "$_NOFIFO/mkfifo"
+_out=$(PATH="$_NOFIFO:$_UVDIR:$PATH" OS=linux VENV_DIR="$_sd/venv" PYTHON_VERSION=3.13 \
+    UV_STUB_STATE="$_STUB_STATE" \
+    sh -c ". '$_STREAM'; _uv_venv_requested 'create venv'; echo RC=\$?" 2>&1)
+assert_contains "mkfifo failure falls back to a plain venv" "$_out" "RC=0"
+if [ -x "$_sd/venv/bin/python" ]; then
+    echo "  PASS: mkfifo failure still leaves an interpreter"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: mkfifo failure aborted the venv"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$_sd" "$_NOFIFO"
+
+_NOTEE=$(mktemp -d)
+for _c in sh sed awk grep mktemp mkfifo rm cat mkdir chmod; do
+    if _p=$(command -v "$_c" 2>/dev/null); then
+        ln -s "$_p" "$_NOTEE/$_c" 2>/dev/null || true
+    fi
+done
+ln -s "$_UVDIR/uv" "$_NOTEE/uv" 2>/dev/null || true
+if (PATH="$_NOTEE"; command -v tee >/dev/null 2>&1); then
+    echo "  FAIL: no-tee case could not build a tee-free PATH"
+    FAIL=$((FAIL + 1))
+else
+    _sd=$(mktemp -d)
+    _out=$(PATH="$_NOTEE" OS=linux VENV_DIR="$_sd/venv" PYTHON_VERSION=3.13 \
+        UV_STUB_STATE="$_STUB_STATE" \
+        "$(command -v sh)" -c ". '$_STREAM'; _uv_venv_requested 'create venv'; echo RC=\$?" 2>&1)
+    assert_contains "missing tee falls back to a plain venv" "$_out" "RC=0"
+    if [ -x "$_sd/venv/bin/python" ]; then
+        echo "  PASS: missing tee still leaves an interpreter"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: missing tee aborted the venv"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$_sd"
+fi
+rm -rf "$_NOTEE"
+
+echo "=== interrupt cleanup ==="
+
+# The FIFOs and the captured output live in a temp dir, so the EXIT/signal
+# cleanup has to own it the way it owns the other installer temporaries.
+case "$(sed -n '/^_cleanup_install_temporaries()/,/^}/p' "$INSTALL_SH")" in
+    *_UV_VENV_CAPTURE_DIR*)
+        echo "  PASS: EXIT/signal cleanup owns the venv capture directory"
+        PASS=$((PASS + 1))
+        ;;
+    *)
+        echo "  FAIL: _cleanup_install_temporaries does not remove the venv capture directory"
+        FAIL=$((FAIL + 1))
+        ;;
+esac
+
+if grep -q '^_UV_VENV_CAPTURE_DIR=""' "$INSTALL_SH"; then
+    echo "  PASS: capture path is cleared before the traps are installed"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: capture cleanup state is not initialized before the traps"
+    FAIL=$((FAIL + 1))
+fi
+
+_TRAPS=$(mktemp)
+for _f in _cleanup_install_temporaries _on_install_signal; do
+    sed -n "/^$_f()/,/^}/p" "$INSTALL_SH" >> "$_TRAPS"
+done
+
+for _sh in sh bash; do
+    _case=$(mktemp -d)
+    mkdir -p "$_case/tmp"
+    : > "$_case/ready"
+    TMPDIR="$_case/tmp" CASE_DIR="$_case" "$_sh" -c '
+        . "'"$_FN"'"
+        . "'"$_TRAPS"'"
+        VENV_DIR="$CASE_DIR/venv"
+        PYTHON_VERSION=3.13
+        _restore_studio_venv_replacement() { :; }
+        _run_uv_venv() {
+            printf "in-venv %s\n" "$_UV_VENV_CAPTURE_DIR" > "$CASE_DIR/ready"
+            while :; do :; done
+        }
+        trap "_on_install_signal 143" TERM
+        _uv_venv_requested "create venv"
+    ' >/dev/null 2>&1 &
+    _pid=$!
+    for _ in $(seq 1 300); do [ -s "$_case/ready" ] && break; sleep 0.01; done
+    if ! grep -q '^in-venv ' "$_case/ready" 2>/dev/null; then
+        echo "  FAIL: $_sh interrupt case never reached uv venv"
+        FAIL=$((FAIL + 1))
+        kill -KILL "$_pid" 2>/dev/null || true
+        wait "$_pid" 2>/dev/null || true
+        rm -rf "$_case"
+        continue
+    fi
+    kill -TERM "$_pid"
+    set +e
+    wait "$_pid"
+    _signal_rc=$?
+    set -e
+    assert_eq "$_sh TERM preserves the signal status" "143" "$_signal_rc"
+    # TMPDIR is this case's own, and the capture is the only thing put in it.
+    _left=$(ls -A "$_case/tmp" 2>/dev/null || true)
+    if [ -z "$_left" ]; then
+        echo "  PASS: $_sh TERM removes the venv capture directory"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $_sh TERM left $_left behind in TMPDIR"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -rf "$_case"
+done
+rm -f "$_TRAPS"
+
 rm -rf "$_UVDIR"
 rm -f "$_FN" "$_STREAM"
 echo ""

@@ -777,6 +777,7 @@ _commit_studio_venv_replacement() {
 _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
+    [ -n "${_UV_VENV_CAPTURE_DIR:-}" ] && rm -rf "$_UV_VENV_CAPTURE_DIR" 2>/dev/null || true
     [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
     # The pinned uv path's own cleanup only runs when that function returns, so a Ctrl-C left
     # the unpacked archive behind plus a staging file inside a directory that is on PATH.
@@ -805,10 +806,11 @@ _on_install_signal() {
     exit "$_signal_status"
 }
 # Empty so an inherited value never reaches the trap's rm; only temp paths this
-# script creates below (spaced-path dir, uv install_name_tool guard, torch-trio
-# overrides) are removed.
+# script creates below (spaced-path dir, uv install_name_tool guard, venv output
+# capture, torch-trio overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
 _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
+_UV_VENV_CAPTURE_DIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 _UIP_WORK=""
 _UIP_STAGE=""
@@ -2919,47 +2921,59 @@ _uv_venv_arm64() {  # label
 # matching interpreter on its own. Fedora 44's system Python is 3.14, which the
 # <3.14 bound (torch / 3.13.8) rejects, and uv then prints the hint that
 # `uv python install <request>` is the explicit fetch. Do that and retry -- and
-# only then: any other venv failure must stay failed. Do not set
-# UV_PYTHON_DOWNLOADS or UV_NO_CONFIG; those would override distro policy for
-# the rest of the install, not just this missing interpreter.
+# only then: any other venv failure must stay failed. The explicit `uv python
+# install` rather than UV_PYTHON_DOWNLOADS=automatic on the same command:
+# "manual" permits an explicit install and "never" refuses one, so a distro that
+# ruled downloads out entirely keeps that answer instead of an env-var override.
 _uv_venv_requested() {  # label
     _uvvr_label="$1"
     _uvvr_req="$(_python_request "$PYTHON_VERSION")"
     # Tee, don't redirect-and-replay: Studio consumes [TAURI:*] as they arrive,
     # and holding them until uv venv exits makes a recovered fallback look idle.
-    _uvvr_dir=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-uv-venv.XXXXXX") || return 1
-    _uvvr_out="$_uvvr_dir/out"
-    _uvvr_err="$_uvvr_dir/err"
-    if ! mkfifo "$_uvvr_dir/out_pipe" "$_uvvr_dir/err_pipe"; then
-        rm -rf "$_uvvr_dir"
-        return 1
+    # The capture exists only to read uv's hint, so a host that cannot set one up
+    # (no tee, a TMPDIR that rejects FIFOs) still gets the venv it got before the
+    # fallback existed -- the same trade _uv_download_markers makes without awk.
+    # _UV_VENV_CAPTURE_DIR, not a local, so an interrupt's cleanup owns it too.
+    _UV_VENV_CAPTURE_DIR=""
+    if ! command -v tee >/dev/null 2>&1 \
+       || ! _UV_VENV_CAPTURE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-uv-venv.XXXXXX") \
+       || ! mkfifo "$_UV_VENV_CAPTURE_DIR/out_pipe" "$_UV_VENV_CAPTURE_DIR/err_pipe"; then
+        [ -n "$_UV_VENV_CAPTURE_DIR" ] && rm -rf "$_UV_VENV_CAPTURE_DIR" || true
+        _UV_VENV_CAPTURE_DIR=""
+        _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req"
+        return $?
     fi
+    _uvvr_out="$_UV_VENV_CAPTURE_DIR/out"
+    _uvvr_err="$_UV_VENV_CAPTURE_DIR/err"
     # GNU coreutils dropped POSIX -u (always unbuffered); BSD tee still has it.
     tee -u /dev/null </dev/null >/dev/null 2>&1 && _uvvr_tee_u=-u || _uvvr_tee_u=
-    tee $_uvvr_tee_u "$_uvvr_out" < "$_uvvr_dir/out_pipe" &
+    tee $_uvvr_tee_u "$_uvvr_out" < "$_UV_VENV_CAPTURE_DIR/out_pipe" &
     _uvvr_tee_out=$!
-    tee $_uvvr_tee_u "$_uvvr_err" < "$_uvvr_dir/err_pipe" >&2 &
+    tee $_uvvr_tee_u "$_uvvr_err" < "$_UV_VENV_CAPTURE_DIR/err_pipe" >&2 &
     _uvvr_tee_err=$!
     if _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" \
-            >"$_uvvr_dir/out_pipe" 2>"$_uvvr_dir/err_pipe"; then
+            >"$_UV_VENV_CAPTURE_DIR/out_pipe" 2>"$_UV_VENV_CAPTURE_DIR/err_pipe"; then
         _uvvr_status=0
     else
         _uvvr_status=$?
     fi
     wait "$_uvvr_tee_out" "$_uvvr_tee_err" 2>/dev/null || true
     if [ "$_uvvr_status" -eq 0 ]; then
-        rm -rf "$_uvvr_dir"
+        rm -rf "$_UV_VENV_CAPTURE_DIR"
+        _UV_VENV_CAPTURE_DIR=""
         return 0
     fi
     if grep -q "Python downloads are set to 'manual'" "$_uvvr_out" "$_uvvr_err" 2>/dev/null \
        || grep -q "python-downloads" "$_uvvr_out" "$_uvvr_err" 2>/dev/null; then
-        rm -rf "$_uvvr_dir"
+        rm -rf "$_UV_VENV_CAPTURE_DIR"
+        _UV_VENV_CAPTURE_DIR=""
         run_install_cmd "$_uvvr_label (managed Python)" \
             uv python install "$_uvvr_req" || return $?
         _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" || return $?
         return 0
     fi
-    rm -rf "$_uvvr_dir"
+    rm -rf "$_UV_VENV_CAPTURE_DIR"
+    _UV_VENV_CAPTURE_DIR=""
     return "$_uvvr_status"
 }
 
