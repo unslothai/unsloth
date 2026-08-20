@@ -510,13 +510,7 @@ def _download(
 
 
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
-    """``extractall`` with a per-member containment check, so an archive carrying an
-    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip).
-
-    ``zipfile.extractall`` also writes symlink members as regular files holding the
-    link-target text (CPython's zipfile never restores symlinks). The release
-    archives ship the ggml/webp shared-library links that way, and flattening them
-    leaves sd-cli unable to start, so they are recreated here from the member list."""
+    """Extract safely within ``target`` and restore symlinks that ``zipfile`` flattens."""
     base = target.resolve()
     destinations: list[Path] = []
     links: list[tuple[Path, str, str]] = []
@@ -530,15 +524,13 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             links.append(
                 (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
             )
-    # ``extractall`` follows links restored by an earlier install, including paths
-    # that become regular files in a newer archive.
+    # Avoid following stale links when a newer archive replaces them with regular files.
     for dest in destinations:
         if dest.is_symlink():
             dest.unlink()
     zf.extractall(target)
     for dest, link_target, filename in links:
-        # A symlink member must stay inside the tree too: absolute or ``..`` targets
-        # are refused, matching the Zip-Slip guard on the member paths above.
+        # Keep symlink targets inside the extraction tree too.
         resolved = (dest.parent / link_target).resolve()
         if resolved != base and base not in resolved.parents:
             raise RuntimeError(f"unsafe symlink in archive: {filename!r} -> {link_target!r}")
