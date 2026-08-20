@@ -845,6 +845,7 @@ def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["top_k"] = top_k
         seen["branch_messages"] = branch_messages
@@ -876,6 +877,7 @@ def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monke
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["top_k"] = top_k
         return ("earlier turn", [{"id": "1"}])
@@ -1069,6 +1071,7 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["top_k"] = top_k
         seen["branch_messages"] = branch_messages
@@ -1116,6 +1119,7 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["query"] = query
         return ("earlier turn", [{"id": "1"}])
@@ -1544,7 +1548,7 @@ def test_no_earlier_instruction_means_no_second_query(
         return real(thread_id, query, **kwargs)
 
     monkeypatch.setattr(conversation_archive, "recall", recording)
-    tools_mod.build_conversation_recall(
+    block = tools_mod.build_conversation_recall(
         turns + [{"role": "user", "content": "continue"}],
         THREAD,
         style = "inline",
@@ -1552,7 +1556,11 @@ def test_no_earlier_instruction_means_no_second_query(
         branch_messages = turns + [{"role": "user", "content": "continue"}],
     )
 
-    assert seen["extra"] is None
+    # The archive is not searched AT ALL: a nudge with no earlier instruction has nothing
+    # to search for, and priming the model's first sight of the search tool with a query
+    # for "continue" teaches the wrong lookup.
+    assert block is None
+    assert seen == {}
 
 
 def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(archived):
@@ -1732,3 +1740,55 @@ def test_any_room_at_all_is_worth_one_recall_attempt():
     assert llama_cpp._recall_top_k(-5) == 0
     assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS - 1) == 1
     assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS * 2) >= 2
+
+
+def test_a_short_earlier_prompt_is_still_worth_searching_for(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    """An instruction is 80 characters; a QUERY only has to name something.
+
+    A thread of short prompts ("Write a story about Mars", then "continue") had no
+    substantive instruction behind the nudge, so recall was skipped entirely. On a first
+    reset that is the worst moment for it: the block carries nothing (the same length
+    rule) and the archive is written after tool selection, so the model sees the nudge
+    alone with no way to reach what it was asked to continue.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
+    turns = [
+        {"role": "user", "content": "Write a story about Mars"},
+        {"role": "assistant", "content": "Chapter one: the dust storm rolled in."},
+    ]
+    for index, message in enumerate(turns):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-m{index}",
+                "threadId": THREAD,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+    conversation_archive.archive_turns(THREAD, turns)
+
+    calls = []
+    real = conversation_archive.recall
+
+    def recording(thread_id, query, **kwargs):
+        calls.append((query, kwargs.get("extra_queries")))
+        return real(thread_id, query, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "recall", recording)
+    branch = turns + [{"role": "user", "content": "continue"}]
+    block = tools_mod.build_conversation_recall(
+        branch, THREAD, style = "inline", top_k = 4, branch_messages = branch
+    )
+
+    assert block is not None, "the nudge was searched for nothing at all"
+    # `recall` runs the extra query as its own pass, so the outermost call is the one that
+    # carries it.
+    assert calls[0] == ("continue", ["Write a story about Mars"]), calls
+    assert "Mars" in block["prefix"]

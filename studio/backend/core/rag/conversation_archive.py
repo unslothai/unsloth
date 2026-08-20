@@ -137,6 +137,16 @@ def _probe_text(message: dict) -> str:
                 result = part.get("result")
                 if result not in (None, "", {}, []):
                     results.extend(rendered(result))
+            elif part.get("type") == "reasoning":
+                # A thinking model's stored reply is [reasoning, text], but the wire copy
+                # the probe is matched against has the text only (the client sends the
+                # thought in the `reasoning_content` FIELD). Folding it in, as the
+                # `"text" in part` arm below would, makes the stored probe longer than the
+                # branch, so `content_on_branch` fails for every assistant turn of every
+                # reasoning thread and `_sticky_compaction_boundary` returns 0 forever --
+                # which under the checkpoint fit turns every overflowing turn into a fresh
+                # reset. Skipped on both sides: the wire shape has no reasoning part.
+                continue
             elif part.get("type") in ("text", "input_text") or "text" in part:
                 if calls:
                     flush()
@@ -575,6 +585,81 @@ def degraded() -> bool:
     on every compaction for nothing. The caller checks this and stops reserving.
     """
     return _INGEST_FAILED
+
+
+# Short enough that a store or embedder coming back is noticed within a turn or two, long
+# enough that one request's refits share a single probe.
+def reachable() -> bool:
+    """Whether an archive write attempted RIGHT NOW could reach its store and embedder.
+
+    ``degraded`` is the verdict on the LAST write, the wrong tense for a caller deciding
+    whether to reset: this request's write runs afterwards and swallows its own failure, so
+    the first request after the store or embedder dies would commit a reset claiming the
+    dropped turns are searchable while nothing was indexed.
+
+    A probe, not a promise: it cannot see a failure starting after it returns, leaving the
+    same one-turn window for a store that dies mid-request (the turns survive anyway, since
+    the client re-sends the branch and the write is idempotent).
+
+    The counter is CALLED, not merely constructed. `embedding_identity` is string
+    formatting over resolver metadata and `token_counter` hands back a lazy closure, so
+    both reported a healthy archive while the embedder could not initialize; calling it
+    forces the load.
+
+    And a real ENCODE, because the tokenizer is not the forward pass. `_st_token_counter`
+    reaches only `_get(model).tokenizer`, so a runtime encode failure with no llama binary
+    to fall back to -- CUDA OOM against the co-resident chat model, a driver fault, the
+    half-precision path -- left this answering yes while `archive_turns` was about to
+    raise and swallow it. The reset would already have dropped the history and told the
+    model it was searchable, and the epoch is replayed from the boundary, so the loss is
+    durable rather than one turn.
+
+    NOT memoised across requests. A time-boxed cache handed back a stale yes for the whole
+    window after the store or embedder died, and one request inside it is enough: the epoch
+    starts, `archive_turns` swallows the write failure, and the fitted prompt has already
+    dropped the turns it says are searchable. The caller memoises per fit instead, which is
+    the only span where the answer cannot change under it.
+
+    `"x"` rather than `""`: an empty input is documented to upset the llama embedding
+    server. An encode rather than `dim()`, which caches and on the sentence-transformers
+    path runs no forward at all -- that would reintroduce exactly the bug this closes.
+    """
+    if not enabled():
+        return False
+    conn = None
+    try:
+        conn = rag_db.get_connection()
+        # WRITABLE, not merely open. `get_connection` succeeds against a database that is
+        # read-only, on a full filesystem, or held by another writer, and the archive
+        # write happens after the reset and swallows its own failure, so the block would
+        # promise a searchable history that nothing could store.
+        #
+        # A real statement, rolled back. `BEGIN IMMEDIATE` on its own is NOT enough:
+        # sqlite defers the check, and it returns cleanly on a read-only connection that
+        # raises the moment anything is written. The rollback leaves the schema untouched.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS _archive_write_probe(x)")
+        finally:
+            conn.rollback()
+        model = config.effective_embedding_model()
+        embeddings.embedding_identity(model)
+        embeddings.token_counter(model)("")
+        embeddings.encode(["x"], model_name = model, normalize = True)
+        return True
+    except Exception:  # noqa: BLE001 -- an unreachable archive is "no", never an error
+        logger.debug("conversation_archive.unreachable", exc_info = True)
+        return False
+    finally:
+        # The probe runs on every checkpoint-eligible overflow, and a connection left to
+        # cyclic collection is a descriptor held for an unbounded time: measured, 50 calls
+        # leaked 50 open handles on rag.db. Every other connection in this module is closed
+        # the same way.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # Returned by ``_stale_document`` for a turn that is already archived under vectors the
@@ -1867,6 +1952,19 @@ def _conversation_order(row) -> tuple:
     return (1, int(ordinal), created, index)
 
 
+def _above_floor(hits: list, min_dense_score: float) -> list:
+    """Candidates clearing the forced path's cosine floor. Off (0.0) returns them all.
+
+    FORCED path only: an automatic lookup returning whatever shares a stopword with the
+    question is worse than none, since that block is the model's first sight of the search
+    tool. Lexical-only hits are kept, because gating them on a similarity they never
+    carried would delete the exact-identifier hits this archive is best at.
+    """
+    if min_dense_score <= 0:
+        return hits
+    return [hit for hit in hits if hit.dense_score is None or hit.dense_score >= min_dense_score]
+
+
 def _ends_first_within_ties(conn, hits: list) -> list:
     """Reorder each run of EQUAL lexical scores as newest, oldest, next-newest, ...
 
@@ -2116,6 +2214,7 @@ def recall(
     top_k: Optional[int] = None,
     branch_messages: Optional[list[dict]] = None,
     extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Most relevant archived turns for ``query``, rendered like any other RAG hit.
 
@@ -2135,6 +2234,7 @@ def recall(
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None
+    min_dense_score = config.CONVERSATION_FORCED_MIN_SCORE if forced else 0.0
 
     scope = store.conversation_archive_scope(thread_id)
     limit = top_k or config.CONVERSATION_ARCHIVE_TOP_K
@@ -2157,7 +2257,11 @@ def recall(
             # shared chunk cost a slot that was never refilled and adding the anchor made
             # the recall smaller than leaving it out.
             found = recall(
-                thread_id, one, top_k = room + len(seen_ids), branch_messages = branch_messages
+                thread_id,
+                one,
+                top_k = room + len(seen_ids),
+                branch_messages = branch_messages,
+                forced = forced,
             )
             if not found:
                 continue
@@ -2207,9 +2311,29 @@ def recall(
         hits: list = []
         live_documents: dict = {}
         while True:
-            candidates = _candidates(conn, scope, query, model, fetch, thread_id)
-            if not candidates:
+            fetched = _candidates(conn, scope, query, model, fetch, thread_id)
+            if not fetched:
                 return None
+            # The floor filters CANDIDATES, before the cut to `limit`. After the slice it
+            # was a deletion instead: weak hits took the slots and were then removed, so at
+            # a floor of 0.5 with four weak hits on top the forced recall returned nothing
+            # where the unforced one returned 4.
+            #
+            # `exhausted` is read off the RAW fetch, or the widening loop would mistake "the
+            # floor removed most of this page" for "the index has nothing more" and stop
+            # one page early.
+            exhausted = len(fetched) < fetch
+            candidates = _above_floor(fetched, min_dense_score)
+            if not candidates:
+                if exhausted or fetch >= _BRANCH_FILTER_MAX_CANDIDATES:
+                    logger.info(
+                        "conversation_archive.recall_below_floor thread_id=%s floor=%.2f",
+                        thread_id,
+                        min_dense_score,
+                    )
+                    return None
+                fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)
+                continue
             rows = store.chunks_by_id(conn, [hit.chunk_id for hit in candidates])
             if not transcript:
                 hits = candidates[:limit]
@@ -2231,11 +2355,7 @@ def recall(
                 )
             # Enough live hits, or nothing more to widen into: an abandoned branch can
             # outrank the live one, but it cannot outrank it forever.
-            if (
-                len(hits) >= limit
-                or len(candidates) < fetch
-                or fetch >= _BRANCH_FILTER_MAX_CANDIDATES
-            ):
+            if len(hits) >= limit or exhausted or fetch >= _BRANCH_FILTER_MAX_CANDIDATES:
                 hits = hits[:limit]
                 break
             fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)

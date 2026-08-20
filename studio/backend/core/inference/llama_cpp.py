@@ -84,6 +84,182 @@ from core.inference.llama_server_args import (
 )
 
 
+def _backend_supports_tools(backend) -> bool:
+    """`backend.supports_tools`, or False if asking is not safe.
+
+    The property reads load-time state a backend mid-construction or teardown may not have
+    yet (measured: AttributeError without the diffusion flag), and a context-policy probe
+    has no business raising on the chat path.
+    """
+    try:
+        return bool(backend.supports_tools)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _memory_tool_withheld(thread_id, tools) -> bool:
+    """Whether this request carries no `search_conversation` although its thread has one.
+
+    The tool-loop paths know their own catalogue, so they can answer what the process
+    policy cannot: will THIS request reach the archive. A request that NAMED its tools is
+    the case that matters on either surface, since both honour the caller's list verbatim;
+    resetting an epoch behind a tool that is then absent every turn is the one outcome
+    checkpoint compaction must never produce.
+
+    Gated on the thread ALREADY having an archive, which is load-bearing, not an
+    optimisation: the archive is written during the first compaction, so on the turn that
+    first resets the tool legitimately does not exist yet and its absence says nothing.
+    Refusing there would mean no thread could ever start an epoch.
+    """
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+        if not conversation_archive.has_archive(thread_id):
+            return False
+    except Exception:  # noqa: BLE001 -- unknown archive state is "do not refuse"
+        return False
+    names = set()
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = (function or {}).get("name") if isinstance(function, dict) else None
+        if name:
+            names.add(name)
+    return "search_conversation" not in names
+
+
+def _can_reset_epoch(
+    thread_id,
+    supports_tools: bool,
+    *,
+    tools_withheld: bool = False,
+) -> bool:
+    """Whether this request may compact by RESETTING rather than trimming.
+
+    Two refusals, both about not lying to the user:
+
+    * the dropped turns must reach the archive, or the reset makes them unreachable while
+      the notice says they are searchable. Incognito, API-only and threadless requests
+      archive nothing, so they keep the rolling window.
+    * the model must be able to receive `search_conversation` at all, so a template that
+      cannot render tools, or a process with the tool loop off, is refused.
+    """
+    if not thread_id or not supports_tools:
+        return False
+    if tools_withheld:
+        # The REQUEST withdrew the tool loop, which the process policy below cannot see
+        # (`tool_choice: "none"` also skips the checkpoint repair that would re-admit
+        # `search_conversation` alone). A caller that sets it once usually sets it every
+        # turn, so resetting would put the epoch behind a tool that never arrives while the
+        # carried-forward header tells the model to search. Same refusal, one scope down.
+        return False
+    try:
+        from state.tool_policy import get_tool_policy
+
+        # `supports_tools` is the TEMPLATE's capability, not "will this request be given
+        # the tool". `--disable-tools` refuses every tool for the life of the process, so
+        # resetting would strand the epoch behind a tool that never arrives. Rolling keeps
+        # the newest turns in view and re-injects the inline recall, needing no tool.
+        if get_tool_policy() is False:
+            return False
+    except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
+        return False
+    try:
+        from core.rag import conversation_archive
+        return bool(conversation_archive.enabled() and conversation_archive.can_archive(thread_id))
+    except Exception:  # noqa: BLE001 -- an unavailable archive is a "no", never an error
+        return False
+
+
+def _archive_is_degraded() -> bool:
+    """Whether an archive write for THIS request would fail.
+
+    Separate from `_can_reset_epoch`: those gates decide whether an epoch may EXIST at all,
+    this only whether a NEW one may start right now, leaving one in force untouched.
+
+    Both halves are needed. `degraded()` is the verdict on the LAST write, the wrong tense:
+    this request's write runs afterwards and swallows its failure, so the first request
+    after the store dies would claim searchable turns that were never indexed.
+    `reachable()` probes the store and embedder now, closing that turn.
+    """
+    try:
+        from core.rag import conversation_archive
+        return bool(conversation_archive.degraded()) or not conversation_archive.reachable()
+    except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
+        return False
+
+
+def _fit_context(messages, **kwargs):
+    """The context policy in one place, so the five call sites do not each pick one.
+
+    Checkpoint mode resets the epoch; rolling mode is the previous behaviour, still
+    reachable via `UNSLOTH_CONTEXT_POLICY=rolling` as the A/B arm and the escape hatch for
+    a misbehaving template family. A request that may not reset (see `_can_reset_epoch`)
+    silently keeps rolling, which is why the two fits share a signature.
+    """
+    can_reset = bool(kwargs.pop("can_reset", False))
+    try:
+        from core.inference import checkpoint
+        if not can_reset and checkpoint.enabled() and int(kwargs.get("sticky_dropped") or 0) > 0:
+            # An epoch is in force but THIS request may not reset. Falling straight through
+            # to rolling was the worst of both: it replays the checkpoint-sized (near-total)
+            # eviction WITHOUT rebuilding the block that made it survivable. Measured on a
+            # 24-message thread: 22 dropped either way, but rolling left the standing
+            # instruction gone entirely, one turn after the user was told the conversation
+            # was compacted and searchable. So replay the epoch and keep the block, with the
+            # header's tool sentence swapped for one that promises no lookup this request
+            # cannot perform. If the replay cannot fit, fall through to rolling BELOW.
+            fitted, truncation = checkpoint.fit_checkpoint_context(
+                messages, can_reset = False, searchable = False, **kwargs
+            )
+            if truncation is not None and truncation.get("fits"):
+                return fitted, truncation
+            # A checkpoint boundary means nothing to rolling, which cannot rebuild what it
+            # assumed. Recomputing loses the epoch: an un-compacted window tells no lie.
+            kwargs.pop("sticky_dropped", None)
+        if can_reset and checkpoint.enabled():
+            # A degraded archive downgrades reset to REPLAY rather than closing the door.
+            # Refusing outright sent the request to rolling, which replays the same boundary
+            # WITHOUT rebuilding the block, so a thread with an epoch silently lost its
+            # standing instructions (and `degraded()` does not self-clear on a broken
+            # embedder, so "transient" is not safe to assume). Only starting a NEW epoch is
+            # refused, the half that would promise a history nobody is writing.
+            #
+            # `searchable` goes with it: the archive write runs AFTER this fit and swallows
+            # its failure, so without it the block would claim the dropped turns are
+            # retrievable while nothing was indexed, and repeat that claim every later turn.
+            # Cleared, it says stored but not retrievable now -- true either way -- and the
+            # tool is still offered so a recovered archive is not walled off.
+            # Resolved lazily, and once. Establishing this probes the store and runs a
+            # real embedding forward, and it was being paid on EVERY persisted tool-capable
+            # request using truncate_oldest -- including short conversations that never
+            # overflow and never render a block. The fit asks only where the answer
+            # changes what it does: before starting a new epoch, and before claiming a
+            # block is searchable.
+            _degraded: dict = {}
+
+            def _is_degraded() -> bool:
+                if "value" not in _degraded:
+                    _degraded["value"] = _archive_is_degraded()
+                return bool(_degraded["value"])
+
+            fitted, truncation = checkpoint.fit_checkpoint_context(
+                messages,
+                can_reset = lambda: not _is_degraded(),
+                searchable = lambda: not _is_degraded(),
+                **kwargs,
+            )
+            # `can_reset = False` has no phase two, so it refuses once the replayed
+            # boundary is no longer enough (measured: a threadless request went from
+            # `dropped 4, fits True` to `fits False`). Rolling still serves those, so a
+            # refusal here falls through rather than reaching the caller.
+            if truncation is None or truncation.get("fits"):
+                return fitted, truncation
+    except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
+        logger.warning("Checkpoint fit failed; falling back to the rolling window", exc_info = True)
+    return fit_rolling_context(messages, **kwargs)
+
+
 def _fit_with_instruction_pins(
     messages,
     *,
@@ -118,11 +294,11 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
-    fitted, truncation = fit_rolling_context(
+    fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
     if pins and truncation and not truncation.get("fits"):
-        return fit_rolling_context(messages, protected_message_ids = anchors or None, **kwargs)
+        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
     return fitted, truncation
 
 
@@ -582,6 +758,15 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     USER turn on is excluded: it is never evicted, and an inline recall rewrites that turn
     into a new dict, which an identity scan reads as an eviction. Excluding just the last
     message is not the same thing, since a continued assistant message follows it.
+
+    Every evicted message is counted, not just the leading run, because that is what the
+    replay consumes: ``truncate_oldest_messages``'s ``min_dropped`` counts dropped messages
+    and SKIPS protected groups. Stopping at the first survivor matched that only while
+    eviction was a clean prefix, which a protected group (an instruction pin, an anchored
+    recall) breaks, leaving live turns on both sides. Under a checkpoint reset that
+    understated the boundary enough to un-compact the epoch: the removed turns returned on
+    the next request, one turn after the user was told they were compacted away. Where
+    eviction IS a prefix, which is every pin-free rolling case, the count is unchanged.
     """
     messages = list(branch or ())
     cutoff = max(
@@ -594,9 +779,8 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     for message in messages:
         if message.get("role") in ("system", "developer"):
             continue
-        if id(message) in live:
-            break
-        count += 1
+        if id(message) not in live:
+            count += 1
     return count
 
 
@@ -608,13 +792,21 @@ def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
 
 
 def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict]]) -> str:
-    """The text of the first message a fit KEPT, as the branch spells it, or "".
+    """The text of the first message a fit kept AFTER everything it dropped, or "".
 
     ``boundary_messages`` is a count against one particular transcript, and the next
     request's transcript is not guaranteed to be that one plus new turns: deleting an
     already-evicted prompt shortens the front, so replaying the count unchanged lands the
     boundary two messages too deep and evicts history that is still live. The anchor names
     the message the boundary was meant to land ON, which survives a deletion in front of it.
+
+    After the LAST eviction, not simply the first survivor. Eviction is a clean prefix only
+    while nothing is protected mid-list; an instruction pin or an anchored recall leaves
+    live turns on both sides, and the first survivor is then the pin itself, sitting near
+    the front. `_sticky_compaction_boundary` clamps the count down to the anchor's index,
+    so anchoring on the pin cut the replayed boundary back to the pin and handed back every
+    turn compacted after it -- one turn after the user was told they were compacted away,
+    which is the same un-compaction `_branch_boundary`'s own count was fixed to prevent.
 
     Text, not an id or an index: ids are per-request objects and an index is the very thing
     that goes stale. Read back by ``_sticky_compaction_boundary``, which only ever lets the
@@ -623,7 +815,11 @@ def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict
     """
     messages = _branch_non_system(branch)
     live = {id(message) for message in conversation}
-    for message in messages:
+    last_dropped = max(
+        (index for index, message in enumerate(messages) if id(message) not in live),
+        default = -1,
+    )
+    for message in messages[last_dropped + 1 :]:
         if id(message) in live:
             return _anchor_text(message)
     return ""
@@ -698,6 +894,7 @@ def _sticky_compaction_boundary(
     if not thread_id:
         return 0
     try:
+        from core.inference import checkpoint
         from storage import studio_db
 
         # The stored rows are the whole DAG, so the newest assistant turn can belong to a
@@ -751,6 +948,16 @@ def _sticky_compaction_boundary(
                 return 0
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
+                return 0
+            # And only under the policy that recorded it. A checkpoint boundary is the depth
+            # of a RESET, affordable only because the block is rebuilt on every replay;
+            # under `UNSLOTH_CONTEXT_POLICY=rolling` nothing rebuilds it and both
+            # `_fit_context` guards are `checkpoint.enabled()`, so the depth replays with
+            # nothing handed back (18 evicted where rolling picks 6). Refused HERE, not at
+            # the fit: `boundary_messages` is re-recorded every turn, so a rolling turn that
+            # inherited 18 would persist it with no `checkpoint` key and make the
+            # reset-sized window permanent. Let rolling compute its own.
+            if truncation.get("checkpoint") and not checkpoint.enabled():
                 return 0
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was
@@ -824,6 +1031,7 @@ def _archive_and_recall(
     thread_id: Optional[str],
     style: str,
     recall_done: bool,
+    force_recall: bool = True,
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
@@ -864,6 +1072,13 @@ def _archive_and_recall(
         counts = {"archived_messages": archived}
 
         if recall_done:
+            result["counts"] = counts
+            return result
+        if not force_recall:
+            # Checkpoint mode, past the first turn of the epoch. Archiving still ran above
+            # (it must, or the epoch stops being searchable), but the automatic lookup fires
+            # only on the turn that reset the conversation; after that the model has
+            # `search_conversation` and decides for itself.
             result["counts"] = counts
             return result
 
@@ -21857,6 +22072,7 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         context_overflow: Optional[str] = None,
         thread_id: Optional[str] = None,
+        tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -21940,6 +22156,11 @@ class LlamaCppBackend:
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    can_reset = _can_reset_epoch(
+                        thread_id,
+                        _backend_supports_tools(self),
+                        tools_withheld = tools_withheld,
+                    ),
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -21950,6 +22171,9 @@ class LlamaCppBackend:
                         branch_messages = _before_fit,
                         thread_id = thread_id,
                         style = "inline",
+                        # Checkpoint mode recalls once, on the turn that reset; rolling has no
+                        # such key and keeps recalling on every turn that evicted anything.
+                        force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = False,
                         recall_budget_tokens = max(
                             0,
@@ -22159,6 +22383,9 @@ class LlamaCppBackend:
                     # archived nowhere and no reserve or boundary applies, on the one path
                     # that deliberately compacts again.
                     thread_id = thread_id,
+                    # The retry refits, so it must be told the same about this request's
+                    # tools as the first attempt was.
+                    tools_withheld = tools_withheld,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -22558,6 +22785,11 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        can_reset = _can_reset_epoch(
+                            thread_id,
+                            _backend_supports_tools(self),
+                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                        ),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = (
                             0
@@ -22587,6 +22819,9 @@ class LlamaCppBackend:
                             style = (
                                 "tool" if "search_conversation" in _enabled_tool_names else "inline"
                             ),
+                            # Checkpoint mode recalls once, on the turn that reset; rolling has
+                            # no such key and recalls on every turn that evicted anything.
+                            force_recall = bool(truncation.get("checkpoint_started", True)),
                             recall_done = _conversation_recall_done,
                             recall_budget_tokens = max(
                                 0,
@@ -22708,6 +22943,11 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        can_reset = _can_reset_epoch(
+                            thread_id,
+                            _backend_supports_tools(self),
+                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                        ),
                     )
                     if truncation and truncation["fits"]:
                         # Archive only: this refit runs against a smaller replacement
@@ -24058,6 +24298,17 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    can_reset = _can_reset_epoch(
+                        thread_id,
+                        _backend_supports_tools(self),
+                        # Withheld, not `tools`: this is the synthesised final answer
+                        # and `stream_payload` below sends no tools array at all, so
+                        # the request's catalogue answers a question it does not pose
+                        # and would let a NEW epoch start on the one pass that can
+                        # never call `search_conversation`. Replaying an epoch already
+                        # in force is unaffected.
+                        tools_withheld = True,
+                    ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
@@ -24076,6 +24327,9 @@ class LlamaCppBackend:
                         # with no tools array, so a forged tool role has no catalogue to
                         # match and breaks strict templates.
                         style = "inline",
+                        # Checkpoint mode recalls once, on the turn that reset; rolling has no
+                        # such key and keeps recalling on every turn that evicted anything.
+                        force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = _conversation_recall_done,
                         recall_budget_tokens = max(
                             0,
@@ -24172,6 +24426,12 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    can_reset = _can_reset_epoch(
+                        thread_id,
+                        _backend_supports_tools(self),
+                        # The final pass again, so again no tools array is sent.
+                        tools_withheld = True,
+                    ),
                 )
                 if truncation and truncation["fits"]:
                     # Archive only, for the same reason as the iteration refit above.

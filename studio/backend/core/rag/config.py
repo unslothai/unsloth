@@ -48,6 +48,10 @@ CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") =
 # earlier; "relevance" restores the previous rendering. Presentation only: neither changes
 # which turns are selected.
 CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
+# Cosine floor for the automatic recall only, never for a search the model asked for.
+# Default 0.0 (off): a weak match is often still the right turn in one's own conversation.
+# Raise it when the automatic block does more harm than good.
+CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # Reject uploads larger than this, so one pathological file can't drive unbounded parse

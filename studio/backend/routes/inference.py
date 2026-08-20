@@ -2892,6 +2892,58 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
+_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+
+
+def _tool_call_names(message) -> list[Optional[str]]:
+    """Every function name in a message's ``tool_calls``, or []. None for a nameless call."""
+    calls = (
+        message.get("tool_calls")
+        if isinstance(message, dict)
+        else getattr(message, "tool_calls", None)
+    )
+    names: list[Optional[str]] = []
+    for call in calls or []:
+        function = (
+            call.get("function") if isinstance(call, dict) else getattr(call, "function", None)
+        ) or {}
+        names.append(
+            function.get("name") if isinstance(function, dict) else getattr(function, "name", None)
+        )
+    return names
+
+
+def _only_studio_memory_tool_history(payload) -> bool:
+    """True when the request's ONLY tool history is Studio's own conversation memory.
+
+    Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
+    turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
+    tool contract, that history routes every later turn to the llama-server passthrough,
+    which runs no context fit, so the epoch, the carried-forward block and the automatic
+    recall vanish one turn after the compaction that created them. It is Studio's own
+    read-only tool run by Studio's own loop, so it must route as a tools-on Studio chat.
+
+    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
+    any other tool name means "not ours", so a real client tool loop is never claimed.
+    """
+    if getattr(payload, "tools", None):
+        return False
+    saw_call = False
+    for message in getattr(payload, "messages", None) or []:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        for name in _tool_call_names(message):
+            saw_call = True
+            if name not in _STUDIO_MEMORY_TOOLS:
+                return False
+        if role == "tool":
+            result_name = (
+                message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
+            )
+            if result_name not in _STUDIO_MEMORY_TOOLS:
+                return False
+    return saw_call
+
+
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
     """True when a GGUF request is forwarded to llama-server verbatim.
 
@@ -2905,7 +2957,9 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or _has_openai_tool_history(payload.messages)
+    ) or (
+        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
+    )
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
@@ -3437,8 +3491,127 @@ def _thread_has_conversation_archive(thread_id) -> bool:
         return False
 
 
+def _as_plain_messages(messages):
+    """Request messages as plain dicts, whatever shape the route received them in."""
+    if not messages:
+        return messages
+    plain = []
+    for message in messages:
+        if isinstance(message, dict):
+            plain.append(message)
+            continue
+        dump = getattr(message, "model_dump", None)
+        if dump is None:
+            return messages
+        try:
+            plain.append(dump())
+        except Exception:
+            return messages
+    return plain
+
+
+def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
+    """Whether an epoch was ever committed on this thread, read from what it persisted.
+
+    An archive is not a checkpoint: a rolling-window thread archives too, and re-admitting
+    the search tool there overrides the caller's `enable_tools = false` for a repair that
+    cannot happen, and costs the request the tool-path guards that reject `n > 1` and
+    non-streaming ask/auto.
+
+    Read from the assistant turn's own `contextTruncation`, the same metadata the sticky
+    boundary uses, so no new state is stored and it survives a restart. The NEWEST turn
+    answers: while an epoch is in force every fit records it on the turn it produced, so
+    a thread mid-epoch still says yes, and a thread whose window grew until the whole
+    branch fits again says no rather than forcing the loop open for ever.
+    """
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+        from storage import studio_db
+
+        # Scoped to the branch the request is on. The stored rows are the whole DAG, so a
+        # Retry that forked BEFORE the epoch-recording turn leaves it on an abandoned
+        # sibling; a thread-wide scan would then report a checkpoint for a branch that
+        # never reset. Same filter the sticky boundary applies, for the same reason.
+        # As dicts: on the ordinary completions path these are `ChatMessage` models, and
+        # the archive helper reads them with `.get`, so it raised, the caller swallowed it
+        # and every thread reported no checkpoint. A tools-off thread that HAD reset then
+        # never reopened the loop, so the block's promise that the history is searchable
+        # was false for the whole of that epoch.
+        branch = conversation_archive.branch_message_texts(
+            _as_plain_messages(branch_messages), ("assistant",)
+        )
+        if branch_messages and not branch:
+            # A branch with no reply of its own never recorded an epoch. Without this the
+            # filter below is skipped rather than applied and the scan goes thread-wide
+            # again, which editing or regenerating the FIRST user turn hits by re-sending
+            # [system, user]. `_sticky_compaction_boundary` returns 0 there.
+            return False
+        live = set(branch or ())
+        rows = [
+            message
+            for message in reversed(studio_db.list_chat_messages(str(thread_id)) or [])
+            if message.get("role") == "assistant"
+        ]
+        if branch:
+            # Exact matches where any exist, substring only as the fallback: the branch
+            # check is textual, so an abandoned short reply rides in on a longer live one
+            # ("Done" against "Not done yet") and reopens the loop on the live branch. The
+            # sticky boundary prefers exact matches for the same collision.
+            exact = [
+                message
+                for message in rows
+                if conversation_archive.message_text(message.get("content")) in live
+            ]
+            rows = exact or [
+                message
+                for message in rows
+                if conversation_archive.content_on_branch(message.get("content"), branch)
+            ]
+        if not rows:
+            return False
+        # Rows the text cannot tell apart decide TOGETHER. Two Retry siblings can carry
+        # byte-identical replies with only the abandoned one having reset, and taking the
+        # first match reopened the loop on the branch that never did. Where the branch
+        # check cannot separate them, choose the reading that leaves the request as it was,
+        # as the sticky boundary's `min(boundaries)` does. The case this loses -- a real
+        # epoch on the live sibling -- is one the sticky boundary declines to replay
+        # anyway, so there is nothing for the tool to reach back to.
+        newest = conversation_archive.message_text(rows[0].get("content"))
+        twins = [
+            message
+            for message in rows
+            if conversation_archive.message_text(message.get("content")) == newest
+        ]
+
+        def _checkpointed(message: dict) -> bool:
+            metadata = message.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                return False
+            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
+                "contextTruncation"
+            )
+            return bool(isinstance(truncation, dict) and truncation.get("checkpoint"))
+
+        # The NEWEST distinguishable state answers, and nothing older. While an epoch is
+        # in force every fit records it on the turn it produced, so the newest row says
+        # so too; once the window grows and the whole branch fits again the fit records
+        # nothing, and scanning back to an older reset then forced the tool loop on for
+        # the rest of the thread's life -- overriding enable_tools = false, and the n > 1
+        # and non-streaming guards with it, to repair a compaction that no longer exists.
+        return all(_checkpointed(message) for message in twins)
+    except Exception:
+        return False
+    return False
+
+
 async def _select_request_tools(
-    payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
+    payload: ChatCompletionRequest,
+    *,
+    tools_on: bool,
+    mcp_allowed: bool,
+    checkpoint_fitted: bool = False,
 ) -> list[dict]:
     """Resolve the tool list for a chat request: built-ins filtered by the
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
@@ -3478,8 +3651,14 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and tools_on:
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
+        if not tools_on:
+            # After a reset, search_conversation is the only route back to what was
+            # dropped, so it is admitted even with the user's tools off, and ALONE: models
+            # meeting a large catalogue at a compaction boundary have been seen calling a
+            # guessed tool name. Read-only and always-safe, so it prompts for nothing.
+            tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3497,19 +3676,61 @@ _COMPACTED_SESSION_NUDGE = (
     "answering. Never tell the user you have no record of an earlier turn, and never "
     "assume the conversation began where your visible context begins."
 )
+# Said only under checkpoint compaction, where the reset is total: the automatic retrieval
+# runs on the turn that reset and NOT after, so "I was shown this" versus "I must go and
+# look" is the difference between a right answer and an invented one.
+#
+# Written CONDITIONALLY because the system prompt is assembled before the fit that would
+# reset, so nobody here knows whether this turn produced a carried_forward block. Asserting
+# a reset that did not happen would tell the model its history is gone and discourage the
+# search that would recover it; a conditional is true either way and costs a clause.
+_CHECKPOINT_SESSION_NUDGE = (
+    "If a carried_forward block appears in this system prompt, the conversation was reset "
+    "to free space: everything before that block is gone from your context and only the "
+    "block was kept. It is a lossy record of the user's earlier instructions, not the "
+    "conversation itself. Earlier turns are retrieved for you automatically on the turn "
+    "the reset happens; on every later turn you must call search_conversation yourself to "
+    "see them."
+)
 
 
-def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
+def _checkpoint_needs_search() -> bool:
+    """Whether the context policy makes search_conversation load-bearing rather than extra.
+
+    Read at call time, so flipping UNSLOTH_CONTEXT_POLICY needs no restart.
+    """
+    try:
+        from core.inference import checkpoint
+        return checkpoint.enabled()
+    except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
+        return False
+
+
+def _apply_compaction_nudge(
+    nudge: str,
+    tools: list[dict],
+    *,
+    checkpoint_fitted: bool = False,
+) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
     Gated on the tool rather than separate state, so it appears exactly when there is an
-    archive to search and stays a no-op for chats that never compacted."""
+    archive to search and stays a no-op for chats that never compacted.
+
+    `checkpoint_fitted` is the CALLER's answer to "does this request go through
+    `_fit_context`, which can reset the epoch", not the process-wide policy. Only the
+    llama.cpp path fits that way; reading the global policy instead told a safetensors
+    model that a carried_forward block had removed its history when no such block exists.
+    Defaults to False so a new call site claims the reset rather than inheriting it."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge
+    text = _COMPACTED_SESSION_NUDGE
+    if checkpoint_fitted and _checkpoint_needs_search():
+        text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
-        return _COMPACTED_SESSION_NUDGE
-    return nudge + " " + _COMPACTED_SESSION_NUDGE
+        return text
+    return nudge + " " + text
 
 
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
@@ -14011,6 +14232,27 @@ async def openai_chat_completions(
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
     _client_disabled_tool_calls = payload.tool_choice == "none" and not _studio_tool_loop_requested
+    # Wider than `tool_choice: "none"`, and used only to ask "can this request ever reach
+    # search_conversation", never to narrow the catalogue. `max_tool_calls_per_message: 0`
+    # means disabled, so the loop runs no iterations and its final pass withholds tools;
+    # `n > 1` is rejected by the tool-path guard the moment the loop opens. Either way the
+    # epoch would sit behind an uncallable tool, so these keep the rolling window.
+    _tool_loop_unusable = (
+        _client_disabled_tool_calls
+        or payload.max_tool_calls_per_message == 0
+        or _wants_multiple_choices(payload)
+        # A confirmation gate with nowhere to ask. The first overflowing turn would open
+        # an epoch, and the NEXT identical request would enter the checkpoint repair,
+        # enable the tool, and be refused 400 by the stream guard below, permanently:
+        # the epoch is replayed from the boundary, so the thread never recovers on its
+        # own. Measured on a non-streaming request with permission_mode ask, and equally
+        # on auto and on a bare confirm_tool_calls, which the validator folds to ask.
+        or (
+            _confirm_gate_needs_stream(payload)
+            and not payload.bypass_permissions
+            and not payload.stream
+        )
+    )
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
@@ -14215,10 +14457,41 @@ async def openai_chat_completions(
             and _cli_policy is not False
         )
         use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
+        # A compacted thread opens the tool loop even with the user's tools off, since
+        # search_conversation is the only way back to what the reset dropped, and
+        # `_select_request_tools` admits it alone. Still gated on `supports_tools`: a
+        # template that cannot render one tool must not be told it has a memory (which is
+        # why such a model never gets checkpoint mode at all, see `_can_reset_epoch`).
+        #
+        # Gated on the request's own overflow policy too: every checkpoint fit sits behind
+        # `context_overflow == "truncate_oldest"`, so a request that did not ask for
+        # truncation cannot reset and has nothing to go back for. Re-admitting the tool
+        # there overrode `enable_tools = false` for an impossible repair and cost n > 1 and
+        # non-streaming ask/auto requests the guards below.
+        if (
+            not use_tools
+            and not _tool_loop_unusable
+            and _cli_policy is not False
+            and llama_backend.supports_tools
+            and _rolling_context_policy(payload) is not None
+            and _checkpoint_needs_search()
+            and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+            # And an epoch actually happened here: a rolling-window thread archives
+            # identically, and there the loop would open for a repair that cannot happen.
+            and _thread_has_checkpoint(
+                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+            )
+        ):
+            use_tools = True
 
         if use_tools:
             tools_to_use = await _select_request_tools(
-                payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
+                payload,
+                tools_on = _tools_on,
+                mcp_allowed = _mcp_allowed,
+                # Only this branch runs the checkpoint fit. The process-wide policy says a
+                # reset is POSSIBLE somewhere, not that this request can perform one.
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
@@ -14266,7 +14539,14 @@ async def openai_chat_completions(
 
             # Nudge the model to ground in attached documents instead of memory.
             _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
-            _nudge = _apply_compaction_nudge(_nudge, tools_to_use)
+            # This path fits through `_fit_context`, the only fit that can reset the epoch,
+            # and only when the request asked for truncation. Otherwise the checkpoint half
+            # of the nudge would describe a reset that cannot happen.
+            _nudge = _apply_compaction_nudge(
+                _nudge,
+                tools_to_use,
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            )
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -15031,6 +15311,11 @@ async def openai_chat_completions(
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
                 thread_id = payload.thread_id,
+                # These requests suppress the tool loop AND are excluded from the checkpoint
+                # repair above, so search_conversation is offered neither now nor on the
+                # next identical turn. The epoch gate cannot see that from the process
+                # policy alone, so tell it.
+                tools_withheld = _tool_loop_unusable,
             )
 
         _gguf_sentinel = object()
@@ -15827,6 +16112,8 @@ async def openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
+        # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = system_prompt

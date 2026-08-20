@@ -2189,6 +2189,57 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
     assert sources[0]["turn"] is None
 
 
+def test_the_forced_floor_filters_candidates_rather_than_deleting_results(conn, monkeypatch):
+    """A floor applied after the top-k slice is a deletion, not a filter.
+
+    Weak hits took the slots and were then removed, so at a floor of 0.5 with four weak
+    candidates on top the forced recall returned nothing where the unforced one returned 4.
+    Only reachable when an operator raises RAG_CONVERSATION_FORCED_MIN_SCORE off its 0.0
+    default.
+    """
+    from core.rag import config
+
+    for index in range(8):
+        _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
+    real = conversation_archive._candidates
+
+    def weak_first(*args, **kwargs):
+        hits = real(*args, **kwargs)
+        for position, hit in enumerate(hits):
+            hit.dense_score = 0.1 if position < 4 else 0.9
+        return hits
+
+    monkeypatch.setattr(conversation_archive, "_candidates", weak_first)
+    monkeypatch.setattr(config, "CONVERSATION_FORCED_MIN_SCORE", 0.5)
+
+    forced = conversation_archive.recall(THREAD, "pelican", top_k = 4, forced = True)
+
+    assert forced is not None, "the floor deleted the result instead of filtering candidates"
+    assert len(forced[1]) == 4
+
+
+def test_a_floor_nothing_clears_still_returns_nothing(conn, monkeypatch):
+    """The filter must not turn into "return the weak ones anyway"."""
+    from core.rag import config
+
+    for index in range(8):
+        _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
+    real = conversation_archive._candidates
+
+    def all_weak(*args, **kwargs):
+        hits = real(*args, **kwargs)
+        for hit in hits:
+            hit.dense_score = 0.1
+        return hits
+
+    monkeypatch.setattr(conversation_archive, "_candidates", all_weak)
+    monkeypatch.setattr(config, "CONVERSATION_FORCED_MIN_SCORE", 0.5)
+
+    assert conversation_archive.recall(THREAD, "pelican", top_k = 4, forced = True) is None
+    # And the tool-initiated path is untouched by the floor.
+    assert conversation_archive.recall(THREAD, "pelican", top_k = 4) is not None
+
+
 def test_the_newest_revision_survives_a_tied_run_LONGER_than_the_cap(conn):
     """Reordering a window cannot reach a turn that never entered it.
 
