@@ -101,7 +101,7 @@ def test_each_lane_gets_its_own_port_and_studio_home() -> None:
         f"the lanes do not have distinct boot ports: {sorted(ports)}. Two servers on one "
         f"port means the second never binds."
     )
-    assert re.search(r'home=.*\$\{?LANE', body) or re.search(r'\.studio-lane-\$LANE', body), (
+    assert re.search(r"home=.*\$\{?LANE", body) or re.search(r"\.studio-lane-\$LANE", body), (
         "the lane home does not vary by lane, so both lanes share one UNSLOTH_STUDIO_HOME "
         "and the auth wipe races"
     )
