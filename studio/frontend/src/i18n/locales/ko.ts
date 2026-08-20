@@ -193,6 +193,7 @@ export const ko = {
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
+      remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
       agents: "에이전트",
@@ -1224,6 +1225,11 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+    },
+    remoteLan: {
+      title: "원격 및 LAN",
+      description:
+        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",
