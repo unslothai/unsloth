@@ -136,8 +136,8 @@ import {
   readTextThoughtSignature,
   claimAutoContinue,
   recordAutoContinue,
-  releaseAutoContinueLeases,
-  renewAutoContinueLeases,
+  releaseAutoContinueLease,
+  renewAutoContinueLease,
   shouldAutoContinueMessage,
   AUTO_CONTINUE_LEASE_RENEW_MS,
 } from "@/features/chat/utils/continuation";
@@ -307,6 +307,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useMemo,
   useLayoutEffect,
   useRef,
   useState,
@@ -1504,53 +1505,81 @@ const ThreadMessage: FC = () => {
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
 /**
- * Which runtime a lease belongs to, for the bar that takes it and the keeper that holds it.
+ * The runtime a continuation lease belongs to, and the way a bar hands one over to it.
  *
- * Empty outside a Thread, which no continuation bar is. Compare mode mounts a runtime per
- * pane, so this is what keeps one pane's leases apart from the other's.
+ * `holder` keeps two runtimes apart: compare mode mounts one per pane, and neither may
+ * touch the other's leases. `adopt` is how the bar that took a lease tells its own keeper
+ * which MESSAGE to hold, because the bar unmounts as soon as the continuation's sibling
+ * becomes the selected branch, taking any timer of its own with it.
+ *
+ * Empty outside a Thread, which no continuation bar is; the lease then simply runs out its
+ * TTL, which is the same thing that happens to a tab that closes mid-run.
  */
-const AutoContinueHolderContext = createContext("");
+const AutoContinueHolderContext = createContext<{
+  holder: string;
+  adopt: (messageId: string) => void;
+}>({ holder: "", adopt: () => undefined });
 
 /**
- * Hold this runtime's automatic-continuation leases for as long as ITS run is live.
+ * Hold the lease of the continuation THIS runtime is running, for as long as it runs.
  *
- * Thread level, not on the bar that took the lease: the continuation runs as a sibling and
- * becomes the selected branch, so the truncated message unmounts almost immediately and a
- * timer living there would die with it, mid-stream.
- *
- * Scoped to one holder, because thread level is not tab level. Compare mode mounts two of
- * these side by side, each with its own thread and its own run; renewing or releasing
- * every lease the tab owns would let the pane that finishes first end the hold on the pane
- * still generating, whose own renewals would then find nothing held.
+ * Two lists, not one. A holder is a runtime and outlives the runs inside it: when a round
+ * ends on another Max Tokens cut, the bar's effect claims the next message before this
+ * effect sees `isRunning` go false, because React runs child effects before parent ones.
+ * A keeper that renewed or released "everything this holder owns" would settle the round
+ * that just started along with the round that ended, and one settle window later another
+ * tab could claim it and pay for it twice. So a claim lands in `pending`, only a run
+ * starting promotes it to `active`, and only `active` is ever released. The ordering then
+ * stops mattering: the next round cannot be in the list being given back, whichever effect
+ * ran first and whether or not a lock manager was in the way.
  *
  * Renewed while running, and given back on the first tick that is not -- a finished run, a
- * cancelled one, or a failed one all land there. Only the run that follows a claim has
- * anything to renew; every other run finds nothing held and does nothing. What is left
- * over after that is a runtime that stopped renewing without saying so, which is a tab that
- * closed or crashed, and the TTL is what covers it.
+ * cancelled one, or a failed one all land there. What is left over after that is a runtime
+ * that stopped renewing without saying so, which is a tab that closed or crashed, and the
+ * TTL is what covers it.
  */
-function useAutoContinueLeaseKeeper(holder: string): void {
+function useAutoContinueLeaseKeeper(holder: string): {
+  holder: string;
+  adopt: (messageId: string) => void;
+} {
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const wasRunning = useRef(false);
+  /** Claimed, with no run of this thread observed for it yet. */
+  const pending = useRef<string[]>([]);
+  /** The messages the run currently live is resuming. */
+  const active = useRef<string[]>([]);
+
+  const adopt = useCallback((messageId: string) => {
+    if (messageId && !pending.current.includes(messageId)) {
+      pending.current.push(messageId);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isRunning) {
-      // Only on the way down. An idle tick must not release a lease that was taken a
-      // moment ago and whose run has not turned `isRunning` on yet.
-      if (wasRunning.current) {
-        wasRunning.current = false;
-        void releaseAutoContinueLeases(holder);
+      // Only what this run was resuming. A message claimed for the NEXT round is still in
+      // `pending` and is not this run's to give back.
+      const finished = active.current;
+      active.current = [];
+      for (const messageId of finished) {
+        void releaseAutoContinueLease(messageId, holder);
       }
       return;
     }
-    wasRunning.current = true;
-    void renewAutoContinueLeases(holder);
-    const timer = setInterval(() => {
-      void renewAutoContinueLeases(holder);
-    }, AUTO_CONTINUE_LEASE_RENEW_MS);
+    active.current = [...active.current, ...pending.current];
+    pending.current = [];
+    const renewActive = () => {
+      for (const messageId of active.current) {
+        void renewAutoContinueLease(messageId, holder);
+      }
+    };
+    renewActive();
+    const timer = setInterval(renewActive, AUTO_CONTINUE_LEASE_RENEW_MS);
     return () => {
       clearInterval(timer);
     };
   }, [isRunning, holder]);
+
+  return useMemo(() => ({ holder, adopt }), [holder, adopt]);
 }
 
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
@@ -1578,8 +1607,7 @@ export const Thread: FC<{
   useThreadForkCounts();
   // Stable per mounted runtime and distinct between the two compare panes, which is
   // exactly what the leases have to be told apart by.
-  const autoContinueHolder = useId();
-  useAutoContinueLeaseKeeper(autoContinueHolder);
+  const autoContinueHolder = useAutoContinueLeaseKeeper(useId());
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -6624,7 +6652,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const [claimHeldElsewhere, setClaimHeldElsewhere] = useState(false);
   // The runtime this bar belongs to, so its keeper renews and releases this claim and no
   // other pane's.
-  const autoContinueHolder = useContext(AutoContinueHolderContext);
+  const { holder: autoContinueHolder, adopt: adoptAutoContinue } = useContext(
+    AutoContinueHolderContext,
+  );
   const autoContinuing =
     !claimHeldElsewhere &&
     resumable &&
@@ -6650,6 +6680,10 @@ const ContinueMessageBarForLastMessage: FC = () => {
     // and its own empty claim; the lease behind this one is shared and settles that.
     void claimAutoContinue(messageId, autoContinueHolder).then((claim) => {
       if (claim === "started") {
+        // Handed to this runtime's keeper BEFORE the run starts, so the lease is held
+        // from the first tick of it. The bar cannot hold it itself: the continuation's
+        // sibling becomes the selected branch and unmounts this component almost at once.
+        adoptAutoContinue(messageId);
         // Started whether or not this component is still mounted: the run belongs to the
         // thread, not to the bar, and a claim taken and then dropped would leave the
         // message continued by nobody.
@@ -6675,6 +6709,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
     messageId,
     startContinuation,
     autoContinueHolder,
+    adoptAutoContinue,
   ]);
 
   // Newest turn only: appending to an older one would strand the replies after it.
