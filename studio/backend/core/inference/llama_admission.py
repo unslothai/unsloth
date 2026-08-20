@@ -587,13 +587,21 @@ class LlamaAdmissionQueue:
     def _fits_budget_locked(self, tokens: int) -> bool:
         """Whether ``tokens`` more KV may be committed.
 
-        A lone caller is always admitted, however large. Its request may still be
-        refused by llama-server, but that refusal names both token counts and the
-        setting to change, whereas refusing here would strand it forever.
+        A caller is always admitted when nothing else holds KV, however large it is.
+        Its request may still be refused by llama-server, but that refusal names both
+        token counts and the setting to change, whereas refusing here would strand it
+        forever.
+
+        The escape asks whether anything is COMMITTED, not whether a slot is held.
+        ``try_park`` hands a slot back while its holder waits on a tool approval, which
+        drops ``_held`` to zero even though llama-server still holds that lease's KV. A
+        held-slot test therefore admitted the next caller unconditionally: park a 1500
+        token lease against a 2048 token budget, and the next 1500 token one sailed
+        through to 3000 committed, which is the collision this accounting exists to stop.
         """
         if self._budget <= 0 or tokens <= 0:
             return True
-        if self._held == 0:
+        if self._committed == 0:
             return True
         return self._committed + tokens <= self._budget
 

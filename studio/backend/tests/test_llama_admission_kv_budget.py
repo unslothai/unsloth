@@ -259,3 +259,70 @@ class TestTheRouteHelpers:
             )
             is None
         )
+
+
+class TestParkedLeasesStillHoldTheirKV:
+    """A parked holder gives its SLOT back, not its cache.
+
+    `try_park` hands the slot to the pool while its holder waits on a tool approval, so
+    `_held` drops to zero even though llama-server still holds that lease's KV. The
+    deadlock escape used to ask whether a slot was held, which made a parked lease look
+    like an empty backend and admitted the next caller unconditionally.
+    """
+
+    def test_parking_does_not_reopen_the_whole_cache(self):
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            first = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
+            lease = first.lease_nowait()
+            assert lease is not None
+            assert lease.park() is True, "the park budget must allow this"
+            # The slot is back, the KV is not.
+            assert queue.snapshot().committed == 1500
+            second = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
+            return queue, second.lease_nowait()
+
+        queue, lease = _run(scenario())
+        assert lease is None, "1500 + 1500 against 2048 must not both be admitted"
+        assert queue.snapshot().committed == 1500
+
+    def test_a_caller_is_still_admitted_when_nothing_is_committed(self):
+        """The escape must survive the fix, or a large lone request deadlocks."""
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            reservation = await _reserve(queue, capacity = 4, tokens = 9999, budget = 2048)
+            return reservation.lease_nowait()
+
+        assert _run(scenario()) is not None
+
+
+class TestTheOutputAllowanceIsCounted:
+    def test_max_completion_tokens_is_reserved_like_max_tokens(self):
+        """Generation honours max_completion_tokens through
+        _effective_openai_max_tokens; admission must reserve the same allowance."""
+        from types import SimpleNamespace
+
+        import routes.inference as routes_inference
+
+        messages = [{"role": "user", "content": "x" * 400}]
+        with_deprecated = routes_inference._openai_llama_admission_tokens(
+            SimpleNamespace(messages = messages, max_tokens = 512),
+            budget = 8192, capacity = 4,
+        )
+        with_supported = routes_inference._openai_llama_admission_tokens(
+            SimpleNamespace(messages = messages, max_tokens = None, max_completion_tokens = 512),
+            budget = 8192, capacity = 4,
+        )
+        assert with_supported == with_deprecated
+
+    def test_a_responses_shape_would_have_fallen_back_to_a_fair_share(self):
+        """Why the /v1/responses site now reserves against the translated chat_req: the
+        raw model has `input` and `max_output_tokens`, so nothing here can size it."""
+        from types import SimpleNamespace
+
+        import routes.inference as routes_inference
+
+        raw = SimpleNamespace(input = "x" * 100_000, max_output_tokens = 4096)
+        assert routes_inference._openai_llama_admission_tokens(
+            raw, budget = 2048, capacity = 4,
+        ) == 512
