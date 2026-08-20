@@ -120,7 +120,7 @@ def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: 
     # getBoundingClientRect() is the border box, so BOTH targets carry the root's own padding.
     # Comparing against the bare declared length pinned fallbackBite at zero whatever happened.
     assert 'targetHeight(px, "fallback")' in probe_src
-    assert "return (which === \"fallback\" ? px.fallback : 0) + px.padding;" in probe_src
+    assert 'return (which === "fallback" ? px.fallback : 0) + px.padding;' in probe_src
 
 
 def test_the_page_scripts_are_installed_as_one_ordered_script(main_src: str):
