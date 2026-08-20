@@ -266,19 +266,30 @@ def _record_then_fail():
     raise ValueError(_SERVER_ERROR)
 
 
-def test_a_bare_to_thread_would_lose_the_refusal():
-    # The behaviour being worked around: `asyncio.to_thread` runs the drain in a COPY of
-    # the context, so this is what the non-streaming GGUF paths used to see.
+async def _drain_like_the_route(func):
+    """The exact shape both non-streaming GGUF drains use: a task around a thread.
+
+    Two context copies between the record and the read, which is what makes the slot
+    necessary. Anything less than this shape does not test the thing that broke.
+    """
+    task = asyncio.create_task(asyncio.to_thread(func))
+    return await asyncio.shield(task)
+
+
+def test_without_a_slot_the_drain_loses_the_refusal():
+    # The behaviour being worked around. `asyncio.create_task` and `asyncio.to_thread`
+    # each copy the context, and a `.set()` in a copy never reaches the request.
     async def _run():
-        await asyncio.to_thread(_record_in_worker)
+        await _drain_like_the_route(_record_in_worker)
+        return context_refusal.latest_refusal()
 
-    asyncio.run(_run())
-    assert context_refusal.latest_refusal() is None
+    assert asyncio.run(_run()) is None
 
 
-def test_run_in_thread_carries_a_refusal_back():
+def test_a_slot_carries_the_refusal_back_through_task_and_thread():
     async def _run():
-        assert await context_refusal.run_in_thread(_record_in_worker) == "drained"
+        context_refusal.open_slot()
+        assert await _drain_like_the_route(_record_in_worker) == "drained"
         return context_refusal.latest_refusal()
 
     # Read inside the coroutine: `asyncio.run` gives it its own context copy, exactly as
@@ -286,36 +297,59 @@ def test_run_in_thread_carries_a_refusal_back():
     assert asyncio.run(_run())["latest_turn_tokens"] == 4800
 
 
-def test_run_in_thread_carries_a_refusal_back_when_the_drain_raises():
+def test_a_slot_carries_the_refusal_back_when_the_drain_raises():
     # The path that matters: the drain diagnoses the refusal and then the request fails
-    # with the oversize error that refusal explains.
+    # with the oversize error that refusal explains, so there is no return value.
     async def _run():
+        context_refusal.open_slot()
         with pytest.raises(ValueError):
-            await context_refusal.run_in_thread(_record_then_fail)
+            await _drain_like_the_route(_record_then_fail)
         return _friendly_error(ValueError(_SERVER_ERROR))
 
     assert "does not fit on its own" in asyncio.run(_run())
 
 
-def test_run_in_thread_leaves_the_request_value_alone_when_nothing_was_recorded():
+def test_a_drain_that_records_nothing_leaves_the_slot_empty():
     def _quiet():
         return 1
 
     async def _run():
-        context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
-        await context_refusal.run_in_thread(_quiet)
+        context_refusal.open_slot()
+        await _drain_like_the_route(_quiet)
         return context_refusal.latest_refusal()
 
-    assert asyncio.run(_run())["latest_turn_tokens"] == 4800
+    assert asyncio.run(_run()) is None
 
 
-def test_both_non_streaming_gguf_drains_use_the_carrying_helper():
-    # Guards the two call sites named in review: a later edit back to a bare
-    # `asyncio.to_thread` would silently restore the generic advice on those paths.
+def test_a_drain_that_fits_clears_an_earlier_refusal_through_the_slot():
+    def _fits():
+        context_refusal.record_fit({"fits": True, "dropped_messages": 3})
+
+    async def _run():
+        context_refusal.open_slot()
+        context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+        await _drain_like_the_route(_fits)
+        return context_refusal.latest_refusal()
+
+    assert asyncio.run(_run()) is None
+
+
+def test_opening_a_slot_starts_empty():
+    # Two requests on one connection: the second must not inherit the first's refusal.
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.open_slot()
+    assert context_refusal.latest_refusal() is None
+
+
+def test_both_non_streaming_gguf_drains_open_a_slot_first():
+    # Guards the two call sites named in review: dropping the `open_slot` line would
+    # silently restore the generic advice on both non-streaming paths.
     source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
     for drain in ("_drain_gguf_tool_loop", "_drain_gguf_choices"):
-        assert f"context_refusal.run_in_thread({drain})" in source
-        assert f"asyncio.to_thread({drain})" not in source
+        spawn = f"asyncio.create_task(asyncio.to_thread({drain}))"
+        assert spawn in source
+        preceding = source.split(spawn)[0].splitlines()[-4:]
+        assert any("context_refusal.open_slot()" in line for line in preceding)
 
 
 def test_other_friendly_errors_are_untouched():

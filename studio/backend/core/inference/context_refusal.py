@@ -12,8 +12,7 @@ ContextVar: per-task, and asyncio copies the context per request, so one request
 refusal cannot describe another's.
 """
 
-import asyncio
-from contextvars import ContextVar, copy_context
+from contextvars import ContextVar
 from typing import Optional
 
 __all__ = [
@@ -21,11 +20,15 @@ __all__ = [
     "clear",
     "latest_refusal",
     "describe_oversize",
-    "run_in_thread",
+    "open_slot",
 ]
 
 
-_LATEST_REFUSAL: ContextVar[Optional[dict]] = ContextVar("unsloth_context_refusal", default = None)
+# A one-key box, not the refusal itself. Both `asyncio.create_task` and
+# `asyncio.to_thread` copy the context, and a `.set()` in a copy is invisible to the
+# original -- which is where `_friendly_error` runs. Copies share VALUES, though, so a
+# box installed before the copies is the same object in all of them. See `open_slot`.
+_REFUSAL_SLOT: ContextVar[Optional[dict]] = ContextVar("unsloth_context_refusal", default = None)
 
 # Share of the irreducible prompt the latest turn must be before the turn, not the
 # conversation, is named as the problem. Never all of it: the system prompt and template
@@ -40,6 +43,28 @@ _LATEST_REFUSAL: ContextVar[Optional[dict]] = ContextVar("unsloth_context_refusa
 _TURN_DOMINATES = 0.66
 
 
+def open_slot() -> None:
+    """Install a slot here that a worker thread or child task can record into.
+
+    Call it in the request's own context, before spawning anything, on any path that
+    diagnoses the fit somewhere other than where the error is formatted. The
+    non-streaming GGUF drains are that case twice over: `asyncio.create_task` copies the
+    context and so does `asyncio.to_thread`, and on the path that matters the drain
+    records the refusal and then raises the oversize error it explains, so there is no
+    return value to carry it back in either.
+    """
+    _REFUSAL_SLOT.set({"refusal": None})
+
+
+def _slot(*, create: bool = False) -> Optional[dict]:
+    slot = _REFUSAL_SLOT.get()
+    if slot is None and create:
+        # No one opened one, so this context is where the message is built too.
+        slot = {"refusal": None}
+        _REFUSAL_SLOT.set(slot)
+    return slot
+
+
 def record_fit(truncation) -> None:
     """Remember a fit that refused, and forget one that succeeded.
 
@@ -48,38 +73,23 @@ def record_fit(truncation) -> None:
     """
     if not isinstance(truncation, dict):
         return
-    if truncation.get("fits"):
-        _LATEST_REFUSAL.set(None)
-        return
-    _LATEST_REFUSAL.set(dict(truncation))
+    slot = _slot(create = True)
+    slot["refusal"] = None if truncation.get("fits") else dict(truncation)
 
 
 def clear() -> None:
-    _LATEST_REFUSAL.set(None)
+    slot = _slot()
+    if slot is not None:
+        # Empty the shared slot as well as dropping it, so anything already holding a
+        # reference to it (a worker mid-flight) does not read a stale refusal back.
+        slot["refusal"] = None
+    _REFUSAL_SLOT.set(None)
 
 
 def latest_refusal() -> Optional[dict]:
     """The most recent fit on this request that could not fit, if there was one."""
-    return _LATEST_REFUSAL.get()
-
-
-async def run_in_thread(func):
-    """`asyncio.to_thread`, but a refusal recorded in the worker reaches this request.
-
-    `to_thread` runs `func` in a COPY of the context, so a `record_fit` inside it is
-    invisible to the caller -- including on the one path that matters, where `func` goes
-    on to raise the oversize error the copy just diagnosed. Run in a context this side
-    owns, and carry the value back whether `func` returned or raised.
-    """
-    ctx = copy_context()
-    try:
-        return await asyncio.to_thread(ctx.run, func)
-    finally:
-        try:
-            _LATEST_REFUSAL.set(ctx[_LATEST_REFUSAL])
-        except KeyError:
-            # The worker never recorded a fit, so this request's own value stands.
-            pass
+    slot = _slot()
+    return slot["refusal"] if slot else None
 
 
 def _int(value) -> int:
