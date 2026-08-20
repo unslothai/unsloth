@@ -5221,6 +5221,8 @@ def _active_gguf_intent(
             strip_ctx_checkpoints = "ctx_checkpoints" in request_fields_set,
             strip_cache_ram = "cache_ram" in request_fields_set,
             strip_spec_draft_cache = "spec_draft_cache_type" in request_fields_set,
+            strip_load_mode = "load_mode" in request_fields_set,
+            strip_load_mode_aliases = "load_mode" in request_fields_set,
         )
         # a strip that changed the list is an override, so the dedupe compares the stripped one
         batch_overrides_inherit = batch_stripped_extra != effective_extra
@@ -6826,7 +6828,10 @@ def _estimate_gguf_kv_gb(
     context-linear term; ``is_diffusion`` skips them, since the diffusion
     runner ignores the llama-server batch flags. 0 if metadata is unreadable."""
     try:
-        from core.inference.llama_server_args import parse_ctx_override
+        from core.inference.llama_server_args import (
+            parse_ctx_override,
+            resolve_ctx_checkpoints,
+        )
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
@@ -6904,10 +6909,11 @@ def _estimate_gguf_kv_gb(
                 default = managed_kv_unified,
             ),
             n_ubatch = effective_ubatch,
-            # Only an explicit request counts, matching the loader: checkpoints are
-            # per-slot SWA snapshots that scale with the slot's context, so a load
-            # asking for them needs materially more memory than one that does not.
-            ctx_checkpoints = int(ctx_checkpoints or 0),
+            # Extras beat the field, as at launch: the control emits its flag
+            # before them. Per-slot SWA snapshots scale with the slot's context, so
+            # a load asking for them needs materially more memory than one that
+            # does not.
+            ctx_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints),
             flash_attn = False,
         )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
@@ -7995,12 +8001,14 @@ def _inherited_batch_flags_stripped(request) -> bool:
     strip_ctx_checkpoints = "ctx_checkpoints" in fields_set
     strip_cache_ram = "cache_ram" in fields_set
     strip_spec_draft_cache = "spec_draft_cache_type" in fields_set
+    strip_load_mode = "load_mode" in fields_set
     if not (
         strip_batch
         or strip_ubatch
         or strip_ctx_checkpoints
         or strip_cache_ram
         or strip_spec_draft_cache
+        or strip_load_mode
     ):
         return False
     stored = list(getattr(get_llama_cpp_backend(), "extra_args", None) or ())
@@ -8019,6 +8027,8 @@ def _inherited_batch_flags_stripped(request) -> bool:
             strip_ctx_checkpoints = strip_ctx_checkpoints,
             strip_cache_ram = strip_cache_ram,
             strip_spec_draft_cache = strip_spec_draft_cache,
+            strip_load_mode = strip_load_mode,
+            strip_load_mode_aliases = strip_load_mode,
         )
         != stored
     )
@@ -8419,10 +8429,13 @@ def _resolve_inherited_extra_args(
             # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
-            # same rule for the llama-server tuning group
+            # same rule for the llama-server tuning group. The load mode strips its
+            # deprecated aliases too, because a trailing one resets the whole mode.
             strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
             strip_cache_ram = "cache_ram" in fields_set,
             strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
+            strip_load_mode = "load_mode" in fields_set,
+            strip_load_mode_aliases = "load_mode" in fields_set,
         )
         # Inherited, not sent: a flag denylisted since it was stored loses only
         # itself. The previous behaviour dropped the whole list, so one name added

@@ -44,6 +44,8 @@ from core.inference.llama_server_args import (
     CACHE_RAM_MAX_MIB,
     CTX_CHECKPOINTS_MAX,
     apply_load_mode_policy,
+    parse_ctx_checkpoints_override,
+    resolve_ctx_checkpoints,
     strip_shadowing_flags,
 )
 from models.inference import LoadRequest
@@ -133,17 +135,34 @@ def test_auto_and_unknown_modes_emit_nothing(memory_settings):
         ) == ([], ["--top-k", "20"])
 
 
-def test_the_requested_mode_strips_inherited_aliases(memory_settings):
-    # A trailing alias resets the whole mode in llama.cpp, so an inherited one
-    # would silently undo the pick. What the user types for THIS load is not
-    # inherited and still last-wins, since the managed flag is emitted first.
+def test_an_explicitly_typed_load_mode_still_wins(memory_settings):
+    # The control emits BEFORE the extras, so a flag typed for THIS load is
+    # appended after it and last-wins, which is what the panel's diagnostics
+    # promise. Only the route strips, and only an INHERITED copy.
     managed, extras = apply_load_mode_policy(
-        ["--no-mmap", "--mlock", "--top-k", "20"],
+        ["--load-mode", "dio", "--top-k", "20"],
         supports_load_mode = True,
-        requested_load_mode = "dio",
+        requested_load_mode = "mmap",
     )
-    assert managed == ["--load-mode", "dio"]
-    assert extras == ["--top-k", "20"]
+    assert managed == ["--load-mode", "mmap"]
+    assert extras == ["--load-mode", "dio", "--top-k", "20"]
+
+
+def test_the_route_strips_an_inherited_load_mode(memory_settings):
+    # A trailing alias resets the whole mode in llama.cpp, so an INHERITED copy
+    # would silently undo the pick. The route drops it when the field is set, the
+    # same rule the batch pair follows; the policy itself strips nothing.
+    inherited = ["--no-mmap", "--mlock", "--top-k", "20"]
+    assert strip_shadowing_flags(
+        inherited,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_load_mode = True,
+        strip_load_mode_aliases = True,
+    ) == ["--mlock", "--top-k", "20"]
 
 
 def test_keep_resident_owns_the_mode(memory_settings):
@@ -240,6 +259,40 @@ def test_strip_shadowing_flags_tuning_toggles():
 def test_swa_checkpoints_is_the_same_setting():
     # upstream's older spelling of --ctx-checkpoints
     assert strip_shadowing_flags(["--swa-checkpoints", "4"], strip_ctx_checkpoints = True) == []
+
+
+def test_the_effective_checkpoint_count_comes_from_the_extras():
+    """A typed --ctx-checkpoints wins at launch, so it has to win in the sizing.
+
+    The control emits its flag before the extras and llama.cpp is last-wins, so
+    ctx_checkpoints=0 with "--ctx-checkpoints 256" in the extras allocates 256
+    per-slot snapshots. Budgeting the field there under-reserves the fit.
+    """
+    assert parse_ctx_checkpoints_override(["--ctx-checkpoints", "256"]) == 256
+    assert parse_ctx_checkpoints_override(["--swa-checkpoints=8"]) == 8
+    # last-wins, like every other override parser here
+    assert parse_ctx_checkpoints_override(["-ctxcp", "4", "--ctx-checkpoints", "16"]) == 16
+    assert parse_ctx_checkpoints_override(["--top-k", "20"]) is None
+    # malformed extras are refused at the boundary; sizing must not raise
+    assert parse_ctx_checkpoints_override(["--ctx-checkpoints", "many"]) is None
+
+    assert resolve_ctx_checkpoints(["--ctx-checkpoints", "256"], 0) == 256
+    assert resolve_ctx_checkpoints(None, 8) == 8
+    assert resolve_ctx_checkpoints([], None) == 0
+
+
+def test_an_unsupported_draft_cache_dtype_is_dropped_not_launched():
+    """llama-server exits on a dtype it cannot map, and by then the old model is gone."""
+    import inspect
+
+    from core.inference import llama_cpp
+
+    assert "Q8_0".strip().lower() in llama_cpp._VALID_KV_CACHE_TYPES
+    assert "fp16" not in llama_cpp._VALID_KV_CACHE_TYPES
+    source = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    # normalized and allow-listed before emission, like the main cache dtype
+    assert "_draft_cache_type not in _VALID_KV_CACHE_TYPES" in source
+    assert "Ignoring unsupported draft KV cache type" in source
 
 
 # ----------------------------------------------------------------------------- dedupe
@@ -348,7 +401,8 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
     source = inspect.getsource(inference_routes._guard_chat_load_against_training)
     assert 'ctx_checkpoints = getattr(request, "ctx_checkpoints", None)' in source
     kv_source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
-    assert "ctx_checkpoints = int(ctx_checkpoints or 0)" in kv_source
+    # priced on what the launch runs, so a typed --ctx-checkpoints wins here too
+    assert "resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)" in kv_source
 
 
 # ------------------------------------------------------------------- override storage

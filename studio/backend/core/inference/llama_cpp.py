@@ -66,6 +66,7 @@ from core.inference.llama_server_args import (
     _tensor_parallel_matches_loaded,
     apply_load_mode_policy,
     apply_model_memory_policy,
+    resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     fit_is_enabled_in,
     memory_state_satisfies_settings,
@@ -3905,6 +3906,14 @@ def _normalized_load_mode(value: Optional[str]) -> Optional[str]:
         return None
     mode = str(value).strip().lower()
     return None if mode in {"", "auto"} else mode
+
+
+# The KV cache dtypes llama.cpp can map, shared by the emission guard and the
+# budget. Module level because both the draft-cache block and the MTP reserve
+# need it, and the main cache path's copy is a local inside load_model.
+_VALID_KV_CACHE_TYPES: frozenset[str] = frozenset(
+    {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
+)
 
 
 def _extra_args_draft_cache_types(
@@ -15464,10 +15473,15 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
-                # What the SWA checkpoint reserve is priced against. Only an explicit
-                # request counts: the estimator has always charged 0, and adopting
-                # llama.cpp's default of 32 would move the fit for every model.
-                _effective_ctx_checkpoints = int(ctx_checkpoints or 0)
+                # What the SWA checkpoint reserve is priced against. Extras beat the
+                # field, as at launch: the control emits its flag before them, so a
+                # typed --ctx-checkpoints is what the child allocates. Only an
+                # explicit request counts at all: the estimator has always charged 0,
+                # and adopting llama.cpp's default of 32 would move the fit for every
+                # model.
+                _effective_ctx_checkpoints = resolve_ctx_checkpoints(
+                    extra_args, ctx_checkpoints
+                )
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
                     self.is_embedding_gguf
@@ -16186,9 +16200,14 @@ class LlamaCppBackend:
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
                     # The control underneath them: emitted before the extras, so an
                     # extra still last-wins and the reserve prices what will run.
-                    if spec_draft_cache_type:
-                        _mtp_draft_ck = _mtp_draft_ck or spec_draft_cache_type
-                        _mtp_draft_cv = _mtp_draft_cv or spec_draft_cache_type
+                    _budget_draft_cache = (
+                        spec_draft_cache_type.strip().lower()
+                        if spec_draft_cache_type
+                        else None
+                    )
+                    if _budget_draft_cache in _VALID_KV_CACHE_TYPES:
+                        _mtp_draft_ck = _mtp_draft_ck or _budget_draft_cache
+                        _mtp_draft_cv = _mtp_draft_cv or _budget_draft_cache
 
                     # Byte-accurate reserve when dims allow, else None -> flat fallback.
                     mtp_overhead_fn: Optional[Callable[[int], int]] = None
@@ -18177,7 +18196,19 @@ class LlamaCppBackend:
                 # nothing without --model-draft. Judged on the flags actually built,
                 # not the requested mode: a mode that fell back to no drafter emits
                 # nothing, and an MTP load that did attach one is covered.
-                if spec_draft_cache_type and any(
+                # Normalized and allow-listed like the main cache dtype above, and
+                # for the same reason: llama-server exits during argument parsing on
+                # a value it cannot map, and by then the resident model is gone. An
+                # unknown value emits nothing instead, so the load still comes up.
+                _draft_cache_type = (
+                    spec_draft_cache_type.strip().lower() if spec_draft_cache_type else None
+                )
+                if _draft_cache_type and _draft_cache_type not in _VALID_KV_CACHE_TYPES:
+                    logger.warning(
+                        "Ignoring unsupported draft KV cache type %r", spec_draft_cache_type
+                    )
+                    _draft_cache_type = None
+                if _draft_cache_type and any(
                     _flag_name(tok) in _LOCAL_DRAFT_FLAGS for tok in spec_flags
                 ):
                     _draft_k_flag = server_caps.get("spec_draft_cache_k_flag")
@@ -18188,17 +18219,17 @@ class LlamaCppBackend:
                         spec_flags.extend(
                             [
                                 str(_draft_k_flag),
-                                spec_draft_cache_type,
+                                _draft_cache_type,
                                 str(_draft_v_flag),
-                                spec_draft_cache_type,
+                                _draft_cache_type,
                             ]
                         )
-                        logger.info("Draft KV cache dtype: %s", spec_draft_cache_type)
+                        logger.info("Draft KV cache dtype: %s", _draft_cache_type)
                     else:
                         logger.info(
                             "llama-server has no draft KV cache flags; skipping the "
                             "requested %s.",
-                            spec_draft_cache_type,
+                            _draft_cache_type,
                         )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).

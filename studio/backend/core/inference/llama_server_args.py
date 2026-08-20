@@ -702,6 +702,33 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return override
 
 
+def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--ctx-checkpoints`` value, or None.
+
+    The control emits its flag before the extras, so a copy typed for this load
+    last-wins at launch. Sizing has to price that value, not the field, or a
+    ``--ctx-checkpoints 256`` in the extras allocates 256 per-slot snapshots
+    against a fit that budgeted the field's count.
+    """
+    value = _last_flag_value(args, _CTX_CHECKPOINTS_FLAGS)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        # Malformed extras are refused at the boundary; sizing must not raise here.
+        return None
+    return max(0, parsed)
+
+
+def resolve_ctx_checkpoints(
+    args: Optional[Iterable[str]], requested: Optional[int]
+) -> int:
+    """The checkpoint count the launch will actually run: extras beat the field."""
+    override = parse_ctx_checkpoints_override(args)
+    return int(override if override is not None else (requested or 0))
+
+
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
     """Return the context size load_model should treat as requested.
 
@@ -1216,29 +1243,12 @@ def apply_load_mode_policy(
         if not legacy:
             logger.info("llama-server has no --load-mode; skipping the requested %r mode.", mode)
             return [], tokens
-        return list(legacy), strip_shadowing_flags(
-            tokens,
-            strip_context = False,
-            strip_cache = False,
-            strip_spec = False,
-            strip_template = False,
-            strip_split_mode = False,
-            strip_mlock = True,
-            strip_load_mode_aliases = True,
-        )
-    # The control owns the group, so an inherited alias cannot reset it. Emitted
-    # before the extras, so a hand-typed flag still last-wins over it.
-    return ["--load-mode", mode], strip_shadowing_flags(
-        tokens,
-        strip_context = False,
-        strip_cache = False,
-        strip_spec = False,
-        strip_template = False,
-        strip_split_mode = False,
-        strip_mlock = True,
-        strip_load_mode_aliases = True,
-        strip_load_mode = True,
-    )
+        return list(legacy), tokens
+    # Emitted BEFORE the extras and stripping nothing, like every other control
+    # here: a flag typed for THIS load is appended after and last-wins, which is
+    # what the panel's diagnostics promise. An INHERITED copy is a different
+    # thing, and the route drops that one before it ever reaches here.
+    return ["--load-mode", mode], tokens
 
 
 def _normalize_load_mode_value(value: Optional[str]) -> str:
