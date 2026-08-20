@@ -3991,17 +3991,36 @@ class _ReasoningSpanGuard:
         self._turn_wrap = None
         self._claimed = False
 
+    @property
+    def claimed(self) -> bool:
+        """True once the current turn's leading tag is backed by a generator wrap."""
+        return self._claimed
+
+    @property
+    def claimed_wrap(self):
+        """The wrap entry claimed for the current turn (may be ``None`` when the
+        ledger recorded the count but not the span)."""
+        return self._turn_wrap
+
     def tool_end(self) -> None:
         # The next synthesis turn restarts its cumulative text and may open a fresh wrap.
         self._turn_wrap = None
         self._claimed = False
 
-    def _wrap_for(self, text: str):
+    def _wrap_for(self, text: str, wrapped_so_far = None):
         if self._claimed:
             return self._turn_wrap
         if not self._prov or not text.startswith(self._OPEN):
             return None
-        if int(self._prov.get("wrapped", 0)) <= self._consumed:
+        # ``wrapped_so_far`` is the ledger as it stood when THIS event was produced.
+        # The streamed path reads the live dict, so it can never hand a later
+        # synthesis turn's wrap to an earlier turn; a reducer running after the
+        # drain sees only the final aggregate and would. See
+        # _collect_anthropic_events.
+        _wrapped = int(self._prov.get("wrapped", 0))
+        if wrapped_so_far is not None:
+            _wrapped = min(_wrapped, int(wrapped_so_far))
+        if _wrapped <= self._consumed:
             # The generator did not wrap this tag: literal model text.
             return None
         wraps = self._prov.get("wraps") or []
@@ -4016,8 +4035,9 @@ class _ReasoningSpanGuard:
         *,
         auto_heal_tool_calls: bool,
         enabled_tool_names: Optional[set] = None,
+        wrapped_so_far = None,
     ) -> str:
-        wrap = self._wrap_for(text)
+        wrap = self._wrap_for(text, wrapped_so_far)
         if wrap is None:
             return _strip_tool_xml_for_display(
                 text,
@@ -21635,12 +21655,35 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
     return HTTPException(status_code = 500, detail = _friendly_error(e))
 
 
-def _collect_anthropic_events(run_gen) -> list:
+_WRAPPED_SO_FAR = "_wrapped_so_far"
+
+
+def _collect_anthropic_events(run_gen, think_provenance = None) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
-    overflow to a clean Anthropic 400 instead of leaking a 500."""
+    overflow to a clean Anthropic 400 instead of leaking a 500.
+
+    ``think_provenance`` is filled in BY the generator as it runs, so the
+    streamed emitter only ever sees the wraps recorded up to the event it is
+    feeding. A reducer runs after the drain and would instead see the final
+    aggregate -- in a tool loop that lets an early turn's literal ``<think>``
+    claim a later turn's genuine wrap. Stamp the live count on each event so the
+    reducer replays the same ledger the streamed path saw.
+    """
+
+    def _drain():
+        for event in run_gen():
+            if (
+                think_provenance is not None
+                and isinstance(event, dict)
+                and event.get("type") == "content"
+            ):
+                # Content events are freshly built per yield, so stamping them
+                # cannot leak into any shared event constant.
+                event[_WRAPPED_SO_FAR] = int(think_provenance.get("wrapped", 0))
+            yield event
 
     try:
-        return list(run_gen())
+        return list(_drain())
     except HTTPException:
         raise
     except Exception as e:
@@ -21752,6 +21795,10 @@ def _anthropic_tool_response_from_events(
     ends_on_tool_use = False
 
     _span_guard = _ReasoningSpanGuard(think_provenance)
+    # Which wrap the guard claimed for the turn that produced each text block.
+    # Presence of the key means "genuine reasoning"; the value may still be None
+    # when the ledger recorded the count but not the span.
+    _block_wrap: dict = {}
 
     for event in events:
         etype = event.get("type", "")
@@ -21761,6 +21808,7 @@ def _anthropic_tool_response_from_events(
                 event["text"],
                 auto_heal_tool_calls = True,
                 enabled_tool_names = _display_names,
+                wrapped_so_far = event.get(_WRAPPED_SO_FAR),
             )
             new = clean[len(prev_text) :]
             prev_text = clean
@@ -21770,6 +21818,11 @@ def _anthropic_tool_response_from_events(
                     content_blocks[-1].text += new
                 else:
                     content_blocks.append(AnthropicResponseTextBlock(text = new))
+                    # The wrap belongs to the block that OPENS this turn's span,
+                    # not to a later block of the same turn (a client tool_use
+                    # can interrupt one turn's text).
+                    if _span_guard.claimed and new.startswith("<think>"):
+                        _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
         elif etype == "tool_start":
             tool_call_id = event["tool_call_id"]
             arguments = event.get("arguments", {})
@@ -21802,25 +21855,24 @@ def _anthropic_tool_response_from_events(
 
     # Split <think> markup out of the accumulated text into typed thinking
     # blocks, preserving position relative to tool_use blocks. With provenance,
-    # only as many leading blocks as the generator actually wrapped from
-    # reasoning_content are parsed; a literal leading tag stays text.
+    # the wrap is the one the span guard already claimed FOR THAT TURN above --
+    # re-deriving it here from the final aggregate would let an earlier turn's
+    # literal <think> consume a later turn's genuine wrap. Without provenance
+    # (test doubles / backends that record none) the leading-tag heuristic
+    # stands.
     if parse_think:
-        _wrap_budget = None if think_provenance is None else int(think_provenance.get("wrapped", 0))
-        _wrap_entries = (think_provenance or {}).get("wraps") or []
-        _wrap_i = 0
         _expanded: list = []
-        for block in content_blocks:
-            leading_think = isinstance(
-                block, AnthropicResponseTextBlock
-            ) and block.text.lstrip().startswith("<think>")
-            if leading_think and (_wrap_budget is None or _wrap_budget > 0):
-                _wrap = _wrap_entries[_wrap_i] if _wrap_i < len(_wrap_entries) else None
-                _wrap_i += 1
-                _expanded.extend(_think_markup_to_blocks(block.text, _wrap))
-                if _wrap_budget is not None:
-                    _wrap_budget -= 1
-            else:
-                _expanded.append(block)
+        for _i, block in enumerate(content_blocks):
+            if think_provenance is None:
+                if isinstance(
+                    block, AnthropicResponseTextBlock
+                ) and block.text.lstrip().startswith("<think>"):
+                    _expanded.extend(_think_markup_to_blocks(block.text, None))
+                    continue
+            elif _i in _block_wrap:
+                _expanded.extend(_think_markup_to_blocks(block.text, _block_wrap[_i]))
+                continue
+            _expanded.append(block)
         content_blocks = _expanded
 
     # disable_parallel_tool_use: cap the response to at most one tool_use
@@ -21863,7 +21915,7 @@ async def _anthropic_tool_non_streaming(
 
     def _drain_and_build():
         return _anthropic_tool_response_from_events(
-            _collect_anthropic_events(run_gen),
+            _collect_anthropic_events(run_gen, think_provenance),
             message_id,
             model_name,
             disable_parallel_tool_use = disable_parallel_tool_use,

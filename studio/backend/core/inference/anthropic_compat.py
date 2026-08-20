@@ -590,10 +590,14 @@ class AnthropicStreamEmitter:
                     break
                 if i:
                     events.extend(self._emit_text_delta(data[:i]))
+                    # Consumed: whatever happens to the tag below, the run
+                    # before it has already been delivered. Re-including it in
+                    # the literal-text branch below sent it to the client twice.
+                    data = data[i:]
+                    i = 0
                     if self._turn_has_text:
                         # Non-space text preceded the tag, so this is not the
                         # leading reasoning block; relay the rest literally.
-                        data = data[i:]
                         continue
                 if (
                     self._think_provenance is not None

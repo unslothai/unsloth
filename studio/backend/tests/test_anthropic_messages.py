@@ -3891,3 +3891,252 @@ class TestReasoningSurvivesTheWholeChain:
             ],
         )
         assert blocks == [("text", "The answer")]
+
+
+class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
+    """A tool loop's non-streaming reducer runs only after generation finished,
+    so ``think_provenance`` is already at its FINAL aggregate. Attributing wraps
+    by block order there let an early turn's literal ``<think>`` (Qwen3 with
+    thinking off re-emits the closed empty block into `content`, llama.cpp
+    common/chat-peg-parser.cpp discards whitespace-only reasoning so no
+    reasoning_content is reported) consume a LATER turn's genuine wrap: the
+    literal block was rendered as thinking and the real trace was delivered as
+    raw tagged text. The streamed emitter reads the ledger live and never can,
+    so the two paths must agree turn for turn.
+    """
+
+    TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Weather.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+
+    @staticmethod
+    def _sse(delta):
+        return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
+
+    @classmethod
+    def _tool_call_sse(cls, call_id, city):
+        return cls._sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": json.dumps({"city": city}),
+                        },
+                    }
+                ]
+            }
+        )
+
+    @classmethod
+    def _backend(cls, monkeypatch, streams):
+        import contextlib
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = object()
+        backend._healthy = True
+        backend._port = 48853
+        backend._api_key = None
+        backend._effective_context_length = 4096
+        backend._supports_reasoning = True
+        backend._reasoning_always_on = False
+        backend._reasoning_style = "enable_thinking"
+        backend._supports_preserve_thinking = False
+        _pending = list(streams)
+
+        @contextlib.contextmanager
+        def fake_stream(_client, _url, _payload, _cancel, headers = None, **_kw):
+            yield type("R", (), {"status_code": 200, "chunks": _pending.pop(0)})()
+
+        monkeypatch.setattr(backend, "_stream_with_retry", fake_stream)
+        monkeypatch.setattr(
+            backend,
+            "_iter_text_cancellable",
+            lambda response, _c, first_token_deadline = None: iter(response.chunks),
+        )
+        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *a, **k: False)
+        monkeypatch.setattr(
+            "core.inference.tools.execute_tool", lambda name, arguments, **k: "sunny"
+        )
+        return backend
+
+    def _generator(self, monkeypatch, streams, provenance):
+        backend = self._backend(monkeypatch, streams)
+        return backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = self.TOOLS,
+            max_tool_iterations = len(streams),
+            reasoning_provenance = provenance,
+        )
+
+    def _streamed(self, monkeypatch, streams):
+        provenance = {"wrapped": 0}
+        emitter = AnthropicStreamEmitter(parse_think = True, think_provenance = provenance)
+        lines = list(emitter.start("msg_1", "test-model"))
+        for event in self._generator(monkeypatch, streams, provenance):
+            lines.extend(emitter.feed(event))
+        lines.extend(emitter.finish())
+        return assert_anthropic_stream_conformant(lines)
+
+    def _reduced(self, monkeypatch, streams):
+        from routes.inference import (
+            _anthropic_tool_response_from_events,
+            _collect_anthropic_events,
+        )
+
+        provenance = {"wrapped": 0}
+        gen = self._generator(monkeypatch, streams, provenance)
+        # Exactly what _anthropic_tool_non_streaming does: drain first, reduce after.
+        events = _collect_anthropic_events(lambda: gen, provenance)
+        response = _anthropic_tool_response_from_events(
+            events,
+            "msg_1",
+            "test-model",
+            openai_tools = self.TOOLS,
+            parse_think = True,
+            think_provenance = provenance,
+        )
+        blocks = []
+        for block in json.loads(response.body)["content"]:
+            if block["type"] == "thinking":
+                blocks.append(("thinking", block["thinking"]))
+            elif block["type"] == "tool_use":
+                blocks.append(("tool_use", block["name"]))
+            else:
+                blocks.append(("text", block["text"]))
+        return blocks
+
+    @staticmethod
+    def _norm(blocks):
+        """The stream conformance helper accumulates a tool_use block's
+        input_json_delta, the reducer reports its name; compare the rest."""
+        return [(t, "" if t == "tool_use" else v) for t, v in blocks]
+
+    def _literal_then_genuine(self):
+        return [
+            # Turn 1: the model re-emitted the template's closed think block, so
+            # llama-server reports no reasoning_content and the tags are content.
+            [
+                self._sse({"content": "<think>\n\n</think>\n\nLet me check."}),
+                self._tool_call_sse("call_1", "SF"),
+                "data: [DONE]\n",
+            ],
+            # Turn 2: genuine reasoning, reported as reasoning_content.
+            [
+                self._sse({"reasoning_content": "The tool said sunny, so"}),
+                self._sse({"content": "It is sunny in SF."}),
+                "data: [DONE]\n",
+            ],
+        ]
+
+    def test_a_literal_leading_tag_does_not_steal_a_later_turns_wrap(self, monkeypatch):
+        blocks = self._reduced(monkeypatch, self._literal_then_genuine())
+        assert blocks == [
+            ("text", "<think>\n\n</think>\n\nLet me check."),
+            ("tool_use", "get_weather"),
+            ("thinking", "The tool said sunny, so"),
+            ("text", "It is sunny in SF."),
+        ]
+
+    def test_streaming_and_non_streaming_agree_on_a_mixed_tool_loop(self, monkeypatch):
+        streamed = self._streamed(monkeypatch, self._literal_then_genuine())
+        reduced = self._reduced(monkeypatch, self._literal_then_genuine())
+        assert self._norm(streamed) == self._norm(reduced)
+
+    def test_a_literal_tag_between_two_genuine_turns_keeps_both_traces(self, monkeypatch):
+        """Three turns: wrap, literal, wrap. Block-order attribution handed the
+        literal middle turn the SECOND wrap and left the third turn's real trace
+        as tagged text."""
+        streams = [
+            [
+                self._sse({"reasoning_content": "first I check"}),
+                self._tool_call_sse("call_1", "SF"),
+                "data: [DONE]\n",
+            ],
+            [
+                self._sse({"content": "<think>\n\n</think>\n\nOne more."}),
+                self._tool_call_sse("call_2", "LA"),
+                "data: [DONE]\n",
+            ],
+            [
+                self._sse({"reasoning_content": "both are sunny"}),
+                self._sse({"content": "Both cities are sunny."}),
+                "data: [DONE]\n",
+            ],
+        ]
+        expected = [
+            ("thinking", "first I check"),
+            ("tool_use", "get_weather"),
+            ("text", "<think>\n\n</think>\n\nOne more."),
+            ("tool_use", "get_weather"),
+            ("thinking", "both are sunny"),
+            ("text", "Both cities are sunny."),
+        ]
+        assert self._reduced(monkeypatch, streams) == expected
+        assert self._norm(self._streamed(monkeypatch, streams)) == self._norm(expected)
+
+    def test_two_genuine_turns_still_map_in_order(self, monkeypatch):
+        """The ordinary case must be untouched: each turn keeps its own trace."""
+        streams = [
+            [
+                self._sse({"reasoning_content": "look it up"}),
+                self._tool_call_sse("call_1", "SF"),
+                "data: [DONE]\n",
+            ],
+            [
+                self._sse({"reasoning_content": "report it"}),
+                self._sse({"content": "Sunny."}),
+                "data: [DONE]\n",
+            ],
+        ]
+        expected = [
+            ("thinking", "look it up"),
+            ("tool_use", "get_weather"),
+            ("thinking", "report it"),
+            ("text", "Sunny."),
+        ]
+        assert self._reduced(monkeypatch, streams) == expected
+        assert self._norm(self._streamed(monkeypatch, streams)) == self._norm(expected)
+
+
+class TestALiteralTagAfterBlankSpaceIsNotDuplicated:
+    """A reply that opens with a blank line and then quotes ``<think>`` -- the
+    shape llama-server returns for a thinking model under
+    ``--reasoning-format none``, where nothing is split into reasoning_content.
+    The leading run was emitted, then emitted AGAIN as part of the literal-text
+    fallback, so the client saw it twice."""
+
+    @pytest.mark.parametrize("lead", ["\n", "\n\n", "  ", " \n\t"])
+    @pytest.mark.parametrize("split", ["one", "chars"])
+    def test_the_leading_run_is_delivered_exactly_once(self, lead, split):
+        text = f"{lead}<think> is the tag you asked about."
+        chunks = [text] if split == "one" else list(text)
+        blocks = assert_anthropic_stream_conformant(
+            _drive_emitter(chunks, {"wrapped": 0, "wraps": []})
+        )
+        assert blocks == [("text", text)]
+
+    def test_a_genuine_trace_after_a_blank_line_still_parses(self):
+        """Only the literal branch was doubling; the provenance-backed one
+        already dropped the consumed run."""
+        provenance = {"wrapped": 1, "wraps": [{"len": 5}]}
+        blocks = assert_anthropic_stream_conformant(
+            _drive_emitter(["\n\n<think>trace</think>Answer"], provenance)
+        )
+        assert blocks == [("text", "\n\n"), ("thinking", "trace"), ("text", "Answer")]
