@@ -28,7 +28,7 @@ TARGET_MODULES = [
 ]
 
 
-def _run_check(new_model_path: bool):
+def _run_redirect_check(new_model_path: bool, target_modules):
     """Core assertions shared by both FastLanguageModel paths."""
     import torch
     from unsloth import FastLanguageModel
@@ -48,11 +48,18 @@ def _run_check(new_model_path: bool):
             model,
             r = 8,
             lora_alpha = 16,
-            target_modules = list(TARGET_MODULES),
+            target_modules = list(target_modules),
         )
 
         config = model.peft_config["default"]
         saved_modules = config.modules_to_save or []
+        state = dict(model.named_parameters())
+        if target_modules == ["lm_head"]:
+            assert not saved_modules, saved_modules
+            assert "lm_head" in config.target_modules, config.target_modules
+            assert any("lm_head.lora_A" in k and v.requires_grad for k, v in state.items())
+            return
+
         assert "embed_tokens" in saved_modules, saved_modules
         assert "lm_head" in saved_modules, saved_modules
 
@@ -61,7 +68,6 @@ def _run_check(new_model_path: bool):
         assert "lm_head" not in config.target_modules, config.target_modules
 
         # Attention/MLP LoRA adapters should still be present
-        state = dict(model.named_parameters())
         assert any("layers.0.self_attn.q_proj.lora_A" in k for k in state)
 
         # embed_tokens/lm_head must be trainable via ModulesToSave, not LoRA
@@ -81,7 +87,14 @@ def _run_check(new_model_path: bool):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("new_model_path", [False, True])
-def test_embed_lm_head_moved_to_modules_to_save(new_model_path: bool):
-    """Both the legacy and new-model paths preserve embed/lm_head trainability."""
-    _run_check(new_model_path)
+@pytest.mark.parametrize(
+    ("new_model_path", "target_modules"),
+    [
+        pytest.param(False, TARGET_MODULES, id = "legacy-redirect"),
+        pytest.param(True, TARGET_MODULES, id = "new-model-redirect"),
+        pytest.param(True, ["lm_head"], id = "new-model-lm-head-only"),
+    ],
+)
+def test_embed_lm_head_target_redirect(new_model_path: bool, target_modules):
+    """Both model paths redirect embeddings without dropping the only LoRA target."""
+    _run_redirect_check(new_model_path, target_modules)

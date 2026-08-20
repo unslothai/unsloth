@@ -1932,10 +1932,13 @@ class FastBaseModel:
         # get_peft_regex would silently drop them when listed in target_modules.
         # Move them to modules_to_save before scoping, matching the behavior in
         # FastLanguageModel.get_peft_model.
-        target_modules, modules_to_save, _moved = _redirect_embedding_targets(
-            target_modules,
-            modules_to_save,
-            allow_redirect = finetune_language_layers,
+        target_modules, modules_to_save, _moved, _direct_lm_head_target = (
+            _redirect_embedding_targets(
+                target_modules,
+                modules_to_save,
+                allow_redirect = finetune_language_layers,
+                preserve_lm_head_target = True,
+            )
         )
         for m in _moved:
             logger.warning_once(
@@ -1965,7 +1968,11 @@ class FastBaseModel:
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
             )
-            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers):
+            if (
+                type(target_modules) in (list, tuple)
+                and (_scoping or finetune_audio_layers)
+                and not _direct_lm_head_target
+            ):
                 if _scoping:
                     print(
                         "Unsloth: Explicit target_modules are constrained by the "

@@ -4455,21 +4455,24 @@ def _redirect_embedding_targets(
 ):
     """Move embedding targets to modules_to_save without emptying legacy LoRA targets."""
     if type(target_modules) not in (list, tuple) or not allow_redirect:
-        return target_modules, modules_to_save, ()
+        return target_modules, modules_to_save, (), False
 
     embedding_modules = frozenset(("embed_tokens", "lm_head"))
     moved = [module for module in target_modules if module in embedding_modules]
     remaining = [module for module in target_modules if module not in embedding_modules]
+    preserved_lm_head = False
     if preserve_lm_head_target and not remaining and "lm_head" in moved:
         moved.remove("lm_head")
         remaining = [module for module in target_modules if module not in moved]
+        preserved_lm_head = True
 
     if not moved:
-        return target_modules, modules_to_save, ()
+        adjusted = remaining if preserved_lm_head else target_modules
+        return adjusted, modules_to_save, (), preserved_lm_head
 
     saved = [] if modules_to_save is None else list(modules_to_save)
     saved.extend(module for module in moved if module not in saved)
-    return remaining, saved, tuple(moved)
+    return remaining, saved, tuple(moved), preserved_lm_head
 
 
 def _select_moe_detection_targets(

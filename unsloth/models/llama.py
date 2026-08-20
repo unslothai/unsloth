@@ -3318,7 +3318,7 @@ class FastLlamaModel:
         # they are listed in `target_modules`. Move them to `modules_to_save`
         # instead (which is what the official continued-pretraining guide
         # actually intends) and warn once.
-        target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
+        target_modules, modules_to_save, _moved_embedding_modules, _ = _redirect_embedding_targets(
             target_modules,
             modules_to_save,
             preserve_lm_head_target = True,
