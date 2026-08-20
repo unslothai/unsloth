@@ -690,7 +690,17 @@ def _raw_config_has_vision_config(
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         else:
             from huggingface_hub import hf_hub_download
+            from utils.hf_probe import hf_file_definitely_absent
 
+            # Avoid caching the expected 404 for GGUF repos without config.json.
+            if not local_files_only and hf_file_definitely_absent(
+                model_name,
+                "config.json",
+                revision = revision,
+                token = hf_token,
+            ):
+                logger.debug("'%s' has no config.json on the Hub", model_name)
+                return None
             download_kwargs = {
                 "repo_id": model_name,
                 "filename": "config.json",
@@ -3454,6 +3464,15 @@ def get_base_model_from_lora_identifier(
     # Remote repo id: read base_model_name_or_path from adapter_config.json only.
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
+    from utils.hf_probe import hf_file_definitely_absent
+
+    # Plain model repos normally lack adapter_config.json, so probe without caching its 404.
+    if hf_file_definitely_absent(
+        identifier,
+        "adapter_config.json",
+        token = hf_token if hf_token else None,
+    ):
+        return None
 
     last_exc = None
     for _attempt in range(2):  # one retry: a transient blip must not skip the base

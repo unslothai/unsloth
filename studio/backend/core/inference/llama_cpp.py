@@ -854,7 +854,11 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
         from huggingface_hub import hf_hub_download
         from utils.hf_cache_settings import active_hf_hub_cache
+        from utils.hf_probe import hf_file_definitely_absent
 
+        # Avoid caching the expected 404 for GGUF repos without config.json.
+        if hf_file_definitely_absent(repo_id, "config.json"):
+            return None
         cfg_path = hf_hub_download(
             repo_id,
             "config.json",
