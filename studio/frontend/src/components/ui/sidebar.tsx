@@ -190,14 +190,11 @@ function SidebarProvider({
         style={
           {
             // The drag handle writes this same property live while resizing.
-            //
-            // With PANEL_RESIZE_SCOPED_VARS_ENABLED the declaration moves DOWN
-            // to [data-slot="sidebar"], which holds every consumer. It cannot
-            // stay here as well: this wrapper is an ancestor of the chat
-            // thread, so a write here marks inherited style dirty for every
-            // element in the thread, and leaving a second declaration behind
-            // would keep the render-time write on the expensive element even
-            // though the drag-time write had moved.
+            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to
+            // [data-slot="sidebar"], which holds every consumer, and cannot
+            // also stay here: this wrapper is an ancestor of the chat thread,
+            // so a declaration left behind would keep restyling the thread on
+            // every render even once the drag-time write had moved.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
               : { "--sidebar-width": `${width}px` }),
@@ -235,9 +232,8 @@ function Sidebar({
   const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, width } =
     useSidebar()
 
-  // The scoped home for --sidebar-width. Every consumer -- this element,
-  // sidebar-gap and sidebar-container -- is inside it, and the chat thread is
-  // not, so a write here cannot invalidate inherited style for the thread.
+  // The scoped home for --sidebar-width: every consumer (this element,
+  // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
   // Empty with the flag off, where the wrapper keeps the declaration.
   const scopedWidthStyle = (
     PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width}px` } : {}
@@ -409,14 +405,13 @@ function SidebarResizeHandle({
         cssVar="--sidebar-width"
         // The custom titlebar renders outside the wrapper and cannot inherit it.
         rootVar="--studio-sidebar-live-width"
-        // Both used only when PANEL_RESIZE_SCOPED_VARS_ENABLED is on.
-        // The rail sits inside sidebar-container, so [data-slot="sidebar"] is
-        // always an ancestor of it.
+        // Both used only under PANEL_RESIZE_SCOPED_VARS_ENABLED. The rail sits
+        // inside sidebar-container, so [data-slot="sidebar"] always encloses it.
         scopedTarget={() =>
           ref.current?.closest<HTMLElement>('[data-slot="sidebar"]') ?? null
         }
-        // Empty on every build without a custom titlebar, which is the honest
-        // answer there: nothing reads the property, so nothing needs writing.
+        // Empty on every build without a custom titlebar: nothing reads the
+        // property there, so nothing needs writing.
         rootVarTargets={() =>
           Array.from(
             document.querySelectorAll<HTMLElement>("[data-titlebar-live-width-scope]"),

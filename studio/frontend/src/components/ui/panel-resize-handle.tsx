@@ -58,16 +58,15 @@ export type PanelResizeHandleProps = {
   /** Mirrors the live width onto :root for chrome outside the panel. */
   rootVar?: string
   /**
-   * Narrower element to paint `cssVar` onto, used instead of `target()` when
-   * PANEL_RESIZE_SCOPED_VARS_ENABLED is on. Must contain every consumer of
-   * `cssVar` and nothing else, because an unregistered custom property
-   * invalidates inherited style for the whole subtree below wherever it lands.
+   * Narrower element for `cssVar`, replacing `target()` under
+   * PANEL_RESIZE_SCOPED_VARS_ENABLED. Must hold every consumer and nothing
+   * else: the write invalidates inherited style for everything below it.
    */
   scopedTarget?: () => HTMLElement | null
   /**
-   * The elements that actually read `rootVar`, used instead of
-   * `document.documentElement` when PANEL_RESIZE_SCOPED_VARS_ENABLED is on.
-   * An empty list means nothing consumes it and the write is skipped.
+   * The elements that actually read `rootVar`, replacing
+   * `document.documentElement` under PANEL_RESIZE_SCOPED_VARS_ENABLED. Empty
+   * means no consumer, so the write is skipped.
    */
   rootVarTargets?: () => HTMLElement[]
 }
@@ -128,8 +127,8 @@ export function PanelResizeHandle({
     committedRef.current = width
   }, [width])
 
-  // Where `rootVar` is painted, resolved once on pointer down. With the flag
-  // off this is always [document.documentElement], which is what shipped.
+  // Where `rootVar` is painted, resolved once on pointer down. Always
+  // [document.documentElement] with the flag off, which is what shipped.
   const rootTargetsRef = React.useRef<HTMLElement[]>([])
 
   const paint = React.useCallback(
@@ -186,8 +185,8 @@ export function PanelResizeHandle({
     if (event.button !== 0) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    // Resolved once per drag, never per frame: the write itself is what costs,
-    // and a DOM walk here is already how `target()` worked.
+    // Resolved once per drag, never per frame: the write is what costs, and a
+    // DOM walk here is already how `target()` worked.
     targetRef.current =
       (PANEL_RESIZE_SCOPED_VARS_ENABLED && scopedTarget?.()) || target()
     rootTargetsRef.current = !rootVar
