@@ -151,10 +151,11 @@ def test_a_lora_repo_weight_named_like_an_imatrix_is_still_picked(monkeypatch):
 
     files = ["imatrix-tuned.safetensors", "imatrix_unsloth.gguf", "README.md"]
     monkeypatch.setitem(
-        sys.modules, "huggingface_hub",
-        SimpleNamespace(HfApi = lambda token = None: SimpleNamespace(
-            list_repo_files = lambda _repo: list(files)
-        )),
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            HfApi = lambda token = None: SimpleNamespace(list_repo_files = lambda _repo: list(files))
+        ),
     )
 
     assert diffusion_lora._pick_repo_weight_file("owner/lora", None) == "imatrix-tuned.safetensors"
@@ -163,10 +164,11 @@ def test_a_lora_repo_weight_named_like_an_imatrix_is_still_picked(monkeypatch):
 def test_an_imatrix_is_never_the_lora_gguf_fallback(monkeypatch):
     files = ["imatrix_unsloth.gguf", "pytorch_lora_weights.gguf"]
     monkeypatch.setitem(
-        sys.modules, "huggingface_hub",
-        SimpleNamespace(HfApi = lambda token = None: SimpleNamespace(
-            list_repo_files = lambda _repo: list(files)
-        )),
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            HfApi = lambda token = None: SimpleNamespace(list_repo_files = lambda _repo: list(files))
+        ),
     )
     from core.inference import diffusion_lora
 
