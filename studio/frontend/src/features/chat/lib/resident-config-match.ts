@@ -23,6 +23,10 @@ type ResidentRuntime = Pick<
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
+  | "requested_load_mode"
+  | "requested_spec_draft_cache_type"
+  | "requested_ctx_checkpoints"
+  | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
   | "chat_template_override"
@@ -334,6 +338,35 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
+  },
+  {
+    chatOnly: true,
+    // Same shape as the batch pair above: a blank control means the llama.cpp
+    // default, and the status echoes what the load asked for rather than what it
+    // resolved to, so null on both sides is agreement and anything else reloads.
+    pinned: () => true,
+    agrees: (c, s) => (c.loadMode ?? null) === (s.requested_load_mode ?? null),
+  },
+  {
+    chatOnly: true,
+    // Only when the pick names one, like spec_draft_n_max: the dtype belongs to a
+    // draft context that a resident load without a drafter does not have, and
+    // comparing null against its absence would reload every time.
+    pinned: (c) => c.specDraftCacheDtype != null,
+    agrees: (c, s) =>
+      (c.specDraftCacheDtype ?? null) ===
+      (s.requested_spec_draft_cache_type ?? null),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.ctxCheckpoints ?? null) === (s.requested_ctx_checkpoints ?? null),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.

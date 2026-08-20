@@ -16,6 +16,9 @@ import {
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  canonicalizeLoadMode,
+  normalizeCacheRam,
+  normalizeCtxCheckpoints,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
@@ -41,6 +44,10 @@ export type PresetLoadConfig = Pick<
   | "nParallel"
   | "nBatch"
   | "nUbatch"
+  | "loadMode"
+  | "specDraftCacheDtype"
+  | "ctxCheckpoints"
+  | "cacheRam"
   | "tensorParallel"
   | "disableVision"
   | "gpuMemoryMode"
@@ -61,6 +68,10 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  loadMode: null,
+  specDraftCacheDtype: null,
+  ctxCheckpoints: null,
+  cacheRam: null,
   tensorParallel: false,
   disableVision: false,
 };
@@ -145,6 +156,16 @@ export function normalizePresetLoadConfig(
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
+    // Through the same normalizers the per-model store uses, so a hand-edited or
+    // older preset cannot smuggle in a mode or dtype the panel cannot show.
+    loadMode: canonicalizeLoadMode(partial.loadMode),
+    specDraftCacheDtype:
+      typeof partial.specDraftCacheDtype === "string" &&
+      VALID_KV_CACHE_DTYPES.has(partial.specDraftCacheDtype)
+        ? partial.specDraftCacheDtype
+        : null,
+    ctxCheckpoints: normalizeCtxCheckpoints(partial.ctxCheckpoints),
+    cacheRam: normalizeCacheRam(partial.cacheRam),
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -198,6 +219,10 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     nParallel: snapshot.nParallel ?? null,
     nBatch: snapshot.nBatch ?? null,
     nUbatch: snapshot.nUbatch ?? null,
+    loadMode: snapshot.loadMode ?? null,
+    specDraftCacheDtype: snapshot.specDraftCacheDtype ?? null,
+    ctxCheckpoints: snapshot.ctxCheckpoints ?? null,
+    cacheRam: snapshot.cacheRam ?? null,
     tensorParallel: snapshot.tensorParallel ?? false,
     disableVision: snapshot.disableVision ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
@@ -257,6 +282,10 @@ export function applyPresetLoadConfig(
     nParallel: config.nParallel ?? null,
     nBatch: config.nBatch ?? null,
     nUbatch: config.nUbatch ?? null,
+    loadMode: config.loadMode ?? null,
+    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+    ctxCheckpoints: config.ctxCheckpoints ?? null,
+    cacheRam: config.cacheRam ?? null,
     tensorParallel: config.tensorParallel ?? false,
     disableVision: config.disableVision ?? false,
     chatTemplateOverride: null,
@@ -295,6 +324,18 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.nUbatch != null) {
     parts.push(`uBatch ${config.nUbatch}`);
+  }
+  if (config.loadMode) {
+    parts.push(`Load ${config.loadMode}`);
+  }
+  if (config.specDraftCacheDtype) {
+    parts.push(`Draft KV ${config.specDraftCacheDtype}`);
+  }
+  if (config.ctxCheckpoints != null) {
+    parts.push(`${config.ctxCheckpoints} checkpoints`);
+  }
+  if (config.cacheRam != null) {
+    parts.push(`Cache RAM ${config.cacheRam}`);
   }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");

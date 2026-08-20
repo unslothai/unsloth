@@ -64,6 +64,7 @@ from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
+    apply_load_mode_policy,
     apply_model_memory_policy,
     extra_args_disable_mmproj,
     fit_is_enabled_in,
@@ -412,6 +413,12 @@ class GgufLoadIntent:
     # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
+    # llama-server tuning group; none follows the llama.cpp defaults
+    # (auto / f16 / 32 / 8192).
+    load_mode: Optional[str] = None
+    spec_draft_cache_type: Optional[str] = None
+    ctx_checkpoints: Optional[int] = None
+    cache_ram: Optional[int] = None
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -3887,6 +3894,19 @@ def _extra_args_mtp_draft_source(
     return None, False
 
 
+def _normalized_load_mode(value: Optional[str]) -> Optional[str]:
+    """Canonical --load-mode, with llama.cpp's own default reading as unset.
+
+    "auto" IS the default, so a load asking for it and a load asking for nothing
+    launch the same command; the dedupe has to see them as equal or picking Auto
+    would reload a server already running it.
+    """
+    if value is None:
+        return None
+    mode = str(value).strip().lower()
+    return None if mode in {"", "auto"} else mode
+
+
 def _extra_args_draft_cache_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> tuple[Optional[str], Optional[str]]:
@@ -4645,6 +4665,14 @@ class LlamaCppBackend:
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
+        # The llama-server tuning group the last load asked for; none = defaults,
+        # or left to extras / env. What was REQUESTED, not what ran: Model Memory
+        # can replace the load mode, and the Windows full-offload tuning has its
+        # own opinion about the two cache knobs.
+        self._requested_load_mode: Optional[str] = None
+        self._requested_spec_draft_cache_type: Optional[str] = None
+        self._requested_ctx_checkpoints: Optional[int] = None
+        self._requested_cache_ram: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -5025,6 +5053,29 @@ class LlamaCppBackend:
         return self._requested_n_ubatch
 
     @property
+    def requested_load_mode(self) -> Optional[str]:
+        """--load-mode the last load asked for; None means llama.cpp's own auto.
+        The Model Memory settings may have replaced it, which the settings route
+        reports; this stays the caller's intent so the dedupe compares like with
+        like."""
+        return self._requested_load_mode
+
+    @property
+    def requested_spec_draft_cache_type(self) -> Optional[str]:
+        """Draft KV cache dtype the last load asked for; None means f16."""
+        return self._requested_spec_draft_cache_type
+
+    @property
+    def requested_ctx_checkpoints(self) -> Optional[int]:
+        """--ctx-checkpoints the last load asked for; None means the default 32."""
+        return self._requested_ctx_checkpoints
+
+    @property
+    def requested_cache_ram(self) -> Optional[int]:
+        """--cache-ram (MiB) the last load asked for; None means the default 8192."""
+        return self._requested_cache_ram
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -5053,6 +5104,10 @@ class LlamaCppBackend:
         self._requested_n_parallel = 1
         self._requested_n_batch = None
         self._requested_n_ubatch = None
+        self._requested_load_mode = None
+        self._requested_spec_draft_cache_type = None
+        self._requested_ctx_checkpoints = None
+        self._requested_cache_ram = None
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -5421,6 +5476,24 @@ class LlamaCppBackend:
             return False
         if not self._is_diffusion and (
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
+        ):
+            return False
+        # Same rule for the tuning group: each is compared requested-against-
+        # requested, so a resident server launched with a different mode, draft
+        # cache dtype, checkpoint count or host cache size is a reload rather than
+        # a match. The draft dtype is compared only when the caller names one, like
+        # spec_draft_n_max above: an unset value asks for no change.
+        if not self._is_diffusion and (
+            _normalized_load_mode(self._requested_load_mode)
+            != _normalized_load_mode(intent.load_mode)
+            or self._requested_ctx_checkpoints != intent.ctx_checkpoints
+            or self._requested_cache_ram != intent.cache_ram
+        ):
+            return False
+        if (
+            not self._is_diffusion
+            and intent.spec_draft_cache_type is not None
+            and self._requested_spec_draft_cache_type != intent.spec_draft_cache_type
         ):
             return False
 
@@ -6014,6 +6087,8 @@ class LlamaCppBackend:
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
+                "spec_draft_cache_k_flag": None,
+                "spec_draft_cache_v_flag": None,
                 "flags": {},
                 "help_probe_ok": False,
             }
@@ -6058,6 +6133,8 @@ class LlamaCppBackend:
         supports_no_mmproj_offload = False
         supports_load_mode = False
         spec_draft_ngl_flag = None
+        spec_draft_cache_k_flag = None
+        spec_draft_cache_v_flag = None
         saw_spec_type = False
         probe_ok = False
         help_text = ""
@@ -6268,6 +6345,19 @@ class LlamaCppBackend:
                 if _is_real(_alias):
                     spec_draft_ngl_flag = _alias
                     break
+            # Same alias dance for the draft KV cache pair: --spec-draft-type-*
+            # is the modern spelling and --cache-type-*-draft the older one, and a
+            # build exposing only one exits on the other. K and V are probed
+            # independently, since upstream renamed them together but a fork need
+            # not have. Long forms only, like the loop above.
+            for _alias in ("--spec-draft-type-k", "--cache-type-k-draft"):
+                if _is_real(_alias):
+                    spec_draft_cache_k_flag = _alias
+                    break
+            for _alias in ("--spec-draft-type-v", "--cache-type-v-draft"):
+                if _is_real(_alias):
+                    spec_draft_cache_v_flag = _alias
+                    break
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
@@ -6329,6 +6419,8 @@ class LlamaCppBackend:
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
+            "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
+            "spec_draft_cache_v_flag": spec_draft_cache_v_flag,
             # The whole parsed catalogue, not just the booleans above. The UI
             # validates pass-through args against THIS build rather than a list
             # bundled with Unsloth, since a custom or newer llama.cpp is exactly
@@ -10867,6 +10959,12 @@ class LlamaCppBackend:
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
         self._requested_n_ubatch = None
+        # The diffusion runner builds its own command and passes none of these,
+        # so a previous GGUF's values must not be reported against it.
+        self._requested_load_mode = None
+        self._requested_spec_draft_cache_type = None
+        self._requested_ctx_checkpoints = None
+        self._requested_cache_ram = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
@@ -14696,6 +14794,10 @@ class LlamaCppBackend:
         n_parallel = intent.n_parallel
         n_batch = intent.n_batch
         n_ubatch = intent.n_ubatch
+        load_mode = intent.load_mode
+        spec_draft_cache_type = intent.spec_draft_cache_type
+        ctx_checkpoints = intent.ctx_checkpoints
+        cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
@@ -15369,6 +15471,11 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # What the SWA checkpoint reserve is priced against. Only an explicit
+                # request counts: the estimator has always charged 0 here, and
+                # adopting llama.cpp's default of 32 for every load would move the
+                # fit for models nobody asked to change.
+                _effective_ctx_checkpoints = int(ctx_checkpoints or 0)
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
                     self.is_embedding_gguf
@@ -16085,6 +16192,12 @@ class LlamaCppBackend:
                             _mtp_draft_weights = 0
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
+                    # The first-class control underneath them: it is emitted BEFORE
+                    # the extras, so an extra still last-wins and keeps the value
+                    # parsed above, and the reserve is priced on what will run.
+                    if spec_draft_cache_type:
+                        _mtp_draft_ck = _mtp_draft_ck or spec_draft_cache_type
+                        _mtp_draft_cv = _mtp_draft_cv or spec_draft_cache_type
 
                     # Byte-accurate reserve when dims allow, else None -> flat fallback.
                     mtp_overhead_fn: Optional[Callable[[int], int]] = None
@@ -16664,6 +16777,7 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
+                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = False,
                                         mtp_overhead_fn = None,
@@ -16744,6 +16858,7 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
+                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = True,
                                         mtp_overhead_fn = mtp_overhead_fn,
@@ -16971,6 +17086,7 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
+                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -17058,6 +17174,7 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
+                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -17200,6 +17317,7 @@ class LlamaCppBackend:
                                 n_parallel = n_parallel,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
+                                ctx_checkpoints = _effective_ctx_checkpoints,
                                 flash_attn = planned_flash_attn,
                                 mtp_engaged = _mtp_reserves_gpu,
                                 mtp_overhead_fn = mtp_overhead_fn,
@@ -17675,6 +17793,27 @@ class LlamaCppBackend:
 
                 server_caps = _launch_caps(binary)
 
+                # Before the extras, like the batch pair: a hand-typed flag still
+                # last-wins over the control. Each is gated on the capability
+                # probe, because a build that predates the flag exits on it.
+                if ctx_checkpoints is not None:
+                    if server_caps.get("supports_ctx_checkpoints"):
+                        cmd.extend(["--ctx-checkpoints", str(int(ctx_checkpoints))])
+                    else:
+                        logger.info(
+                            "llama-server has no --ctx-checkpoints; skipping the "
+                            "requested %s.",
+                            ctx_checkpoints,
+                        )
+                if cache_ram is not None:
+                    if server_caps.get("supports_cache_ram"):
+                        cmd.extend(["--cache-ram", str(int(cache_ram))])
+                    else:
+                        logger.info(
+                            "llama-server has no --cache-ram; skipping the requested %s MiB.",
+                            cache_ram,
+                        )
+
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
                 # "model" field of its chat/completions responses.
@@ -18044,6 +18183,35 @@ class LlamaCppBackend:
                 # Restore the requested view, or the spec-mode compare never matches.
                 if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
                     self._requested_spec_mode = None
+                # The draft KV cache dtype, which only means anything when a
+                # separate draft model is attached: the flags size the DRAFT
+                # context, and a launch with no --model-draft has none. Judged on
+                # the flags actually built rather than on the requested mode, so a
+                # mode that fell back to no drafter emits nothing and an MTP load
+                # that did attach a drafter file is covered.
+                if spec_draft_cache_type and any(
+                    _flag_name(tok) in _LOCAL_DRAFT_FLAGS for tok in spec_flags
+                ):
+                    _draft_k_flag = server_caps.get("spec_draft_cache_k_flag")
+                    _draft_v_flag = server_caps.get("spec_draft_cache_v_flag")
+                    if _draft_k_flag and _draft_v_flag:
+                        # Both axes together: llama.cpp refuses K != V on an MLA
+                        # draft context, and the control is one dtype for the pair.
+                        spec_flags.extend(
+                            [
+                                str(_draft_k_flag),
+                                spec_draft_cache_type,
+                                str(_draft_v_flag),
+                                spec_draft_cache_type,
+                            ]
+                        )
+                        logger.info("Draft KV cache dtype: %s", spec_draft_cache_type)
+                    else:
+                        logger.info(
+                            "llama-server has no draft KV cache flags; skipping the "
+                            "requested %s.",
+                            spec_draft_cache_type,
+                        )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
@@ -18215,11 +18383,19 @@ class LlamaCppBackend:
                 # a repeated prompt is not re-prefilled on every request. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
-                    if server_caps.get("supports_cache_ram"):
+                    # An explicit control wins over the platform tuning: the user
+                    # asked for this number on this host, and llama.cpp is
+                    # last-wins, so emitting a 0 after it would silently overrule
+                    # the panel while still showing the value it typed.
+                    if cache_ram is not None:
+                        pass
+                    elif server_caps.get("supports_cache_ram"):
                         cmd.extend(["--cache-ram", "0"])
                     else:
                         unsupported_cache_flags.append("--cache-ram")
-                    if server_caps.get("supports_ctx_checkpoints"):
+                    if ctx_checkpoints is not None:
+                        pass
+                    elif server_caps.get("supports_ctx_checkpoints"):
                         cmd.extend(["--ctx-checkpoints", "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
@@ -18334,6 +18510,15 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                 )
+                # After Model Memory and on the extras it returned, because it
+                # defers to those settings: while either one owns host placement
+                # the per-model pick emits nothing at all.
+                _load_mode_managed, _mem_extras = apply_load_mode_policy(
+                    _mem_extras,
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    weights_in_host_memory = _mem_host_resident,
+                    requested_load_mode = load_mode,
+                )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
@@ -18349,6 +18534,9 @@ class LlamaCppBackend:
                         "Model Memory: keeping weights pinned in place (%s)",
                         " ".join(_mem_managed),
                     )
+                if _load_mode_managed:
+                    cmd.extend(_load_mode_managed)
+                    logger.info("Load mode: %s", " ".join(_load_mode_managed))
 
                 # User pass-through args go last. Placement flags are removed
                 # below when the Studio picker owns the GPU selection.
@@ -19462,6 +19650,12 @@ class LlamaCppBackend:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
                                 supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                # Deliberately not the requested load mode: the
+                                # first launch already emitted it, and this call
+                                # only ADDS to the command. A second copy would
+                                # land after the extras (overruling a flag the
+                                # user typed) and would make _memory_policy_active
+                                # true for a launch Model Memory never touched.
                                 weights_in_host_memory = _retry_host_resident,
                             )
                             if _retry_managed:
@@ -20003,6 +20197,10 @@ class LlamaCppBackend:
                 self._vram_fraction_pending = None
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
+                self._requested_load_mode = intent.load_mode
+                self._requested_spec_draft_cache_type = intent.spec_draft_cache_type
+                self._requested_ctx_checkpoints = intent.ctx_checkpoints
+                self._requested_cache_ram = intent.cache_ram
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash. The verified-cache hint is
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery

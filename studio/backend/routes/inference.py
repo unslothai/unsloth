@@ -5218,6 +5218,9 @@ def _active_gguf_intent(
             strip_split_mode = False,
             strip_batch = "n_batch" in request_fields_set,
             strip_ubatch = "n_ubatch" in request_fields_set,
+            strip_ctx_checkpoints = "ctx_checkpoints" in request_fields_set,
+            strip_cache_ram = "cache_ram" in request_fields_set,
+            strip_spec_draft_cache = "spec_draft_cache_type" in request_fields_set,
         )
         # a strip that changed the list is an override, so the dedupe compares the stripped one
         batch_overrides_inherit = batch_stripped_extra != effective_extra
@@ -7980,7 +7983,18 @@ def _inherited_batch_flags_stripped(request) -> bool:
     fields_set = getattr(request, "model_fields_set", set())
     strip_batch = "n_batch" in fields_set
     strip_ubatch = "n_ubatch" in fields_set
-    if not (strip_batch or strip_ubatch):
+    # The llama-server tuning group shadows the same way, so an inherited copy of
+    # one of its flags counts as an override here too.
+    strip_ctx_checkpoints = "ctx_checkpoints" in fields_set
+    strip_cache_ram = "cache_ram" in fields_set
+    strip_spec_draft_cache = "spec_draft_cache_type" in fields_set
+    if not (
+        strip_batch
+        or strip_ubatch
+        or strip_ctx_checkpoints
+        or strip_cache_ram
+        or strip_spec_draft_cache
+    ):
         return False
     stored = list(getattr(get_llama_cpp_backend(), "extra_args", None) or ())
     if not stored:
@@ -7995,6 +8009,9 @@ def _inherited_batch_flags_stripped(request) -> bool:
             strip_split_mode = False,
             strip_batch = strip_batch,
             strip_ubatch = strip_ubatch,
+            strip_ctx_checkpoints = strip_ctx_checkpoints,
+            strip_cache_ram = strip_cache_ram,
+            strip_spec_draft_cache = strip_spec_draft_cache,
         )
         != stored
     )
@@ -8394,6 +8411,10 @@ def _resolve_inherited_extra_args(
             # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
+            # same rule for the llama-server tuning group
+            strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
+            strip_cache_ram = "cache_ram" in fields_set,
+            strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
         )
         # Inherited, not sent: a flag denylisted since it was stored loses only
         # itself. The previous behaviour dropped the whole list, so one name added

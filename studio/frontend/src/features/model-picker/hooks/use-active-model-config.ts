@@ -28,6 +28,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
+  const specDraftCacheDtype = useChatRuntimeStore(
+    (s) => s.specDraftCacheDtype,
+  );
+  const loadMode = useChatRuntimeStore((s) => s.loadMode);
+  const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
+  const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
@@ -66,6 +72,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nParallel: nParallel ?? null,
       nBatch: nBatch ?? null,
       nUbatch: nUbatch ?? null,
+      specDraftCacheDtype: specDraftCacheDtype ?? null,
+      loadMode: loadMode ?? null,
+      ctxCheckpoints: ctxCheckpoints ?? null,
+      cacheRam: cacheRam ?? null,
       tensorParallel: tensorParallel ?? false,
       disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
@@ -93,6 +103,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nParallel,
     nBatch,
     nUbatch,
+    specDraftCacheDtype,
+    loadMode,
+    ctxCheckpoints,
+    cacheRam,
     tensorParallel,
     disableVision,
     chatTemplateOverride,
