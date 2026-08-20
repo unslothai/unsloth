@@ -288,6 +288,7 @@ class TestParkedLeasesStillHoldTheirKV:
 
     def test_a_caller_is_still_admitted_when_nothing_is_committed(self):
         """The escape must survive the fix, or a large lone request deadlocks."""
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             reservation = await _reserve(queue, capacity = 4, tokens = 9999, budget = 2048)
@@ -307,11 +308,13 @@ class TestTheOutputAllowanceIsCounted:
         messages = [{"role": "user", "content": "x" * 400}]
         with_deprecated = routes_inference._openai_llama_admission_tokens(
             SimpleNamespace(messages = messages, max_tokens = 512),
-            budget = 8192, capacity = 4,
+            budget = 8192,
+            capacity = 4,
         )
         with_supported = routes_inference._openai_llama_admission_tokens(
             SimpleNamespace(messages = messages, max_tokens = None, max_completion_tokens = 512),
-            budget = 8192, capacity = 4,
+            budget = 8192,
+            capacity = 4,
         )
         assert with_supported == with_deprecated
 
@@ -323,6 +326,11 @@ class TestTheOutputAllowanceIsCounted:
         import routes.inference as routes_inference
 
         raw = SimpleNamespace(input = "x" * 100_000, max_output_tokens = 4096)
-        assert routes_inference._openai_llama_admission_tokens(
-            raw, budget = 2048, capacity = 4,
-        ) == 512
+        assert (
+            routes_inference._openai_llama_admission_tokens(
+                raw,
+                budget = 2048,
+                capacity = 4,
+            )
+            == 512
+        )

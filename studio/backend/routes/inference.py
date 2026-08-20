@@ -1516,12 +1516,15 @@ def _openai_llama_admission_tokens(
     # The same helper generation honours, not the raw field. A request that sets only
     # the supported max_completion_tokens and leaves the deprecated max_tokens unset
     # would otherwise reserve its prompt and none of its output allowance.
-    output_tokens = _positive_int_or_none(
-        _effective_openai_max_tokens_from_values(
-            getattr(payload, "max_tokens", None),
-            getattr(payload, "max_completion_tokens", None),
+    output_tokens = (
+        _positive_int_or_none(
+            _effective_openai_max_tokens_from_values(
+                getattr(payload, "max_tokens", None),
+                getattr(payload, "max_completion_tokens", None),
+            )
         )
-    ) or 0
+        or 0
+    )
     # Clamped to the budget so an oversized request stays schedulable: the queue
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.
