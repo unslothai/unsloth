@@ -120,9 +120,7 @@ ANTHROPIC_ID = re.compile(r"[a-zA-Z0-9_-]+")
 
 
 def test_anthropic_rejects_nothing_it_would_have_rejected():
-    call_id, output_id = _replayed_ids(
-        "sandboxsess:threadid:approvalid", provider_type = "anthropic"
-    )
+    call_id, output_id = _replayed_ids("sandboxsess:threadid:approvalid", provider_type = "anthropic")
     assert call_id == output_id
     assert ANTHROPIC_ID.fullmatch(call_id), call_id
 
