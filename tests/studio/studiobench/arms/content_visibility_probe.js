@@ -99,6 +99,9 @@
 	var doc = window.document;
 	var watched = [];
 	var watchedSet = typeof WeakSet === "function" ? new WeakSet() : null;
+	/* element -> its record, so a sample can ask whether THIS root is currently skipped. Weak so
+	 * that a root the app has thrown away is not held alive by the probe. */
+	var recOf = typeof WeakMap === "function" ? new WeakMap() : null;
 	var ev = { stateChange: 0, skip: 0, unskip: 0, watchers: 0, listenerErrors: 0 };
 	var seq = 0;
 
@@ -167,6 +170,11 @@
 				}
 			});
 			watched.push(rec);
+			if (recOf) {
+				recOf.set(el, rec);
+			} else {
+				el.__cvPotRec = rec;
+			}
 			ev.watchers += 1;
 		} catch (e) {
 			ev.listenerErrors += 1;
@@ -201,6 +209,20 @@
 			}
 		}
 		return n;
+	}
+
+	/* Whether the browser last told us THIS root is skipping its contents.
+	 *
+	 * `null` means no transition has been seen, which is not the same as "rendered" and must not
+	 * be read as either. Callers that care about the difference check for `true` explicitly. */
+	function skippedState(el) {
+		var rec = null;
+		try {
+			rec = recOf ? recOf.get(el) : el.__cvPotRec;
+		} catch (e) {
+			rec = null;
+		}
+		return rec ? rec.skipped : null;
 	}
 
 	function roleOf(el) {
@@ -251,6 +273,7 @@
 			skippedNow: 0,
 			fallbackBite: 0,
 			paddingOnly: 0,
+			droppedDetached: 0,
 			scanned: 0,
 			codeBlocks: 0,
 			codeBlocksAuto: 0
@@ -281,8 +304,14 @@
 				 * is tested first and wins ties, because a root sitting on its fallback is
 				 * behaving exactly as the declaration asks and must never be charged to the
 				 * trap. Anything else is counted as neither. */
+				/* ONLY WHILE SKIPPED. `content-visibility: auto` computes to `auto` whether or
+				 * not the element is currently skipping, and size containment applies only while
+				 * it is. An armed root that is on screen has its ordinary rendered height, and if
+				 * that height happens to land within the tolerance of a role target it would be
+				 * charged to the remembered-size trap. Ordinary geometry must not be able to
+				 * masquerade as the finding. */
 				var px = ROLE_PX[roleOf(el)];
-				if (cv === "auto" && px) {
+				if (cv === "auto" && px && skippedState(el) === true) {
 					if (Math.abs(r.height - targetHeight(px, "fallback")) <= PX_EPS) {
 						out.fallbackBite += 1;
 					} else if (Math.abs(r.height - targetHeight(px, "padding")) <= PX_EPS) {
@@ -324,11 +353,32 @@
 			}
 		}
 
+		/* CONNECTED roots only, and the detached ones are dropped as we go.
+		 *
+		 * `thread_reopen` is in the film: it tears the thread down and rebuilds it, so the old
+		 * roots leave the document. A detached root receives no further transitions, so one whose
+		 * last event said `skipped` would go on being counted in `skippedNow` for the rest of the
+		 * session, reporting roots as skipped that are not in the page at all. Pruning here also
+		 * stops `watched` growing a strong reference per root for the life of a long run. */
+		var live = [];
 		for (i = 0; i < watched.length; i++) {
+			var wel = watched[i].el;
+			var connected = false;
+			try {
+				connected = wel.isConnected !== false && doc.contains(wel);
+			} catch (e) {
+				connected = false;
+			}
+			if (!connected) {
+				out.droppedDetached += 1;
+				continue;
+			}
+			live.push(watched[i]);
 			if (watched[i].skipped === true) {
 				out.skippedNow += 1;
 			}
 		}
+		watched = live;
 
 		heights.sort(function (a, b) {
 			return a - b;

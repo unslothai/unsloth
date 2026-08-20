@@ -123,6 +123,27 @@ def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: 
     assert 'return (which === "fallback" ? px.fallback : 0) + px.padding;' in probe_src
 
 
+def test_only_a_skipped_root_can_land_in_a_size_bucket(probe_src: str):
+    """`content-visibility: auto` computes to `auto` whether or not it is currently skipping.
+
+    An armed root that is on screen has its ordinary rendered height, and size containment is not
+    applying to it. Without the gate, a natural height near a role target reads as the trap.
+    """
+
+    assert "skippedState(el) === true" in probe_src
+
+
+def test_detached_roots_stop_counting_as_skipped(probe_src: str):
+    """`thread_reopen` rebuilds the thread, so watched roots leave the document.
+
+    A detached root receives no further transitions, so one whose last event said `skipped` would
+    keep inflating `skippedNow` for the rest of the session.
+    """
+
+    assert "droppedDetached" in probe_src
+    assert "doc.contains(wel)" in probe_src
+
+
 def test_the_page_scripts_are_installed_as_one_ordered_script(main_src: str):
     """Playwright does not define the order of separate init scripts.
 
