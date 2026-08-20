@@ -921,9 +921,7 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
         )
         assert _ctx_values(captured["cmd"])[-1] == "32768"
 
-    def test_the_pinned_projector_is_charged_once_and_not_twice(
-        self, tmp_path, monkeypatch
-    ):
+    def test_the_pinned_projector_is_charged_once_and_not_twice(self, tmp_path, monkeypatch):
         """The other side of the same coin. The shared-pool charge now lives in the
         common fit total, so an Apple-specific one on top of it prices the encoder
         twice and refuses loads that do fit.

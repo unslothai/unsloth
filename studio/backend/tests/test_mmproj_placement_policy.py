@@ -810,9 +810,7 @@ def test_a_user_pinned_projector_still_costs_a_shared_pool(tmp_path):
     cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
     pinned_ctx = int(cmd[cmd.index("-c") + 1])
 
-    reference, ref_gguf = _backend(
-        tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0
-    )
+    reference, ref_gguf = _backend(tmp_path, memory = memory, model_bytes = 7 * GIB, mmproj_bytes = 0)
     ref_cmd = _launch(reference, ref_gguf)["cmd"]
     reference_ctx = int(ref_cmd[ref_cmd.index("-c") + 1])
 

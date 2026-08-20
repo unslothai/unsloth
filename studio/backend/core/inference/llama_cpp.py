@@ -16802,10 +16802,7 @@ class LlamaCppBackend:
                     # same way, off the same list.
                     _shared_pool_mmproj = 0 if _mm_budgeted_gpus else _mmproj_pinned_bytes
                     model_size_fit = (
-                        model_size
-                        + _compute_buffer_pipeline
-                        + _soft_overhead
-                        + _shared_pool_mmproj
+                        model_size + _compute_buffer_pipeline + _soft_overhead + _shared_pool_mmproj
                     )
 
                     def _subset_model_size(n_gpus: int) -> int:
