@@ -44,6 +44,11 @@ MEASURE_KIND = "measure"
 ZERO_OK_KEYS = frozenset(
     {
         "index",
+        # The parity capture in scene/parity.js numbers its message rows with a bare loop
+        # counter (`i`), not `index`, so the first message of every capture is `i: 0`. That is
+        # an ordinal like every other name on this list, and rejecting it made `--report` fail
+        # on any payload that carried parity rows at all.
+        "i",
         "rung_index",
         "arm_index",
         "window_index",
