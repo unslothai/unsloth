@@ -538,9 +538,9 @@ class TrainingStartRequest(BaseModel):
 
     # Vision-specific LoRA parameters
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
-    finetune_language_layers: bool = Field(False, description = "Finetune language layers")
-    finetune_attention_modules: bool = Field(False, description = "Finetune attention modules")
-    finetune_mlp_modules: bool = Field(False, description = "Finetune MLP modules")
+    finetune_language_layers: bool = Field(True, description = "Finetune language layers")
+    finetune_attention_modules: bool = Field(True, description = "Finetune attention modules")
+    finetune_mlp_modules: bool = Field(True, description = "Finetune MLP modules")
     is_dataset_image: bool = Field(False, description = "Whether the dataset contains image data")
     is_dataset_audio: bool = Field(False, description = "Whether the dataset contains audio data")
     is_embedding: bool = Field(
@@ -628,6 +628,22 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(
                 f"{active[0]} requires an adapter method (LoRA/QLoRA or "
                 "Continued Pretraining); it has no effect under Full Finetuning."
+            )
+        return self
+
+    @model_validator(mode = "after")
+    def _check_finetune_targets(self) -> "TrainingStartRequest":
+        if getattr(self, "training_type", None) == "Full Finetuning":
+            return self
+        if not (
+            self.finetune_vision_layers
+            or self.finetune_language_layers
+            or self.finetune_attention_modules
+            or self.finetune_mlp_modules
+        ):
+            raise ValueError(
+                "Nothing to train: enable at least one of finetune_language_layers, "
+                "finetune_attention_modules, finetune_mlp_modules, or finetune_vision_layers."
             )
         return self
 
