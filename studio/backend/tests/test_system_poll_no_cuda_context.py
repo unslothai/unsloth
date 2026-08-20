@@ -323,6 +323,29 @@ def test_context_free_nvidia_smi_resolves_a_uuid_mask(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, 96 * gib) == 94 * gib
 
 
+def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch):
+    gib = 1 << 30
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: {
+            "available": True,
+            "devices": [{"visible_ordinal": 0, "vram_used_gb": 70.0, "vram_total_gb": 80.0}],
+        },
+    )
+
+    # torch reports the 10 GiB MIG allocation, while --query-gpu reports its
+    # 80 GiB parent. Capping the parent's 10 GiB free would falsely report the
+    # instance as completely empty even when its own allocation is full.
+    assert hw._context_free_cuda_memory_info(0, 10 * gib) is None
+
+
 # ========== Inventory parity ==========
 
 
