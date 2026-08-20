@@ -190,9 +190,11 @@ test("only the dismissible cards licence covering the composer", () => {
   );
   // Measured up from the corner, so the run that stops a cover is the one that
   // would land on the composer, not any persistent card anywhere in the stack.
+  // Over `cards`, the rail's in-flow children: a dragged loaded models card is
+  // `position: fixed` somewhere else and lands on nothing.
   assert.match(
     STORE,
-    /for \(let i = node\.children\.length - 1; i >= 0; i -= 1\)/,
+    /for \(let i = cards\.length - 1; i >= 0; i -= 1\)/,
     "the persistent run is no longer counted from the bottom of the stack",
   );
 });

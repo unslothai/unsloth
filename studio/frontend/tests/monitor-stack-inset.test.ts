@@ -507,11 +507,35 @@ test("the card floors are read off the layout box, not the painted one", async (
     /function cardHeight\([\s\S]*?\)\.offsetHeight;/,
     "a card's height is not the untransformed layout box",
   );
+  assert.match(measure, /const grown = cards\.map\(cardHeight\)/);
+  assert.match(measure, /squeezed: cardHeight\(child\)/);
+  assert.match(measure, /tail \+= cardHeight\(child\) \+ STACK_GAP/);
+});
+
+// Dragged, the loaded models card pins itself `position: fixed` and leaves the
+// rail's flow. scrollHeight drops it, so a floor that still counted it asked
+// for 225px where 128 was needed and lifted the rail off a corner it fitted.
+test("a card dragged out of the rail is not floored for", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("const observer = new ResizeObserver"),
+  );
+  assert.match(
+    source,
+    /function inRailFlow\([\s\S]*?position !== "fixed" && position !== "absolute";/,
+    "an out-of-flow card is not recognised",
+  );
   assert.match(
     measure,
-    /const grown = \[\.\.\.node\.children\]\.map\(cardHeight\)/,
+    /const cards = \[\.\.\.node\.children\]\.filter\(inRailFlow\)/,
   );
-  assert.match(measure, /squeezed: cardHeight\(child\)/);
 });
 
 // The sweep above, re-run at the heights the stack actually takes.

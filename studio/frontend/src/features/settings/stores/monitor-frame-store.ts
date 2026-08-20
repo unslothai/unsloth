@@ -273,6 +273,17 @@ function cardHeight(child: Element): number {
 }
 
 /**
+ * Whether the card is part of the rail's own layout. Dragged, the loaded models
+ * card pins itself `position: fixed` and is painted wherever the reader left
+ * it; `scrollHeight` has already dropped it, so the floor and the tail have to
+ * drop it too, or the rail asks for room to hold a card that is not in it.
+ */
+function inRailFlow(child: Element): boolean {
+  const { position } = getComputedStyle(child);
+  return position !== "fixed" && position !== "absolute";
+}
+
+/**
  * How short the rail can be and still show every card in it.
  *
  * Per card, never over their sum. The update banner's own min-height, 189px,
@@ -523,8 +534,10 @@ export function useStackGeometry(): StackPlacement {
       node.style.maxHeight = "none";
       const natural = node.scrollHeight;
       // Card by card as well as in total, since a card is floored against its
-      // own height rather than the rail's. Same probe, so no extra layout.
-      const grown = [...node.children].map(cardHeight);
+      // own height rather than the rail's. Same probe, so no extra layout, and
+      // one list for both readings so the two can never fall out of step.
+      const cards = [...node.children].filter(inRailFlow);
+      const grown = cards.map(cardHeight);
       // Taken here, uncapped, and not after the cap goes back on. The tail
       // panels are min-h-0 with their own scrollers, so under a tight cap they
       // measure as almost nothing, the placement reads that as a tail it can
@@ -534,10 +547,10 @@ export function useStackGeometry(): StackPlacement {
       // rail. One size that does not depend on the answer, as with the two
       // heights above.
       let tail = 0;
-      for (let i = node.children.length - 1; i >= 0; i -= 1) {
-        const child = node.children[i];
+      for (let i = cards.length - 1; i >= 0; i -= 1) {
+        const child = cards[i];
         if (child.hasAttribute("data-overlay-dismissible")) break;
-        tail += child.getBoundingClientRect().height + STACK_GAP;
+        tail += cardHeight(child) + STACK_GAP;
       }
       const persistent = Math.round(tail);
       // And the other end of the same measurement: squeezed to nothing, what is
@@ -548,7 +561,7 @@ export function useStackGeometry(): StackPlacement {
       node.style.maxHeight = "0px";
       const collapsed = node.scrollHeight;
       const floor = usableFloorRoom(
-        [...node.children].map((child, index) => ({
+        cards.map((child, index) => ({
           squeezed: cardHeight(child),
           natural: grown[index],
         })),
