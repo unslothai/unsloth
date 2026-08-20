@@ -1265,6 +1265,8 @@ def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
     unreadable.mkdir(parents = True)
     (unreadable / "file.bin").write_bytes(b"x")
     os.chmod(unreadable, 0o500)
+    if os.access(unreadable, os.W_OK):  # pragma: no cover - root ignores the mode
+        pytest.skip("cannot make the directory undeletable for this user")
     try:
         with pytest.raises(OSError):
             remove_tree_logged(tree, "unreadable tree")
@@ -1274,7 +1276,8 @@ def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
         # there is nothing a chmod of this entry could have fixed anyway.
         assert stat.S_IMODE(os.stat(unreadable).st_mode) == 0o500
     finally:
-        os.chmod(unreadable, 0o700)
+        if unreadable.exists():
+            os.chmod(unreadable, 0o700)
 
 
 def test_prune_stale_install_side_paths_keeps_the_paths_it_is_told_to_keep(tmp_path: Path):
