@@ -586,6 +586,17 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     /\? \(loadedContextFields\(loadResp\)\.loadedContextLength \?\? undefined\)\s*: loadedWindow,/,
   );
 
+  // Compare loads the same way: a pane with no context pin sends the sentinel, and
+  // capping its budget at 0 would leave the pane asking for no output at all.
+  const composer = readFileSync(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    composer,
+    /maxTokensCap:\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
+  );
+
   const status = readFileSync(
     new URL(
       "../src/features/chat/lib/apply-inference-status-to-store.ts",

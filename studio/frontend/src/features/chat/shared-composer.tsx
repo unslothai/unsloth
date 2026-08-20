@@ -1648,9 +1648,14 @@ export function SharedComposer({
           // remembered settings, and a budget kept from a larger context does
           // not fit the one it just loaded with.
           {
-            maxTokensCap: resp.is_gguf
-              ? (resp.context_length ?? undefined)
-              : effectiveMaxSeqLength,
+            // The reported window leads and the request stands in only for a backend
+            // that sizes nothing, as on the interactive load: an unpinned pane sends
+            // the auto-size sentinel, and capping a budget at 0 asks for no output.
+            maxTokensCap:
+              loadedContextFields(resp).loadedContextLength ??
+              (!resp.is_gguf && effectiveMaxSeqLength > 0
+                ? effectiveMaxSeqLength
+                : undefined),
           },
         );
         store.setModelRequiresTrustRemoteCode(
