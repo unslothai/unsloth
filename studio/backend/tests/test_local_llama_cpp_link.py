@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from utils import llama_cpp_path_settings as path_settings
 from utils import llama_cpp_update as u
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
@@ -209,3 +210,26 @@ def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch, scan)
     killed = _run_orphan_scan(monkeypatch, studio_root, fake, scan, tmp_path)
     assert killed == 1
     assert fake.killed is True
+
+
+@pytest.mark.parametrize("scan", ["psutil", "procfs"])
+def test_orphan_cleanup_spares_studio_selected_custom_tree(
+    tmp_path: Path, monkeypatch, scan
+) -> None:
+    studio_root = tmp_path / "studio-home"
+    studio_root.mkdir()
+    custom_root = tmp_path / "user-owned-llama.cpp"
+    binary = custom_root / _server_subpath()
+    binary.parent.mkdir(parents = True)
+    binary.write_text("x")
+    monkeypatch.setattr(
+        path_settings,
+        "get_stored_custom_llama_cpp_path",
+        lambda: custom_root.resolve(),
+    )
+
+    fake = _FakeProc(os.getpid() + 999, str(binary.resolve()))
+    killed = _run_orphan_scan(monkeypatch, studio_root, fake, scan, tmp_path)
+
+    assert killed == 0
+    assert fake.killed is False

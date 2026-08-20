@@ -4383,6 +4383,12 @@ def install_python_stack() -> int:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
         # both with --no-deps (PyPI metadata declares torch a hard dep; avoid it).
         _progress("base packages (no torch)")
+        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+        unsloth_spec = (
+            f"{package_name}>={desktop_min_ver}"
+            if (desktop_min_ver and package_name == "unsloth")
+            else package_name
+        )
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -4391,7 +4397,7 @@ def install_python_stack() -> int:
             package_name,
             "--upgrade-package",
             "unsloth-zoo",
-            package_name,
+            unsloth_spec,
             "unsloth-zoo",
         )
         # Resolve pydantic WITH deps so pip pins pydantic-core to the exact version
@@ -4472,6 +4478,12 @@ def install_python_stack() -> int:
         # torch/CUDA installs. Torch is pre-installed by install.sh/setup.ps1;
         # --upgrade-package targets only base pkgs.
         _progress("base packages")
+        desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
+        unsloth_spec = (
+            f"{package_name}>={desktop_min_ver}"
+            if (desktop_min_ver and package_name == "unsloth")
+            else package_name
+        )
         pip_install(
             "Updating core packages",
             "--no-cache-dir",
@@ -4479,7 +4491,7 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            "unsloth",
+            unsloth_spec,
             "unsloth-zoo",
         )
 
