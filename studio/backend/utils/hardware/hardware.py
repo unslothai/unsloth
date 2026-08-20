@@ -853,10 +853,23 @@ def _clear_mps_cache() -> None:
         logger.debug("Failed to clear MPS cache: %s", e)
 
 
+def _rocm_visibility_masks_are_stacked() -> bool:
+    """Whether a ROCr mask is composed with a higher HIP-layer mask."""
+    if sys.platform == "win32" or os.environ.get("ROCR_VISIBLE_DEVICES") is None:
+        return False
+    return (
+        os.environ.get("HIP_VISIBLE_DEVICES") is not None
+        or os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+    )
+
+
 def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]]:
     """Translate visible HIP ordinals to amd-smi physical GPU IDs."""
     if hip_ids is None or not hip_ids:
         return hip_ids
+    if _rocm_visibility_masks_are_stacked():
+        logger.debug("Skipping amd-smi VRAM query: ROCr and HIP visibility masks are stacked")
+        return None
 
     from . import amd
 

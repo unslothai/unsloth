@@ -291,6 +291,34 @@ def test_context_free_rocm_smi_declines_without_an_id_mapping(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, 16 << 30) is None
 
 
+def test_context_free_rocm_smi_declines_stacked_visibility_masks(monkeypatch):
+    from utils.hardware import amd
+
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.sys, "platform", "linux")
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1,2")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": "0", "numeric_ids": [0], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(
+        amd,
+        "get_hip_id_by_gpu_index",
+        lambda: pytest.fail("stacked masks have no global HIP mapping"),
+    )
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: pytest.fail("stacked masks must decline amd-smi telemetry"),
+    )
+
+    assert hw._context_free_cuda_memory_info(0, 24 << 30) is None
+
+
 def test_context_free_nvidia_smi_resolves_a_uuid_mask(monkeypatch):
     from utils.hardware import nvidia
 
