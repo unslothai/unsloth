@@ -4184,7 +4184,6 @@ class TestPreserveThinkingHonoursTheBackendDefault:
     @staticmethod
     def _backend(default):
         from types import SimpleNamespace
-
         return SimpleNamespace(
             supports_preserve_thinking = True,
             preserve_thinking_default = default,
@@ -4208,7 +4207,6 @@ class TestPreserveThinkingHonoursTheBackendDefault:
     )
     def test_resolver_is_three_valued(self, default, override, expected):
         from routes.inference import _anthropic_preserve_thinking
-
         resolved = _anthropic_preserve_thinking(
             self._backend(default), self._payload(preserve_thinking = override)
         )
@@ -4287,7 +4285,13 @@ class TestPreserveThinkingHonoursTheBackendDefault:
             seen["preserve_thinking"] = kwargs.get("preserve_thinking")
             yield "ok"
 
-        def _count(messages, system, tools, strict = False, chat_template_kwargs = None):
+        def _count(
+            messages,
+            system,
+            tools,
+            strict = False,
+            chat_template_kwargs = None,
+        ):
             seen["count_messages"] = messages
             return sum(len(str(m.get("reasoning_content") or "")) for m in messages) + 1
 
@@ -4309,7 +4313,11 @@ class TestPreserveThinkingHonoursTheBackendDefault:
             effective_parallel_slots = 4,
             base_url = "http://llama.preserve.test:9999",
             _request_reasoning_kwargs = lambda et, re_, pt: (
-                {k: v for k, v in (("enable_thinking", et), ("preserve_thinking", pt)) if v is not None}
+                {
+                    k: v
+                    for k, v in (("enable_thinking", et), ("preserve_thinking", pt))
+                    if v is not None
+                }
                 or None
             ),
         )
