@@ -142,10 +142,9 @@ def carried_forward_items(
             continue
         item = _neutralise(text)
         if item in seen:
-            # Users restate a standing rule, and every copy after the first cost a slot
-            # out of eight: one rule repeated eight times carried eight copies and pushed
-            # the user's other rule out. Skipped before the cost is charged, so a repeat
-            # cannot exhaust the budget either.
+            # Users restate a standing rule, and each copy used to take a slot out of
+            # eight: one rule repeated eight times crowded out the user's other rule.
+            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
             continue
         cost = estimate_message_tokens(head)
         if spent + cost > max_tokens:
