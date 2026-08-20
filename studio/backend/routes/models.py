@@ -4501,67 +4501,71 @@ def _preferred_gguf_copy(
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cache_scans = _all_hf_cache_scans()
-        try:
-            active_root = _resolve_hf_cache_dir().resolve(strict = False)
-        except Exception:
-            active_root = None
-
-        seen_lower: dict[str, dict] = {}
-        # How each kept row's copy ranks, since the compatibility schema carries neither field.
-        seen_rank: dict[str, tuple[bool, bool]] = {}
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                try:
-                    if repo_info.repo_type != "model":
-                        continue
-                    repo_id = repo_info.repo_id
-                    # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
-                    if _is_hidden_model(repo_id, str(repo_info.repo_path)):
-                        continue
-                    total_size = _repo_gguf_size_bytes(repo_info)
-                    if total_size == 0:
-                        continue
-                    key = repo_id.lower()
-                    existing = seen_lower.get(key)
-                    last_modified = _repo_gguf_last_modified(repo_info)
-                    load_id = _repo_gguf_load_id(repo_info, active_root)
-                    rank = (
-                        _gguf_copy_is_usable(repo_info, load_id),
-                        active_root is not None
-                        and Path(repo_info.repo_path).parent.resolve(strict = False) == active_root,
-                    )
-                    if _preferred_gguf_copy(seen_lower, seen_rank, key, rank, total_size):
-                        row = {
-                            "repo_id": repo_id,
-                            "size_bytes": total_size,
-                            "cache_path": str(repo_info.repo_path),
-                            "has_vision": _cached_gguf_row_has_vision(repo_info, load_id),
-                            "task": _repo_gguf_task(repo_info),
-                        }
-                        if load_id:
-                            row["load_id"] = load_id
-                        # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.
-                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
-                        if lm > 0:
-                            row["last_modified"] = lm
-                        seen_lower[key] = row
-                        seen_rank[key] = rank
-                    elif last_modified > existing.get("last_modified", 0.0):
-                        existing["last_modified"] = last_modified
-                except Exception as e:
-                    repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                    logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
-                    continue
-        # Newest download first; stable repo_id tie-break for equal/missing mtimes.
-        cached = sorted(
-            seen_lower.values(),
-            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
-        )
-        return {"cached": cached}
+        return {"cached": cached_gguf_rows()}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
         return {"cached": []}
+
+
+def cached_gguf_rows(cache_scans = None) -> list[dict]:
+    if cache_scans is None:
+        cache_scans = _all_hf_cache_scans()
+    try:
+        active_root = _resolve_hf_cache_dir().resolve(strict = False)
+    except Exception:
+        active_root = None
+
+    seen_lower: dict[str, dict] = {}
+    # How each kept row's copy ranks, since the compatibility schema carries neither field.
+    seen_rank: dict[str, tuple[bool, bool]] = {}
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            try:
+                if repo_info.repo_type != "model":
+                    continue
+                repo_id = repo_info.repo_id
+                # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
+                if _is_hidden_model(repo_id, str(repo_info.repo_path)):
+                    continue
+                total_size = _repo_gguf_size_bytes(repo_info)
+                if total_size == 0:
+                    continue
+                key = repo_id.lower()
+                existing = seen_lower.get(key)
+                last_modified = _repo_gguf_last_modified(repo_info)
+                load_id = _repo_gguf_load_id(repo_info, active_root)
+                rank = (
+                    _gguf_copy_is_usable(repo_info, load_id),
+                    active_root is not None
+                    and Path(repo_info.repo_path).parent.resolve(strict = False) == active_root,
+                )
+                if _preferred_gguf_copy(seen_lower, seen_rank, key, rank, total_size):
+                    row = {
+                        "repo_id": repo_id,
+                        "size_bytes": total_size,
+                        "cache_path": str(repo_info.repo_path),
+                        "has_vision": _cached_gguf_row_has_vision(repo_info, load_id),
+                        "task": _repo_gguf_task(repo_info),
+                    }
+                    if load_id:
+                        row["load_id"] = load_id
+                    # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.
+                    lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                    if lm > 0:
+                        row["last_modified"] = lm
+                    seen_lower[key] = row
+                    seen_rank[key] = rank
+                elif last_modified > existing.get("last_modified", 0.0):
+                    existing["last_modified"] = last_modified
+            except Exception as e:
+                repo_label = getattr(repo_info, "repo_id", "<unknown>")
+                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                continue
+    # Newest download first; stable repo_id tie-break for equal/missing mtimes.
+    return sorted(
+        seen_lower.values(),
+        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+    )
 
 
 def _repo_has_pipeline_index(repo_info) -> bool:
@@ -4679,106 +4683,108 @@ async def list_cached_models(
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
-    _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
-    hf_token = _normalize_hf_token(hf_token)
-
     try:
-        cache_scans = _all_hf_cache_scans()
-        try:
-            active_root = _resolve_hf_cache_dir().resolve(strict = False)
-        except Exception:
-            active_root = None
-
-        seen_lower: dict[str, dict] = {}
-        # Repos whose active-cache copy cannot be loaded by id; this schema carries no path.
-        unusable_active: set[str] = set()
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                try:
-                    if repo_info.repo_type != "model":
-                        continue
-                    repo_id = repo_info.repo_id
-                    # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
-                    if _is_hidden_model(repo_id, str(repo_info.repo_path)):
-                        continue
-                    # No partial or load id here, so a snapshot-path-only repo would read as ready.
-                    if _recovered_repo_is_unusable_by_repo_id(repo_info):
-                        try:
-                            if (
-                                active_root is not None
-                                and Path(repo_info.repo_path).parent.resolve(strict = False)
-                                == active_root
-                            ):
-                                unusable_active.add(repo_id.lower())
-                        except (OSError, RuntimeError, ValueError):
-                            pass
-                        continue
-                    if _repo_has_gguf_files(repo_info):
-                        continue
-                    total_size = sum(
-                        (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
-                    )
-                    if total_size == 0:
-                        continue
-                    weight_files = [
-                        f
-                        for rev in repo_info.revisions
-                        for f in rev.files
-                        if f.file_name.endswith(_WEIGHT_EXTENSIONS)
-                    ]
-                    if not weight_files:
-                        continue
-                    last_modified = max(
-                        (_blob_mtime(f) for f in weight_files),
-                        default = 0.0,
-                    )
-                    key = repo_id.lower()
-                    existing = seen_lower.get(key)
-                    # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
-                    is_partial = _cached_repo_partial(
-                        repo_id, Path(repo_info.repo_path)
-                    ) or _repo_pipeline_missing_denoiser(repo_info)
-                    # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
-                    if existing is None or (not is_partial, total_size) > (
-                        not bool(existing.get("partial")),
-                        existing["size_bytes"],
-                    ):
-                        row = {
-                            "repo_id": repo_id,
-                            "size_bytes": total_size,
-                            "task": _cached_repo_task(repo_info),
-                        }
-                        if is_partial:
-                            row["partial"] = True
-                        # Listed, so tens of GB of companion weights stay visible and deletable,
-                        # but flagged, so no picker offers a denoiser-less repo as a load.
-                        if _is_sd_cpp_companion_repo(repo_id):
-                            row["companion"] = True
-                        # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
-                        if row["task"] is not None and not _repo_has_pipeline_index(repo_info):
-                            row["single_file"] = True
-                        # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.
-                        lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
-                        if lm > 0:
-                            row["last_modified"] = lm
-                        seen_lower[key] = row
-                    elif last_modified > existing.get("last_modified", 0.0):
-                        existing["last_modified"] = last_modified
-                except Exception as e:
-                    repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                    logger.warning(f"Skipping cached model repo {repo_label}: {e}")
-                    continue
-
-        rows = [row for key, row in seen_lower.items() if key not in unusable_active]
-        # Local-only list path: update checks are GGUF-only and happen lazily when variants are viewed.
-        cached = sorted(
-            rows,
-            key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
-        )
-        return {"cached": cached}
+        return {"cached": cached_model_rows()}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)
         return {"cached": []}
+
+
+def cached_model_rows(cache_scans = None) -> list[dict]:
+    _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+    if cache_scans is None:
+        cache_scans = _all_hf_cache_scans()
+    try:
+        active_root = _resolve_hf_cache_dir().resolve(strict = False)
+    except Exception:
+        active_root = None
+
+    seen_lower: dict[str, dict] = {}
+    # Repos whose active-cache copy cannot be loaded by id; this schema carries no path.
+    unusable_active: set[str] = set()
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            try:
+                if repo_info.repo_type != "model":
+                    continue
+                repo_id = repo_info.repo_id
+                # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
+                if _is_hidden_model(repo_id, str(repo_info.repo_path)):
+                    continue
+                # No partial or load id here, so a snapshot-path-only repo would read as ready.
+                if _recovered_repo_is_unusable_by_repo_id(repo_info):
+                    try:
+                        if (
+                            active_root is not None
+                            and Path(repo_info.repo_path).parent.resolve(strict = False)
+                            == active_root
+                        ):
+                            unusable_active.add(repo_id.lower())
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                    continue
+                if _repo_has_gguf_files(repo_info):
+                    continue
+                total_size = sum(
+                    (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
+                )
+                if total_size == 0:
+                    continue
+                weight_files = [
+                    f
+                    for rev in repo_info.revisions
+                    for f in rev.files
+                    if f.file_name.endswith(_WEIGHT_EXTENSIONS)
+                ]
+                if not weight_files:
+                    continue
+                last_modified = max(
+                    (_blob_mtime(f) for f in weight_files),
+                    default = 0.0,
+                )
+                key = repo_id.lower()
+                existing = seen_lower.get(key)
+                # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
+                is_partial = _cached_repo_partial(
+                    repo_id, Path(repo_info.repo_path)
+                ) or _repo_pipeline_missing_denoiser(repo_info)
+                # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
+                if existing is None or (not is_partial, total_size) > (
+                    not bool(existing.get("partial")),
+                    existing["size_bytes"],
+                ):
+                    row = {
+                        "repo_id": repo_id,
+                        "size_bytes": total_size,
+                        "task": _cached_repo_task(repo_info),
+                    }
+                    if is_partial:
+                        row["partial"] = True
+                    # Listed, so tens of GB of companion weights stay visible and deletable,
+                    # but flagged, so no picker offers a denoiser-less repo as a load.
+                    if _is_sd_cpp_companion_repo(repo_id):
+                        row["companion"] = True
+                    # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
+                    if row["task"] is not None and not _repo_has_pipeline_index(repo_info):
+                        row["single_file"] = True
+                    # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.
+                    lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                    if lm > 0:
+                        row["last_modified"] = lm
+                    seen_lower[key] = row
+                elif last_modified > existing.get("last_modified", 0.0):
+                    existing["last_modified"] = last_modified
+            except Exception as e:
+                repo_label = getattr(repo_info, "repo_id", "<unknown>")
+                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                continue
+
+    rows = [row for key, row in seen_lower.items() if key not in unusable_active]
+    # Local-only list path: update checks are GGUF-only and happen lazily when variants are viewed.
+    return sorted(
+        rows,
+        key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
+    )
 
 
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
