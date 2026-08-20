@@ -429,6 +429,7 @@ def run(args, ab_ref = None) -> int:
             pacer = pacer,
             seeder = side_seeder,
             corpus = corpus,
+            click_probe = bool(getattr(args, "click_probe", False)),
             base_url = side["base_url"],
             model_id = model_id,
             tier = args.tier,
@@ -879,6 +880,15 @@ def main(argv: list) -> int:
         help = "comma-separated action names --assert-liveness may excuse. Use only "
         "for an action a platform genuinely cannot perform, and say which in "
         "the pull request: every name here is a hole in the gate",
+    )
+    ap.add_argument(
+        "--click-probe",
+        dest = "click_probe",
+        action = "store_true",
+        help = "before the film starts, split the composer click into what a USER pays and "
+        "what Playwright's actionability check pays, plus a hover-only reading. Off by "
+        "default: it costs seconds at large rungs and makes the cell's timings "
+        "incomparable with a cell that did not run it",
     )
     ap.add_argument(
         "--allow-slot-misses",
