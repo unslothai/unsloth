@@ -203,20 +203,24 @@ class TestTheNonStreamingPathAlsoReportsTheCause:
 
     def test_starvation_reaches_a_non_streaming_client(self):
         from utils.utils import safe_error_detail
-
-        assert safe_error_detail(self._error("Context size has been exceeded.")) == KV_STARVATION_MESSAGE
+        assert (
+            safe_error_detail(self._error("Context size has been exceeded."))
+            == KV_STARVATION_MESSAGE
+        )
 
     def test_an_oversize_refusal_keeps_both_counts(self):
         from utils.utils import safe_error_detail
-
-        detail = safe_error_detail(self._error(
-            "request (2358 tokens) exceeds the available context size (2048 tokens)"
-        ))
+        detail = safe_error_detail(
+            self._error("request (2358 tokens) exceeds the available context size (2048 tokens)")
+        )
         assert "2358" in detail and "2048" in detail
 
     def test_an_ordinary_exception_is_still_generalised(self):
         """The leak guard must keep working: only the curated message is exempt."""
         from utils.utils import safe_error_detail
 
-        assert safe_error_detail(RuntimeError("/srv/secret/path blew up")) == "An internal error occurred"
+        assert (
+            safe_error_detail(RuntimeError("/srv/secret/path blew up"))
+            == "An internal error occurred"
+        )
         assert "/srv/secret" not in safe_error_detail(RuntimeError("/srv/secret/path blew up"))

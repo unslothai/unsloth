@@ -607,7 +607,6 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     # core.inference at import time.
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
-
         if isinstance(error, LlamaStreamError) and error.friendly:
             return error.friendly
     except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
