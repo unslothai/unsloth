@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
+from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
@@ -114,6 +115,22 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
+_ADMISSION_HEARTBEAT_MISSES = 3
+# Model-loading budget when the request budget is unlimited, and its ceiling for any budget:
+# the poll loop stays bounded however long generation itself may run.
+_DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
+_MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
+# Headroom so the named stall guards expire before HTTPX's own read timeout does.
+_STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
+
+
+def _model_wait_budget(run: dict) -> float:
+    """Share of the request budget one model wait may spend, clamped so an unlimited or
+    oversized budget still leaves the poll loop bounded."""
+    timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
+    capped = min(timeout or _DEFAULT_MODEL_TIMEOUT_SECONDS, _MAX_MODEL_WAIT_BUDGET_SECONDS)
+    return capped / (_MAX_MODEL_WAITS + 1)
 
 
 def _select_synthesis_report(content: str, reasoning: str) -> str:
@@ -525,8 +542,11 @@ def _fit_decision_inputs(
 
 
 @asynccontextmanager
-async def _wall_clock_timeout(seconds: float) -> AsyncIterator[None]:
+async def _wall_clock_timeout(seconds: float | None) -> AsyncIterator[None]:
     """Use asyncio.timeout when available, with the same behavior on Python 3.9/3.10."""
+    if seconds is None:
+        yield
+        return
     timeout = getattr(asyncio, "timeout", None)
     if timeout is not None:
         async with timeout(seconds):
@@ -1007,7 +1027,7 @@ class ResearchSupervisor:
         loop = asyncio.get_running_loop()
         # Share the model budget across the allowed waits: spending all of it on one lets the
         # enclosing wall clock fire first, burying the real refusal under a timeout.
-        budget = float(run["config"]["budgets"]["modelTimeoutSeconds"]) / (_MAX_MODEL_WAITS + 1)
+        budget = _model_wait_budget(run)
         if max_seconds is not None:
             budget = min(budget, max_seconds)
         deadline = loop.time() + budget
@@ -1030,8 +1050,7 @@ class ResearchSupervisor:
         step = _retry_after_seconds(response) or _MODEL_SWITCH_RETRY_SECONDS
         # Same budget share as _wait_for_local_model: one wait must leave room for the others and
         # for the refusal, or the enclosing wall clock fires first and reports a timeout instead.
-        budget = float(run["config"]["budgets"]["modelTimeoutSeconds"]) / (_MAX_MODEL_WAITS + 1)
-        remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, budget)
+        remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, _model_wait_budget(run))
         logger.info("research.waiting_for_model_switch run_id=%s seconds=%.0f", run_id, remaining)
         while remaining > 0:
             await self._check_active(run_id)
@@ -1271,16 +1290,33 @@ class ResearchSupervisor:
         try:
             await self._note_phase(run["id"], "phase.started", phase, call_id, step_position)
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, capped by the run's wall clock; legacy runs use the default.
-            first_output_budget = min(
-                float(
-                    config["budgets"].get(
-                        "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                    )
-                ),
-                model_timeout,
+            # Configurable, capped by a finite run wall clock; legacy runs use the default.
+            first_output_budget = float(
+                config["budgets"].get(
+                    "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+                )
             )
-            timeout = httpx.Timeout(model_timeout)
+            if model_timeout > 0:
+                first_output_budget = min(first_output_budget, model_timeout)
+            # Unlimited only drops the total wall clock; connect and headers stay bounded. This
+            # bound also caps the silence between queue notices, which no wall clock covers, so
+            # it has to clear the heartbeat those notices are paced by.
+            admission_gap_budget = max(
+                first_output_budget,
+                _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
+                llama_admission_config_from_env().keepalive_interval_s
+                * _ADMISSION_HEARTBEAT_MISSES,
+            )
+            timeout = (
+                httpx.Timeout(model_timeout)
+                if model_timeout
+                else httpx.Timeout(
+                    first_output_budget,
+                    # Strictly looser than the guards above, so a stall is reported by name
+                    # rather than as a message-less HTTPX ReadTimeout.
+                    read = admission_gap_budget + _STREAM_READ_TIMEOUT_MARGIN_SECONDS,
+                )
+            )
             loop = asyncio.get_running_loop()
 
             def semantic_deadline() -> tuple[float, type[BaseException]] | None:
@@ -1294,7 +1330,7 @@ class ResearchSupervisor:
                 )
 
             async with (
-                _wall_clock_timeout(model_timeout),
+                _wall_clock_timeout(model_timeout or None),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
             ):
                 response: httpx.Response | None = None
@@ -1377,7 +1413,11 @@ class ResearchSupervisor:
                             # for it, and start the budget when the slot is granted. A plain
                             # ": keep-alive" means a silent backend, which is what we bound.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
-                                first_output_deadline = None
+                                # Unlimited has no wall clock behind this, so bound the gap
+                                # between queue notices; each notice refreshes it.
+                                first_output_deadline = (
+                                    None if model_timeout else loop.time() + admission_gap_budget
+                                )
                             elif line.startswith(_ADMISSION_DONE_COMMENT):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
@@ -1453,6 +1493,13 @@ class ResearchSupervisor:
                             )
             await flush_progress()
             return report, reasoning, finish_reason, usage
+        except (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout):
+            raise
+        except httpx.ReadTimeout as exc:
+            # Transport backstop: HTTPX raises this with no message, so name the stall instead.
+            if semantic_output_at is None:
+                raise ModelFirstOutputTimeout("Local model never produced output") from exc
+            raise ModelOutputIdleTimeout("Local model stopped producing output") from exc
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ModelWallClockTimeout(
                 "Local model request exceeded its wall-clock timeout"

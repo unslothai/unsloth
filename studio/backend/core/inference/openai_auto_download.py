@@ -273,9 +273,12 @@ def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
         _is_mtp_drafter,
     )
 
+    from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+    # Plans and advertised variants are derived separately, so both are filtered here.
     siblings = [
         sibling
-        for sibling in (siblings or [])
+        for sibling in drop_shadowed_appledouble_siblings(list(siblings or []))
         if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "")
     ]
     plans = build_gguf_variant_plans(siblings)

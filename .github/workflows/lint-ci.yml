@@ -135,13 +135,17 @@ jobs:
       # update and install are one unit: retrying the install alone after a stalled
       # update just re-reads the same broken package list.
       - name: Linux deps for shellcheck
-        timeout-minutes: 13
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
         env:
-          RETRY_ATTEMPTS: '3'
-          RETRY_ATTEMPT_TIMEOUT: '150'
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get update -qq && apt-get install -y --no-install-recommends shellcheck'
+            'apt-get install -y --no-install-recommends shellcheck || { apt-get update -qq && apt-get install -y --no-install-recommends shellcheck; }'
 
       - name: Python AST/syntax check (every committed .py must compile)
         # python -m compileall uses the same parser the interpreter
