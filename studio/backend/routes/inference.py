@@ -4007,7 +4007,11 @@ class _ReasoningSpanGuard:
         self._turn_wrap = None
         self._claimed = False
 
-    def _wrap_for(self, text: str, wrapped_so_far = None):
+    def _wrap_for(
+        self,
+        text: str,
+        wrapped_so_far = None,
+    ):
         if self._claimed:
             return self._turn_wrap
         if not self._prov or not text.startswith(self._OPEN):
@@ -21864,9 +21868,9 @@ def _anthropic_tool_response_from_events(
         _expanded: list = []
         for _i, block in enumerate(content_blocks):
             if think_provenance is None:
-                if isinstance(
-                    block, AnthropicResponseTextBlock
-                ) and block.text.lstrip().startswith("<think>"):
+                if isinstance(block, AnthropicResponseTextBlock) and block.text.lstrip().startswith(
+                    "<think>"
+                ):
                     _expanded.extend(_think_markup_to_blocks(block.text, None))
                     continue
             elif _i in _block_wrap:

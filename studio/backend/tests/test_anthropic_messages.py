@@ -3961,7 +3961,14 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
         _pending = list(streams)
 
         @contextlib.contextmanager
-        def fake_stream(_client, _url, _payload, _cancel, headers = None, **_kw):
+        def fake_stream(
+            _client,
+            _url,
+            _payload,
+            _cancel,
+            headers = None,
+            **_kw,
+        ):
             yield type("R", (), {"status_code": 200, "chunks": _pending.pop(0)})()
 
         monkeypatch.setattr(backend, "_stream_with_retry", fake_stream)
