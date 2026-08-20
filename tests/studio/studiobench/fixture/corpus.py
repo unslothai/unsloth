@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -891,11 +891,70 @@ class RungPlan:
         return self.seeded_chars + self.streamed_chars + self.follow_up_chars
 
 
-def plan_rung(
-    corpus: Corpus,
-    rung: str,
-    chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
-) -> RungPlan:
+def dollarise(text: str, salt: str) -> str:
+    """Give `text` the CURRENCY AND SHELL dollars a real reply has, deterministically.
+
+    WHAT THIS IS FOR, AND WHAT IT IS NO LONGER FOR. This was written when the frozen corpus
+    contained zero `$`, zero `\\[` and zero `\\(` across all 519,859 characters, so that
+    `preprocessLaTeX` -- which runs on the whole reply once per animation frame -- always took its
+    cheap path. That path is an early return after `text.includes("$")` fails
+    (`studio/frontend/src/lib/latex.ts`), and the two regimes are an order of magnitude apart:
+    measured over one 96,000 character reply, 15.3 ms against 281.3 ms.
+
+    CORPUS v2 CHANGED THAT AND THIS DOCSTRING WOULD OTHERWISE LIE. The frozen corpus now carries
+    well-formed LaTeX throughout, and the streamed unit is drawn from it, so the streamed reply
+    already contains `$` without this flag: 10 of them at the 10K rung and 6 at 100K, measured.
+    The early return is therefore already defeated by default, and the claim that the expensive
+    regime "has never been exercised" is dead. Anyone reaching for this flag to reach that regime
+    does not need it any more.
+
+    WHAT IT STILL DOES, which is narrower and worth stating exactly. The early return is keyed on
+    the reply BEING PROCESSED -- `preprocessLaTeX(displayText)` is called per message
+    (`components/assistant-ui/markdown-text.tsx`) -- and past it the cost is the `CURRENCY_REGEX`
+    pass, whose callback has three branches: skip inside a code region, skip inside a math region
+    just created from `\\(...\\)`, and escape everything else. v2's dollars are well-formed math,
+    so they take the SKIP branches. The dollars added here are deliberately not math: `$HOME/...`
+    inside fences exercises the code-region exclusion, and `$12.99` in prose exercises the escape
+    branch and `hasInlineMathCloser`. That is the false-positive half of the function, and it is
+    the half that rewrites the string rather than leaving it alone.
+
+    So the two mechanisms are complementary rather than redundant: v2 puts renderable math in the
+    SEEDED thread and exercises the renderer, and this puts malformed-on-purpose dollars in the
+    turn that STREAMS and exercises the heuristics, per chunk, on the path a streaming-cost metric
+    measures. Expect a far smaller effect from this flag than the 15.3-to-281.3 figure above,
+    because that transition now happens without it.
+
+    Applied to the STREAMED unit only, and never to the frozen corpus on disk: the frozen units
+    and their hashes are exactly what they were, so a run with this off is byte-identical to a run
+    of the same corpus version without it. A run with it on records the fact in its payload,
+    because a corpus difference that is not in the payload is a difference two runs will be
+    compared across without knowing.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    fenced = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        # Inside a fence, shell-shaped lines. Outside it, prices in prose. Both are what a real
+        # answer contains, and they exercise different branches: the code-region scan has to
+        # EXCLUDE the first and the currency heuristic has to escape the second.
+        if fenced and index % 11 == 0:
+            out.append(f'{line}  # $HOME/{salt}{index} costs $1{index % 10}.99')
+        elif not fenced and line and index % 17 == 0:
+            out.append(f"{line} It costs ${index % 9}{index % 10}.99 or ${index % 7},200 a year.")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def plan_rung(corpus: Corpus, rung: str,
+              chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
+              stream_tail_chars: Optional[int] = None,
+              dollars: bool = False) -> RungPlan:
     """Which units are SEEDED and which one STREAMS.
 
     Only the last reply streams. At the field's own cadence, 24 characters every 73ms, a million
@@ -927,8 +986,20 @@ def plan_rung(
     # Holding the tail constant also isolates the variable under investigation. The question is
     # what a streamed chunk costs AS A FUNCTION OF THE THREAD ALREADY ON SCREEN, and that needs
     # the chunk workload held fixed while the thread grows, not both moving together.
+    # `stream_tail_chars` overrides the constant, and is the ONLY way to vary reply length in this
+    # tool. The paragraphs above explain why the tail is pinned: the rung ladder exists to ask what
+    # a chunk costs as a function of the THREAD, and that needs the chunk workload held fixed. The
+    # consequence, which cost a whole investigation to rediscover, is that a cost scaling with the
+    # length of the reply BEING STREAMED is constant across every rung and reads as a floor. Such a
+    # mechanism is real and this ladder cannot see it at any effect size.
+    #
+    # Raising this makes the film's labels false in the way the note above describes, because the
+    # stream then outlasts the after-generation slots. That is a trade a reply-length investigation
+    # has to make deliberately, so it is a parameter and not a second constant, and `--assert-
+    # liveness` on the resulting payload is how the cost of making it shows up.
     turns = STREAM_TURNS if target_chars >= MULTI_TURN_MIN_CHARS else 1
-    tail_target = min(STREAM_TAIL_CHARS, target_chars)
+    tail_budget = STREAM_TAIL_CHARS if stream_tail_chars is None else max(1, stream_tail_chars)
+    tail_target = min(tail_budget, target_chars) if stream_tail_chars is None else tail_budget
     follow_budget = FOLLOW_UP_CHARS * (turns - 1)
     seed_target = max(0, target_chars - tail_target - follow_budget)
 
@@ -960,6 +1031,24 @@ def plan_rung(
         corpus.unit(min(len(seeded) + i, last_index)).clipped_to(FOLLOW_UP_CHARS)
         for i in range(1, turns)
     ]
+    if dollars:
+        # The streamed turns only. The seeded prefix is rendered once at mount and never
+        # re-preprocessed, so dollars there would change the corpus without changing what the
+        # per-frame path is asked to do.
+        streamed = replace(
+            streamed,
+            reasoning = dollarise(streamed.reasoning, "r"),
+            content = dollarise(streamed.content, "c"),
+        )
+        streamed = replace(streamed, chars = len(streamed.reasoning) + len(streamed.content))
+        follow_ups = [
+            replace(u, reasoning = dollarise(u.reasoning, "r"),
+                    content = dollarise(u.content, "c"))
+            for u in follow_ups
+        ]
+        follow_ups = [
+            replace(u, chars = len(u.reasoning) + len(u.content)) for u in follow_ups
+        ]
 
     return RungPlan(
         rung = rung,

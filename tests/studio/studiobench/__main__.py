@@ -364,6 +364,11 @@ def run(args, ab_ref = None) -> int:
             "cadence": args.cadence,
             "rungs": TIER_RUNGS[args.tier],
             "instrument_level": args.instrument_level,
+            # In the payload, not only in the log. Two runs with different fixtures are
+            # not comparable, and a fixture difference that is not recorded is one a later
+            # reader has no way to notice before quoting a ratio across it.
+            "stream_tail_chars": args.stream_tail_chars,
+            "corpus_dollars": bool(args.corpus_dollars),
         }
     )
     rec.gate("production_build", verdict.production, verdict.as_dict())
@@ -423,8 +428,24 @@ def run(args, ab_ref = None) -> int:
 
     rungs = args.rungs.split(",") if args.rungs else TIER_RUNGS[args.tier]
     cells = build_cells(
-        rungs, corpus, args.tier, ctx.session_id, args.instrument_level, reps = args.reps
+        rungs,
+        corpus,
+        args.tier,
+        ctx.session_id,
+        args.instrument_level,
+        reps = args.reps,
+        stream_tail_chars = args.stream_tail_chars,
+        corpus_dollars = args.corpus_dollars,
     )
+    if args.stream_tail_chars or args.corpus_dollars:
+        # Loud, because both change the fixture. A payload produced under either of them is not
+        # comparable with one produced without, and the pair that says so is printed here and
+        # written into the run manifest above.
+        _log(
+            f"  FIXTURE CHANGED: stream tail {args.stream_tail_chars or 'default'}, "
+            f"dollars {'on' if args.corpus_dollars else 'off'}. Compare only against a run "
+            f"with the same pair."
+        )
 
     done = _resume_set(paths) if args.resume else set()
     if done:
@@ -852,6 +873,29 @@ def main(argv: list) -> int:
         "film is designed to roll on through one. Default 0, which is right for a "
         "quiet measurement machine; raise it only on a contended runner, where the "
         "gate is proving the plumbing works rather than that the runner is fast",
+    )
+    ap.add_argument(
+        "--stream-tail-chars",
+        type = int,
+        dest = "stream_tail_chars",
+        help = "override how many characters of the last turn STREAM. The rung ladder "
+        "pins this at 6,000 on every rung so that the thread is the only thing that "
+        "varies, which means a cost scaling with the length of the reply being streamed "
+        "is constant across the whole ladder and reads as a floor. This is the axis that "
+        "can see one. Raising it makes the film's after-generation slots run mid-stream, "
+        "so check the payload with --assert-liveness rather than trusting the labels",
+    )
+    ap.add_argument(
+        "--corpus-dollars",
+        action = "store_true",
+        dest = "corpus_dollars",
+        help = "give the STREAMED turns the CURRENCY AND SHELL dollars a real reply has "
+        "($HOME, $12.99). Not the same thing as the LaTeX the frozen corpus carries since "
+        "corpus v2: that is well-formed math in the SEEDED thread, which exercises the "
+        "renderer, and this is malformed-on-purpose dollars in the turn that STREAMS, "
+        "which exercises preprocessLaTeX's currency-escape and code-region heuristics. "
+        "Measured over one 96,000 character reply, the cheap regime is 15.3 ms and the "
+        "expensive one 281.3 ms. The frozen units on disk and their hashes are untouched",
     )
     ap.add_argument("--rungs", help = "comma-separated rung override, e.g. 1K,10K")
     ap.add_argument("--reps", type = int, default = 1)
