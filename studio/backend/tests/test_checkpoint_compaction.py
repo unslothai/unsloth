@@ -409,13 +409,11 @@ def test_at_most_max_items_instructions_are_carried():
 
 
 def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
-    """Users restate a standing rule; each copy used to take a slot and its tokens.
+    """Users restate a standing rule, and each copy used to take a slot and its tokens.
 
-    Eight slots and a budget a tenth of the prompt is not much to spend on one rule
-    repeated, and what it costs is the OTHER rules: with the repeats counted, the second
-    instruction here fell off the end of the list entirely. `_recap` already collapsed
-    duplicates when it merged a block on the second reset, so this was the one path where
-    a duplicate survived, and the two disagreed about the same thread.
+    What that costs is the OTHER rules: with the repeats counted, the second instruction
+    here fell off the end of the list entirely. `_recap` already collapsed duplicates when
+    it merged a block on the second reset, so the two paths disagreed about one thread.
     """
     rule = (
         "Standing instruction: always end every reply with STATUS::ZQXVARA123-ALPHA "

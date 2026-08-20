@@ -124,8 +124,7 @@ def carried_forward_items(
     instructions the model treats as current. Instructions older than the budget are
     silently dropped, which is why `max_items` is small and the header says "lossy".
 
-    Repeats are collapsed to their newest copy, on the same rule and the same key
-    `_recap` uses for the merged list.
+    Repeats collapse to their newest copy, on the same key `_recap` uses.
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
@@ -143,12 +142,10 @@ def carried_forward_items(
             continue
         item = _neutralise(text)
         if item in seen:
-            # Restating a standing rule is ordinary, and every copy after the first buys
-            # nothing while costing a slot out of eight and its tokens out of a budget
-            # that is a tenth of the prompt. Measured: a thread whose user restated one
-            # rule eight times and gave one other rule carried eight copies of the first
-            # and dropped the second entirely. Skipped BEFORE the cost is charged, so a
-            # repeat cannot exhaust the budget either.
+            # Users restate a standing rule, and every copy after the first cost a slot
+            # out of eight: one rule repeated eight times carried eight copies and pushed
+            # the user's other rule out. Skipped before the cost is charged, so a repeat
+            # cannot exhaust the budget either.
             continue
         cost = estimate_message_tokens(head)
         if spent + cost > max_tokens:
