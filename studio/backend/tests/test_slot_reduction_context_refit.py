@@ -24,6 +24,7 @@ from test_llama_cpp_placement import _backend, _launch  # noqa: E402
 MIB = 1024 * 1024
 NATIVE_CTX = 262144
 CARD_MIB = 12 * 1024  # usable 11,919 MiB at the 0.97 pin fraction
+MIXED_CARDS = (CARD_MIB, 1_280)  # a primary plus a card too small to plan onto
 
 # Qwen3.8-27B-GGUF metadata.
 HYBRID = {
@@ -69,8 +70,9 @@ def _plan(
     metadata = HYBRID,
     gpus = 1,
 ):
-    """Return the generated placement plan."""
-    memory = [(i, vram_mib, vram_mib) for i in range(gpus)]
+    """Return the generated placement plan. ``vram_mib`` may be a per-card sequence."""
+    cards = list(vram_mib) if isinstance(vram_mib, (tuple, list)) else [vram_mib] * gpus
+    memory = [(i, mib, mib) for i, mib in enumerate(cards)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
 
     def read(_path):
@@ -88,7 +90,8 @@ def _plan(
         "supports_kv_unified": True,
         "supports_fit_ctx": True,
     }
-    cmd = _launch(backend, gguf, speculative_type = spec, n_ctx = n_ctx, n_parallel = n_parallel)["cmd"]
+    launched = _launch(backend, gguf, speculative_type = spec, n_ctx = n_ctx, n_parallel = n_parallel)
+    cmd = launched["cmd"]
 
     def flag(name, default = None):
         return cmd[cmd.index(name) + 1] if name in cmd else default
@@ -99,6 +102,7 @@ def _plan(
         "fit": flag("--fit", "off"),
         "spec": flag("--spec-type", "-"),
         "ceiling": backend._max_context_length,
+        "devices": (launched["env"] or {}).get("CUDA_VISIBLE_DEVICES"),
     }
 
 
@@ -142,6 +146,37 @@ class TestTheLaunchedCountOwnsTheContext:
         assert (reduced["slots"], reduced["fit"]) == (2, "off")
         assert reduced["ctx"] == reduced["ceiling"] == 8_448
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
+
+
+class TestTheRefitStaysOnTheCardsTheReductionChose:
+    """A 12 GiB primary next to a 1.25 GiB card: the reduced plan fits on the primary
+    alone, and only the small card can hold a longer context."""
+
+    def test_the_refit_does_not_pull_in_another_card(self, tmp_path):
+        got = _plan(
+            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
+        assert (got["slots"], got["fit"], got["devices"]) == (2, "off", "0")
+        assert got["ctx"] == 7_680
+
+    def test_it_matches_a_request_started_at_the_final_count(self, tmp_path):
+        reduced = _plan(
+            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
+        direct = _plan(
+            tmp_path, weights_mib = 10_200, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS
+        )
+        assert reduced["devices"] == direct["devices"] == "0"
+        assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
+
+    def test_the_ceiling_still_counts_the_card_the_launch_left_out(self, tmp_path):
+        """The ceiling is a hardware bound, so it keeps measuring across both cards."""
+        mixed = _plan(
+            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
+        alone = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
+        assert mixed["ctx"] == alone["ctx"] == 7_680
+        assert (mixed["ceiling"], alone["ceiling"]) == (9_472, 7_680)
 
 
 class TestAutoSpeculationStillDecidesBeforeTheReduction:

@@ -16213,12 +16213,12 @@ class LlamaCppBackend:
                             # closures read the rebound slot and micro-batch values; the
                             # helper re-prices flat compute and MTP per candidate.
 
-                            def _slots_hold(ctx: int) -> Optional[list[int]]:
+                            def _slots_hold(ctx: int, devices: list[tuple[int, int]]) -> Optional[list[int]]:
                                 """Return the GPU subset if the final slot count fits."""
                                 _gi, _uf, _got = self._slots_that_fit_on_gpu(
                                     n_parallel,
                                     ctx,
-                                    gpus,
+                                    devices,
                                     total_by_idx,
                                     model_size_fit - _compute_buffer_pipeline + _cc_bytes(ctx),
                                     cache_type_kv,
@@ -16236,31 +16236,45 @@ class LlamaCppBackend:
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
-                            # Find the largest 256-aligned context that still fits. The
-                            # footprint grows monotonically with context.
-                            _lo = max(1, min(4096, native_ctx_for_cap) // 256)
-                            _hi = native_ctx_for_cap // 256
-                            _refit = None
-                            while _lo <= _hi:
-                                _mid = (_lo + _hi) // 2
-                                _held = _slots_hold(_mid * 256)
-                                if _held is None:
-                                    _hi = _mid - 1
-                                else:
-                                    _refit = (_mid * 256, _held)
-                                    _lo = _mid + 1
-                            if _refit is not None:
-                                # Explicit contexts are never rewritten.
-                                if not explicit_ctx and _refit[0] > effective_ctx:
-                                    logger.info(
-                                        "Context re-fitted %d -> %d for %d serving slot(s).",
-                                        effective_ctx,
-                                        _refit[0],
-                                        n_parallel,
-                                    )
-                                    effective_ctx, gpu_indices = _refit
-                                # Publish the ceiling measured at the final slot count.
-                                max_available_ctx = max(max_available_ctx, _refit[0])
+                            def _largest_ctx(devices: list[tuple[int, int]]) -> Optional[tuple[int, list[int]]]:
+                                """Largest 256-aligned context these cards hold. The
+                                footprint grows monotonically with context."""
+                                _lo = max(1, min(4096, native_ctx_for_cap) // 256)
+                                _hi = native_ctx_for_cap // 256
+                                _best = None
+                                while _lo <= _hi:
+                                    _mid = (_lo + _hi) // 2
+                                    _held = _slots_hold(_mid * 256, devices)
+                                    if _held is None:
+                                        _hi = _mid - 1
+                                    else:
+                                        _best = (_mid * 256, _held)
+                                        _lo = _mid + 1
+                                return _best
+
+                            # The launch may only grow the context on the cards the
+                            # reduction just chose. Searching every GPU again buys context
+                            # by pulling in another device: the layer split this path
+                            # prefers fewer GPUs to avoid, and one a request started at
+                            # the final slot count never makes.
+                            _kept = set(_gi_slots or ())
+                            _plan_gpus = [g for g in gpus if g[0] in _kept]
+                            _refit = _largest_ctx(_plan_gpus)
+                            # Explicit contexts are never rewritten.
+                            if _refit is not None and not explicit_ctx and _refit[0] > effective_ctx:
+                                logger.info(
+                                    "Context re-fitted %d -> %d for %d serving slot(s).",
+                                    effective_ctx,
+                                    _refit[0],
+                                    n_parallel,
+                                )
+                                effective_ctx, gpu_indices = _refit
+                            # The ceiling stays a hardware bound like the sweep above, so
+                            # measure it across every card at the final slot count: an
+                            # explicit request that large re-selects GPUs and does load.
+                            _ceiling = _refit if len(_plan_gpus) == len(gpus) else _largest_ctx(gpus)
+                            if _ceiling is not None:
+                                max_available_ctx = max(max_available_ctx, _ceiling[0])
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
