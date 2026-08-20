@@ -896,9 +896,7 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
 
     _COMMON = dict(real_fit = True, weights_bytes = 1024**3, kv_per_token = 32 * 1024)
 
-    def test_the_pinned_projector_still_counts_against_the_budget(
-        self, tmp_path, monkeypatch
-    ):
+    def test_the_pinned_projector_still_counts_against_the_budget(self, tmp_path, monkeypatch):
         with pytest.raises(RuntimeError, match = "unified"):
             _launch(
                 tmp_path,

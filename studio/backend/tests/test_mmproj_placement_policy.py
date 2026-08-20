@@ -773,9 +773,7 @@ def test_a_shared_device_beside_a_discrete_one_does_not_veto_the_pin(tmp_path):
     The discrete card here is the one the single-GPU pin test uses, with a shared
     device (total 0) alongside it.
     """
-    backend, gguf = _backend(
-        tmp_path, memory = [(0, 8_692, 16_384), (1, 7_600, 0)]
-    )
+    backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384), (1, 7_600, 0)])
 
     cmd = _launch(backend, gguf)["cmd"]
 
@@ -787,9 +785,7 @@ def test_a_host_that_is_only_shared_memory_still_never_pins(tmp_path):
     """The rule that survives: with no budgeted device anywhere, moving the projector
     shuffles bytes inside one pool and frees nothing, so the 8.8x image-encode cost
     buys exactly nothing. Unchanged by the mixed-host relaxation above."""
-    backend, gguf = _backend(
-        tmp_path, memory = [(0, 7_600, 0), (1, 7_600, 0)]
-    )
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 0), (1, 7_600, 0)])
 
     cmd = _launch(backend, gguf)["cmd"]
 

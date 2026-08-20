@@ -16324,9 +16324,7 @@ class LlamaCppBackend:
                     # the discrete side cannot hold the load even then, the pin is what
                     # the placement wanted anyway.
                     _mm_budgeted_gpus = [
-                        (_idx, _free)
-                        for _idx, _free in gpus
-                        if total_by_idx.get(_idx, 0) > 0
+                        (_idx, _free) for _idx, _free in gpus if total_by_idx.get(_idx, 0) > 0
                     ]
                     _discrete_vram = bool(_mm_budgeted_gpus)
                     if (
