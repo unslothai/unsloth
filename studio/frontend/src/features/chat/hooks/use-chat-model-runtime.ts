@@ -1181,10 +1181,28 @@ export function useChatModelRuntime() {
               stateBeforeUnload.tensorParallel);
           // The diffusion runner has no projector to skip, so the toggle is inert
           // there for the same reason tensorParallel is.
+          //
+          // Unlike tensorParallel, this does NOT survive a model switch. It is
+          // per-model config with a default of vision on, so a target that saved no
+          // config gets that default rather than the outgoing model's setting.
+          // Carrying it over loaded the new model text-only, and silently: the dedupe
+          // comparison a few hundred lines up already builds its own view of an
+          // unconfigured switch out of DEFAULT_PER_MODEL_CONFIG, so the two halves
+          // disagreed about the same load. The later resetsPerModelSettings block
+          // cannot repair it, since this constant is captured before it runs.
+          const loadSwitchesModelOrVariant = Boolean(
+            currentCheckpoint &&
+              (currentCheckpoint !== modelId ||
+                (stateBeforeUnload.activeGgufVariant ?? null) !==
+                  (ggufVariant ?? null)) &&
+              !keepSpeculative,
+          );
           const loadDisableVision = targetIsDiffusion
             ? false
             : (pendingLoadConfig?.disableVision ??
-              stateBeforeUnload.disableVision);
+              (loadSwitchesModelOrVariant
+                ? DEFAULT_PER_MODEL_CONFIG.disableVision
+                : stateBeforeUnload.disableVision));
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =

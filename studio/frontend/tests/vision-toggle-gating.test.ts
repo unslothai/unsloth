@@ -238,3 +238,42 @@ test("the rollback seeds the Vision control from the restored model, not the tar
     "the control must not be seeded from the echo, which is false for a text-only GGUF",
   );
 });
+
+// Vision is per-model config with a default of ON, so switching to a model that saved
+// no config must give it that default rather than the outgoing model's setting. It
+// used to inherit, which loaded the new model text-only and did it silently: the
+// dedupe comparison builds its own view of an unconfigured switch out of
+// DEFAULT_PER_MODEL_CONFIG, so the two halves disagreed about the same load. This is
+// where it parts company with tensorParallel, which is deliberately standing across
+// models. Source-level for the same reason as the tests above.
+test("an unconfigured target gets the default Vision value, not the outgoing model's", () => {
+  const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+  const decl = runtime.slice(
+    runtime.indexOf("const loadDisableVision ="),
+    runtime.indexOf("const loadActivePresetSource"),
+  );
+  assert.ok(
+    decl.includes("DEFAULT_PER_MODEL_CONFIG.disableVision"),
+    `a model switch must fall back to the per-model default, got: ${decl.trim()}`,
+  );
+  assert.ok(
+    decl.includes("loadSwitchesModelOrVariant"),
+    "the default must apply on a model or variant switch specifically",
+  );
+});
+
+test("a compare pane with no saved config does not inherit the live Vision value", () => {
+  const composer = read("src/features/chat/shared-composer.tsx");
+  const decl = composer.slice(
+    composer.indexOf("const effectiveDisableVision ="),
+    composer.indexOf("if (ownConfig.selectedGpuIds != null)"),
+  );
+  assert.ok(
+    decl.includes("DEFAULT_PER_MODEL_CONFIG.disableVision"),
+    `an unremembered pane must take the per-model default, got: ${decl.trim()}`,
+  );
+  assert.ok(
+    !/fallbackDisableVision/.test(composer),
+    "the store-derived fallback should be gone entirely, not just unused",
+  );
+});

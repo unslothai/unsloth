@@ -92,6 +92,7 @@ import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
@@ -1190,7 +1191,6 @@ export function SharedComposer({
       const store = useChatRuntimeStore.getState();
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const fallbackTensorParallel = store.tensorParallel;
-      const fallbackDisableVision = store.disableVision;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
@@ -1375,11 +1375,17 @@ export function SharedComposer({
             : fallbackTensorParallel;
         // The diffusion runner has no projector to skip, so the toggle is inert
         // there for the same reason tensorParallel is.
+        //
+        // A pane with no saved config gets the per-model DEFAULT, not the store's
+        // current value, which belongs to whichever model happens to be loaded. That
+        // is where this parts company with tensorParallel above: tensorParallel is
+        // deliberately standing across models, while Vision is per-model config and a
+        // model nobody has configured is a model with vision on.
         const effectiveDisableVision = resolvedIsDiffusion
           ? false
           : ownRemembered
             ? ownConfig.disableVision
-            : fallbackDisableVision;
+            : DEFAULT_PER_MODEL_CONFIG.disableVision;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
