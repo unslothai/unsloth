@@ -144,13 +144,29 @@ def _select_items(
             return None
         return _neutralise(text), estimate_message_tokens(head)
 
+    # Where each instruction is rendered: the position of its NEWEST copy in the
+    # transcript, whether or not the walk ever reaches that copy. Users restate a standing
+    # rule, and the block's own later-wins header means the position IS the meaning, so a
+    # restatement rendered at the position of the copy the walk happened to see reports
+    # the opposite of the truth. Reading it off the transcript rather than off the walk is
+    # what makes that independent of the order the walk runs in: the reserved pair can
+    # fill the cap before the walk reaches a newer copy at all, and "metric", "imperial",
+    # "metric", "add a table" at max_items 3 then rendered metric, imperial, table,
+    # telling the model imperial was current at the moment the user had just restored
+    # metric.
+    newest_position: dict[str, int] = {}
+    for index in range(len(groups)):
+        found = _item(index)
+        if found is not None:
+            newest_position[found[0]] = index
+
     def _walk(order: list[int]) -> list[str]:
         # Kept as (position, text) so the render can sort by position: with a reserved
         # item the selection order is no longer simply the reverse of the transcript
         # order, and `reversed(chosen)` put the oldest turn LAST, inverting the
         # supersession the header promises.
         picked: list[tuple[int, str]] = []
-        seen: dict[str, int] = {}
+        seen: set[str] = set()
         spent = 0
         for index in order:
             if len(picked) >= max_items:
@@ -163,25 +179,15 @@ def _select_items(
                 # Users restate a standing rule, and each copy used to take a slot out of
                 # eight: one rule repeated eight times crowded out the user's other rule.
                 # Checked before the cost is charged, so a repeat cannot exhaust the
-                # budget.
-                #
-                # The surviving copy keeps the NEWEST position. `reserve_oldest` walks the
-                # opening turn early, so without this a restatement was dropped in favour
-                # of its own older copy: "metric", "imperial", "metric" rendered as metric
-                # then imperial, and the header's later-wins rule then told the model
-                # imperial was current when the user had just restored metric. In the
-                # plain newest-first walk the first sighting is already the newest, so
-                # nothing moves there.
-                slot = seen[item]
-                if index > picked[slot][0]:
-                    picked[slot] = (index, item)
+                # budget. Every copy renders at the same place, `newest_position`, so
+                # which copy the walk saw first does not matter here.
                 continue
             if spent + cost > max_tokens:
                 # Skipped, not truncated, and the loop continues: an older instruction
                 # that still fits beats nothing.
                 continue
-            picked.append((index, item))
-            seen[item] = len(picked) - 1
+            picked.append((newest_position[item], item))
+            seen.add(item)
             spent += cost
         return [item for _, item in sorted(picked)]
 
@@ -242,12 +248,33 @@ def _select_items(
     successor_text = _item(successor)[0]
     if opening_text not in chosen or successor_text in chosen:
         return chosen
-    # Both or neither. The pair did not fit whole (a cap of one or two slots, or a
-    # successor costing more than the budget left), and half a pair is the bug itself:
-    # the abandoned request carried with the correction to it dropped. So the
-    # reservation is abandoned and the plain newest-first walk decides, which keeps the
-    # newest direction the user gave.
-    return _walk(plain)
+    if not _takeable(successor):
+        # The successor costs more than the entire budget, so no ordering carries it and
+        # there was never a pair to take. Dropping the opening here buys nothing: on the
+        # threads where this happens the opening is usually the ONLY turn that fits, so
+        # the block would go out empty, and an empty block is the case this whole pass
+        # exists to stop -- the model told the conversation was compacted and handed none
+        # of it. Measured on the campaign's headline thread: a 43-token standing
+        # instruction followed by eight 160-token sections under a 100-token budget, where
+        # the instruction is the only affordable turn in the epoch.
+        return chosen
+    # Both or neither. The successor was affordable and the pair still did not fit whole
+    # (a cap of one or two slots, or the budget already spent), and half a pair is the bug
+    # itself: the abandoned request carried with the correction to it dropped. So the
+    # reservation is abandoned and the newest-first walk decides, which keeps the newest
+    # direction the user gave.
+    #
+    # WITHOUT the opening turn, which is the whole point of abandoning the reservation.
+    # Handing the fallback the plain order simply picked the opening up again whenever it
+    # was the cheaper of the two, which is the same wrong statement of the task by another
+    # route: a 10-token "Build Tetris", a 30-token correction and a 25-token newest turn
+    # under a 40-token budget carried the opening and the newest turn, correction dropped,
+    # both before and after the pair was introduced.
+    #
+    # Only that one turn is excluded, by position and not by text: a user who RESTATES the
+    # opening request later has not abandoned it, and that newer copy is still free to be
+    # selected.
+    return _walk([index for index in plain if index != oldest])
 
 
 def carried_forward_items(
