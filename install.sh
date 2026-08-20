@@ -1353,7 +1353,8 @@ _offer_systemd_user_service() {
     fi
     [ "$_sd_wants" = true ] || return 0
 
-    _sd_host="${UNSLOTH_SYSTEMD_HOST:-0.0.0.0}"
+    # Same default bind as `unsloth studio` (localhost). Set UNSLOTH_SYSTEMD_HOST=0.0.0.0 for LAN.
+    _sd_host="${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}"
     _sd_port="${UNSLOTH_SYSTEMD_PORT:-8888}"
 
     _sd_ok=false
