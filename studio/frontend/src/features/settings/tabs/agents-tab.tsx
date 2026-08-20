@@ -163,6 +163,13 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
   },
+  {
+    id: "vibe",
+    name: "Mistral Vibe",
+    docsUrl: "https://github.com/mistralai/mistral-vibe",
+    color: "#FA500F",
+    mark: "MV",
+  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];

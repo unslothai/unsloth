@@ -12,7 +12,7 @@ def test_matches_unsloth_start_subcommands():
     # Each entry must be an actual `unsloth start <agent>` subcommand name
     # (unsloth_cli/commands/start.py). Spelled out here rather than imported
     # from that module, which pulls in the CLI's heavier dependencies.
-    assert CODING_AGENTS == ("claude", "codex", "openclaw", "opencode", "hermes", "pi")
+    assert CODING_AGENTS == ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "vibe")
 
 
 def test_detects_only_agents_present_on_path():

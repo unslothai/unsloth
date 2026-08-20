@@ -108,6 +108,7 @@ const DOC_LINKS = [
   { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
   { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
   { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
+  { label: "Mistral Vibe", href: "https://github.com/mistralai/mistral-vibe" },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors
@@ -119,6 +120,7 @@ const DEFAULT_AGENTS = [
   "openclaw",
   "opencode",
   "hermes",
+  "vibe",
 ];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
@@ -130,6 +132,7 @@ const AGENT_LABELS: Record<string, string> = {
   openclaw: "OpenClaw",
   opencode: "OpenCode",
   hermes: "Hermes",
+  vibe: "Mistral Vibe",
 };
 
 const j = (s: string): string => JSON.stringify(s);
