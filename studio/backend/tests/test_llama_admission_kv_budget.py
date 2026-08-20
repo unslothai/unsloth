@@ -474,6 +474,7 @@ class TestToolLoopsReserveTheirUpperBound:
         ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
         none of which carry a client catalogue."""
         from types import SimpleNamespace
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,
@@ -524,6 +525,7 @@ class TestToolLoopsReserveTheirUpperBound:
         """The passthrough and streaming /v1/responses run ONE generation per HTTP
         call; the client sends the next round itself, with its own reservation."""
         from types import SimpleNamespace
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = 16,

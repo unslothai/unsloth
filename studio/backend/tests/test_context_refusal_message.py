@@ -83,9 +83,7 @@ def test_single_oversized_turn_says_shortening_will_not_help():
 
 
 def test_oversized_tool_result_names_the_tool():
-    context_refusal.record_fit(
-        _refusal(irreducible = 5000, latest_turn = 4800, role = "tool")
-    )
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = "tool"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "A tool returned more than this context window can hold" in message
     assert "smaller slice" in message
@@ -94,9 +92,7 @@ def test_oversized_tool_result_names_the_tool():
 
 
 def test_function_role_is_treated_as_a_tool_result():
-    context_refusal.record_fit(
-        _refusal(irreducible = 5000, latest_turn = 4800, role = "function")
-    )
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, role = "function"))
     assert "A tool returned" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
@@ -137,9 +133,7 @@ def test_the_turn_has_to_dominate_the_floor(latest_turn, dominates):
 def test_a_diagnosis_for_a_different_window_is_ignored():
     # A model reload between the fit and the error. The recorded shape describes a
     # window the server did not just refuse, so it must not narrate this one.
-    context_refusal.record_fit(
-        _refusal(irreducible = 5000, latest_turn = 4800, context_length = 8192)
-    )
+    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, context_length = 8192))
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
@@ -220,6 +214,4 @@ def test_the_recorded_diagnosis_is_a_copy():
 
 def test_other_friendly_errors_are_untouched():
     assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
-    assert "Lost connection" in _friendly_error(
-        RuntimeError("Lost connection to llama-server")
-    )
+    assert "Lost connection" in _friendly_error(RuntimeError("Lost connection to llama-server"))
