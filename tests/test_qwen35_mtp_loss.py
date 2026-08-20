@@ -1,3 +1,6 @@
+import inspect
+import types
+
 import torch
 
 from unsloth.models import mtp
