@@ -344,10 +344,7 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
         "ctx_checkpoints"
         in inspect.signature(inference_routes._estimate_gguf_required_gb).parameters
     )
-    assert (
-        "ctx_checkpoints"
-        in inspect.signature(inference_routes._estimate_gguf_kv_gb).parameters
-    )
+    assert "ctx_checkpoints" in inspect.signature(inference_routes._estimate_gguf_kv_gb).parameters
     source = inspect.getsource(inference_routes._guard_chat_load_against_training)
     assert 'ctx_checkpoints = getattr(request, "ctx_checkpoints", None)' in source
     kv_source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
