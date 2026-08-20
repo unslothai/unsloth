@@ -973,6 +973,8 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
+        generation_stats_holder: dict = {}
+
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
@@ -996,6 +998,7 @@ class InferenceBackend:
                 # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
+                _generation_stats_holder = generation_stats_holder,
             )
 
         initial = list(messages)
@@ -1042,6 +1045,7 @@ class InferenceBackend:
             # So a conversation search can be sized against what this model can hold.
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
+            generation_stats_holder = generation_stats_holder,
         )
 
     def generate_chat_response(
@@ -1108,6 +1112,7 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        _generation_stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic, called by generate_chat_response and
         generate_with_adapter_control.
@@ -1276,6 +1281,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            generation_stats_holder = _generation_stats_holder,
         )
 
     def _generate_vision_response(
@@ -1863,6 +1869,7 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        generation_stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1875,6 +1882,8 @@ class InferenceBackend:
 
         # Reset so a failed or uncountable run cannot surface stale stats.
         self.last_generation_stats = None
+        if generation_stats_holder is not None:
+            generation_stats_holder["stats"] = None
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -2038,6 +2047,7 @@ class InferenceBackend:
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
+                    stats_holder = generation_stats_holder,
                 )
 
             if err.get("msg"):
@@ -2734,6 +2744,7 @@ class InferenceBackend:
         ended_on_stop_token: bool = False,
         cancelled: bool = False,
         timer = None,
+        stats_holder: Optional[dict] = None,
     ) -> None:
         """Latch usage, timings and budget exhaustion for the worker's gen_done stats channel.
 
@@ -2769,6 +2780,8 @@ class InferenceBackend:
         if timings is not None:
             stats["timings"] = timings
         self.last_generation_stats = stats
+        if stats_holder is not None:
+            stats_holder["stats"] = stats
 
     def _cancel_stopping_criteria(self, cancel_event):
         """Build a Transformers stopping criteria list for user cancellation."""
