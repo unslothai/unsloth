@@ -34,6 +34,18 @@ REPO = Path(__file__).resolve().parents[2]
 STACK = REPO / "studio/install_python_stack.py"
 
 
+@pytest.fixture(autouse = True)
+def _no_ambient_pm_policy(monkeypatch):
+    """These tests are about the INDEX scrub, and they assert the default contract.
+
+    An inherited UNSLOTH_STRICT_PM_POLICY plus a cutoff pip cannot honour refuses the
+    fetch outright, which is correct behaviour and a different test's subject
+    (TestTheStrictFallbackRefusesWhatPipCannotHonour in the install-stack suite).
+    """
+    for name in ("UNSLOTH_STRICT_PM_POLICY", "UV_EXCLUDE_NEWER", "UV_NO_BUILD"):
+        monkeypatch.delenv(name, raising = False)
+
+
 def _load_real_index_env_scrub():
     """The module's OWN _install_env_for_cmd, so the scrub is executed, not re-implemented.
 
@@ -41,27 +53,83 @@ def _load_real_index_env_scrub():
     than stubbed -- a hand-written copy here would agree with a broken original forever.
     """
     import os as _os
+    import sys as _sys
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os}
+    # The projection registers its temp dir with the module's own exit hook.
+    _sys.path.insert(0, str(REPO / "studio"))
+    from backend.utils.uv_path_safety import register_tmpdir_for_cleanup as _register
+
+    # The printing helpers are stubbed rather than extracted: they pull in the whole
+    # colour/terminal stack, and these tests assert on the environment, not the text.
+    ns: dict = {
+        "_step": lambda *a, **k: None,
+        "_red": lambda text: text,
+        "_safe_print": lambda *a, **k: None,
+        "os": _os,
+        "subprocess": subprocess,
+        "sys": _sys,
+        "tempfile": _tempfile,
+        "Path": _Path,
+        "_register_tmpdir": _register,
+    }
     for anchor, end, keep in (
+        ("IS_WINDOWS = ", "\n", 0),
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
-        # _install_env_for_cmd calls both of these, and they resolve from this namespace
-        # at CALL time, so omitting either only shows up as a NameError once a test
+        # _install_env_for_cmd calls all of these, and they resolve from this namespace
+        # at CALL time, so omitting any one only shows up as a NameError once a test
         # actually invokes the scrub.
-        ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
-        ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
+        ('_STRICT_PM_POLICY_ENV_VAR = "', "\n", 0),
+        ("def _strict_pm_policy(", "\n\n\n", 0),
+        ("_PM_POLICY_FORCED_SOURCE_ENV_VARS = (", "\n)\n", 2),
+        ("_PM_POLICY_RELAXED_ENV_VARS = (", "\n)\n", 2),
+        ("def _is_uv_cmd(", "\n\n\n", 0),
+        ("def _is_pip_fetch_cmd(", "\n\n\n", 0),
+        ("def _refuse_pip_under_untranslatable_policy(", "\n\n\n", 0),
+        ("def _untranslatable_strict_policy(", "\n\n\n", 0),
+        ("def _relaxed_pip_policy_env(", "\n\n\n", 0),
+        ("_PM_POLICY_CONFIG_KEYS = (", "\n)\n", 2),
+        ("_PM_POLICY_SCOPED_CONFIG_KEYS = ", "\n", 0),
+        ("_PM_POLICY_DISABLED_VALUES = ", "\n", 0),
+        ("def _pm_policy_value_is_on(", "\n\n\n", 0),
+        ("def _pm_policy_config_names(", "\n\n\n", 0),
+        ("def _pm_policy_scope(", "\n\n\n", 0),
+        ('_UV_POLICY_CONFIG: "', "\n", 0),
+        ("def _uv_policy_config(", "\n\n\n", 0),
+        ("def _uv_config_candidates(", "\n\n\n", 0),
+        ("def _scan_uv_policy_config(", "\n\n\n", 0),
+        ("def _scan_uv_policy_config_by_line(", "\n\n\n", 0),
+        ("def _file_exists(", "\n\n\n", 0),
+        ("def _pyproject_speaks_for_uv(", "\n\n\n", 0),
+        ("def _toml_line_value(", "\n\n\n", 0),
+        ("def _uv_policy_settings(", "\n\n\n", 0),
+        ("def _uv_policy_as_pip_policy(", "\n\n\n", 0),
+        ('_UV_POLICY_PROJECTION: "', "\n", 0),
+        ("def _uv_policy_config_projection(", "\n\n\n", 0),
+        ("def _toml_inline_table(", "\n\n\n", 0),
+        ('_PIP_CONFIG_POLICY: "', "\n", 0),
+        ("_PIP_CONFIG_REACHED_PIP = ", "\n", 0),
+        ("def _windows_hidden_subprocess_kwargs(", "\n\n\n", 0),
+        ("def _pip_config_policy(", "\n\n\n", 0),
+        ("def _pip_command_name(", "\n\n\n", 0),
+        ("def _pip_config_as_pip_env(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
+        ("def _merged_only_binary(", "\n\n\n", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
-    assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
-    return ns["_install_env_for_cmd"]
+    assert (
+        "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_RELAXED_ENV_VARS"]
+    ), "extraction lost the policy vars"
+    return ns
 
 
-_real_install_env_for_cmd = _load_real_index_env_scrub()
+_REAL_POLICY_NS = _load_real_index_env_scrub()
+_real_install_env_for_cmd = _REAL_POLICY_NS["_install_env_for_cmd"]
 
 
 def _load(
@@ -188,6 +256,10 @@ def _load(
         "IS_WINDOWS": False,
         "_PYTORCH_WHL_BASE": "https://download.pytorch.org/whl",
         "_install_env_for_cmd": _real_install_env_for_cmd,
+        # The swap declines an optional fetch under a policy pip cannot honour, so the
+        # slice calls these too. Real, from the same extraction, not restated here.
+        "_untranslatable_strict_policy": _REAL_POLICY_NS["_untranslatable_strict_policy"],
+        "_STRICT_PM_POLICY_ENV_VAR": _REAL_POLICY_NS["_STRICT_PM_POLICY_ENV_VAR"],
         "_explicit_xpu_torch_index_url": (
             (lambda: "https://download.pytorch.org/whl/xpu") if pinned else (lambda: None)
         ),
@@ -363,6 +435,25 @@ class TestTheInstalledWheelIsThePin:
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
+
+
+class TestAnUntranslatablePolicyDeclinesTheSwap:
+    """uv has no `pip download`, so this swap is pip or nothing.
+
+    Under a policy pip cannot be told about it is one more optional install that declines:
+    a failed fetch here already leaves generic triton in place and carries on, and taking
+    the whole install down over the swap would be a worse answer than the one it has.
+    """
+
+    def test_the_swap_is_skipped_not_fatal(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("UNSLOTH_STRICT_PM_POLICY", "1")
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
+        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert "DOWNLOAD" not in log and "UNINSTALL" not in log, log
+        # The stub logs WARN for the "left in place" line, which is how the swap says it
+        # declined rather than silently doing nothing.
+        assert "WARN" in log, log
 
 
 class TestTheFetchIgnoresTheUsersIndexEnvironment:
