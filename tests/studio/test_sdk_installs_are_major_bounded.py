@@ -70,9 +70,7 @@ def _specs_for(package: str) -> list[tuple[Path, int, str]]:
 @pytest.mark.parametrize("package", GUARDED)
 def test_the_sdk_is_pinned_below_the_next_major(package: str) -> None:
     unbounded = [
-        (path, number, spec)
-        for path, number, spec in _specs_for(package)
-        if "<" not in spec
+        (path, number, spec) for path, number, spec in _specs_for(package) if "<" not in spec
     ]
     assert not unbounded, (
         f"{package} is installed without an upper bound at "
