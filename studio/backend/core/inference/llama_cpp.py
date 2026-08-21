@@ -8362,7 +8362,9 @@ class LlamaCppBackend:
         return split_library and not any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
 
     def _argv_offloads_every_layer(
-        self, argv: Iterable[str], env: Optional[Mapping[str, str]] = None
+        self,
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """Whether the finished command puts every weight on the GPU.
 
