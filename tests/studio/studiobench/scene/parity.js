@@ -301,7 +301,9 @@
   // mechanism Blink's own relevance machinery uses to decide whether a `content-visibility: auto`
   // subtree is skipped, so observing with it neither forces rendering nor perturbs the decision.
   // NOTHING in this section may call a geometry method on a candidate element.
-  const VIS = { obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false };
+  const VIS = {
+    obs: null, mut: null, ever: new Set(), seen: new WeakSet(), watching: false, seen_count: 0,
+  };
 
   const ordinalOf = (el, index) => {
     // The message's position in the THREAD, not in the mounted list. This is what makes a windowed
@@ -318,17 +320,54 @@
     return index + 1;
   };
 
-  const observeMessages = () => {
+  const observeOne = (el, fallbackIndex) => {
+    if (!VIS.obs || VIS.seen.has(el)) return;
+    VIS.seen.add(el);
+    // The ordinal is stamped on the node, because by the time an entry is delivered the node may
+    // have been unmounted and `closest()` would return nothing.
+    el.__sbOrdinal = ordinalOf(el, fallbackIndex);
+    VIS.obs.observe(el);
+  };
+
+  //: The FULL scan. O(the document), so it runs exactly once, when the observer is installed --
+  //: which happens before the measured window opens.
+  const observeAll = () => {
     if (!VIS.obs) return;
     const nodes = (D().messages && D().messages()) || [];
-    for (let i = 0; i < nodes.length; i++) {
-      const el = nodes[i];
-      if (VIS.seen.has(el)) continue;
-      VIS.seen.add(el);
-      // The ordinal is stamped on the node, because by the time an entry is delivered the node may
-      // have been unmounted and `closest()` would return nothing.
-      el.__sbOrdinal = ordinalOf(el, i);
-      VIS.obs.observe(el);
+    for (let i = 0; i < nodes.length; i++) observeOne(nodes[i], i);
+  };
+
+  // THE TOP-UP, AND WHY IT IS NOT A RESCAN.
+  //
+  // A windowed list mounts rows as it scrolls, so rows appearing after the observer was installed
+  // have to be picked up or a windowed arm is only ever asked about what it happened to have
+  // mounted at the start. The obvious way to do that is to re-run the full scan from a
+  // MutationObserver -- and the MutationObserver runs DURING the measured action window, so a
+  // full `querySelectorAll` per mutation batch would charge an O(document) walk to the action,
+  // once per batch, on a 64,000-element DOM, growing with exactly the quantity under
+  // investigation. That is workspace task #102 verbatim: the census and the parity digest running
+  // inside the window, which reported delete_message at 14.3 fps when it costs 49.0.
+  //
+  // So this walks only what was ADDED. `addedNodes` is small by construction -- a virtualizer
+  // mounts one or two rows per scroll step -- and the cost is proportional to the mutation rather
+  // than to the document.
+  const observeAdded = (records) => {
+    for (const rec of records) {
+      const added = rec.addedNodes;
+      for (let i = 0; i < added.length; i++) {
+        const node = added[i];
+        if (!node || node.nodeType !== 1) continue;
+        if (node.hasAttribute && node.hasAttribute("data-role")) {
+          observeOne(node, VIS.seen_count++);
+        }
+        // A row wrapper arrives with the message inside it, so the added node is the ancestor.
+        // Bounded by the added subtree, never by the document.
+        if (node.querySelectorAll) {
+          for (const inner of node.querySelectorAll("[data-role]")) {
+            observeOne(inner, VIS.seen_count++);
+          }
+        }
+      }
     }
   };
 
@@ -340,6 +379,7 @@
         if (VIS.watching) return { visible_attempted: true, already: true };
         VIS.ever = new Set();
         VIS.seen = new WeakSet();
+        VIS.seen_count = 0;
         VIS.obs = new IntersectionObserver((entries) => {
           for (const entry of entries) {
             if (!entry.isIntersecting) continue;
@@ -347,11 +387,13 @@
             if (typeof ord === "number") VIS.ever.add(ord);
           }
         }, { root: vp, threshold: 0 });
-        observeMessages();
-        // A windowed list mounts and unmounts rows as it scrolls, so the observed set has to be
-        // topped up. childList on the subtree is enough: a row entering the DOM is what needs
-        // observing, and a row leaving it has already contributed to `ever`.
-        VIS.mut = new MutationObserver(() => observeMessages());
+        observeAll();
+        VIS.seen_count = (D().messages && D().messages().length) || 0;
+        // childList only, and no attribute or character-data records: a row ENTERING the DOM is
+        // the only thing that needs observing, and a row leaving it has already contributed to
+        // `ever`. Text changing inside a mounted row -- which is what a stream is -- must not
+        // reach this callback at all.
+        VIS.mut = new MutationObserver(observeAdded);
         VIS.mut.observe(vp, { childList: true, subtree: true });
         VIS.watching = true;
         return { visible_attempted: true, already: false };

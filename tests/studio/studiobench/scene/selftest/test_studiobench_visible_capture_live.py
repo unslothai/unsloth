@@ -235,3 +235,72 @@ def test_a_page_with_no_thread_viewport_is_refused(page):
     got = page.evaluate("() => window.__sb.parityVisible.watch()")
     assert got["visible_attempted"] is False, got
     assert "viewport" in got["reason"]
+
+
+# ── the instrument must not charge its own cost to the action ───────
+
+
+def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
+    """WORKSPACE TASK #102, WHICH THIS NEARLY REPEATED.
+
+    The visibility observer's MutationObserver is the one part of this instrument that runs INSIDE
+    the measured action window. The obvious implementation re-runs the full `querySelectorAll` scan
+    on every mutation batch, which charges an O(document) walk to the action, once per batch, on a
+    DOM whose size is the quantity under investigation. That is exactly the defect that reported
+    `delete_message` at 14.3 fps when the action costs 49.0.
+
+    So the top-up walks only `addedNodes`. This is asserted by counting `querySelectorAll` calls
+    against the DOCUMENT while a stream-like mutation storm runs: text churning inside already
+    mounted rows must produce none at all, because childList records do not fire for it.
+    """
+    page.evaluate(
+        """() => {
+             window.__docQsa = 0;
+             const original = Document.prototype.querySelectorAll;
+             Document.prototype.querySelectorAll = function () {
+               window.__docQsa += 1;
+               return original.apply(this, arguments);
+             };
+           }"""
+    )
+    _watch(page)
+    # The handle is taken BEFORE the baseline, because looking the element up is itself a
+    # document-wide query and would otherwise be counted against the instrument.
+    page.evaluate(
+        """() => {
+             const rows = document.querySelectorAll("[data-role]");
+             window.__last = rows[rows.length - 1];
+           }"""
+    )
+    baseline = page.evaluate("() => window.__docQsa")
+    # A stream: the last message's text changes many times, and nothing is added or removed.
+    page.evaluate(
+        "() => { for (let i = 0; i < 200; i++) window.__last.textContent = 'streaming ' + i; }"
+    )
+    page.wait_for_timeout(150)
+    assert page.evaluate("() => window.__docQsa") == baseline, (
+        "a text mutation inside a mounted row triggered a document-wide scan, so the instrument "
+        "charges an O(document) walk to whatever action happens to be streaming"
+    )
+
+
+def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
+    """The top-up has to actually work, or the previous test passes by doing nothing."""
+    page.evaluate("() => window.__build(2)")
+    _watch(page)
+    page.evaluate(
+        """() => {
+             const vp = document.getElementById("vp");
+             const row = document.createElement("div");
+             row.setAttribute("aria-posinset", "3");
+             const msg = document.createElement("div");
+             msg.setAttribute("data-role", "assistant");
+             msg.textContent = "late arrival";
+             row.appendChild(msg);
+             vp.appendChild(row);
+           }"""
+    )
+    page.wait_for_timeout(120)
+    page.evaluate("() => { document.getElementById('vp').scrollTop = 900; }")
+    got = _capture(page)
+    assert 3 in got["ever_visible"], got["ever_visible"]
