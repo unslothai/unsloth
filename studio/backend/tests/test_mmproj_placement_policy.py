@@ -1202,9 +1202,9 @@ def test_the_speculative_reserve_is_normalized_before_anything_prices_it(tmp_pat
     source = Path(inspect.getsourcefile(LlamaCppBackend)).read_text()
     normalize_at = source.index("if _draft_cpu_no_embedded and mtp_overhead_fn is not None:")
     probe_at = source.index("_mm_mtp_on_gpu = _mtp_will_engage and not _draft_cpu_no_embedded")
-    assert normalize_at < probe_at, (
-        "the CPU-drafter reserve must be normalized before the projector probe prices it"
-    )
+    assert (
+        normalize_at < probe_at
+    ), "the CPU-drafter reserve must be normalized before the projector probe prices it"
 
 
 def test_a_shared_device_beside_a_discrete_one_does_not_veto_the_pin(tmp_path):
