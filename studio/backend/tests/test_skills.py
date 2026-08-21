@@ -500,8 +500,9 @@ def test_repository_files_do_not_count_toward_bundle_limits(tmp_path: Path):
     assert not (tmp_path / "skills/unsloth/source").exists()
 
 
+@pytest.mark.parametrize("trailing_data", [b"", b"trailing data"])
 def test_rejects_too_many_archive_entries_before_opening_zipfile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trailing_data: bytes
 ):
     archive = _bundle(
         tmp_path / "entry-heavy.zip",
@@ -515,7 +516,10 @@ def test_rejects_too_many_archive_entries_before_opening_zipfile(
     payload = bytearray(archive.read_bytes())
     end_record = payload.rfind(b"PK\x05\x06")
     struct.pack_into("<HH", payload, end_record + 8, 1, 1)
+    payload.extend(trailing_data)
     archive.write_bytes(payload)
+    with zipfile.ZipFile(archive) as handle:
+        assert len(handle.infolist()) == 3
     monkeypatch.setattr(
         skills.zipfile,
         "ZipFile",

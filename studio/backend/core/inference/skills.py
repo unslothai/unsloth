@@ -396,51 +396,46 @@ def _validate_archive_entry_count(archive_path: Path) -> None:
             )
             handle.seek(-tail_size, 2)
             tail = handle.read()
-            search_end = len(tail)
-            while True:
-                offset = tail.rfind(_ZIP_END_SIGNATURE, 0, search_end)
-                if offset < 0:
+            offset = tail.rfind(_ZIP_END_SIGNATURE)
+            if offset < 0:
+                return
+            record = tail[offset : offset + _ZIP_END_SIZE]
+            if len(record) != _ZIP_END_SIZE:
+                return
+            entries = int.from_bytes(record[10:12], "little")
+            if entries > MAX_ARCHIVE_ENTRIES:
+                raise SkillError(
+                    f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit."
+                )
+            central_size = int.from_bytes(record[12:16], "little")
+            central_end = archive_size - len(tail) + offset
+            central_start = central_end - central_size
+            if central_start < 0:
+                return
+            handle.seek(central_start)
+            remaining = central_size
+            actual_entries = 0
+            while remaining:
+                header = handle.read(_ZIP_CENTRAL_SIZE)
+                if (
+                    len(header) != _ZIP_CENTRAL_SIZE
+                    or header[:4] != _ZIP_CENTRAL_SIGNATURE
+                ):
                     return
-                record = tail[offset : offset + _ZIP_END_SIZE]
-                if len(record) == _ZIP_END_SIZE:
-                    comment_size = int.from_bytes(record[20:22], "little")
-                    if offset + _ZIP_END_SIZE + comment_size == len(tail):
-                        entries = int.from_bytes(record[10:12], "little")
-                        if entries > MAX_ARCHIVE_ENTRIES:
-                            raise SkillError(
-                                f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit."
-                            )
-                        central_size = int.from_bytes(record[12:16], "little")
-                        central_end = archive_size - len(tail) + offset
-                        central_start = central_end - central_size
-                        if central_start < 0:
-                            return
-                        handle.seek(central_start)
-                        remaining = central_size
-                        actual_entries = 0
-                        while remaining:
-                            header = handle.read(_ZIP_CENTRAL_SIZE)
-                            if (
-                                len(header) != _ZIP_CENTRAL_SIZE
-                                or header[:4] != _ZIP_CENTRAL_SIGNATURE
-                            ):
-                                return
-                            variable_size = sum(
-                                int.from_bytes(header[index : index + 2], "little")
-                                for index in (28, 30, 32)
-                            )
-                            record_size = _ZIP_CENTRAL_SIZE + variable_size
-                            if record_size > remaining:
-                                return
-                            actual_entries += 1
-                            if actual_entries > MAX_ARCHIVE_ENTRIES:
-                                raise SkillError(
-                                    f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit."
-                                )
-                            handle.seek(variable_size, 1)
-                            remaining -= record_size
-                        return
-                search_end = offset
+                variable_size = sum(
+                    int.from_bytes(header[index : index + 2], "little")
+                    for index in (28, 30, 32)
+                )
+                record_size = _ZIP_CENTRAL_SIZE + variable_size
+                if record_size > remaining:
+                    return
+                actual_entries += 1
+                if actual_entries > MAX_ARCHIVE_ENTRIES:
+                    raise SkillError(
+                        f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit."
+                    )
+                handle.seek(variable_size, 1)
+                remaining -= record_size
     except OSError as exc:
         raise SkillError("Could not read the skill archive.") from exc
 
