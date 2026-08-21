@@ -633,25 +633,30 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _check_finetune_targets(self) -> "TrainingStartRequest":
-        # Only the vision (VLM) LoRA path feeds these four selectors to
-        # FastVisionModel.get_peft_model. Text runs, the audio paths and Continued
-        # Pretraining build adapters from target_modules alone (trainer.py's else /
-        # snac branches, worker.py's is_cpt branch), so all-false is a valid request
-        # there and rejecting it broke working configs.
+        # Two LoRA branches feed these four selectors to get_peft_model: the vision one
+        # (trainer.is_vlm) and the audio-VLM one (trainer.is_audio_vlm). Text runs and
+        # Continued Pretraining build adapters from target_modules alone (trainer.py's
+        # else branch, worker.py's is_cpt branch), so all-false is a valid request there
+        # and rejecting it broke working configs.
         #
-        # Full Finetuning and CPT are exempt on training_type alone, NOT via the
-        # is_dataset_image gate below: worker.py takes its `if is_cpt` branch before the
-        # LoRA one and passes only target_modules, so a CPT run never reads these four
-        # however its dataset is tagged. Gating CPT on the image flag still rejected
+        # Full Finetuning and CPT are exempt on training_type alone, NOT via the dataset
+        # gate below: worker.py takes its `if is_cpt` branch before the LoRA one and
+        # passes only target_modules, so a CPT run never reads these four however its
+        # dataset is tagged. Gating CPT on the image flag still rejected
         # is_dataset_image=true + all-false, a config the worker runs fine.
         if getattr(self, "training_type", None) in (
             "Full Finetuning",
             "Continued Pretraining",
         ):
             return self
-        # trainer.is_vlm is `not is_audio_vlm and vision and is_dataset_image`, so a run
-        # that did not declare an image dataset can never reach the branch that reads these.
-        if not self.is_dataset_image:
+        # is_vlm is `not is_audio_vlm and vision and is_dataset_image` and is_audio_vlm is
+        # `is_dataset_audio` on an audio-VLM model -- it never consults is_dataset_image --
+        # so audio has to gate this too or an all-false Gemma-3N-style run slips through and
+        # dies in get_peft_regex ("No layers to finetune") after the model is loaded. Which
+        # audio model it is only becomes known after that load, so a codec/TTS run (csm,
+        # snac, whisper, bicodec, dac), whose branch ignores these flags, is also asked to
+        # turn one on; that is a no-op there and costs nothing.
+        if not (self.is_dataset_image or self.is_dataset_audio):
             return self
         if not (
             self.finetune_vision_layers
