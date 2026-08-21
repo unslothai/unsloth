@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { type ProfileStats, loadProfileStats } from "../api/profile-stats";
 
 type ProfileStatsState = {
@@ -42,6 +44,18 @@ export function useProfileStats(): ProfileStatsState {
     void load();
     return () => abortRef.current?.abort();
   }, [load]);
+
+  useEffect(() => subscribeResidentStatusRefresh(load), [load]);
+
+  const settingsOpen = useSettingsDialogStore((state) => state.open);
+  const sawSettingsOpenRef = useRef(settingsOpen);
+  useEffect(() => {
+    const wasOpen = sawSettingsOpenRef.current;
+    sawSettingsOpenRef.current = settingsOpen;
+    if (!wasOpen && settingsOpen) {
+      void load();
+    }
+  }, [settingsOpen, load]);
 
   const reload = useCallback(() => {
     void load();
