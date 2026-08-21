@@ -57,6 +57,22 @@ export interface ChatGenerationRunUpdate {
   source: "snapshot" | "event";
 }
 
+export function normalizeChatGenerationChunkPayload(
+  payload: OpenAIChatChunk | Record<string, unknown>,
+): OpenAIChatChunk | Record<string, unknown> {
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    "type" in payload &&
+    payload.type === "reasoning_summary"
+  ) {
+    return {
+      _reasoningDurationMs: (payload as { duration_ms?: unknown }).duration_ms,
+    } as unknown as OpenAIChatChunk;
+  }
+  return payload;
+}
+
 const TERMINAL_STATUSES = new Set<ChatGenerationStatus>([
   "cancelled",
   "completed",
@@ -290,7 +306,11 @@ async function* streamChatGenerationEvents(
           if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
         }
         if (data.length > 0) {
-          yield JSON.parse(data.join("\n")) as ChatGenerationEvent;
+          const event = JSON.parse(data.join("\n")) as ChatGenerationEvent;
+          if (event.type === "chunk") {
+            event.payload = normalizeChatGenerationChunkPayload(event.payload);
+          }
+          yield event;
         }
         boundary = buffer.indexOf("\n\n");
       }

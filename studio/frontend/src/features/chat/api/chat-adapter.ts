@@ -5858,13 +5858,14 @@ export function createOpenAIStreamAdapter(
                 if (update.event) {
                   generationSeq = Math.max(generationSeq, update.event.seq);
                   if (update.event.type === "chunk") {
-                    generationChunkCount += 1;
-                    if (
-                      generationChunkHasSubstantiveDelta(update.event.payload)
-                    ) {
-                      generationFirstChunkAt ??= update.event.createdAt;
+                    const chunk = update.event.payload as OpenAIChatChunk;
+                    if (!("_reasoningDurationMs" in chunk)) {
+                      generationChunkCount += 1;
+                      if (generationChunkHasSubstantiveDelta(chunk)) {
+                        generationFirstChunkAt ??= update.event.createdAt;
+                      }
                     }
-                    yield update.event.payload as OpenAIChatChunk;
+                    yield chunk;
                   }
                 }
               }

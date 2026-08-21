@@ -45,6 +45,31 @@ export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
   );
 }
 
+export function recoveredReasoningSummaryMetadata(
+  current: Record<string, unknown>,
+  reasoningMs: unknown,
+): Record<string, unknown> {
+  if (
+    typeof reasoningMs !== "number" ||
+    !Number.isFinite(reasoningMs) ||
+    reasoningMs < 0
+  ) {
+    return current;
+  }
+  const durations = Array.isArray(current.reasoningDurations)
+    ? current.reasoningDurations.filter(
+        (duration): duration is number =>
+          typeof duration === "number" && Number.isFinite(duration),
+      )
+    : [];
+  const duration = Math.max(0, Math.round(reasoningMs / 1000));
+  return {
+    ...current,
+    reasoningDuration: duration,
+    reasoningDurations: [...durations, duration],
+  };
+}
+
 export function generationIsSettled(
   status: StoredGenerationStatus | null,
   cursor: number,

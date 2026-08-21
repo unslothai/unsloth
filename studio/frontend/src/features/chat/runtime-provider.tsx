@@ -100,6 +100,7 @@ import {
   generationChunkHasSubstantiveDelta,
   generationNeedsRecovery,
   loadGenerationOverlaySnapshot,
+  recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
@@ -916,6 +917,7 @@ function scheduleGenerationRecovery(
           cursor = update.event.seq;
           if (update.event.type === "chunk") {
             const chunk = update.event.payload as {
+              _reasoningDurationMs?: unknown;
               usage?: {
                 prompt_tokens?: unknown;
                 completion_tokens?: unknown;
@@ -933,6 +935,15 @@ function scheduleGenerationRecovery(
               }>;
               context_truncated?: OpenAIChatChunk["context_truncated"];
             };
+            if ("_reasoningDurationMs" in chunk) {
+              currentMetadata = recoveredReasoningSummaryMetadata(
+                currentMetadata,
+                chunk._reasoningDurationMs,
+              );
+              lastPublishedStatus = update.run.status;
+              await publish(update.run);
+              continue;
+            }
             totalChunks += 1;
             if (generationChunkHasSubstantiveDelta(chunk)) {
               firstChunkAt ??= update.event.createdAt;

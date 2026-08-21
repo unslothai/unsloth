@@ -146,6 +146,34 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
   }
 });
 
+test("durable replay normalizes reasoning summary control frames", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/events")) {
+      return sse([
+        frame(1, "chunk", { type: "reasoning_summary", duration_ms: 3200 }),
+        frame(2, "run.completed", { status: "completed" }, run("completed", 2)),
+      ]);
+    }
+    return new Response(JSON.stringify(run("completed", 2)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const chunks: object[] = [];
+    for await (const update of followChatGenerationRun("run-1", {
+      initialRun: run("running", 0),
+      replayFrom: 0,
+    })) {
+      if (update.event?.type === "chunk") chunks.push(update.event.payload);
+    }
+    assert.deepEqual(chunks, [{ _reasoningDurationMs: 3200 }]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("a backend without chat runs selects the legacy path", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = (async () =>
