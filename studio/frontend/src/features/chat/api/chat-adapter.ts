@@ -1388,6 +1388,44 @@ function toOpenAIMessages(
   ];
 }
 
+/** A Stop that landed before the turn produced anything: it serialises to a lone empty
+ * assistant message, which every backend drops, stranding two user turns in a row. */
+function isAbandonedAssistantTurn(
+  message: RunMessage,
+  includeReasoningContent: boolean,
+): boolean {
+  if (message.role !== "assistant") return false;
+  const [only, ...rest] = toOpenAIMessages(message, includeReasoningContent);
+  return (
+    rest.length === 0 &&
+    only?.role === "assistant" &&
+    !only.content &&
+    !only.tool_calls &&
+    !only.reasoning_content
+  );
+}
+
+/** Drop refused and abandoned assistant turns along with the user prompt that triggered
+ * them: a refusal re-triggers the classifier, an abandoned turn breaks role alternation. */
+function pruneOutboundHistory(
+  messages: RunMessages,
+  includeReasoningContent: boolean,
+): RunMessage[] {
+  const surviving: RunMessage[] = [];
+  for (const message of messages) {
+    if (
+      isAnthropicRefusalMessage(message) ||
+      isAbandonedAssistantTurn(message, includeReasoningContent)
+    ) {
+      const last = surviving.at(-1);
+      if (last && last.role === "user") surviving.pop();
+      continue;
+    }
+    surviving.push(message);
+  }
+  return surviving;
+}
+
 function extractImageBase64(input: string): string | undefined {
   if (!input) {
     return undefined;
@@ -1563,17 +1601,7 @@ export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
   threadId: string | undefined,
 ): Promise<OpenAIChatMessage[]> {
-  const survivingMessages: RunMessage[] = [];
-  for (const message of messages) {
-    if (isAnthropicRefusalMessage(message)) {
-      const last = survivingMessages.at(-1);
-      if (last && last.role === "user") survivingMessages.pop();
-      continue;
-    }
-    survivingMessages.push(message);
-  }
-
-  const outboundMessages = survivingMessages
+  const outboundMessages = pruneOutboundHistory(messages, true)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -4412,19 +4440,10 @@ export function createOpenAIStreamAdapter(
         throw new Error("Image generation edit unavailable.");
       }
 
-      // Drop refused assistant turns + their triggering user prompt;
-      // otherwise context re-triggers the classifier.
-      const survivingMessages: RunMessage[] = [];
-      for (const message of messages) {
-        if (isAnthropicRefusalMessage(message)) {
-          const last = survivingMessages.at(-1);
-          if (last && last.role === "user") {
-            survivingMessages.pop();
-          }
-          continue;
-        }
-        survivingMessages.push(message);
-      }
+      const survivingMessages = pruneOutboundHistory(
+        messages,
+        !isExternalRequest,
+      );
 
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
