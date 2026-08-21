@@ -1737,12 +1737,26 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
         (d / "model.safetensors").write_bytes(b"\0" * 8)
         return d
 
+    def _adapter(parent, name, base):
+        d = parent / name
+        d.mkdir(parents = True)
+        config = {"base_model_name_or_path": str(base)} if base else {}
+        (d / "adapter_config.json").write_text(json.dumps(config))
+        (d / "adapter_model.safetensors").write_bytes(b"\0" * 8)
+        return d
+
     whisper = {"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}
     causal = {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}
     trained_whisper = _ckpt(tmp_path / "outputs", "whisper-finetune", whisper)
     trained_chat = _ckpt(tmp_path / "outputs", "qwen-finetune", causal)
+    trained_whisper_adapter = _adapter(tmp_path / "outputs", "whisper-adapter", trained_whisper)
+    trained_chat_adapter = _adapter(tmp_path / "outputs", "qwen-adapter", trained_chat)
+    trained_run_adapter = _adapter(tmp_path / "outputs", "run-whisper-adapter", None)
     exported_whisper = _ckpt(tmp_path / "exports", "checkpoint-whisper", whisper)
     exported_chat = _ckpt(tmp_path / "exports", "checkpoint-qwen", causal)
+    exported_whisper_adapter = _adapter(
+        tmp_path / "exports", "checkpoint-whisper-adapter", trained_whisper
+    )
     exported_gguf = tmp_path / "exports" / "run-gguf" / "model-Q4_K_M.gguf"
     exported_gguf.parent.mkdir(parents = True)
     exported_gguf.write_bytes(b"\0" * 8)
@@ -1751,14 +1765,22 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
     fake_models.scan_trained_models = lambda: [
         (trained_whisper.name, str(trained_whisper), "merged"),
         (trained_chat.name, str(trained_chat), "merged"),
+        (trained_whisper_adapter.name, str(trained_whisper_adapter), "lora"),
+        (trained_chat_adapter.name, str(trained_chat_adapter), "lora"),
+        (trained_run_adapter.name, str(trained_run_adapter), "lora"),
     ]
     fake_models.scan_exported_models = lambda: [
         ("whisper-export", str(exported_whisper), "merged", None),
         ("qwen-export", str(exported_chat), "merged", None),
+        ("whisper-adapter", str(exported_whisper_adapter), "lora", str(trained_whisper)),
         ("gguf-export", str(exported_gguf), "gguf", None),
     ]
     monkeypatch.setitem(sys.modules, "utils.models", fake_models)
-    monkeypatch.setattr(cat, "_runs_by_output_dir", lambda: {})
+    monkeypatch.setattr(
+        cat,
+        "_runs_by_output_dir",
+        lambda: {str(trained_run_adapter): {"model_name": str(trained_whisper)}},
+    )
 
     # Mirrors the shared predicate's contract: False only for a locally identifiable
     # non-chat architecture, None when it cannot tell. The real one is covered by the
@@ -1772,7 +1794,70 @@ def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypa
 
     fake_common = types.ModuleType("hub.services.models.common")
     fake_common._local_transformers_can_chat = _can_chat
+    fake_common._read_adapter_config = lambda path: (
+        json.loads((path / "adapter_config.json").read_text())
+        if (path / "adapter_config.json").is_file()
+        else {}
+    )
     monkeypatch.setitem(sys.modules, "hub.services.models.common", fake_common)
 
-    assert [e.name for e in cat.trained_entries()] == ["qwen-finetune"]
+    assert [e.name for e in cat.trained_entries()] == ["qwen-finetune", "qwen-adapter"]
     assert [e.name for e in cat.exported_entries()] == ["qwen-export", "gguf-export"]
+
+
+def test_catalog_adapter_classifies_the_exact_cached_base_revision(monkeypatch, tmp_path):
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "base_model_name_or_path": "openai/whisper-large-v3",
+                "revision": "base-commit",
+            }
+        )
+    )
+    (adapter / "adapter_model.safetensors").write_bytes(b"\0" * 8)
+    base = tmp_path / "cache" / "models--openai--whisper-large-v3" / "snapshots" / "base-commit"
+    base.mkdir(parents = True)
+    (base / "config.json").write_text(json.dumps({"model_type": "whisper"}))
+
+    fake_common = types.ModuleType("hub.services.models.common")
+
+    def _can_chat(path):
+        try:
+            config = json.loads((Path(path) / "config.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return False if config.get("model_type") == "whisper" else None
+
+    fake_common._local_transformers_can_chat = _can_chat
+    fake_common._read_adapter_config = lambda path: json.loads(
+        (path / "adapter_config.json").read_text()
+    )
+    monkeypatch.setitem(sys.modules, "hub.services.models.common", fake_common)
+
+    calls = []
+    fake_hub = types.ModuleType("huggingface_hub")
+
+    def _cached(repo_id, filename, *, cache_dir, revision):
+        calls.append((repo_id, filename, cache_dir, revision))
+        return str(base / filename)
+
+    fake_hub.try_to_load_from_cache = _cached
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    fake_settings = types.ModuleType("utils.hf_cache_settings")
+    fake_settings.get_hf_cache_paths = lambda: types.SimpleNamespace(hub_cache = tmp_path / "cache")
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", fake_settings)
+
+    assert cat._path_can_chat(str(adapter)) is False
+    assert calls == [
+        (
+            "openai/whisper-large-v3",
+            "config.json",
+            tmp_path / "cache",
+            "base-commit",
+        )
+    ]

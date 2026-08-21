@@ -82,19 +82,57 @@ def _runs_by_output_dir() -> dict:
     return by_dir
 
 
-def _path_can_chat(path: str) -> Optional[bool]:
+def _base_can_chat(base_model: str, revision: Optional[str], classifier) -> Optional[bool]:
+    """Classify an exact local or active-cache base without a network lookup.
+
+    Relative paths stay relative to the process cwd, matching PEFT's unchanged handoff to
+    ``from_pretrained``. An inactive cache's stale ``main`` ref cannot identify what will load.
+    """
+    try:
+        local_path = Path(base_model).expanduser()
+        if local_path.is_dir():
+            return classifier(local_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from utils.hf_cache_settings import get_hf_cache_paths
+        config_path = try_to_load_from_cache(
+            base_model,
+            "config.json",
+            cache_dir = get_hf_cache_paths().hub_cache,
+            revision = revision,
+        )
+    except Exception:
+        return None
+    return classifier(Path(config_path).parent) if isinstance(config_path, str) else None
+
+
+def _path_can_chat(path: str, base_model: Optional[str] = None) -> Optional[bool]:
     """``False`` only for a locally identifiable non-chat checkpoint, else ``None``.
 
     The outputs and exports scanners classify nothing, and Studio trains Whisper and other
     audio models, so a user's own folders legitimately hold a checkpoint that cannot answer
-    a text turn. Fails open on anything inconclusive, including a GGUF export, whose path is
-    a file rather than a directory.
+    a text turn. Adapters fall through to their recorded base only when its config is local or
+    already in the active cache. Fails open on anything inconclusive, including a GGUF export,
+    whose path is a file rather than a directory.
     """
     try:
-        from hub.services.models.common import _local_transformers_can_chat
+        from hub.services.models.common import _local_transformers_can_chat, _read_adapter_config
     except ImportError:
         return None
-    return _local_transformers_can_chat(Path(path))
+    model_path = Path(path)
+    verdict = _local_transformers_can_chat(model_path)
+    if verdict is not None:
+        return verdict
+    adapter_config = _read_adapter_config(model_path)
+    adapter_base = adapter_config.get("base_model_name_or_path")
+    revision = adapter_config.get("revision")
+    adapter_base = adapter_base.strip() if isinstance(adapter_base, str) else ""
+    revision = revision.strip() if isinstance(revision, str) and revision.strip() else None
+    base = adapter_base or (base_model.strip() if isinstance(base_model, str) else "")
+    return _base_can_chat(base, revision, _local_transformers_can_chat) if base else None
 
 
 def trained_entries() -> List[ModelEntry]:
@@ -103,9 +141,10 @@ def trained_entries() -> List[ModelEntry]:
     runs = _runs_by_output_dir()
     entries = []
     for folder, path, model_type in scan_trained_models():
-        if _path_can_chat(path) is False:
-            continue
         run = runs.get(os.path.normpath(path))
+        base = run.get("model_name") if run and model_type == "lora" else None
+        if _path_can_chat(path, base) is False:
+            continue
         name = (_run_title(run) if run else "") or _folder_title(folder)
         entries.append(ModelEntry("Fine-tunes", name, _run_detail(model_type, path, run), path))
     return entries
@@ -115,8 +154,8 @@ def exported_entries() -> List[ModelEntry]:
     from utils.models import scan_exported_models
     return [
         ModelEntry("Exports", name, export_type, path)
-        for name, path, export_type, _base in scan_exported_models()
-        if _path_can_chat(path) is not False
+        for name, path, export_type, base in scan_exported_models()
+        if _path_can_chat(path, base if export_type == "lora" else None) is not False
     ]
 
 
