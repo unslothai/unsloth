@@ -2550,10 +2550,8 @@ def test_a_nested_adapter_config_does_not_serve_the_snapshot_root(tmp_path, monk
     assert rows == [] or rows[0]["partial"] is True
 
 
-def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypatch):
-    """The compatibility model list carries no path, so a client loads by id out of the active
-    cache. With a broken copy there, publishing another cache's copy under the same id offers a
-    load that follows the broken one. The Hub inventory still lists it, with a path."""
+def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, monkeypatch):
+    """A broken active copy must not hide a complete copy the row can pin by path."""
     import asyncio
 
     import routes.models as models_route
@@ -2569,7 +2567,7 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
     del torn["model-00002-of-00002.safetensors"]
     # Active: half a set behind a dangling ref. Legacy: the same repo, whole.
     _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
-    _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
+    legacy_repo = _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(
@@ -2583,7 +2581,8 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
         models_route.list_cached_models(current_subject = "test-user", hf_token = None)
     )
     cached = response["cached"] if isinstance(response, dict) else response.cached
-    assert cached == []
+    assert len(cached) == 1
+    assert cached[0]["load_id"] == str(legacy_repo / "snapshots" / NEWER)
 
     # Control: the broken copy in the other cache leaves the active one publishable.
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [legacy, active])

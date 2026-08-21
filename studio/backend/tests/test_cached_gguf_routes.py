@@ -6117,16 +6117,12 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monk
 
 
 def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkeypatch, tmp_path):
-    """A newer metadata-only encoder snapshot must not speak for a repo whose pin is an
-    older complete causal-LM: capability has to describe the copy the load will read, or
-    the row is flagged unchattable and the valid model disappears from the picker."""
+    """A stale encoder revision must not override an inconclusive selected config."""
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Repurposed"
     old = repo_dir / "snapshots" / "aaaold"
     old.mkdir(parents = True)
-    (old / "config.json").write_text(
-        json.dumps({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]})
-    )
+    (old / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (old / "model.safetensors").write_bytes(b"\0" * 32)
     new = repo_dir / "snapshots" / "bbbnew"
     new.mkdir(parents = True)

@@ -4931,15 +4931,17 @@ def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional
     ordinary chat model. ``None`` when nothing is conclusive, so unknowns are never hidden.
 
     The selected revision answers first, so capability describes the copy the pin will
-    load rather than whichever snapshot sorts newest. The others still stand in when it
-    says nothing: a weights-only selection carries no config, and dropping the fallback
-    would readmit every encoder-only repo whose pin happens to be metadata-free.
+    load rather than whichever snapshot sorts newest. Other snapshots stand in only when
+    the selection has no readable config, such as a weights-only snapshot.
     """
-    from hub.services.models.common import _local_transformers_can_chat
+    from hub.services.models.common import _local_transformers_can_chat, _read_local_json_object
 
     ordered = _repo_model_snapshots(repo_info)
     if selected is not None:
-        ordered = [selected, *(s for s in ordered if s != selected)]
+        verdict = _local_transformers_can_chat(selected)
+        if verdict is not None or _read_local_json_object(selected / "config.json"):
+            return verdict
+        ordered = [s for s in ordered if s != selected]
     for snapshot in ordered:
         verdict = _local_transformers_can_chat(snapshot)
         if verdict is not None:
@@ -4957,8 +4959,6 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
         active_root = None
 
     seen_lower: dict[str, dict] = {}
-    # Repos whose active-cache copy cannot be loaded by id; this schema carries no path.
-    unusable_active: set[str] = set()
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -4981,15 +4981,6 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         # .safetensors, so the coarse check alone would advertise a torn set.
                         and not _snapshot_payload_is_torn(recovered)
                     ):
-                        try:
-                            if (
-                                active_root is not None
-                                and Path(repo_info.repo_path).parent.resolve(strict = False)
-                                == active_root
-                            ):
-                                unusable_active.add(repo_id.lower())
-                        except (OSError, RuntimeError, ValueError):
-                            pass
                         continue
                 if _repo_has_gguf_files(repo_info):
                     continue
@@ -5058,10 +5049,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                 continue
 
-    rows = [row for key, row in seen_lower.items() if key not in unusable_active]
     # Local-only list path: update checks are GGUF-only and happen lazily when variants are viewed.
     return sorted(
-        rows,
+        seen_lower.values(),
         key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),
     )
 
