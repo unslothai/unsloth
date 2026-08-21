@@ -6,6 +6,8 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+
+import { createReasoningScrollPin } from "@/components/assistant-ui/reasoning-scroll-pin";
 import {
   Collapsible,
   CollapsibleContent,
@@ -19,18 +21,18 @@ import {
   useChatPreferencesStore,
 } from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import { BulbIcon } from "@/lib/bulb-icon";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
   type ReasoningMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
 import { ChevronDownIcon, CopyIcon } from "lucide-react";
-import { BulbIcon } from "@/lib/bulb-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -144,7 +146,9 @@ function ReasoningTrigger({
         {active ? (
           <span className="text-sm">Thinking...</span>
         ) : (
-          <span>Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}</span>
+          <span>
+            Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}
+          </span>
         )}
       </span>
       <ChevronDownIcon
@@ -163,9 +167,11 @@ function ReasoningTrigger({
 function ReasoningContent({
   className,
   children,
-  streaming,
+  streaming: _streaming,
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
+  // Consume this control prop without forwarding it to Radix or the DOM.
+  void _streaming;
   return (
     <CollapsibleContent
       data-slot="reasoning-content"
@@ -208,7 +214,8 @@ function ReasoningText({
       if (currentScrollTop < lastScrollTopRef.current) {
         detachedFromBottomRef.current = true;
       }
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const distanceFromBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight;
       if (
         detachedFromBottomRef.current &&
         distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
@@ -224,11 +231,13 @@ function ReasoningText({
         shouldAutoScrollRef.current = false;
       }
     };
-    const observer = new MutationObserver(() => {
-      if (shouldAutoScrollRef.current) {
+    const scrollPin = createReasoningScrollPin(
+      () => shouldAutoScrollRef.current,
+      () => {
         el.scrollTop = el.scrollHeight;
-      }
-    });
+      },
+    );
+    const observer = new MutationObserver(scrollPin.schedule);
     el.addEventListener("scroll", updateAutoScroll);
     el.addEventListener("wheel", handleWheel, { passive: true });
     observer.observe(el, {
@@ -240,6 +249,7 @@ function ReasoningText({
     detachedFromBottomRef.current = false;
     updateAutoScroll();
     return () => {
+      scrollPin.cancel();
       observer.disconnect();
       el.removeEventListener("scroll", updateAutoScroll);
       el.removeEventListener("wheel", handleWheel);
@@ -271,11 +281,16 @@ function ReasoningText({
   );
 }
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+const ReasoningImpl: ReasoningMessagePartComponent = () => (
+  <MarkdownText codeHighlighting="plain" paginateReasoning={true} />
+);
 
 const COPY_RESET_MS = 2000;
 
-function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+function ReasoningCopyButton({
+  startIndex,
+  endIndex,
+}: { startIndex: number; endIndex: number }) {
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 

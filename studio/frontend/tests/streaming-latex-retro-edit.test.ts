@@ -10,6 +10,11 @@ import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/strea
 import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
+import {
+  committedBlockContents,
+  renderBlockContents,
+} from "./streaming-render-plan.ts";
+
 const processStreamingText = (text: string): string =>
   stabilizeStreamingMarkdown(preprocessLaTeX(text), true);
 
@@ -24,11 +29,7 @@ const rebuilds = (cache: IncrementalMarkdownCache): number =>
 const rewound = (cache: IncrementalMarkdownCache): number =>
   (cache as unknown as { rewoundCharacters: number }).rewoundCharacters;
 
-// `parseMarkdownIntoBlocks("")` splits to nothing, so passing an empty string
-// returns exactly the blocks the cache has retained.
-const retainedBlocks = (render: {
-  parseMarkdownIntoBlocks: (markdown: string) => string[];
-}): string[] => render.parseMarkdownIntoBlocks("");
+const retainedBlocks = committedBlockContents;
 
 // Prose, inline math, display math, a list, a fence and currency: what an
 // answer to a modelling question actually looks like.
@@ -245,7 +246,7 @@ test("retaining across a rewrite still matches a full Streamdown split", () => {
       const input = processStreamingText(reply.slice(0, length));
       const render = cache.update(input);
       assert.deepEqual(
-        render.parseMarkdownIntoBlocks(render.markdown),
+        renderBlockContents(render),
         parseMarkdownIntoBlocks(remend(input)),
         `block mismatch at prefix ${length}`,
       );
@@ -274,7 +275,7 @@ test("a rewind restores the repair context of the commit it lands on", () => {
     const input = processStreamingText(reply.slice(0, length));
     const render = cache.update(input);
     assert.deepEqual(
-      render.parseMarkdownIntoBlocks(render.markdown),
+      renderBlockContents(render),
       parseMarkdownIntoBlocks(remend(input)),
       `block mismatch at prefix ${length}`,
     );
@@ -313,7 +314,7 @@ test("an edit that closes up a blank line cannot keep the block before it", () =
     cache.update(source);
     const render = cache.update(edited);
     assert.deepEqual(
-      render.parseMarkdownIntoBlocks(render.markdown),
+      renderBlockContents(render),
       parseMarkdownIntoBlocks(remend(edited)),
       `block mismatch after ${JSON.stringify(edited.slice(0, 24))}`,
     );

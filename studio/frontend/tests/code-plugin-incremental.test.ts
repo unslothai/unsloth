@@ -12,7 +12,6 @@ import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
-
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
 const PYTHON = `import json
@@ -61,6 +60,35 @@ function highlightOnce(
     if (immediate) resolve(immediate);
   });
 }
+
+test("the highlighter preserves an exact trailing newline without a marker", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const expected = "const exact = true;\n".repeat(300);
+  const result = await highlightOnce(plugin, {
+    code: expected,
+    language: "typescript",
+    themes: THEMES,
+  });
+  const source = result.tokens
+    .map((line) => line.map((token) => token.content).join(""))
+    .join("\n");
+
+  assert.equal(source, expected);
+});
+test("a legitimate terminal private-use character remains source", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const expected = 'const exact = "private";\uE000';
+  const result = await highlightOnce(plugin, {
+    code: expected,
+    language: "typescript",
+    themes: THEMES,
+  });
+  const source = result.tokens
+    .map((line) => line.map((token) => token.content).join(""))
+    .join("\n");
+
+  assert.equal(source, expected);
+});
 
 async function withTimeout<T>(
   promise: Promise<T>,

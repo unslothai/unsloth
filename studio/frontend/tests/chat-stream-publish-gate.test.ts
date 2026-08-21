@@ -300,12 +300,14 @@ test("the gate paces the publish, not the bookkeeping before it", () => {
   // loop, on every arrival, before the rebuild reads it.
   const append = loop.indexOf("appendCumulative(delta)");
   const rebuild = loop.indexOf(
-    "const assistantContent = liveAssistantContent()",
+    "const assistantContent = currentAssistantContent()",
   );
   const track = loop.indexOf("countReasoningGroups(assistantContent)");
   const finish = loop.indexOf("reasoningDurationTracker.finishGroup()");
   const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
-  const publish = loop.indexOf("content: assistantContent,");
+  const publish = loop.indexOf(
+    "content: publishedAssistantContent(assistantContent)",
+  );
 
   for (const [name, at] of [
     ["the text append", append],
@@ -467,7 +469,7 @@ test("the live tool-argument preview shares the gate", () => {
 
   const gate = preview.indexOf("if (canPublish(streamedChars)) {");
   assert.notEqual(gate, -1, "the per-argument-delta preview is not gated");
-  const rebuild = preview.indexOf("content: liveAssistantContent()");
+  const rebuild = preview.indexOf("currentAssistantContent()");
   assert.ok(rebuild > gate, "the gate must precede the message rebuild");
 
   // Argument deltas never reach cumulativeText, so without this the cap can
