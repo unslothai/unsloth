@@ -629,7 +629,7 @@ def main() -> int:
     out = Path("logs/pw") / f"dismiss_guard_{args.label}_{args.engine}.json"
     out.parent.mkdir(parents = True, exist_ok = True)
     out.write_text(json.dumps(result, indent = 2), encoding = "utf-8")
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent = 2))
     print(f"[probe] wrote {out}", flush = True)
 
     skipped = [(c["case"], c["skipped"]) for c in result["cases"] if c.get("skipped")]
