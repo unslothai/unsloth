@@ -22,10 +22,10 @@ import {
   ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
+  EnergyRectangleIcon,
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
-  KeyboardIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -217,7 +217,7 @@ const TABS: TabDef[] = [
   {
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
-    icon: KeyboardIcon,
+    icon: EnergyRectangleIcon,
     badgeKey: "common.new",
   },
   {
