@@ -423,12 +423,26 @@ making, because "PARITY OK" has meant three different things in this file's hist
 
 | mode | claim | fails on |
 | --- | --- | --- |
-| `digest` | whole-document structural parity | any DOM difference, on screen or off |
+| `digest` | thread-structure parity: the thread root and the declared overlay selectors are identical, on screen and off. NOT the sidebar, NOT computed layout or geometry, NOT CSS custom properties | any DOM difference it can see, on screen or off |
 | `visible` | every message the viewport showed during the action is present on both arms and identical; every difference lies off screen | a difference the user could see |
 | `behaviour` | the scroll extent matches and the invariants a windowed mount breaks first still hold. Says NOTHING about how anything looks | a broken invariant, e.g. a truncated clipboard |
 
-`auto` scores a fully mounted pair structurally, and a windowed pair on BOTH the visible region and
-the behavioural invariants: neither subsumes the other, and the run fails if either does.
+`auto` decides PER ACTION PAIR, not per payload and not per invocation: one payload can hold fully
+mounted small rungs and windowed large rungs, and a single windowed large-rung capture must not
+suppress the structural digest for every fully mounted pair beside it. A fully mounted pair is
+scored structurally; a windowed pair is scored on BOTH the visible region and the behavioural
+invariants, because neither subsumes the other. The report names which pairs went which way and the
+exit status combines every mode that ran.
+
+Whether a pair is windowed is MEASURED from its parity capture where one exists, and falls back to
+the run's own DECLARATION -- the `windowed_readiness:{arm}` gate rows and the per-cell `readiness`
+metadata -- where it does not. Without the fallback a declared windowed run whose captures all
+failed looks unwindowed, gets scored structurally, and exits 0 having compared nothing.
+
+Pairs are keyed by rung as well as by rep. They were keyed on the last dotted segment of the cell
+id, so `r1K.base.rep0` and `r100K.base.rep0` collided: a payload carrying more than one rung
+silently overwrote one rung's rows with the other's and could pair a 1K base against a 100K
+treatment.
 
 ### The two boundary decisions in visible-region parity
 

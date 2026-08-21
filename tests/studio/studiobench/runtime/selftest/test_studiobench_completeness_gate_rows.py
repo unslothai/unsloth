@@ -135,3 +135,63 @@ def test_a_probe_that_never_ran_fails_the_cell_rather_than_passing_it(tmp_path):
     )
     assert passed is False and rows[0]["passed"] is False
     assert [c["cell_id"] for c in excluded_from_rows(rows)] == [CELL.cell_id]
+
+
+# ── every per-cell gate, not just the completeness one ──────────────
+
+
+def test_every_per_cell_gate_names_its_cell():
+    """THE SAME DEFECT, IN FOUR MORE PLACES. `excluded_from_rows` reads
+    `row.get("cell_id") or "run"`, so a per-cell gate emitted without one is attributed to the
+    synthetic cell "run": a failure that says one arm at one rung lost the thread, or fell behind
+    the stream, or had its timer clamped, is presented as a run-level self-check failure and the
+    report cannot say which arm or which rung.
+
+    Asserted against the source rather than a live session, because reaching these lines needs a
+    browser, a backend and a seeded thread, and the property under test is simply that the call
+    passes the identity it already has in scope.
+    """
+    import inspect
+
+    from studiobench.runtime import session as S
+
+    src = inspect.getsource(S)
+
+    def _calls(text: str) -> list:
+        # A PAREN COUNTER, not a regex. `rec.gate("follows_the_stream", bool(...), ...)` contains a
+        # nested call, and a non-greedy regex stops at the inner closing paren -- reporting the
+        # outer call as missing an argument that is two lines further down.
+        out = []
+        for marker in ("rec.gate(", "recorder.gate("):
+            start = 0
+            while True:
+                i = text.find(marker, start)
+                if i < 0:
+                    break
+                j = i + len(marker)
+                depth = 1
+                while j < len(text) and depth:
+                    if text[j] == "(":
+                        depth += 1
+                    elif text[j] == ")":
+                        depth -= 1
+                    j += 1
+                args = text[i + len(marker) : j - 1]
+                # Skip prose. `session.py` carries a comment reading "WHY THIS IS NOT
+                # `recorder.gate(...)`", and a scanner that counts it reports a defect in a
+                # sentence.
+                line_start = text.rfind("\n", 0, i) + 1
+                is_comment = text[line_start:i].lstrip().startswith("#")
+                if args.strip() != "..." and not is_comment:
+                    out.append(args)
+                start = j
+        return out
+
+    calls = _calls(src)
+    assert calls, "no gate calls found, so this test is asserting nothing"
+    per_cell = [c for c in calls if "instrument_unavailable" not in c]
+    missing = [c.strip()[:60] for c in per_cell if "cell_id" not in c]
+    assert not missing, (
+        "these per-cell gates do not name the cell they describe, so a failure in one arm at one "
+        f"rung will be reported against the synthetic cell 'run': {missing}"
+    )

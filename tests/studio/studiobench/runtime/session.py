@@ -274,7 +274,12 @@ class CellRunner:
                 # on purpose. The verdict now carries every condition and the last probe reading.
                 row["failure"]["readiness"] = exc.detail
                 row["readiness"] = exc.detail
-                rec.gate(f"thread_ready:{self.readiness_mode}", False, exc.detail)
+                rec.gate(
+                    f"thread_ready:{self.readiness_mode}",
+                    False,
+                    exc.detail,
+                    cell_id = cell.cell_id,
+                )
             self.log(f"  cell FAILED: {type(exc).__name__}: {exc}")
             rec.failure(cell.cell_id, type(exc).__name__, {"message": str(exc)})
             with contextlib.suppress(Exception):
@@ -314,7 +319,12 @@ class CellRunner:
         row["readiness"] = readiness.as_dict()
         # RECORDED AS A GATE, so no reader can pick up a windowed cell's frame rate without also
         # seeing that its readiness was established a different way.
-        rec.gate(f"thread_ready:{self.readiness_mode}", True, readiness.as_dict())
+        rec.gate(
+            f"thread_ready:{self.readiness_mode}",
+            True,
+            readiness.as_dict(),
+            cell_id = cell.cell_id,
+        )
 
         # THE COMPLETENESS PROBE, before the idle window and therefore before anything is measured.
         # It scrolls the whole thread, which mounts rows and dirties the page, so it has to be
@@ -352,12 +362,12 @@ class CellRunner:
             # so without it busy_pct is null with the reason attached and every other column
             # stands.
             self.log(f"  timer clamp NOT established: {clamp.get('reason')}")
-            rec.gate("timer_clamp", False, clamp)
+            rec.gate("timer_clamp", False, clamp, cell_id = cell.cell_id)
         else:
             self.log(
                 f"  timer clamp {clamp['clampMs']:.2f}ms " f"over {clamp.get('samples')} idle ticks"
             )
-            rec.gate("timer_clamp", True, clamp)
+            rec.gate("timer_clamp", True, clamp, cell_id = cell.cell_id)
 
         row["paint_floor_ms"] = paint_floor_ms(page)
         row["census_before"] = dom_signature(page)
@@ -487,6 +497,7 @@ class CellRunner:
                 and not follow.get("ever_fell_behind")
             ),
             follow,
+            cell_id = cell.cell_id,
         )
         # THE OTHER HALF OF THE CONTRACT, RECORDED AND DELIBERATELY NOT GATED.
         #
@@ -571,7 +582,12 @@ class CellRunner:
         if cell.rung == EQUIVALENCE_RUNG and plan.streamed_unit is not None:
             eq = self._check_equivalence(plan, row)
             row["equivalence"] = eq
-            rec.gate("seeded_equals_streamed", bool(eq.get("equivalent")), eq)
+            rec.gate(
+                "seeded_equals_streamed",
+                bool(eq.get("equivalent")),
+                eq,
+                cell_id = cell.cell_id,
+            )
             if not eq.get("equivalent"):
                 # A FINDING, printed, not a bug to hide. It says exactly which of this tool's
                 # numbers are about the streaming path and which are about a thread that was put
