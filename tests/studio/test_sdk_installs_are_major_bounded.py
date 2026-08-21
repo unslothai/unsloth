@@ -33,15 +33,12 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
 # Packages our probe code calls directly by keyword, each with the first major it must
-# NOT reach. A pin has to exclude that major; anything at or below it is fine, so the
-# narrower `playwright>=1.55,<1.58` window in one workflow still satisfies this.
+# NOT reach. Asserting the boundary rather than "some upper bound exists" is what makes
+# this mean anything: `openai>=1.50,<999` contains a `<` and admits every major it is
+# meant to keep out. Anything stricter than the boundary is fine.
 #
-# Asserting the boundary rather than "some upper bound exists" is what makes the guard
-# mean anything: `openai>=1.50,<999` contains a `<` and still admits every major this
-# exists to keep out.
-#
-# Moving one of these is a deliberate act. Bump the number here in the same commit that
-# widens the pin, and only after CI has actually run against that major.
+# Bump a number here in the same commit that widens the pin, and only once CI has run
+# against that major.
 GUARDED = {
     # v1 removed temperature, top_p and top_k from messages.create().
     "anthropic": (1,),
@@ -65,15 +62,14 @@ _COMPATIBLE = re.compile(r"~=(?P<version>[0-9][0-9.]*)")
 
 
 def _install_commands_in(text: str) -> list[tuple[int, str]]:
-    """Every `pip install` COMMAND in a workflow, continuations joined, comments dropped.
+    """Every `pip install` COMMAND, continuations joined, comment lines dropped.
 
-    Joining matters: `pip install \\` over several lines is the house style at 19 sites
-    here, and a line-at-a-time scan sees only the first one. A guarded SDK added on a
-    continuation line would then be invisible while the anti-vacuity test below stayed
-    satisfied by the single-line pins -- the guard would pass and check nothing.
+    `pip install \\` over several lines is the house style at 19 sites here, and a
+    line-at-a-time scan sees only the first, so a guarded SDK below it would be
+    unchecked while the anti-vacuity test stayed satisfied by the single-line pins.
 
-    Comments are dropped because #9432 added comments naming `anthropic` right beside
-    the pins, and a comment must not be able to satisfy or trip this either way.
+    Comments go because #9432 put comments naming `anthropic` beside the pins, and one
+    must not be able to satisfy or trip this.
     """
     commands = []
     pending: list[str] = []
@@ -110,11 +106,9 @@ def _install_lines() -> list[tuple[Path, int, str]]:
 def _requirements_in(command: str, package: str) -> list[str]:
     """Every requirement for `package` in one pip command, as its raw specifier.
 
-    Returns "" for a bare `pip install openai`, which is a requirement with no
-    constraint at all, and is distinct from the package not appearing.
-
-    Tokenized rather than pattern-matched across the whole command so that a package
-    name inside a URL or a `-r` path cannot be mistaken for an install of it.
+    "" means a bare `pip install openai`: a requirement with no constraint, which is
+    not the same as the package being absent. Tokenized so a name inside a URL or a
+    `-r` path is not mistaken for an install of it.
     """
     try:
         tokens = shlex.split(command, posix = True)
@@ -220,9 +214,8 @@ def test_a_bound_above_the_next_major_is_not_accepted() -> None:
 def test_a_pin_that_cannot_drift_is_accepted() -> None:
     """An exact or compatible-release pin already excludes the major.
 
-    Rejecting these would be a false positive that pushes people to add a redundant
-    `<N` beside an `==`, so the rule is about what the requirement can RESOLVE to, not
-    about which operator was typed.
+    Rejecting them would push people to add a redundant `<N` beside an `==`, so the
+    rule is what the requirement can RESOLVE to, not which operator was typed.
     """
     assert _excludes("==3.0.0", GUARDED["openai"])
     assert _excludes("===3.0.0", GUARDED["openai"])
@@ -236,9 +229,8 @@ def test_a_pin_that_cannot_drift_is_accepted() -> None:
 def test_a_bare_or_extras_install_is_not_invisible() -> None:
     """`pip install openai` resolves whatever major is current.
 
-    A pattern that required a version specifier matched nothing here, so the package
-    was neither bounded nor reported, while the anti-vacuity test stayed satisfied by
-    the other pins. Extras are the same shape.
+    Requiring a version specifier matched nothing here, so the package was neither
+    bounded nor reported. Extras are the same shape.
     """
     assert _requirements_in("pip install openai", "openai") == [""]
     assert _requirements_in("pip install 'openai[datalib]>=1.50'", "openai") == [">=1.50"]
@@ -271,11 +263,7 @@ def test_a_pin_on_a_continuation_line_is_still_seen() -> None:
 
 
 def test_the_guard_is_reading_real_pins() -> None:
-    """An empty scan would make every assertion above pass silently.
-
-    If the workflows stop installing these, this test is the one that says so, rather
-    than the suite going quietly green while it checks nothing.
-    """
+    """An empty scan would make every assertion above pass silently."""
     for package in GUARDED:
         assert _specs_for(package), (
             f"no `pip install` line in .github/workflows pins {package} any more; either"
