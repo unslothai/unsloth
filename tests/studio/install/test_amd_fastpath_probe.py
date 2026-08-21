@@ -54,15 +54,12 @@ def _host(
     monkeypatch.setattr(stack.platform, "machine", lambda: machine)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: nvidia)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: rocm_gpu and not nvidia)
-    monkeypatch.setattr(
-        stack, "_detect_amd_gfx_codes", lambda dedup = True: list(gfx)
-    )
+    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", lambda dedup = True: list(gfx))
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: rocm_ver)
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: inferred)
     version, hip = torch
-    monkeypatch.setattr(
-        stack, "_probe_torch_runtime", lambda: (ran, importable, version, hip, "")
-    )
+    monkeypatch.setattr(stack, "_probe_torch_runtime", lambda: (ran, importable, version, hip, ""))
+
     # Nothing here may install: the dependency pass it unlocks owns that.
     def _no_installs(*_a, **_k):
         raise AssertionError("the fast-path probe must not install anything")
@@ -198,9 +195,7 @@ def test_a_host_without_rocm_wheels_keeps_the_fast_path(monkeypatch, kwargs):
 # CLI
 
 
-@pytest.mark.parametrize(
-    "env_name", ["UNSLOTH_NO_TORCH", "UNSLOTH_TORCH_BACKEND"]
-)
+@pytest.mark.parametrize("env_name", ["UNSLOTH_NO_TORCH", "UNSLOTH_TORCH_BACKEND"])
 def test_the_cli_reports_keep_the_fast_path_as_a_non_zero_exit(env_name):
     env = {"UNSLOTH_NO_TORCH": "1", "UNSLOTH_TORCH_BACKEND": "cpu"}
     result = subprocess.run(
@@ -238,24 +233,44 @@ def _repair_installs(monkeypatch):
 @pytest.mark.parametrize(
     "label,host,expected",
     [
-        ("a visible GPU with a readable ROCm version",
-         dict(rocm_ver = (6, 4), inferred = None), True),
-        ("a Strix host below the per-arch floor",
-         dict(rocm_ver = (7, 0), inferred = None, gfx = ("gfx1151",)), True),
-        ("a gfx906 host on a newer ROCm",
-         dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx906",)), True),
+        ("a visible GPU with a readable ROCm version", dict(rocm_ver = (6, 4), inferred = None), True),
+        (
+            "a Strix host below the per-arch floor",
+            dict(rocm_ver = (7, 0), inferred = None, gfx = ("gfx1151",)),
+            True,
+        ),
+        (
+            "a gfx906 host on a newer ROCm",
+            dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx906",)),
+            True,
+        ),
         # #7301: no runtime enumerates anything, but the arch is known.
-        ("UNSLOTH_ROCM_GFX_ARCH naming the arch with no runtime",
-         dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()), True),
-        ("an arch inferred from the CPU model with no runtime",
-         dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()), True),
+        (
+            "UNSLOTH_ROCM_GFX_ARCH naming the arch with no runtime",
+            dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()),
+            True,
+        ),
+        (
+            "an arch inferred from the CPU model with no runtime",
+            dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()),
+            True,
+        ),
         # The repair prints "skipping torch reinstall" and returns for all three.
-        ("a visible GPU whose ROCm version cannot be read",
-         dict(rocm_ver = None, inferred = None), False),
-        ("a ROCm older than any published wheel family",
-         dict(rocm_ver = (5, 0), inferred = None, gfx = ("gfx1030",)), False),
-        ("an inferred arch AMD publishes no per-arch index for",
-         dict(rocm_ver = None, inferred = "gfx900", rocm_gpu = False, gfx = ()), False),
+        (
+            "a visible GPU whose ROCm version cannot be read",
+            dict(rocm_ver = None, inferred = None),
+            False,
+        ),
+        (
+            "a ROCm older than any published wheel family",
+            dict(rocm_ver = (5, 0), inferred = None, gfx = ("gfx1030",)),
+            False,
+        ),
+        (
+            "an inferred arch AMD publishes no per-arch index for",
+            dict(rocm_ver = None, inferred = "gfx900", rocm_gpu = False, gfx = ()),
+            False,
+        ),
     ],
 )
 def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
