@@ -4788,6 +4788,27 @@ async def list_cached_models(
         return {"cached": []}
 
 
+# The weight payload that makes a non-GGUF snapshot loadable. Shared by the row gate and
+# the load-id pin so the two cannot disagree about which copy actually holds weights.
+_NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+
+
+def _snapshot_holds_weights(snapshot: Path) -> bool:
+    """Whether this snapshot dir carries non-GGUF weights of its own.
+
+    huggingface_hub keeps one snapshot per commit holding only the files resolved at that
+    commit, so a metadata-only fetch (AutoConfig / AutoTokenizer against a newer revision)
+    leaves a weightless dir with a newer mtime than the complete snapshot beside it.
+    """
+    try:
+        return any(
+            entry.name.endswith(_NON_GGUF_WEIGHT_EXTENSIONS) and entry.is_file()
+            for entry in snapshot.iterdir()
+        )
+    except OSError:
+        return False
+
+
 def _repo_model_snapshots(repo_info) -> list:
     """Snapshot dirs of a cached non-GGUF repo, newest selection order first."""
     from hub.utils.hf_cache_state import snapshot_selection_key
@@ -4821,13 +4842,22 @@ def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]
             return None
     except (OSError, RuntimeError, ValueError):
         pass
+    usable = []
     for snapshot in _repo_model_snapshots(repo_info):
         try:
             if snapshot.is_dir():
-                return str(snapshot)
+                usable.append(snapshot)
         except OSError:
             continue
-    return None
+    # Prefer the newest snapshot that actually holds weights. The row is listed because
+    # SOME revision carries them, but pinning the newest directory names a metadata-only
+    # commit the load cannot serve. Training resolves its pin the same way.
+    for snapshot in usable:
+        if _snapshot_holds_weights(snapshot):
+            return str(snapshot)
+    # No snapshot carries root-level weights (a diffusers pipeline keeps them in
+    # subdirectories), so keep the previous newest-dir pin rather than drop the repo.
+    return str(usable[0]) if usable else None
 
 
 def _repo_model_format(repo_info) -> Optional[str]:
@@ -4865,7 +4895,7 @@ def _repo_model_can_chat(repo_info) -> Optional[bool]:
 
 
 def cached_model_rows(cache_scans = None) -> list[dict]:
-    _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+    _WEIGHT_EXTENSIONS = _NON_GGUF_WEIGHT_EXTENSIONS
     if cache_scans is None:
         cache_scans = _all_hf_cache_scans()
     try:

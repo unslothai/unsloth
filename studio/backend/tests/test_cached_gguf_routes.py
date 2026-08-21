@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import threading
 import time
@@ -5808,3 +5809,89 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
     assert rows["openai/clip-vit-base-patch32"]["can_chat"] is False
     # Fails open: a chat repo is never flagged, and neither is an unreadable snapshot.
     assert "can_chat" not in rows["unsloth/Qwen3-0.6B"]
+
+
+def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch, tmp_path):
+    """A metadata-only commit must not win the pin just for being newest.
+
+    huggingface_hub stores one snapshot per commit holding only the files resolved at
+    that commit, so reading a config or tokenizer at a newer revision leaves a weightless
+    dir beside the complete one. The row is listed because some revision carries weights,
+    so pinning the weightless dir advertises a Downloaded model whose load raises
+    "no file named model.safetensors" offline.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    repo_dir = tmp_path / "legacy" / "models--Org--Chatty"
+
+    complete = repo_dir / "snapshots" / "complete"
+    complete.mkdir(parents = True)
+    (complete / "config.json").write_text("{}")
+    (complete / "model.safetensors").write_bytes(b"\0" * 64)
+
+    metadata_only = repo_dir / "snapshots" / "metadata"
+    metadata_only.mkdir(parents = True)
+    (metadata_only / "config.json").write_text("{}")
+    (metadata_only / "tokenizer.json").write_text("{}")
+
+    # The metadata fetch happened later, so it sorts first by mtime.
+    os.utime(complete, (1_000_000, 1_000_000))
+    os.utime(metadata_only, (2_000_000, 2_000_000))
+
+    repo = _repo(
+        "Org/Chatty",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("model.safetensors", 5_000)], snapshot_path = complete
+            ),
+            SimpleNamespace(files = [_file("config.json", 100)], snapshot_path = metadata_only),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Chatty"]["load_id"] == str(complete)
+    assert rows["Org/Chatty"]["load_id"] != str(metadata_only)
+
+
+def test_repo_model_can_chat_still_reads_a_metadata_only_snapshot(tmp_path):
+    """The classification must keep reading whichever snapshot holds the config, even
+    though the load id now skips it: the metadata-only commit is exactly where a config
+    lives, and losing it would let an encoder-only repo back into the chat picker."""
+    repo_dir = tmp_path / "models--Org--Embedder"
+
+    weights_only = repo_dir / "snapshots" / "weights"
+    weights_only.mkdir(parents = True)
+    (weights_only / "model.safetensors").write_bytes(b"\0" * 64)
+
+    metadata_only = repo_dir / "snapshots" / "metadata"
+    metadata_only.mkdir(parents = True)
+    (metadata_only / "config.json").write_text(
+        json.dumps({"model_type": "bert", "architectures": ["BertModel"]})
+    )
+
+    os.utime(weights_only, (2_000_000, 2_000_000))
+    os.utime(metadata_only, (1_000_000, 1_000_000))
+
+    repo = _repo(
+        "Org/Embedder",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [], snapshot_path = weights_only),
+            SimpleNamespace(files = [], snapshot_path = metadata_only),
+        ],
+    )
+
+    assert models_route._repo_model_can_chat(repo) is False
