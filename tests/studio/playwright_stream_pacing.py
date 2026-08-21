@@ -1,44 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Main-thread cost of a fast streaming reply in the chat renderer.
+"""Measures main-thread cost of real MarkdownText streaming in Chromium.
 
-Four merged PRs moved this path and each rebuilt a throwaway harness to prove it:
-
-    #7892  Streamdown's transition starvation      9.86s -> 0.34s longest freeze
-    #8750  incremental Markdown parsing            O(n) per update -> tail only
-    #8845  publish coalescing                      4.01s -> 0.62s longest stall
-    #8935  incremental fence tokenization          21x fewer characters to Shiki
-
-None of them left anything behind that would notice the next regression, and each had to
-rediscover the same methodology. This is that harness, kept.
-
-It drives smoke-stream-pacing.html, which mounts the real MarkdownText inside a real
-assistant-ui local runtime, so nothing is a mock of the code under test and assistant-ui's
-own update scheduling is inside the measurement. Runs against a vite dev server; no
-backend, no auth, no GPU, no model.
-
-The reply is a fixed string. #8845's first measurement attempts failed because a real
-model gave the two sides different essays and the renderer's cost is superlinear in
-length, so a comparison across different text says nothing.
-
-CPU throttling is not decoration: on a developer machine the renderer keeps up with any
-rate this can feed, so an unthrottled run measures nothing on either side.
-
-Chromium only, deliberately. Both things that make this a measurement are Chromium-only:
-`Emulation.setCPUThrottlingRate` is reached over CDP, which Playwright exposes for Chromium
-alone, and `longtask` PerformanceObserver entries exist in no other engine (Gecko bug
-1348405 is open; WebKit has never shipped them). Neither fails loudly on firefox or webkit,
-since `observe({type: "longtask"})` is specified to abort silently on an unsupported type
-rather than throw, so the budgets would read a perfect zero instead of an error. The verdict
-below therefore refuses a run that saw no long tasks, and the harness records whether the
-engine supported them.
-
-Run:
-    python tests/studio/playwright_stream_pacing.py
-
-It starts and stops its own vite dev server. Point it at one you already have with
-SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
+Runs a fixed reply through the production renderer and records long-task and paint budgets.
 """
 
 from __future__ import annotations
@@ -60,46 +25,26 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5186"))
-# Unset: start and stop our own server. Set: drive that one and leave it running.
-# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
-# Under logs/ like every sibling harness. A default of "." would drop an untracked
-# stream-pacing.json in the repo root every run; logs/ is gitignored, so the tree stays clean.
+
+# Use an external server when SMOKE_BASE_URL is set; otherwise own a local server.
+# Keep artifacts under gitignored logs/.
+
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-stream-pacing"))
 LABEL = "stream-pacing"
 
-# The reply and the rate it arrives at. Length is what the renderer's cost is superlinear
-# in, so it is the knob that matters; the arrival count stays modest because throttling
-# slows the feed's own timers too, and 1,000 arrivals at 6x stretched a one-second stream
-# to 43s of wall clock for no extra signal.
+# Length drives renderer cost; modest chunking avoids stretching the run without signal.
+
 TOTAL_CHARS = int(os.environ.get("SMOKE_STREAM_CHARS", "24000"))
 CHUNK_CHARS = int(os.environ.get("SMOKE_STREAM_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_STREAM_GAP_MS", "2"))
 THROTTLE = int(os.environ.get("SMOKE_STREAM_THROTTLE", "6"))
 
-# Budgets, not targets, chosen against real regressions rather than by feel. Two merged
-# fixes were reverted in this harness, on two machines, and they move the two numbers in
-# opposite directions, which is why there are two budgets and not one headline metric.
-#
-#                        main   #8750 reverted   #7892 reverted
-#   long tasks      5.0-8.0s      13.1s/74.4s        6.7-7.9s
-#   long task count    49-71          144/598           14-23
-#   longest stall   1.05-1.23s     0.97-1.40s        5.03-6.35s
-#
-# Reverting #8750 (incremental Markdown parsing) blows up the long-task total and leaves
-# the longest stall alone. Reverting #7892 (Streamdown's `animated` config, which keeps
-# block updates out of an interruptible transition) does the opposite: the stall goes 4-5x
-# while the long-task total stays in the clean range. A single headline metric would have
-# missed one of the two outright.
-#
-# Machine spread: the "main" column above is 5,029/5,901ms on one machine and 6,687-8,003ms
-# on another, so clean readings vary ~60% ACROSS boxes even though a single box repeats to
-# within ~15%. That is what keeps the CI step non-gating. The 10,000ms budget is NOT raised
-# for that headroom, because the same two machines read the #8750 revert as 13,059ms and
-# 74,353ms: a budget loose enough for the slower box would stop catching that regression on
-# the faster one. Retune from observed runner numbers, not from one machine.
+# Separate budgets catch the regressions observed when #8750 and #7892 were reverted.
+# Values vary across machines, so tune from repeated runner measurements.
+
 MAX_LONGEST_STALL_MS = int(os.environ.get("SMOKE_STREAM_STALL_BUDGET_MS", "2500"))
 MAX_LONG_TASK_MS = int(os.environ.get("SMOKE_STREAM_LONG_TASK_BUDGET_MS", "10000"))
 

@@ -13,8 +13,7 @@ export type TerminalStreamingCodeFence = StreamingCodeFence & {
   isClosed: boolean;
   openingLine: string;
   openingOffset: number;
-  // Exact bytes between the opening line and closing marker line. Unlike
-  // `source`, this retains the line ending that also positions the closer.
+  // Preserve the separator before the closing marker; `source` omits it.
   rawSource: string;
 };
 
@@ -114,7 +113,7 @@ const parseFenceOpening = (blockContent: string): FenceOpening | null => {
 
   const marker = opening[2][0] as "`" | "~";
   const info = opening[3];
-  // CommonMark forbids a backtick in a backtick fence's info string.
+  // Backtick fences cannot contain backticks in the info string.
   if (marker === "`" && info.includes("`")) {
     return null;
   }

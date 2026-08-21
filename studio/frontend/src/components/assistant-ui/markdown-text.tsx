@@ -87,8 +87,7 @@ type StreamingCodeHighlightObserver = (
 let streamingCodeHighlightObserver: StreamingCodeHighlightObserver | null =
   null;
 
-// The production Chromium harness observes the real plugin boundary rather than
-// inferring TextMate work from DOM spans. Normal app bundles install no observer.
+// The Chromium harness observes the real plugin boundary; normal bundles install no observer.
 export function observeStreamingCodeHighlights(
   observer: StreamingCodeHighlightObserver,
 ): () => void {
@@ -121,9 +120,7 @@ const STREAMDOWN_SYNTAX_PLUGINS = {
     },
   ],
 } satisfies NonNullable<StreamdownProps["plugins"]>;
-// Streamdown keeps its code container, header, language label, and raw code
-// renderer when the code plugin is absent. Math, Mermaid, and the persistent
-// oversized renderer remain available; only fenced-code tokenization is omitted.
+// Without the code plugin, Streamdown still renders code containers and other plugins.
 const STREAMDOWN_PLAIN_CODE_PLUGINS = {
   math,
   mermaid,
@@ -150,9 +147,7 @@ const STREAMDOWN_SHIKI_THEME = [
 
 const FINAL_HIGHLIGHT_CHUNK_CHARACTERS = 512;
 
-// The open phase deliberately never calls Shiki. On completion, tokenize the
-// exact canonical source in bounded tasks while the exact plain block remains
-// visible; the final tree consumes that result without another plugin request.
+// Keep open fences plain; highlight completed source in bounded tasks.
 const prepareOversizedCodeHighlight = (
   source: string,
   language: string | null,

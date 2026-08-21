@@ -13,25 +13,11 @@ import {
   normalizeCodeFenceLanguage,
 } from "./streaming-code-policy.ts";
 
-// How far behind the live edge a block has to be before it can be retained.
-// The block list interleaves "\n\n" separators, so this is about four
-// paragraphs of slack for a construct that a later line can still reinterpret.
+// Retain blocks only after they are outside the rollback window.
 const ROLLBACK_BLOCKS = 8;
-
-// Group retained blocks so token updates reconcile stable chunk fibers instead of
-// every completed Markdown block. Eight-block chunks also let live reasoning keep
-// a useful recent window without retaining hundreds of rich DOM blocks. Only the
-// final, partially filled chunk changes when a block leaves the rollback tail.
+// Group retained blocks so token updates touch only the final partial chunk.
 const COMMITTED_CHUNK_BLOCKS = 8;
-// A marker the reply never closes leaves the tail growing with nothing to
-// retain, and the boundary scan is then paid on top of the full repair it was
-// meant to replace. Give up at a character budget, since characters are what
-// that scan costs, and a transient imbalance closes far below this. The budget
-// is spent before giving up and that spending grows with the square of the tail,
-// so the value matters. Measured on an emphasis marker that only closes 40,000
-// characters later, 420 updates, five repetitions: the median cost against the
-// full-document path is +73% at 32,768 and +1.6% at 8,192. 8,192 characters is
-// still around 1,300 words of slack, well beyond a marker a later line closes.
+// Bound stalled-tail scans; 8,192 characters preserves enough context for late closures.
 const STALLED_TAIL_CHARACTERS = 8_192;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
@@ -100,12 +86,7 @@ const createRepairParity = (): RepairParity => ({
   inlineMath: false,
 });
 
-// Marked keeps link reference definitions in one document-wide map and emits
-// no token for a label it has already seen, so a definition that is retained
-// while its twin is still live would be lexed apart and shown as a literal
-// line. Keeping every definition in the live tail makes the two lexes agree.
-// Marked reads a fenced block as code, so those do not count; anything else
-// that merely looks like a definition costs retention, never correctness.
+// Keep link definitions in the live tail so Marked's document-wide map stays consistent.
 function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
   if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
     parity.linkDefinition = true;
