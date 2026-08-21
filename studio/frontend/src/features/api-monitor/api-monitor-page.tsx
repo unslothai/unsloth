@@ -530,6 +530,14 @@ export function ApiMonitorPage(): ReactElement {
     loadingDetails,
     requestDetail,
   } = useApiMonitor();
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (loading || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [loading]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);

@@ -109,7 +109,9 @@ const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
   );
 };
 
-const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
+const AttachmentPreviewDialog: FC<
+  PropsWithChildren<{ redactFromReload?: boolean }>
+> = ({ children, redactFromReload = false }) => {
   const src = useAttachmentSrc();
 
   if (!src) {
@@ -127,6 +129,7 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
       {/* Chrome-free lightbox: the image floats on the dimmed backdrop with
           no dialog panel, and the close button sits in the screen corner. */}
       <DialogContent
+        data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
         overlayClassName="bg-black/70"
         className="aui-attachment-preview-dialog-content top-0 left-0 grid h-dvh w-screen max-h-none max-w-none translate-x-0 translate-y-0 place-items-center overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-none [&>button]:fixed [&>button]:top-4 [&>button]:right-4 [&>button]:z-20 [&>button]:size-9 [&>button]:rounded-full [&>button]:bg-transparent [&>button]:text-white [&>button]:opacity-100 [&>button]:ring-0! [&>button]:hover:bg-white/25 [&>button]:hover:text-white [&_svg]:text-white"
       >
@@ -417,7 +420,7 @@ const AttachmentUI: FC = () => {
             "aui-attachment-root-composer only:[&>#attachment-tile]:size-16",
         )}
       >
-        <AttachmentPreviewDialog>
+        <AttachmentPreviewDialog redactFromReload={isComposer}>
           <TooltipTrigger asChild={true}>
             <button
               className={cn(
@@ -466,7 +469,10 @@ export const UserMessageAttachments: FC = () => {
 
 export const ComposerAttachments: FC = () => {
   return (
-    <div className="aui-composer-attachments mb-2 flex w-full flex-row items-center gap-2 overflow-x-auto px-1.5 pt-0.5 pb-1 empty:hidden">
+    <div
+      data-reload-snapshot-sensitive
+      className="aui-composer-attachments mb-2 flex w-full flex-row items-center gap-2 overflow-x-auto px-1.5 pt-0.5 pb-1 empty:hidden"
+    >
       <ComposerPrimitive.Attachments
         components={{ Attachment: AttachmentUI }}
       />
