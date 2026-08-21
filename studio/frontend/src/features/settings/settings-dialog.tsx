@@ -167,7 +167,6 @@ const TABS: TabDef[] = [
     id: "profile",
     labelKey: "settings.tabs.profile",
     icon: UserIcon,
-    badgeKey: "common.new",
   },
   {
     id: "appearance",
@@ -193,6 +192,7 @@ const TABS: TabDef[] = [
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
     icon: HomeWifiIcon,
+    badgeKey: "common.new",
   },
   {
     id: "connections",
@@ -203,24 +203,22 @@ const TABS: TabDef[] = [
     id: "agents",
     labelKey: "settings.tabs.agents",
     icon: BotIcon,
-    badgeKey: "common.new",
   },
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
-    badgeKey: "common.new",
   },
   {
     id: "data",
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
     icon: KeyboardIcon,
+    badgeKey: "common.new",
   },
   {
     id: "debugging",
