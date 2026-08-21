@@ -4800,17 +4800,21 @@ _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
     """Whether this snapshot has metadata and a complete weight payload.
 
-    ``_is_model_directory`` supplies the local scanners' config-plus-weight check, with
-    ``.bin`` held to ``_WEIGHT_BIN_PREFIXES`` so a Trainer ``training_args.bin`` is not
-    read as a checkpoint. The payload check also rejects a shard family short of its own
-    stated total. The ``.gguf`` arm cannot fire here because ``cached_model_rows`` skips
-    repos carrying GGUF files before any pin is computed.
+    Transformers snapshots use the local scanners' config-plus-weight check. Diffusers
+    pipelines instead have a root ``model_index.json`` and component payloads in subdirs,
+    so use the same component-completeness check that guards local media loads.
 
     huggingface_hub keeps one snapshot per commit, so a partial fetch leaves an unloadable
     dir with a newer mtime than the complete one beside it. Both halves happen: metadata
     only (AutoConfig/AutoTokenizer at a newer revision) and weights only (Unsloth's base
     model pre-warm fetches the shards plus index, no config.json).
     """
+    if _local_pipeline_index(snapshot):
+        from core.inference.media_locality import _pipeline_components_present
+        from hub.utils.inventory_scan import snapshot_pipeline_missing_denoiser
+        return _pipeline_components_present(snapshot) and not snapshot_pipeline_missing_denoiser(
+            snapshot
+        )
     return _is_model_directory(snapshot) and not _snapshot_payload_is_torn(snapshot)
 
 
@@ -4891,8 +4895,8 @@ def _repo_model_selection(
     if _repo_is_reachable_by_id(Path(repo_path), active_root, loadable):
         # The bare id follows refs/main, so that ref names the revision a load reads.
         return _default_ref_snapshot(Path(repo_path)) or loadable, None
-    # No snapshot can serve a load on its own (a diffusers pipeline keeps its config and
-    # weights in subdirectories), so keep the previous newest-dir pin rather than drop it.
+    # no snapshot can prove it serves a load, so keep the previous newest-dir pin rather than
+    # drop it.
     selected = loadable or (usable[0] if usable else None)
     return selected, (str(selected) if selected else None)
 

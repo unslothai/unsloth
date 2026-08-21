@@ -6062,21 +6062,38 @@ def test_cached_model_rows_scope_pipeline_partialness_to_the_pinned_snapshot(mon
     repo_dir = active / "models--Org--Pipeline"
     complete = repo_dir / "snapshots" / "complete"
     broken = repo_dir / "snapshots" / "broken"
-    (complete / "transformer").mkdir(parents = True)
-    (broken / "vae").mkdir(parents = True)
 
-    manifest = json.dumps(
-        {
-            "_class_name": "FluxPipeline",
-            "transformer": ["diffusers", "FluxTransformer2DModel"],
+    manifest = {
+        "_class_name": "FluxPipeline",
+        "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+        "text_encoder": ["transformers", "CLIPTextModel"],
+        "tokenizer": ["transformers", "CLIPTokenizer"],
+        "transformer": ["diffusers", "FluxTransformer2DModel"],
+        "vae": ["diffusers", "AutoencoderKL"],
+    }
+
+    def write_pipeline(snapshot, *, with_transformer):
+        files = {
+            "model_index.json": json.dumps(manifest).encode(),
+            "scheduler/scheduler_config.json": b"{}",
+            "text_encoder/config.json": b"{}",
+            "text_encoder/model.safetensors": b"\0" * 64,
+            "tokenizer/tokenizer_config.json": b"{}",
+            "tokenizer/tokenizer.json": b"{}",
+            "vae/config.json": b"{}",
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 64,
         }
-    )
-    (complete / "config.json").write_text("{}")
-    (complete / "model.safetensors").write_bytes(b"\0" * 64)
-    (complete / "model_index.json").write_text(manifest)
-    (complete / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
-    (broken / "model_index.json").write_text(manifest)
-    (broken / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
+        if with_transformer:
+            files["transformer/config.json"] = b"{}"
+            files["transformer/diffusion_pytorch_model.safetensors"] = b"\0" * 64
+        for name, payload in files.items():
+            target = snapshot / name
+            target.parent.mkdir(parents = True, exist_ok = True)
+            target.write_bytes(payload)
+        return files
+
+    complete_files = write_pipeline(complete, with_transformer = True)
+    broken_files = write_pipeline(broken, with_transformer = False)
     os.utime(complete, (1_000_000, 1_000_000))
     os.utime(broken, (2_000_000, 2_000_000))
     (repo_dir / "refs").mkdir(parents = True)
@@ -6088,19 +6105,11 @@ def test_cached_model_rows_scope_pipeline_partialness_to_the_pinned_snapshot(mon
         repo_dir,
         revisions = [
             SimpleNamespace(
-                files = [
-                    _file("config.json", 2),
-                    _file("model.safetensors", 64),
-                    _file("model_index.json", len(manifest)),
-                    _file("transformer/diffusion_pytorch_model.safetensors", 64),
-                ],
+                files = [_file(name, len(payload)) for name, payload in complete_files.items()],
                 snapshot_path = complete,
             ),
             SimpleNamespace(
-                files = [
-                    _file("model_index.json", len(manifest)),
-                    _file("vae/diffusion_pytorch_model.safetensors", 64),
-                ],
+                files = [_file(name, len(payload)) for name, payload in broken_files.items()],
                 snapshot_path = broken,
             ),
         ],
