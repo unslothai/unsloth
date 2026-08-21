@@ -705,6 +705,10 @@ def fake_runtime(monkeypatch):
     diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
     # Qwen-Image-Edit: its own pipeline is the loaded one.
     diffusers.QwenImageEditPlusPipeline = _FakePipeline
+    # FLUX Kontext: another edit-family pipeline, whose `image` kwarg is a batch not a
+    # multi-conditioning list -- used to exercise the reference_images rejection.
+    diffusers.FluxKontextPipeline = _FakePipeline
+    diffusers.FluxTransformer2DModel = _FakeTransformer
     # Ideogram 4, for its guidance_scale/guidance_schedule pairing. It loads only as a full pipeline (two DiTs), so stub the assembly.
     diffusers.Ideogram4Pipeline = _FakePipeline
     diffusers.Ideogram4Transformer2DModel = _FakeTransformer
