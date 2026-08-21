@@ -4762,6 +4762,7 @@ export function createOpenAIStreamAdapter(
           !runtime.loadedIsDiffusion &&
           !imageBase64 &&
           !audioBase64 &&
+          !videoBase64 &&
           resolvedThreadId &&
           !isThreadIncognito(resolvedThreadId) &&
           unstable_assistantMessageId &&
