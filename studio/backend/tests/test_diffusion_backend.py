@@ -7142,8 +7142,7 @@ def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(m
 
 
 def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path):
-    # A queued generation is not the active denoise unload signals, and Python locks are not FIFO,
-    # so without the fence it could get in ahead and denoise after the eject.
+    # A queued generation must not bypass the teardown fence.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -7245,8 +7244,7 @@ class _AdmissionHookLock:
 
 
 def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
-    # A generation that wins the lock race must yield it to the queued teardown, not
-    # misreport a cancellation. Two reservations prove it does not resume early.
+    # A lock winner must yield to every pending teardown.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -7480,8 +7478,7 @@ def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
     else:
         pytest.fail("the queued generation never published a cancel event")
 
-    # Stand in for the construction phase: begin_load holds _lock from the teardown release
-    # to the end of the load, which is where the queued request used to go deaf to Stop.
+    # Simulate construction while _lock is held.
     with backend._lock:
         assert backend.cancel_generate() is True
         worker.join(5)
@@ -7496,10 +7493,7 @@ def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
 def test_cancel_reaches_a_waiter_once_the_generation_it_queued_behind_exits(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # The reason a request is waiting changes under it: it queues behind a denoising
-    # generation, that generation exits, and a replacement takes the slot. Whether Stop may
-    # signal it is therefore decided by cancel_generate() on live state, not cached per
-    # waiter, since a waiter asleep in its timed acquisition cannot notice the handover.
+    # Stop eligibility is decided from live state after the handoff.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -7548,8 +7542,7 @@ def test_cancel_reaches_a_waiter_once_the_generation_it_queued_behind_exits(
         release_active.set()
         pytest.fail("the waiting request was never published")
 
-    # A replacement reserves while the first generation is still denoising, so the slot the
-    # waiter is queued for goes to the teardown rather than to the waiter.
+    # Reserve teardown before releasing the active generation.
     with backend._lock:
         backend._reserve_teardown_locked()
     release_active.set()
