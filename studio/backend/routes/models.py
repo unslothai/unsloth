@@ -3657,10 +3657,8 @@ async def get_gguf_variants(
         # the loader both span them. Absent bytes read as no architecture and are kept, so an
         # undownloaded quant is never dropped on a guess.
         speech_roots = [context_model] if local else _cached_snapshot_roots(repo_id, local_path)
-        listed = (
-            _without_mixed_folder_speech_variants(speech_roots, list(response.variants))
-            if speech_roots
-            else list(response.variants)
+        listed = await _without_mixed_folder_speech_variants_bounded(
+            speech_roots, list(response.variants)
         )
         default_variant = response.default_variant
         # A default naming a quant that just left the listing would preselect a row the picker
@@ -4401,6 +4399,84 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
     except Exception:
         return None
+
+
+_SPEECH_FILTER_HARD_TIMEOUT_SECONDS = 4.0
+# Concurrent speech-filter probes. One stranded on a hung mount holds its slot, so retries wait
+# rather than pile another daemon thread onto the same dead path.
+_SPEECH_FILTER_MAX_CONCURRENT_READS = 4
+_SPEECH_FILTER_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _speech_filter_slots() -> asyncio.Semaphore:
+    """Per running loop, since an asyncio primitive cannot be shared across loops."""
+    loop = asyncio.get_running_loop()
+    slots = _SPEECH_FILTER_SLOTS.get(loop)
+    if slots is None:
+        slots = asyncio.Semaphore(_SPEECH_FILTER_MAX_CONCURRENT_READS)
+        _SPEECH_FILTER_SLOTS[loop] = slots
+    return slots
+
+
+def _settle_speech_filter(slots: asyncio.Semaphore, future: "asyncio.Future", value: list) -> None:
+    slots.release()
+    if not future.done():
+        future.set_result(value)
+
+
+async def _without_mixed_folder_speech_variants_bounded(roots: list, variants: list) -> list:
+    """``_without_mixed_folder_speech_variants`` off the event loop, with a hard bound.
+
+    The probes are ``is_file()`` and a header read, and a cached snapshot or custom model folder
+    can sit on an unresponsive network or removable mount where either blocks indefinitely. Run
+    inline this would freeze the loop for every request, not just this expansion, so it follows
+    the same shape as the native-context read beside it: a daemon thread so a stranded probe never
+    joins at interpreter exit, a slot cap so a dead mount cannot accumulate threads, and one
+    budget covering the wait and the reads.
+
+    Times out to the UNFILTERED listing, deliberately. The filter only removes a quant it has
+    positively read as ``llama-csm``, and a mount too slow to answer is one the loader cannot read
+    either, so failing open keeps this consistent with the absent-bytes case rather than hiding a
+    runnable quant on a timeout."""
+    if not roots or not variants:
+        return list(variants)
+
+    slots = _speech_filter_slots()
+    began = time.monotonic()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout = _SPEECH_FILTER_HARD_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.debug("speech variant filter waited out its slot; listing unfiltered")
+        return list(variants)
+
+    remaining = _SPEECH_FILTER_HARD_TIMEOUT_SECONDS - (time.monotonic() - began)
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future" = loop.create_future()
+
+    def worker() -> None:
+        try:
+            value = _without_mixed_folder_speech_variants(roots, variants)
+        except Exception:
+            value = list(variants)
+        try:
+            loop.call_soon_threadsafe(_settle_speech_filter, slots, future, value)
+        except RuntimeError:
+            pass  # loop already closed; nothing is waiting on this
+
+    if remaining <= 0:
+        slots.release()
+        return list(variants)
+    try:
+        threading.Thread(target = worker, name = "speech-filter", daemon = True).start()
+    except RuntimeError:
+        slots.release()  # thread never ran, so it will never release
+        return list(variants)
+
+    try:
+        return await asyncio.wait_for(future, timeout = remaining)
+    except asyncio.TimeoutError:
+        logger.debug("speech variant filter did not return; listing unfiltered")
+        return list(variants)
 
 
 def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]:

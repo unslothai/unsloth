@@ -5361,6 +5361,44 @@ def test_the_snapshot_roots_break_mtime_ties_the_way_the_loader_does(tmp_path):
     ]
 
 
+def test_a_hung_speech_probe_leaves_the_loop_running_and_lists_unfiltered(monkeypatch):
+    """``is_file()`` and the header read block indefinitely on an unresponsive network or
+    removable mount. Inline that froze the loop for every request, not just this expansion. The
+    probe runs off-loop under one budget now, and times out to the UNFILTERED listing: the filter
+    only removes a quant it positively read as llama-csm, and a mount too slow to answer is one
+    the loader cannot read either."""
+    monkeypatch.setattr(models_route, "_SPEECH_FILTER_HARD_TIMEOUT_SECONDS", 0.1)
+
+    def hang(roots, variants):
+        time.sleep(5)
+        return []
+
+    monkeypatch.setattr(models_route, "_without_mixed_folder_speech_variants", hang)
+    variants = [SimpleNamespace(filename = "csm-1b-Q4_0.gguf", quant = "Q4_0")]
+
+    async def scenario():
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            for _ in range(5):
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beating = asyncio.ensure_future(heartbeat())
+        listed = await models_route._without_mixed_folder_speech_variants_bounded(
+            ["/mnt/hung"], variants
+        )
+        await beating
+        return listed, ticks
+
+    listed, ticks = asyncio.run(scenario())
+
+    assert [v.quant for v in listed] == ["Q4_0"]
+    # The loop kept scheduling while the probe hung, which is the whole point.
+    assert ticks == 5
+
+
 def _speech_mix_answer(
     repo_id,
     folder,
