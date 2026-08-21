@@ -123,14 +123,19 @@ def _extract_sh_function(source, name):
     lines = source.splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith(name + "() {"))
     end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
-    return "\n".join(lines[start:end + 1])
+    return "\n".join(lines[start : end + 1])
 
 
-def _run_persist_helper(tmp_path, skip_torch, env = None):
+def _run_persist_helper(
+    tmp_path,
+    skip_torch,
+    env = None,
+):
     """Run _persist_rocm_aotriton_env for real, with its drop-in target redirected into
     tmp_path so the test never touches /etc. Returns (exported_value, dropin_written)."""
-    body = _extract_sh_function(_INSTALL_SH.read_text(encoding = "utf-8"),
-                                "_persist_rocm_aotriton_env")
+    body = _extract_sh_function(
+        _INSTALL_SH.read_text(encoding = "utf-8"), "_persist_rocm_aotriton_env"
+    )
     profile_d = tmp_path / "profile.d"
     profile_d.mkdir()
     body = body.replace("/etc/profile.d", str(profile_d))
@@ -139,23 +144,26 @@ def _run_persist_helper(tmp_path, skip_torch, env = None):
         # Shadow id(1) so the helper takes its root branch and writes the redirected path
         # directly. Otherwise the result depends on whether the test host has passwordless
         # sudo, and the sudo-tee arm swallows its own failure by design.
-        'id() { echo 0; }\n'
-        + body + "\n"
-        '_persist_rocm_aotriton_env\n'
+        "id() { echo 0; }\n" + body + "\n"
+        "_persist_rocm_aotriton_env\n"
         'printf "%s" "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL-<unset>}"\n',
-        encoding = "utf-8")
+        encoding = "utf-8",
+    )
     run_env = dict(os.environ)
     run_env.pop("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", None)
     run_env.update(env or {})
     run_env["SKIP_TORCH"] = skip_torch
-    proc = subprocess.run(["sh", str(script)], capture_output = True, text = True,
-                          env = run_env, timeout = 60)
+    proc = subprocess.run(
+        ["sh", str(script)], capture_output = True, text = True, env = run_env, timeout = 60
+    )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout, (profile_d / "unsloth-rocm-aotriton.sh").exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32" or shutil.which("sh") is None,
-                    reason = "needs a POSIX shell to execute the installer helper")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason = "needs a POSIX shell to execute the installer helper",
+)
 def test_install_sh_skips_persistence_under_no_torch(tmp_path):
     """--no-torch installs no ROCm torch, so writing a root-owned /etc/profile.d file that
     re-points every future ROCm process on the host is out of scope. A pinned or probed
@@ -167,8 +175,10 @@ def test_install_sh_skips_persistence_under_no_torch(tmp_path):
     assert not wrote, "--no-torch must not write the host-wide drop-in"
 
 
-@pytest.mark.skipif(sys.platform == "win32" or shutil.which("sh") is None,
-                    reason = "needs a POSIX shell to execute the installer helper")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason = "needs a POSIX shell to execute the installer helper",
+)
 def test_install_sh_persists_when_torch_is_being_installed(tmp_path):
     """The other half: with torch going in, the helper still does its job."""
     value, wrote = _run_persist_helper(tmp_path, "false")
@@ -176,12 +186,15 @@ def test_install_sh_persists_when_torch_is_being_installed(tmp_path):
     assert wrote
 
 
-@pytest.mark.skipif(sys.platform == "win32" or shutil.which("sh") is None,
-                    reason = "needs a POSIX shell to execute the installer helper")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason = "needs a POSIX shell to execute the installer helper",
+)
 def test_install_sh_leaves_an_existing_opinion_alone(tmp_path):
     """ "0" is somebody who hit an AOTriton bug, not an empty slot."""
     value, wrote = _run_persist_helper(
-        tmp_path, "false", env = {"TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL": "0"})
+        tmp_path, "false", env = {"TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL": "0"}
+    )
     assert value == "0"
     assert not wrote
 
