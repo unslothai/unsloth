@@ -454,7 +454,14 @@ class SAOTrainer(_SAOTrainerBase):
             model.train()
 
         prompt_length = encoded["input_ids"].shape[1]
-        sequences = generated.sequences
+        # generate() runs under torch.inference_mode() internally (regardless
+        # of the torch.no_grad() above), so `generated.sequences` comes back as
+        # an inference tensor. `sequences`/`completion_ids` are threaded into
+        # `_policy_logprobs`' forward pass below, which needs to be part of the
+        # backward graph for the policy loss - an inference tensor there raises
+        # "Inference tensors cannot be saved for backward". Clone to get plain
+        # tensors, the same fix TRL's own generation-based trainers apply.
+        sequences = generated.sequences.clone()
         completion_ids = sequences[:, prompt_length:]
         # The sampler's own distribution is the behaviour policy (paper Sec 3.1);
         # no separate pi_theta_old snapshot is ever taken.
