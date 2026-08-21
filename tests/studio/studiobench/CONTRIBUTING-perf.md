@@ -276,6 +276,28 @@ Anything **per-message** (menus, hover targets, avatars, action bars, virtualiza
 is therefore measured on a document that has far too few of them, and should not be extrapolated
 from this corpus without saying so.
 
+### One home per arm, or the A/B compares a build against itself
+
+`install_studio` derives its repo checkout from the home directory, so **two arms sharing one
+`--home` share one checkout**. The second install overwrites the first and both arms then serve
+whichever build was installed last. Every number downstream is then a comparison of a build with
+itself: parity matches, invariants agree, timings sit on top of each other, and none of it means
+anything.
+
+It is invisible in the payload, and it looks like the result you were hoping not to get. Two runs
+of the same pair reported **716 ms and 718 ms** for base and treatment in one, and **2,583 ms and
+2,614 ms** in the other -- nearly equal *within* each run and 3.6x apart *between* them, because
+each run was internally uniform and the two runs were serving different builds. Read as a
+within-run comparison it says the change does nothing. The difference was sitting between the runs
+the whole time.
+
+`--ab` now refuses `--home` outright. Left to itself the harness gives each arm its own
+`studio_home_<label>` under `--out`, which is what you want.
+
+**The general rule this is an instance of:** before believing a null result, confirm the two arms
+could have differed. A comparison that was structurally incapable of showing a difference will
+report agreement with total confidence.
+
 ### One engine per comparison
 
 Nothing in the payload format stops you from scoring a Chromium arm against a WebKit one. The engine

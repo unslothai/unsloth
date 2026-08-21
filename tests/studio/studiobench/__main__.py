@@ -250,6 +250,26 @@ def run(args, ab_ref = None) -> int:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
             return 2
         _log(f"  A/B: base={args.branch} vs treatment={ab_ref}, interleaved in ONE session")
+        # ONE HOME CANNOT HOLD TWO BUILDS. `install_studio` checks the ref out into a repo
+        # directory derived from the home and installs from it, so two arms sharing a home share
+        # one checkout: the second install overwrites the first and BOTH arms then serve whichever
+        # build was installed last. The A/B compares a build against itself and reports a clean,
+        # confident "no difference" -- which is the same failure mode as a copy timing that is
+        # really a sleep, and just as invisible in the payload.
+        #
+        # Measured, before this refused: two runs of the same pair, one at 716 ms and 718 ms for
+        # base and treatment, the other at 2,583 ms and 2,614 ms. Nearly equal WITHIN each run and
+        # 3.6x apart BETWEEN them, because each run was internally uniform and the two runs were
+        # serving different builds. Read as a within-run comparison it says the change does
+        # nothing; the difference was sitting between the runs the whole time.
+        if not args.attach and args.home:
+            _log(
+                "  --home cannot be used with --ab: both arms would install into that one "
+                "directory, the second install would overwrite the first, and both arms would "
+                "then serve the same build. Drop --home and each arm gets its own "
+                "studio_home_<label> under --out."
+            )
+            return 2
 
     installs = []
     sides = []
