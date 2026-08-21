@@ -12095,8 +12095,7 @@ async def generate_audio(
 
 
 async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
-    """Proxy CreateSpeech to a saved connection's /audio/speech, so read-aloud can use a
-    remote TTS server (e.g. Kokoro) without occupying the local model slot."""
+    """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
     config = providers_db.get_provider(body.provider_id)
     if config is None:
         raise HTTPException(
@@ -12113,8 +12112,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     base_url = config["base_url"] or get_base_url(config["provider_type"])
     if not base_url:
         raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
-    # Validate the proxy destination before the API key is decrypted, so a
-    # refused target never sees a credential.
+    # Validate the destination before decrypting the key: a refused target sees no credential.
     try:
         base_url = validate_provider_base_url(base_url)
     except ValueError as exc:
@@ -12129,9 +12127,8 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         base_url = base_url,
         api_key = api_key,
     )
-    # Stopping read-aloud aborts the browser fetch, but FastAPI does not cancel a
-    # non-streaming handler on disconnect, so the paid synthesis would run on. Same
-    # task-plus-watcher pair the transcription proxy above uses.
+    # FastAPI does not cancel a non-streaming handler on disconnect, so stopping
+    # read-aloud would leave the paid synthesis running. Same pair as transcription.
     speech_task = asyncio.create_task(
         client.create_speech(
             text = body.input,
@@ -12170,11 +12167,10 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    With ``provider_id`` set, the request is proxied to that saved connection's
-    /audio/speech and model/voice/speed are forwarded. Otherwise the loaded audio
-    model is used: ``model`` is informational, ``voice`` and ``speed`` are ignored,
-    and only WAV exists, so another ``response_format`` is a 400 rather than a
-    silent container mismatch."""
+    With ``provider_id`` the request is proxied to that connection, forwarding
+    model/voice/speed. Otherwise the loaded model is used: ``model`` is informational,
+    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
+    a 400 rather than a silent container mismatch."""
     if body.provider_id:
         return await _external_tts_speech(body, request)
     fmt = (body.response_format or "wav").strip().lower()

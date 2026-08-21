@@ -134,10 +134,8 @@ export interface VoiceSettingsState {
   ttsEnabled: boolean;
   setTtsEnabled: (value: boolean) => void;
 
-  /**
-   * "system": speechSynthesis voices. "studio": the loaded TTS audio model.
-   * "custom": a saved connection's OpenAI-compatible /audio/speech endpoint.
-   */
+  /** "system": speechSynthesis voices. "studio": the loaded TTS audio model.
+   * "custom": a saved connection's /audio/speech endpoint. */
   ttsEngine: TtsEngine;
   setTtsEngine: (value: TtsEngine) => void;
 

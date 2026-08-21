@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // #9214: "Enable connections" is a frontend-only flag, so the request guard is the
-// whole enforcement. Custom TTS read the persisted engine and posted assistant text
-// to the saved connection even with connections switched off.
+// whole enforcement; custom TTS posted assistant text with connections switched off.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -92,8 +91,7 @@ test("custom TTS still reaches the saved connection while connections are on", a
   });
 });
 
-// #9214: a browser whose backend key migration failed keeps the connection
-// selectable on its retained key, so this path must send it like chat and STT.
+// #9214: a failed key migration leaves the connection selectable on the retained key.
 test("custom TTS forwards a retained legacy key when the connection has none saved", async () => {
   const { adapter, posted } = load(true, {
     providers: [{ id: "conn-1", hasApiKey: false }],

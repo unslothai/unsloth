@@ -799,8 +799,7 @@ export function VoiceTab() {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       releaseTtsAudioUrl(previewAudioRef.current.src);
-      // removeAttribute, not `src = ""`: an empty src fires a spurious media
-      // error that would toast "preview failed" after a successful preview.
+      // removeAttribute, not `src = ""`: an empty src fires a media error toasting "preview failed".
       previewAudioRef.current.removeAttribute("src");
       previewAudioRef.current = null;
     }

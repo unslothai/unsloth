@@ -254,8 +254,7 @@ export async function generateStudioTtsAudio(
   return `data:audio/wav;base64,${data.audio.data}`;
 }
 
-/** Generate speech via a saved connection's OpenAI-compatible /audio/speech
- * endpoint; returns an object URL (callers release it via releaseTtsAudioUrl). */
+/** Speech via a saved connection's /audio/speech. Returns an object URL to release. */
 export async function generateCustomTtsAudio(
   text: string,
   signal?: AbortSignal,
@@ -275,9 +274,8 @@ export async function generateCustomTtsAudio(
       "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
     );
   }
-  // A browser whose backend key migration failed keeps the connection selectable
-  // on the strength of a retained legacy key, so send it the way chat and custom
-  // STT do or this path alone calls the endpoint unauthenticated.
+  // A browser whose key migration failed keeps the connection selectable on a
+  // retained legacy key; send it like chat and STT do, or this call is unauthenticated.
   const provider = providersState.providers.find(
     (candidate) => candidate.id === ttsProviderId,
   );
@@ -386,8 +384,7 @@ function speakWithBackendAudio(
 
 /**
  * Text-to-speech for assistant messages. Reads Voice settings at speak time.
- * Engines: "system" (speechSynthesis), "studio" (loaded TTS audio model), or
- * "custom" (a saved connection's OpenAI-compatible /audio/speech endpoint).
+ * Engines: "system" (speechSynthesis), "studio" (local TTS model), "custom" (a connection).
  */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   /** Web Speech synthesis, used by the "system" engine. */
