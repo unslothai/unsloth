@@ -355,6 +355,95 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
     )
 
 
+#: THE SAME GESTURE A USER MAKES. `reasoning_toggle` above opens every pane in the thread at once,
+#: which is a deliberate worst case and reads at 2.2 fps at the 100K rung. That number has been
+#: quoted as though it described opening a reasoning pane, and it does not: a user opens ONE, and
+#: almost always the newest one. This action measures that, so the two can be quoted apart.
+#:
+#: It is NOT in the standard film. The scene is a fixed-duration slot schedule, so adding a slot
+#: shifts every window after it and voids comparability against every payload already on disk. Run
+#: it in a purpose-built film until the next corpus or tier bump invalidates those payloads anyway.
+REASONING_ONE_JS = """
+async (timeoutMs) => {
+  const D = window.__sb.dom;
+  const triggers = D.reasoningTriggers();
+  if (triggers.length === 0) return { ran: false, reason: "no reasoning pane in the thread" };
+  const before = D.reasoningOpenCount();
+  if (before !== 0) return { ran: false, reason: `${before} panes were already open` };
+  // The LAST pane: the newest reply is the one a user reaches for, and it is also the only pane
+  // whose position is the same on a windowed mount as on a full one.
+  const target = triggers[triggers.length - 1];
+  const settle = async (want) => {
+    const started = performance.now();
+    while (performance.now() - started < timeoutMs) {
+      if (D.reasoningOpenCount() === want) return performance.now() - started;
+      await window.__sbNextPaint();
+    }
+    return null;
+  };
+  const spansBefore = document.querySelectorAll("pre span").length;
+  const openStart = performance.now();
+  target.click();
+  const openedIn = await settle(1);
+  const openMs = openedIn === null ? null : performance.now() - openStart;
+  const openCount = D.reasoningOpenCount();
+  const spansOpen = document.querySelectorAll("pre span").length;
+  const closeStart = performance.now();
+  (D.reasoningTriggers()[triggers.length - 1] || target).click();
+  const closedIn = await settle(0);
+  const closeMs = closedIn === null ? null : performance.now() - closeStart;
+  return {
+    ran: true,
+    panes: triggers.length,
+    openCount,
+    afterClose: D.reasoningOpenCount(),
+    spansOpen,
+    spansAdded: spansOpen - spansBefore,
+    openMs: openMs === null ? null : Math.round(openMs * 10) / 10,
+    closeMs: closeMs === null ? null : Math.round(closeMs * 10) / 10,
+  };
+}
+"""
+
+
+@register_action(name = "reasoning_toggle_one", default_budget_ms = 12000)
+def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
+    raw = _ev(ctx, REASONING_ONE_JS, SETTLE_TIMEOUT_MS)
+    err = _failed(raw)
+    if err:
+        return not_run(err)
+    if not raw.get("ran"):
+        return not_run(raw.get("reason", "the reasoning toggle did not run"))
+    ok = (
+        raw["openMs"] is not None
+        and raw["closeMs"] is not None
+        and raw["openCount"] == 1
+        and raw["afterClose"] == 0
+    )
+    return ActionResult(
+        ran = True,
+        expect_ok = ok,
+        expect = {
+            # `panes` is context, not an assertion: this action opens one of them whatever the
+            # thread holds, which is the whole point of it existing beside `reasoning_toggle`.
+            "panes": raw["panes"],
+            "panes_scope": "mounted",
+            "panes_opened": 1,
+            "open_after_expand": raw["openCount"],
+            "open_after_collapse": raw["afterClose"],
+            "highlight_spans_while_open": raw["spansOpen"],
+            # The cost driver, so a reading can be normalised rather than compared across threads
+            # whose newest reply happens to differ in size.
+            "highlight_spans_added": raw["spansAdded"],
+        },
+        timings = {"open_ms": raw["openMs"], "close_ms": raw["closeMs"]},
+        reason = None
+        if ok
+        else f"{raw['openCount']} panes were open after opening one and "
+        f"{raw['afterClose']} were still open after collapsing",
+    )
+
+
 # ── 5. stop generation ──────────────────────────────────────────────
 
 #: Remove the throwaway turn `stop_generation` created, so the thread it leaves behind is the
@@ -853,6 +942,29 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     err = _failed(raw)
     if err:
         return not_run(err)
+    # A SENTINEL ON THE CLIPBOARD BEFORE THE COPY, so "the copy happened" is OBSERVED rather than
+    # assumed from the keystroke having been sent.
+    #
+    # THE FAILURE THIS EXISTS FOR, measured. Playwright's WebKit never performs a clipboard copy on
+    # Control+C. The action pressed the key, slept 250ms for the copy to land, and reported the
+    # sleep as `copy_ms`. In every WebKit payload on this machine that number is 258.5 ms at the 1K
+    # rung, 258.8 ms at 10K and 263.9 ms at 100K: a hundredfold change in the quantity under study
+    # moved the "measurement" by two percent, because it was measuring `wait_for_timeout(250)`.
+    # Chromium reads about 1,538 ms at 100K for the same action. Forty-three rows across eleven
+    # payloads reported a sleep as a result.
+    #
+    # A measurement that silently reports a sleep is the worst failure mode in this harness, so the
+    # test is on the CLIPBOARD and not on the engine name: an engine that starts working, or a new
+    # one, is admitted automatically, and an engine that stops working is refused automatically.
+    sentinel = f"__sb_clipboard_sentinel_{int(time.monotonic() * 1000)}__"
+    sentinel_written = False
+    try:
+        ctx.page.evaluate("async (s) => await navigator.clipboard.writeText(s)", sentinel)
+        sentinel_written = True
+    except Exception:  # noqa: BLE001
+        # No clipboard-write permission. The readback check below still applies.
+        sentinel = ""
+
     copy_started = time.monotonic()
     ctx.page.keyboard.press("Control+C")
     ctx.page.wait_for_timeout(250)
@@ -878,6 +990,22 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
         clip_reason = f"the clipboard could not be read back: {type(exc).__name__}"
     clipboard_chars = len(clip) if isinstance(clip, str) else None
     ctx.page.evaluate("() => window.getSelection().removeAllRanges()")
+
+    # NO CONFIRMED COPY, NO TIMING. Reported NOT RUN rather than as a number, because a reader who
+    # sees `copy_ms` has no way to tell a real copy from a keystroke that went nowhere, and the
+    # engines that fail this do so silently and consistently enough to look like data.
+    if sentinel_written and clip == sentinel:
+        return not_run(
+            "Control+C did not put anything on the clipboard: it still holds the sentinel written "
+            "before the keystroke, so this engine did not perform the copy and the elapsed time "
+            f"would be the harness's own {250}ms settle rather than a measurement of the app"
+        )
+    if clip_reason is not None:
+        return not_run(
+            f"the copy could not be confirmed ({clip_reason}), so there is no evidence that "
+            "Control+C did anything and the elapsed time would be the harness's own settle. A "
+            "timing is only reported when the clipboard can be read back and has changed"
+        )
     total = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     mounted = _ev(ctx, "() => window.__sb.dom.messageCount()")
     ok = raw["chars"] > 0

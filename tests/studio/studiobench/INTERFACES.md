@@ -564,8 +564,13 @@ per-window comparison must drop windows whose action did not run on BOTH arms, a
 dropped. This is general and is not specific to virtualization.
 
 **`reasoning_toggle` runs at 2.2 fps on BOTH arms at the 100K rung**, with a p95 frame of 2,084 ms.
-It is the worst number the harness produces, it is not a virtualization finding, and it is not
-fixed. It is the standing complaint.
+It is the worst number the harness produces and it is not a virtualization finding.
+
+**It is a STRESS reading, not a USER-JOURNEY reading, and it has been quoted as the latter.** The
+action opens EVERY reasoning pane in the thread in one gesture: 10 panes, materialising 74,917
+highlight spans, 2,143 ms to open and 805 ms to close. No user does that; a user expands one pane.
+So 2.2 fps is a legitimate measurement of a deliberate worst case and must not be described as what
+a user feels when they open a reasoning pane. We do not currently have that second number.
 
 **Any scan that can return zero carries a positive control.** The style probe walks a hand-written
 selector list; a class rename empties it, and two empty scans have equal element counts and equal

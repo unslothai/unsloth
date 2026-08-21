@@ -205,6 +205,66 @@ Related: rank frames by **slope, not size**. `findNextMatchSync` is the second-l
 100K rung at 1,365 ms, and it is a floor, not a cause: it grows at 3.52x against a 3.83x aggregate.
 Optimising it would shave a constant off a curve whose shape is set elsewhere.
 
+### A stress action is not a user journey
+
+`reasoning_toggle` runs at **2.2 fps** at the 100K rung, with a p95 frame of 2,084 ms. It is the
+worst number this harness produces, and it has been quoted as though it described what a user feels.
+It does not.
+
+The action opens **every reasoning pane in the thread in one gesture**: 10 panes, materialising
+74,917 highlight spans, 2,143 ms to open and 805 ms to close. No user does that. A user expands one
+pane. So 2.2 fps is a legitimate measurement of a deliberate worst case and an illegitimate answer
+to "how slow is opening a reasoning pane". **We do not currently have that second number**, and a
+single-pane variant is the cheapest way to get it: the blocker is not the action, it is that the
+film is a fixed-duration slot schedule, so a new slot shifts every existing window and voids
+comparability against every payload already on disk. Add it as a registered action first and run it
+in a purpose-built film; fold it into the standard scene only at the next corpus or tier bump, when
+the payloads are being invalidated anyway.
+
+The general rule: before quoting any action's number as a user-facing latency, read what the action
+actually does. Several of them are stress gestures by design, because a stress gesture is the only
+way to make a mechanism's slope visible above the noise.
+
+### What the fixture over- and under-states
+
+The corpus is not a real thread and it is shaped differently from one in two directions that do not
+cancel.
+
+- **Span density is 4.69 characters per highlight span against the generator's 5.6 target**, so the
+  fixture carries about **19% more highlight spans per character of code** than it is meant to.
+  Every syntax-highlighting number in this campaign, including the fence-deferral arm's `pre span`
+  and LayoutObjects reductions, is measured against that inflated span count and **overstates the
+  win by roughly that much**. Read those numbers with this beside them.
+- The corpus reaches its rung with **too few, uniformly large messages**: at the 100K rung the nine
+  assistant turns run 11,374 to 126,203 characters with a median of 36,215, and none is small. Real
+  threads carry many short turns. The total size is right; the distribution is not.
+- Because there are 18 messages rather than the hundreds a real thread of that size would hold,
+  **per-message chrome is about 1.5% of the fixture's DOM against roughly 14% of a real one**. So
+  the fixture **understates** total DOM size, which is the conservative direction for any change
+  that reduces element counts.
+
+Anything **per-message** (menus, hover targets, avatars, action bars, virtualization row overhead)
+is therefore measured on a document that has far too few of them, and should not be extrapolated
+from this corpus without saying so.
+
+### One engine per comparison
+
+Nothing in the payload format stops you from scoring a Chromium arm against a WebKit one. The engine
+is recorded in the run-level `platform` header and **not** on the cell rows, and both `sweep/ab.py`
+and `sweep/floor_table.py` pool shards by glob without looking at it. A directory glob such as
+`outputs/sbench_v*` will happily merge the two.
+
+This has produced exactly one wrong kind of number so far, and it is the worst kind: Playwright's
+WebKit never performs a clipboard copy on Control+C, so `select_all_copy` measured the harness's own
+250 ms settle and reported it as `copy_ms` -- 258.5 ms at 1K, 258.8 ms at 10K, 263.9 ms at 100K
+across 43 rows. A hundredfold change in the quantity under study moved the "measurement" by 2%,
+because it was measuring a `sleep`. Chromium reads about 1,538 ms for the same action at 100K. A
+stable wrong number is much harder to catch than a missing one.
+
+The action now refuses instead: a clipboard sentinel is written before the keystroke, and if it
+survives the row is **NOT RUN** with a reason, on any engine, with no engine list to maintain. Until
+`ab.py` and `floor_table.py` check the header too, **check it yourself** before pooling shards.
+
 ## Ablation: correlation to causation
 
 A hot frame with a steep slope is a lead. To make it a finding, remove the mechanism and watch the
