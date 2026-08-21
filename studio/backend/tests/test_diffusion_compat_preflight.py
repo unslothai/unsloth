@@ -1082,3 +1082,53 @@ def test_the_speech_verdict_is_memoised_per_pick(monkeypatch):
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
     assert len(requests) == 1
+
+
+def test_a_failed_probe_is_not_reused_for_a_retry_with_a_working_token(monkeypatch):
+    """A probe that failed on an expired credential memoises "no verdict". Keyed without the
+    token that produced it, the retry that finally has a working one reads the stale answer back
+    and the speech file proceeds to the download this preflight exists to stop."""
+    bodies = {CSM_FILE: _arch_header("llama-csm")}
+    requests: list = []
+
+    class _Session:
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
+            header_map = headers or {}
+            requests.append(header_map.get("authorization") or header_map.get("Authorization"))
+            # The expired credential is refused; the working one is served.
+            if not any("good" in str(v) for v in header_map.values()):
+                return _FakeResponse(401)
+            body = next((b for name, b in bodies.items() if url.endswith(name)), None)
+            return _FakeResponse(206, body) if body is not None else _FakeResponse(404)
+
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, "expired") is None
+    # Same pick, different credential: it must probe again rather than answer from that miss.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, "good-token") is not None
+    assert len(requests) == 2
+
+
+def test_a_checkpoint_that_lands_after_a_miss_is_probed_again(monkeypatch, tmp_path):
+    """A file arriving (or being replaced) under the same name after the first probe is a
+    different checkpoint. Keyed without its identity the verdict never revisits it."""
+    _stub_range_reads(monkeypatch, {})
+    landed = tmp_path / CSM_FILE
+    seen: dict = {"path": None}
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: seen["path"])
+
+    # Nothing on disk and nothing served: no opinion, and that miss is memoised.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+    landed.write_bytes(_arch_header("llama-csm"))
+    seen["path"] = str(landed)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None

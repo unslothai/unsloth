@@ -366,25 +366,32 @@ def flux2_pick_mismatch(
 # GGUF ``general.architecture`` values nothing in Studio can decode. Kept beside the FLUX.2
 # check because both answer the same question -- is this pick loadable -- from the same prefix.
 _SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
-_SPEECH_ARCH_CACHE: dict[tuple[str, str], Optional[str]] = {}
+_SPEECH_ARCH_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[str]] = {}
 _SPEECH_ARCH_CACHE_MAX = 256
 
 
 def _speech_probe_architecture(
     repo_id: str, gguf_filename: str, hf_token: Optional[str]
 ) -> Optional[str]:
-    """``general.architecture`` of a pick, from a cached copy or one range request."""
-    key = (repo_id, gguf_filename)
+    """``general.architecture`` of a pick, from a cached copy or one range request.
+
+    Keyed like the inner-dim memo beside it, and for the same two reasons. The token
+    fingerprint, because a probe that failed on an expired credential caches "no verdict", and
+    keying without it would hand that stale answer back to the retry that finally has a working
+    one -- letting the speech file through to the download. The file identity, because a
+    checkpoint that arrives or is replaced under the same name after the first probe is a
+    different checkpoint, and its header may say something else."""
+    token = (hf_token or "").strip() or None
+    # Resolved BEFORE the memo is consulted, because the file's identity is part of the key.
+    local = _local_gguf_path(repo_id, gguf_filename)
+    key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
     with _CACHE_LOCK:
         if key in _SPEECH_ARCH_CACHE:
             return _SPEECH_ARCH_CACHE[key]
     arch: Optional[str] = None
     try:
-        local = _local_gguf_path(repo_id, gguf_filename)
         prefix = (
-            _read_local_header(local)
-            if local
-            else _read_gguf_header(repo_id, gguf_filename, hf_token)
+            _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
         )
         # Magic, version and the two counts: anything shorter is not a GGUF at all.
         if len(prefix) >= 24:
@@ -425,7 +432,9 @@ def speech_pick_refusal(
     unreadable or truncated header, an offline host, a server that ignores Range -- because a
     false positive would refuse a pick that works, which is worse than the download this saves.
     """
-    if not gguf_filename:
+    # A ".gguf" name only, as the size pairing does: a single_file pick names a .safetensors,
+    # which has no GGUF header, and a range request to learn that on every such load is waste.
+    if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token)
     if arch is not None and arch in _SPEECH_GGUF_ARCHS:
