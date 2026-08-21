@@ -227,6 +227,11 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     assert 'prefix="relative">../../share/unsloth/fonts' in fontconfig_source
     assert '<match target="scan">' in fontconfig_source
     assert "Unsloth Safe Emoji" in fontconfig_source
+
+    assert '<edit name="color" mode="assign">' in fontconfig_source
+    assert "<selectfont>" in fontconfig_source
+    assert "<rejectfont>" in fontconfig_source
+    assert '<patelt name="color"><bool>true</bool></patelt>' in fontconfig_source
     assert 'case "${APPDIR:-}" in' in tool_script
     assert 'APPDIR="$(dirname "$(realpath "$0")")"' in tool_script
     for host_library in (

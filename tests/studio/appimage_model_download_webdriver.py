@@ -423,14 +423,24 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
         env = font_env,
         stdout = subprocess.DEVNULL,
     )
-    selected = subprocess.check_output(
-        ["fc-match", "-f", "%{file}\t%{family}\n", "sans-serif:charset=1f680"],
-        env = font_env,
-        text = True,
-    ).strip()
-    if str(installed) not in selected:
-        raise RuntimeError(f"Host Fontconfig did not select the COLRv1 fixture: {selected}")
-    result = {"path": str(installed), "sha256": actual_sha, "host_fc_match": selected}
+    selected_by_charset = {}
+    for charset in ("1f680", "1faea"):
+        selected = subprocess.check_output(
+            ["fc-match", "-f", "%{file}\t%{family}\t%{color}\n", f"sans-serif:charset={charset}"],
+            env = font_env,
+            text = True,
+        ).strip()
+        if str(installed) not in selected:
+            raise RuntimeError(
+                f"Host Fontconfig did not select the COLRv1 fixture for U+{charset.upper()}: "
+                f"{selected}"
+            )
+        selected_by_charset[charset] = selected
+    result = {
+        "path": str(installed),
+        "sha256": actual_sha,
+        "host_fc_match": selected_by_charset,
+    }
     (ART_DIR / "colrv1-host-font.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
     return result
 
@@ -556,7 +566,7 @@ def main() -> None:
             inserted = _execute(
                 base,
                 session_id,
-                "const d=document.createElement('div');d.id='appimage-colrv1-probe';d.textContent='🚀 🇬🇧 👨‍👩‍👧 ⭐ ✅';d.style.cssText=\"position:fixed;z-index:2147483647;left:320px;top:90px;padding:16px;background:white;color:black;font-size:48px;font-family:'Unsloth Test COLRv1'\";document.body.appendChild(d);return d.textContent;",
+                "const d=document.createElement('div');d.id='appimage-colrv1-probe';d.textContent='🚀 🇬🇧 👨‍👩‍👧 ⭐ ✅ 🫪 🫯';d.style.cssText=\"position:fixed;z-index:2147483647;left:320px;top:90px;padding:16px;background:white;color:black;font-size:48px;font-family:'Unsloth Test COLRv1',sans-serif\";document.body.appendChild(d);return d.textContent;",
             )
             assert inserted, "Could not inject the COLRv1 renderer probe"
             evidence = {**colrv1_font, "route": "/hub", "survived_seconds": 0}
