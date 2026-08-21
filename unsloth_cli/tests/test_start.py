@@ -1771,6 +1771,39 @@ def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, 
     ]
 
 
+def test_resolved_launch_command_normalizes_extensionless_windows_shim(monkeypatch, tmp_path):
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_normalizes_extensionless_windows_exe_sibling(
+    monkeypatch, tmp_path
+):
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    exe_file = tmp_path / "fake-agent.exe"
+    exe_file.write_bytes(b"")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        str(exe_file),
+        "--flag",
+    ]
+
+
 def test_launch_windows_npm_shim_preserves_shebang_args_and_environment(monkeypatch, tmp_path):
     _simulate_windows(monkeypatch)
     cmd = tmp_path / "fake-agent.cmd"
