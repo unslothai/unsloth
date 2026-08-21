@@ -71,9 +71,9 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert "googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742" in e2e_source
     assert e2e_source.count(colrv1_sha) >= 2
     assert "APPIMAGE_COLRV1_FONT" in e2e_source
-    webdriver_script = (
-        REPO_ROOT / "tests/studio/appimage_model_download_webdriver.py"
-    ).read_text(encoding = "utf-8")
+    webdriver_script = (REPO_ROOT / "tests/studio/appimage_model_download_webdriver.py").read_text(
+        encoding = "utf-8"
+    )
     assert "Unsloth Test COLRv1" in webdriver_script
     assert '"route": "/hub"' in webdriver_script
     assert '"survived_seconds": 0' in webdriver_script

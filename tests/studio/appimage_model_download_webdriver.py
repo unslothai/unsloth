@@ -431,11 +431,8 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
     if str(installed) not in selected:
         raise RuntimeError(f"Host Fontconfig did not select the COLRv1 fixture: {selected}")
     result = {"path": str(installed), "sha256": actual_sha, "host_fc_match": selected}
-    (ART_DIR / "colrv1-host-font.json").write_text(
-        json.dumps(result, indent = 2), encoding = "utf-8"
-    )
+    (ART_DIR / "colrv1-host-font.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
     return result
-
 
 
 def main() -> None:
