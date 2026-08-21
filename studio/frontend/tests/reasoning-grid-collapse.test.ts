@@ -122,6 +122,16 @@ test("the close path unmounts on transitionend for the right property, with a ti
   assert.match(code, /const CLOSE_FALLBACK_MARGIN_MS = \d+;/);
 });
 
+test("nothing writes a ref during render", () => {
+  const code = codeOf(UNMEASURED);
+  // React does not roll a ref back when a render is abandoned or suspended, so a ref
+  // assigned in the render body can hold a value that was never committed while the DOM
+  // still shows the old one. The toggle closes over `open` instead. (`nodeRef` is written
+  // inside the ref callback, which runs on commit, not during render.)
+  assert.ok(!code.includes("openRef"));
+  assert.ok(code.includes("const next = !open;"));
+});
+
 test("the flag is off by default", () => {
   assert.match(FLAGS, /export const GRID_COLLAPSE_REASONING_ENABLED = false;/);
 });

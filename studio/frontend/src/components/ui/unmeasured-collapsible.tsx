@@ -97,17 +97,19 @@ const UnmeasuredCollapsible = React.forwardRef<
     const open = isControlled ? openProp : uncontrolledOpen;
     const contentId = React.useId();
 
-    // Read `open` through a ref so the toggle identity does not change every time the pane opens.
-    const openRef = React.useRef(open);
-    openRef.current = open;
-
+    // Closes over the committed `open`, and deliberately not over a ref written during
+    // render. A render can be abandoned or suspended, and React does not roll a ref back when
+    // that happens, so a ref assigned here can hold a value that was never committed while the
+    // trigger the user is looking at still shows the old one; the click would then toggle away
+    // from the visible state. The ref bought nothing anyway: `context` below is memoized on
+    // `open`, so it is rebuilt on every open change whatever this callback's identity is.
     const onOpenToggle = React.useCallback(() => {
-      const next = !openRef.current;
+      const next = !open;
       if (!isControlled) {
         setUncontrolledOpen(next);
       }
       onOpenChange?.(next);
-    }, [isControlled, onOpenChange]);
+    }, [open, isControlled, onOpenChange]);
 
     const context = React.useMemo<UnmeasuredCollapsibleContextValue>(
       () => ({ open, disabled, contentId, onOpenToggle }),
