@@ -85,6 +85,17 @@ MOUNT_TIMEOUT_S = 180
 #: other half of the intent contract being broken.
 FOLLOW_PINNED_MIN = 0.95
 
+#: How much of the STREAMING TIME the attached phases must cover before `pinned_fraction` is
+#: allowed to stand as a verdict.
+#:
+#: `pinned_fraction` is computed over attached samples only. With `detached` latching on the first
+#: deliberate scroll and never clearing, the shipped film -- which scrolls 1.5s into an 18s opening
+#: stream and then streams twice more -- produced a verdict from the first ~3s: 11 attached samples
+#: against 72 detached, 13% coverage, reported as 100% pinned and read as "the thread follows the
+#: stream". The latch is fixed, and this makes the coverage a condition rather than a footnote, so
+#: a future regression that strands the sampler cannot produce a confident pass over a sliver.
+FOLLOW_MIN_STREAM_COVERAGE = 0.50
+
 # How long the composer may take to accept the click that starts the film. Not a performance
 # budget: the point is that the cell survives and the number gets recorded. See `_press_send`.
 # 90s because it has to be well clear of the worst real reading and still bounded, since a click
@@ -97,6 +108,36 @@ SLOW_COMPOSER_CLICK_MS = 1_000
 
 class WindowInUse(RuntimeError):
     pass
+
+
+def record_completeness_gate(recorder: Recorder, cell: Cell, completeness: dict) -> bool:
+    """Write the completeness verdict as a gate row AGAINST THE CELL THAT PRODUCED IT.
+
+    WHY THIS IS NOT `recorder.gate(...)`. `Recorder.gate` writes `{row_type, name, passed,
+    detail}` and no cell_id, and `report/payload.py::excluded_from_rows` reads a failed gate as
+    `row.get("cell_id") or "run"`. So a windowed cell that had really lost messages was excluded
+    under the synthetic cell id "run": the report could say a self-check failed somewhere in the
+    run and could not say which arm or which rung lost them, which is the one thing this probe
+    exists to find out. `cell_id` is `r{rung}.{arm}.rep{rep}`, so attributing the row names all
+    three. `Recorder.failure` already takes a cell_id for the same reason.
+
+    THE VERDICT ITSELF is the head marker AND the ordinal coverage, and coverage is three-valued:
+    only `False` is a finding. `None` is the traversal not having looked -- a gesture that never
+    reached the top, or an arm that publishes no ordinals at all -- and failing a cell on that
+    would be reporting "we could not tell" as "the app lost messages".
+    """
+    coverage = completeness.get("ordinal_coverage_complete")
+    passed = bool(completeness.get("head_reached")) and coverage is not False
+    recorder.emit(
+        {
+            "row_type": "gate",
+            "name": "thread_complete",
+            "passed": passed,
+            "detail": completeness,
+            "cell_id": cell.cell_id,
+        }
+    )
+    return passed
 
 
 @dataclass
@@ -291,7 +332,7 @@ class CellRunner:
                 log = self.log,
             )
             row["completeness"] = completeness
-            rec.gate("thread_complete", bool(completeness.get("head_reached")), completeness)
+            record_completeness_gate(rec, cell, completeness)
             # Back to the resting state the gate described, or the idle calibration below runs
             # against a page that is still settling from the traversal.
             self._wait_for_thread(page, seeded)
@@ -435,11 +476,14 @@ class CellRunner:
         follow = self._read_follow(page)
         row["follow"] = follow
         pinned = follow.get("pinned_fraction")
+        coverage = follow.get("attached_fraction_of_stream")
         rec.gate(
             "follows_the_stream",
             bool(
                 pinned is not None
                 and pinned >= FOLLOW_PINNED_MIN
+                and coverage is not None
+                and coverage >= FOLLOW_MIN_STREAM_COVERAGE
                 and not follow.get("ever_fell_behind")
             ),
             follow,
@@ -470,9 +514,13 @@ class CellRunner:
         if pinned is None:
             self.log(f"  follow: NOT MEASURED ({follow.get('pinned_fraction_reason')})")
         else:
+            cov = follow.get("attached_fraction_of_stream")
             self.log(
                 f"  follow: pinned for {pinned:.0%} of the samples taken while attached and "
-                f"streaming, worst drift {follow.get('max_distance_while_running')}px"
+                f"streaming, over "
+                + ("an unknown share" if cov is None else f"{cov:.0%}")
+                + " of the streaming time"
+                + f", worst drift {follow.get('max_distance_while_running')}px"
                 + (", AND IT FELL BEHIND" if follow.get("ever_fell_behind") else "")
             )
         if follow.get("detached_samples"):

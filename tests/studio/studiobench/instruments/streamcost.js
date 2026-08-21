@@ -318,6 +318,11 @@
     // Cumulative since page load and monotonic, so unlike the DOM reading it replaces there is no
     // "the reply shrank, so it is a different message" case to handle: characters delivered only
     // ever go up.
+    // The two things that can make `wireChars` short by an unknown amount, read at the same O(1)
+    // cost as the counter itself so a window boundary can capture both ends.
+    wireIntegrity() {
+      return { failures: S.wireParseFailures, pending_chars: pending.length };
+    },
     replyChars() {
       return S.wireChars;
     },

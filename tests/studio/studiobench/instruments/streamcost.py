@@ -62,6 +62,7 @@ class StreamCostInstrument(_PageInstrument):
     def __init__(self) -> None:
         super().__init__()
         self._chars_open: Optional[int] = None
+        self._integrity_open: dict = {}
         self._overhead_ms = 0.0
 
     def open(self, window: Window) -> None:
@@ -73,6 +74,18 @@ class StreamCostInstrument(_PageInstrument):
         # both ends of every window; see the long note in streamcost.js for why that had to go.
         self._chars_open = self._eval(
             "() => window.__sb.streamcost && window.__sb.streamcost.replyChars()"
+        )
+        # THE DENOMINATOR'S INTEGRITY, SAMPLED AT BOTH ENDS. A frame that cannot be parsed --
+        # unrelated `TextDecoder` traffic appended while `pending` holds a split SSE frame, say --
+        # increments a diagnostic and leaves `wireChars` short by an amount nobody can recover.
+        # Counting the failures was not enough on its own: nothing consulted the count, so the
+        # affected `reply_chars_delta` was still accepted as a denominator and every cost-per-
+        # character derived from it came out inflated by an unknown factor. A delta spanning a new
+        # failure, or ending with an unterminated frame still buffered, is now marked unscoreable
+        # at the window that contains it.
+        self._integrity_open = (
+            self._eval("() => window.__sb.streamcost && window.__sb.streamcost.wireIntegrity()")
+            or {}
         )
 
     def close(self, window: Window) -> Optional[dict]:
@@ -98,6 +111,21 @@ class StreamCostInstrument(_PageInstrument):
         # different quantities -- the growth of the last mounted message against the characters
         # delivered to the page -- and nothing else in the row would tell them so.
         out["reply_chars_source"] = "sse_wire"
+        integrity = self._eval("() => window.__sb.streamcost.wireIntegrity()") or {}
+        failures = (integrity.get("failures") or 0) - (self._integrity_open.get("failures") or 0)
+        residual = integrity.get("pending_chars") or 0
+        out["wire_parse_failures_in_window"] = failures
+        out["wire_pending_chars_at_close"] = residual
+        if failures > 0 or residual > 0:
+            out["reply_chars_scoreable"] = False
+            out["reply_chars_unscoreable_reason"] = (
+                f"{failures} SSE frame(s) failed to parse inside this window and "
+                f"{residual} character(s) of an unterminated frame were still buffered at its "
+                "close, so the wire character count is short by an unknown amount and any "
+                "cost-per-character derived from it would be inflated"
+            )
+        else:
+            out["reply_chars_scoreable"] = True
         out["reply_chars_source_note"] = (
             "counted from the SSE deltas in the decode hook, O(the chunk). Previously read from "
             "the DOM with a querySelectorAll, which is O(the document) and therefore cheaper on "
@@ -131,6 +159,7 @@ class StreamCostInstrument(_PageInstrument):
 
         self._overhead_ms += float(out.get("overhead_ms") or 0.0)
         self._chars_open = None
+        self._integrity_open = {}
         return out
 
     def end_cell(self, cell: Cell) -> Optional[dict]:

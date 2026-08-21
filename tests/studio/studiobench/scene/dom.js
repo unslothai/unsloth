@@ -362,6 +362,8 @@
     suspended_samples: 0,
     detached_samples: 0,
     yanked_back_samples: 0,
+    stream_samples: 0,
+    reattachments: 0,
     // Set once the thread is seen to fall behind while a run is in progress, and never cleared.
     // A thread that drifts away and is later yanked back to the bottom has still failed the
     // contract, and an end-of-cell reading would show it pinned.
@@ -408,6 +410,7 @@
     const distance = D.distanceFromBottom();
     if (detached) {
       F.detached_samples += 1;
+      F.stream_samples += 1;
       // Pinned again, without anybody asking. `distance` corroborates so a build that never
       // renders the jump control is not scored on a null.
       if (app === true || (app === null && distance !== null && distance <= FOLLOW_TOLERANCE_PX)) {
@@ -416,6 +419,7 @@
       return;
     }
     F.running_samples += 1;
+    F.stream_samples += 1;
     if (distance !== null && distance > F.max_distance_while_running) {
       F.max_distance_while_running = distance;
     }
@@ -439,7 +443,40 @@
     // other than the bottom, and everything after it is scored against the second half of the
     // contract instead of the first.
     suspend() { suspended += 1; detached = true; },
-    resume() { suspended = Math.max(0, suspended - 1); },
+    resume() {
+      suspended = Math.max(0, suspended - 1);
+      // RE-ATTACH IF THE GESTURE LEFT US AT THE END, and this is not a nicety.
+      //
+      // `detached` used to latch on the first suspend and never clear, so from the harness's
+      // first deliberate scroll onwards every remaining sample went to the detached branch and
+      // `running_samples` stopped growing. In the shipped film that scroll happens 1.5s into an
+      // 18s opening stream and is followed by two more streamed turns, so the follow verdict was
+      // computed from the first ~3s and covered 13% of the streaming time -- while reading, and
+      // being reported as, "the thread follows the stream". Measured: running_samples 11,
+      // detached_samples 72.
+      //
+      // The contract is about INTENT, and intent is re-expressed by coming back: a user who
+      // scrolls up is detached until they return to the end, at which point they are following
+      // again. That is the same re-attachment Studio's own intent-aware autoscroll implements.
+      // Only checked here, on the way out of a deliberate gesture, so the app silently pulling
+      // the viewport down on its own is still scored as a yank rather than laundered into a
+      // re-attachment.
+      if (suspended === 0 && detached) {
+        const app = D.appSaysAtBottom();
+        const distance = D.distanceFromBottom();
+        // EITHER answer is enough, and the geometry is not merely a fallback for a build with no
+        // jump control. The control's `invisible` class is updated from a scroll LISTENER, and
+        // scroll events are dispatched asynchronously, so a gesture that has just returned the
+        // viewport to the end can reach this line while the class still says otherwise. Reading
+        // the class alone loses the re-attachment to a race and quietly restores the old
+        // never-reattach behaviour on exactly the fast gestures the harness performs.
+        // `distanceFromBottom()` is computed from scrollTop and cannot be stale.
+        if (app === true || (distance !== null && distance <= FOLLOW_TOLERANCE_PX)) {
+          detached = false;
+          F.reattachments += 1;
+        }
+      }
+    },
     read() {
       const measured = F.running_samples - F.running_unknown;
       return {
@@ -459,6 +496,14 @@
         pinned_fraction: measured > 0 ? F.running_pinned / measured : null,
         pinned_fraction_reason:
           measured > 0 ? null : "no sample was taken while a reply was streaming",
+        // HOW MUCH OF THE STREAM THIS VERDICT ACTUALLY COVERS. `pinned_fraction` is computed
+        // over the attached phases only, so without this it can read 1.0 on a cell where the
+        // thread was attached for three seconds of an eighteen-second stream. Reported beside it
+        // so the one cannot be quoted without the other.
+        stream_samples: F.stream_samples,
+        attached_fraction_of_stream:
+          F.stream_samples > 0 ? F.running_samples / F.stream_samples : null,
+        reattachments: F.reattachments,
         max_distance_while_running: F.max_distance_while_running,
         ever_fell_behind: F.ever_fell_behind,
         tolerance_px: FOLLOW_TOLERANCE_PX,
@@ -475,6 +520,8 @@
       F.suspended_samples = 0;
       F.detached_samples = 0;
       F.yanked_back_samples = 0;
+      F.stream_samples = 0;
+      F.reattachments = 0;
       F.ever_fell_behind = false;
       suspended = 0;
       detached = false;
