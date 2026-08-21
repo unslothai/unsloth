@@ -435,6 +435,9 @@ export function VoiceTab() {
     (s) => s.setTtsProviderVoice,
   );
   const ttsConnections = useExternalProvidersStore((s) => s.providers);
+  const hasSelectedTtsConnection = ttsConnections.some(
+    (connection) => connection.id === ttsProviderId,
+  );
   const ttsRate = useVoiceSettingsStore((s) => s.ttsRate);
   const setTtsRate = useVoiceSettingsStore((s) => s.setTtsRate);
   const ttsPitch = useVoiceSettingsStore((s) => s.ttsPitch);
@@ -473,6 +476,14 @@ export function VoiceTab() {
       setSttProviderId("");
     }
   }, [hasSelectedSttConnection, setSttProviderId, sttProviderId]);
+
+  // A deleted connection would otherwise stay selected and every read aloud would
+  // post the stale id, so drop it the way the dictation selection does.
+  useEffect(() => {
+    if (ttsProviderId && !hasSelectedTtsConnection) {
+      setTtsProviderId("");
+    }
+  }, [hasSelectedTtsConnection, setTtsProviderId, ttsProviderId]);
 
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
@@ -1357,7 +1368,7 @@ export function VoiceTab() {
                   )}
                 >
                   <Select
-                    value={ttsProviderId}
+                    value={hasSelectedTtsConnection ? ttsProviderId : undefined}
                     onValueChange={setTtsProviderId}
                     disabled={ttsConnections.length === 0}
                   >
