@@ -343,7 +343,14 @@ def report(paths: list[Path], label: str, unstable: frozenset[str]) -> int:
             "structural digest cannot answer. This is not a pass."
         )
     else:
-        print("\n  No stable action rendered differently between the two arms.")
+        print(
+            "\n  No stable action rendered a different THREAD STRUCTURE between the two arms.\n"
+            "  Read that literally. This digest walks the thread and nothing else: it is\n"
+            "  sidebar-blind and layout-blind by construction, and it never reads geometry or\n"
+            "  CSS custom properties. A change confined to the sidebar, or one that moves things\n"
+            "  without restructuring the thread, passes here while being invisible to it.\n"
+            "  This is not a statement that the UI is unchanged."
+        )
 
     if blind:
         print("\n  NOT COMPARABLE -- these surfaces carry no verdict in either direction:")

@@ -26,6 +26,29 @@ import collections
 from typing import Any, Iterable, Optional
 
 # What a comparison concluded. Kept as plain strings so a payload row carries them verbatim.
+#: WHAT "MATCH" ACTUALLY CLAIMS, because the name promises more than the instrument delivers.
+#:
+#: Everything in this module is computed from `scene/parity.js`, whose structural digest walks the
+#: THREAD and nothing else. It is sidebar-blind and layout-blind by construction: a change confined
+#: to the sidebar, or one that alters computed geometry without altering thread structure, passes
+#: it while being entirely invisible to it. That is not a theory. A concurrent campaign measuring
+#: the sidebar drag found the shipped thread digest returned 0 of 34 differing pairs on a real,
+#: visible change -- and its null control returned 0 of 34 as well, so the instrument was not
+#: discriminating in either direction. Three purpose-built captures (sidebar-inclusive structure,
+#: sidebar inline style, custom-property reach) found the same change 34 of 34, with the null at
+#: zero in every category.
+#:
+#: So MATCH means NO THREAD-STRUCTURE CHANGE WAS DETECTED. It does not mean the UI is unchanged.
+#: Not covered, and not detectable here at all:
+#:
+#:   the sidebar                 outside the digest root
+#:   computed layout / geometry  positions and sizes are never read
+#:   CSS custom properties       never read
+#:   stylesheet changes          only insofar as they alter `display`, `visibility` or
+#:                               `pointer-events` on the <=64 elements the bounded style probe
+#:                               reaches, which is reported separately and as an advisory
+#:
+#: Anything relying on a stronger reading than that needs its own capture.
 MATCH = "match"
 DIFFER = "differ"
 NOT_COMPARABLE = "not_comparable"
@@ -242,6 +265,20 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
         return NOT_COMPARABLE, (
             f"the probe hit its element cap "
             f"(base={bs.get('elements')}, treatment={ts.get('elements')})"
+        )
+    # A POSITIVE CONTROL ON THE SCAN ITSELF. Two probes that matched no elements have equal
+    # counts and equal digests -- both are the hash of an empty string -- so a probe that scanned
+    # NOTHING reports MATCH, which is the strongest verdict this function can return and is
+    # supported by no observation whatsoever. That is not hypothetical: the selector list is
+    # written against Studio's markup, and a class rename anywhere in it silently empties the
+    # scan. A DOM or CSSOM scan that can return zero has to be able to tell "I looked and they
+    # agree" from "I did not look", and this one could not.
+    if not bs.get("elements") or not ts.get("elements"):
+        return NOT_COMPARABLE, (
+            f"the style probe matched no elements (base={bs.get('elements')}, "
+            f"treatment={ts.get('elements')}), so it observed nothing on at least one arm. Its "
+            "selector list is written against Studio's markup and does not survive a rename; "
+            "this is a probe that needs fixing, not two arms that agree"
         )
     if bs.get("elements") != ts.get("elements"):
         return DIFFER, (

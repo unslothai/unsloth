@@ -43,9 +43,37 @@
 //     selection, scroll position (deliberately normalised), `<input>` live values typed by a user
 //     (the DOM attribute is not the property), shadow DOM, and any state kept only in JS.
 //
+// THAT LIST HAS NOW BEEN MEASURED RATHER THAN JUST ASSERTED, and the result is worse than the
+// wording above suggests. A concurrent campaign measuring the sidebar drag ran this digest against
+// a real, visible change and got 0 of 34 differing pairs -- and its null control also returned 0 of
+// 34, so the instrument was not discriminating in either direction on that change. Three
+// purpose-built captures (sidebar-inclusive structure, sidebar inline style, custom-property reach)
+// each found the same change 34 of 34 with the null at zero. The two blind spots that mattered were
+// the two named above: the sidebar is outside the root, and computed layout is never read.
+//
+// So a PARITY OK verdict from this file means NO THREAD-STRUCTURE CHANGE WAS DETECTED. It does not
+// mean the UI is unchanged, and the two are far enough apart that the second should never be
+// written down on the strength of the first.
+//
 // Extending this into a real visual diff is the screenshot pair's job, not this one's. The point
 // of the digest is breadth at near-zero cost per action, and its limits are stated here so nobody
 // reads "18 actions, 0 differences" as "the UI is pixel-identical". It is not that claim.
+//
+// ── AND A NOTE ON ANY SCAN THAT CAN RETURN ZERO ──────────────────────────────────────────────
+//
+// `styleProbe` below walks a hand-written selector list. If Studio renames a class the list goes
+// quiet, matches nothing, and its digest becomes the hash of an empty string -- identical on both
+// arms, reported as a MATCH. A scan of nothing must never be reported as agreement, so
+// `compare_styles` refuses a zero-element probe instead of matching it, and `elements` travels
+// with every reading so the count can be checked rather than assumed.
+//
+// The same team hit the general form of this and it is worth recording: their CSSOM scan returned
+// a clean zero because CSS nesting gives every `CSSStyleRule` a truthy but empty `cssRules`, so
+// code that treats a truthy `cssRules` as "this is a grouping rule, recurse" silently skips every
+// declaration in the document. They caught it only because they had gated on a positive control.
+// Nothing in this file walks the CSSOM today, so that specific bug is not present here -- but any
+// scan added later that can legitimately return zero needs a positive control, and a zero without
+// one should not be believed.
 //
 // ── WHAT IS NORMALISED AWAY, and why each one has to be ──────────────────────────────────────
 //

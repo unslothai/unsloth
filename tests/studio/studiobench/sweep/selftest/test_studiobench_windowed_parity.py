@@ -376,3 +376,51 @@ def test_the_observation_cost_is_not_charged_to_the_action_budget():
         "the deadline is sampled after the observations again, which charges instrument time to "
         "the action's budget"
     )
+
+
+# ── a scan of nothing is not agreement ──────────────────────────────
+
+
+def _styled(elements: int, digest: str = "s") -> dict:
+    cap = _capture(mounted = 18, total = 18)
+    cap["styles"] = {"elements": elements, "digest": digest, "capped": False}
+    return cap
+
+
+def test_a_style_probe_that_matched_no_elements_does_not_report_a_match():
+    """THE POSITIVE CONTROL. Two probes that matched nothing have equal counts and equal digests
+    -- both the hash of an empty string -- so the strongest verdict the function can return was
+    being issued on the strength of no observation at all.
+
+    Not hypothetical: the probe walks a hand-written selector list written against Studio's
+    markup, and a class rename anywhere in it empties the scan silently.
+    """
+    verdict, reason = P.compare_styles(_styled(0), _styled(0))
+    assert verdict == P.NOT_COMPARABLE, (verdict, reason)
+    assert "matched no elements" in reason
+
+
+def test_one_arm_scanning_nothing_is_also_not_a_difference_to_report():
+    """It is a broken probe, not a finding about the build, and saying DIFFER here would send
+    somebody looking for a UI change that nobody has evidence for."""
+    verdict, _reason = P.compare_styles(_styled(0), _styled(12))
+    assert verdict == P.NOT_COMPARABLE
+
+
+def test_a_probe_that_actually_looked_still_matches_and_still_differs():
+    """The control must not swallow the readings it exists to protect."""
+    assert P.compare_styles(_styled(12, "a"), _styled(12, "a"))[0] == P.MATCH
+    assert P.compare_styles(_styled(12, "a"), _styled(12, "b"))[0] == P.DIFFER
+
+
+def test_the_passing_digest_verdict_states_what_it_did_not_look_at():
+    """A PARITY OK line that reads as "the UI is unchanged" is a claim the instrument cannot
+    support: run against a real sidebar-drag change the thread digest returned 0 of 34, and so did
+    its null. The limitation is printed next to the verdict, not left in a source comment."""
+    import inspect
+
+    from studiobench.sweep import ui_parity as U
+
+    src = inspect.getsource(U.report)
+    assert "THREAD STRUCTURE" in src
+    assert "sidebar-blind" in src and "layout-blind" in src

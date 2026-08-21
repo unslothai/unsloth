@@ -356,6 +356,41 @@ scroll extent, plus the invariants on `select_all_copy`, `select_text`, `copy_ma
 `thread_reopen` and `scroll_after`. What is no longer being asked is whether the mounted messages
 render identically.
 
+**What a PARITY OK verdict actually claims.** It claims that NO THREAD-STRUCTURE CHANGE WAS
+DETECTED. It does not claim the UI is unchanged, and the gap between those two readings is wide
+enough that the second must never be written down on the strength of the first.
+
+`scene/parity.js` digests the thread root and the overlay selectors. It is sidebar-blind and
+layout-blind by construction, and it never reads geometry or CSS custom properties. This has been
+measured, not merely assumed: run against a real, visible sidebar-drag change, the shipped thread
+digest returned 0 of 34 differing pairs -- and the concurrent null control also returned 0 of 34,
+so the instrument was not discriminating in either direction. Three purpose-built captures
+(sidebar-inclusive structure, sidebar inline style, custom-property reach) each found the same
+change 34 of 34 with the null at zero.
+
+Not covered, and not detectable by this digest at all:
+
+| surface | why |
+| --- | --- |
+| the sidebar, header, toasts | outside the digest root |
+| computed layout and geometry | positions, sizes and overflow are never read |
+| CSS custom properties | never read |
+| stylesheet changes | only via the bounded style probe: three properties (`display`, `visibility`, `pointer-events`) on at most 64 elements, reported separately and as an advisory |
+| raster content, colour, typography, animation | not in the DOM |
+
+A change confined to any of those needs its own capture. `sweep/ui_parity.py` prints this
+limitation next to the passing verdict rather than leaving it in a source comment.
+
+**Any scan that can return zero carries a positive control.** The style probe walks a hand-written
+selector list; a class rename empties it, and two empty scans have equal element counts and equal
+digests (both the hash of an empty string), so a probe that observed nothing used to report MATCH.
+`compare_styles` now refuses a zero-element probe instead. The general form of this is worth
+knowing: a CSSOM scan elsewhere in the campaign returned a clean zero because CSS nesting gives
+every `CSSStyleRule` a truthy but empty `cssRules`, so code that recurses on a truthy `cssRules`
+silently skips every declaration in the document. Nothing here walks the CSSOM today; anything
+added later that can legitimately return zero needs a positive control, and a zero without one
+should not be believed.
+
 ---
 
 ## 9. Stability
