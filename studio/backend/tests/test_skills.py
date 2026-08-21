@@ -980,10 +980,7 @@ def test_replacement_reports_cleanup_failure_and_uses_a_fresh_backup(
     [("import", ".import-"), ("create", ".create-")],
 )
 def test_staging_cleanup_failures_are_reported(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    operation: str,
-    prefix: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, prefix: str
 ):
     skills.create_skill("unsloth", SKILL_MD)
     archive = _bundle(tmp_path / "duplicate.zip", {"unsloth/SKILL.md": SKILL_MD})
