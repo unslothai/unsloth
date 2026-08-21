@@ -1138,9 +1138,7 @@ class ExternalProviderClient:
                     body["reasoning_effort"] = reasoning_effort
             elif enable_thinking is not None and model != "kimi-k2-thinking":
                 body["thinking"] = (
-                    {"type": "enabled", "keep": "all"}
-                    if enable_thinking
-                    else {"type": "disabled"}
+                    {"type": "enabled", "keep": "all"} if enable_thinking else {"type": "disabled"}
                 )
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
@@ -1475,9 +1473,7 @@ class ExternalProviderClient:
         else:
             body["thinking"] = {"type": "disabled"}
         if max_tokens is not None:
-            body[
-                "max_completion_tokens" if is_kimi_k3 else "max_tokens"
-            ] = max_tokens
+            body["max_completion_tokens" if is_kimi_k3 else "max_tokens"] = max_tokens
 
         from core.inference.providers import get_provider_info
 
@@ -1515,9 +1511,7 @@ class ExternalProviderClient:
                 visible_delta = dict(delta) if isinstance(delta, dict) else {}
                 if is_kimi_k3 and isinstance(visible_delta.get("content"), str):
                     content_parts.append(visible_delta["content"])
-                if is_kimi_k3 and isinstance(
-                    visible_delta.get("reasoning_content"), str
-                ):
+                if is_kimi_k3 and isinstance(visible_delta.get("reasoning_content"), str):
                     reasoning_parts.append(visible_delta["reasoning_content"])
                 for tool_call in visible_delta.pop("tool_calls", []) or []:
                     if not isinstance(tool_call, dict):
@@ -1837,9 +1831,7 @@ class ExternalProviderClient:
             yield "data: [DONE]"
             return
         next_search_calls = [
-            call
-            for call in next_tool_calls.values()
-            if call["function"]["name"] == "$web_search"
+            call for call in next_tool_calls.values() if call["function"]["name"] == "$web_search"
         ]
         if len(next_search_calls) != len(next_tool_calls):
             yield _error_sse_line(
@@ -1883,9 +1875,7 @@ class ExternalProviderClient:
             "tool_calls": list(next_tool_calls.values()),
         }
         if is_kimi_k3 and next_reasoning_parts:
-            next_assistant_message["reasoning_content"] = "".join(
-                next_reasoning_parts
-            )
+            next_assistant_message["reasoning_content"] = "".join(next_reasoning_parts)
         next_tool_messages = [
             {
                 "role": "tool",

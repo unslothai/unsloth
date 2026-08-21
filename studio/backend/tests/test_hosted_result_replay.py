@@ -138,7 +138,12 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport, *, provider_type = None, model = None):
+def _run(
+    transport,
+    *,
+    provider_type = None,
+    model = None,
+):
     async def _collect():
         out: list[str] = []
         agen = stream_with_studio_tools(

@@ -114,6 +114,7 @@ def test_build_usage_chunk_returns_none_when_all_zero():
 
 # ── streaming integration tests ─────────────────────────────────────
 
+
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -793,14 +794,9 @@ def test_kimi_k3_web_search_loops_until_the_model_stops(monkeypatch):
         "reason 1",
         "reason 2",
     ]
-    assert [message["content"] for message in third_turn_assistants] == [
-        "draft 1",
-        "draft 2",
-    ]
+    assert [message["content"] for message in third_turn_assistants] == ["draft 1", "draft 2"]
     assert [
-        message["tool_call_id"]
-        for message in bodies[2]["messages"]
-        if message["role"] == "tool"
+        message["tool_call_id"] for message in bodies[2]["messages"] if message["role"] == "tool"
     ] == ["call_search_1", "call_search_2"]
 
 
