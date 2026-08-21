@@ -4162,6 +4162,11 @@ _persist_rocm_wsl_dropin() {
 # AOTriton bug and wants the math fallback. /etc/profile.d is root-owned, so sudo-tee when not
 # root. Best-effort throughout -- ALWAYS returns 0, never aborts the installer.
 _persist_rocm_aotriton_env() {
+    # --no-torch installs no ROCm torch, so there is nothing here to unlock and no reason to
+    # write a root-owned file that changes every future ROCm process on the host. Same gate
+    # every other _torch_index_is_rocm_family side effect uses, and the same one install.ps1
+    # gets for free from $ROCmIndexUrl, which only resolves when -SkipTorch is off.
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     if [ -n "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL:-}" ]; then
         return 0
     fi
