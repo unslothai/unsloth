@@ -247,7 +247,34 @@ def behaviour_report(
     return 0
 
 
-def visible_report(paths: list[Path], label: str) -> int:
+def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[str]:
+    """Actions whose VISIBLE REGION differs between two runs of the SAME build.
+
+    A floor, measured rather than assumed, and it has to be measured separately from the digest's
+    because the two ask different questions. Observed on a 100K base-vs-base control: 13 of 64
+    action pairs differed inside the viewport, against 5 for the virtualization arm the control was
+    run for. Without this the arm under test scores WORSE than an identical pair of builds and the
+    verdict is not merely weak, it is backwards.
+
+    The mechanism is the same one the digest already normalises around and does not fully catch:
+    the rows differ at identical character counts (`7609->7609c`), which is a volatile attribute
+    rather than changed content.
+    """
+    if not null_paths:
+        return frozenset()
+    results, _got = compare_all_with(null_paths, P.compare_visible, "visible")
+    return frozenset(
+        action
+        for action, _shard, _rep, r in results
+        if r.get("_ran") and r.get("verdict") == P.DIFFER
+    )
+
+
+def visible_report(
+    paths: list[Path],
+    label: str,
+    unstable: frozenset[str] = frozenset(),
+) -> int:
     """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
 
     Policy: all changes preserve UI and UX idempotency, except that a difference may be accepted
@@ -270,20 +297,24 @@ def visible_report(paths: list[Path], label: str) -> int:
         print("  NO ACTION DATA in this payload.")
         return 2
 
-    differing, blind, idle, matched = [], [], [], 0
+    differing, unstable_bad, blind, idle, matched = [], [], [], [], 0
     for action, shard, rep, r in results:
         if not r.get("_ran"):
             idle.append((action, shard, rep, r))
         elif r["verdict"] == P.NOT_COMPARABLE:
             blind.append((action, shard, rep, r))
         elif r["verdict"] == P.DIFFER:
-            differing.append((action, shard, rep, r))
+            (unstable_bad if action in unstable else differing).append((action, shard, rep, r))
         else:
             matched += 1
 
     print(f"\n  {len(results)} action pairs across {len(paths)} shard(s)")
     print(f"  visible region matched:     {matched}")
     print(f"  VISIBLE DIFFERENCES:        {len(differing)}")
+    print(
+        f"  unstable actions differing: {len(unstable_bad)}  (differ against an identical build; "
+        "not a verdict)"
+    )
     print(f"  NOT COMPARABLE:             {len(blind)}  (never observed; not a pass)")
     print(f"  NOT EXERCISED:              {len(idle)}  (the action did not run; not coverage)")
 
@@ -305,9 +336,21 @@ def visible_report(paths: list[Path], label: str) -> int:
         print("\n  NOT COMPARABLE -- these carry no verdict in either direction:")
         for action, shard, rep, r in blind[:8]:
             print(f"    {action:<26} {shard} {rep}: {r['reason']}")
+    if unstable_bad:
+        names = sorted({a for a, _s, _r, _v in unstable_bad})
+        print(
+            f"\n  (reported, not counted) {len(unstable_bad)} pair(s) over {len(names)} action(s) "
+            f"whose visible region differs between two runs of the SAME build: {', '.join(names)}"
+        )
     if idle:
         names = sorted({a for a, _s, _r, _v in idle})
         print(f"\n  NOT EXERCISED: {', '.join(names)}")
+    if not unstable:
+        print(
+            "\n  NO FLOOR WAS MEASURED. Pass --null OUTDIR of a base-vs-base run: an identical\n"
+            "  pair of builds has been observed differing on 13 of 64 pairs inside the viewport,\n"
+            "  so an unfloored count here can rank a real arm below two copies of the same build."
+        )
 
     if differing:
         return 1
@@ -592,7 +635,19 @@ def main(argv: list[str] | None = None) -> int:
                 # thread. Neither subsumes the other, so a windowed pair gets both and the run
                 # fails if either does.
                 if args.mode in ("auto", "visible"):
-                    worst = max(worst, visible_report(paths, f"UI PARITY: {pattern}"))
+                    # The floor, derived from the null control the caller passed. Without it an
+                    # identical pair of builds outscores the arm under test.
+                    vis_null: list[Path] = []
+                    for pat in args.null:
+                        vis_null.extend(shards_of(pat))
+                    worst = max(
+                        worst,
+                        visible_report(
+                            paths,
+                            f"UI PARITY: {pattern}",
+                            visible_unstable_set(vis_null),
+                        ),
+                    )
                 if args.mode in ("auto", "behaviour"):
                     worst = max(
                         worst,

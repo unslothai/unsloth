@@ -483,3 +483,88 @@ def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
     checks = {c["invariant"]: c for c in got["checks"]}
     assert checks["clipboard_carries_the_whole_thread"]["ok"] is None
     assert got["verdict"] == P.NOT_COMPARABLE, got
+
+
+# ── visible-region parity needs a measured floor like everything else ──
+
+
+def _visible_shard(
+    tmp_path,
+    name,
+    differ_actions,
+    actions = ("a", "b", "c"),
+):
+    """A payload shard whose visible-region captures differ on `differ_actions` and match elsewhere."""
+    import json
+
+    rows = []
+    for action in actions:
+        for side in ("base", "treatment"):
+            digest = "X" if (action in differ_actions and side == "treatment") else "same"
+            rows.append(
+                {
+                    "row_type": "action",
+                    "action": action,
+                    "ran": True,
+                    "cell_id": f"r100K.{side}.rep0",
+                    "parity": _capture(mounted = 18, total = 18),
+                    "visible": {
+                        "visible_attempted": True,
+                        "ever_visible": [1],
+                        "ever_visible_count": 1,
+                        "mounted_ever_visible": 1,
+                        "unmounted_at_capture": 0,
+                        "messages": {"1": {"role": "assistant", "digest": digest, "chars": 10}},
+                    },
+                }
+            )
+    shard = tmp_path / name
+    shard.mkdir()
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    return shard / "payload.jsonl"
+
+
+def test_an_action_that_differs_against_an_identical_build_is_not_counted_against_the_arm(
+    tmp_path, capsys
+):
+    """THE FLOOR, AND WHY IT IS NOT OPTIONAL.
+
+    Measured on a real 100K run: the base-vs-base null control differed inside the viewport on 13
+    of 64 action pairs, while the virtualization arm it was the control for differed on 5. Scored
+    without the floor the arm ranks WORSE than two copies of the same build, so the verdict is not
+    merely weak, it is backwards. The rows differ at identical character counts, which is a
+    volatile attribute rather than changed content.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    null = _visible_shard(tmp_path, "null", differ_actions = {"a", "b"})
+    arm = _visible_shard(tmp_path, "arm", differ_actions = {"a"})
+
+    unstable = U.visible_unstable_set([null])
+    assert unstable == frozenset({"a", "b"}), unstable
+
+    # Unfloored: the arm's one difference is counted and the run fails.
+    assert U.visible_report([arm], "unfloored") == 1
+    # Floored by its own null: that action is known to differ against itself, so it is reported
+    # and not counted.
+    assert U.visible_report([arm], "floored", unstable) == 0
+    out = capsys.readouterr().out
+    assert "differ against an identical build" in out
+
+
+def test_a_real_visible_difference_outside_the_floor_still_fails(tmp_path):
+    """The floor must not become a way of passing anything. An action the null never saw differ is
+    still a failure."""
+    from studiobench.sweep import ui_parity as U
+
+    null = _visible_shard(tmp_path, "null2", differ_actions = {"b"})
+    arm = _visible_shard(tmp_path, "arm2", differ_actions = {"a"})
+    assert U.visible_report([arm], "floored", U.visible_unstable_set([null])) == 1
+
+
+def test_an_unfloored_visible_run_says_so(tmp_path, capsys):
+    from studiobench.sweep import ui_parity as U
+
+    arm = _visible_shard(tmp_path, "arm3", differ_actions = set())
+    U.visible_report([arm], "no floor")
+    assert "NO FLOOR WAS MEASURED" in capsys.readouterr().out
