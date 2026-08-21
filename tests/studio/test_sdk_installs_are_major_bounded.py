@@ -52,9 +52,7 @@ GUARDED = {
 # is optional on purpose -- a bare `pip install openai` resolves whatever major is current,
 # which is the exact thing this file exists to prevent, and a pattern that required a
 # specifier could not see it at all.
-_REQUIREMENT = re.compile(
-    r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$"""
-)
+_REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
 # `pip install`, but also `pip3 install` and `"$VENV/bin/pip" install`, which
 # mlx-ci.yml:439 already uses. Matching the literal text `pip install` missed both.
@@ -273,9 +271,12 @@ def test_a_bare_or_extras_install_is_not_invisible() -> None:
     assert not _excludes("", GUARDED["openai"]), "a bare install constrains nothing"
     # A name inside a URL or a requirements path is not an install of that package.
     assert _requirements_in("pip install -r reqs/openai.txt", "openai") == []
-    assert _requirements_in(
-        "pip install --index-url https://example.test/openai/simple pytest", "openai"
-    ) == []
+    assert (
+        _requirements_in(
+            "pip install --index-url https://example.test/openai/simple pytest", "openai"
+        )
+        == []
+    )
 
 
 def test_a_pin_on_a_continuation_line_is_still_seen() -> None:
