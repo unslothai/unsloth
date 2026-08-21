@@ -57,6 +57,71 @@ def test_sdpa_packed_attention_mask_sliding_window():
     assert mask[0, 0, 0, 6].item() == float("-inf")
 
 
+def test_sdpa_packed_attention_mask_covers_a_padded_flattened_row():
+    # TRL flattens a padding-free batch into one row and only then pads it out to
+    # pad_to_multiple_of, so the sequence lengths add up to fewer tokens than the
+    # kernels are handed. The mask has to cover the padded length.
+    seq_info = _make_seq_info([3, 4])
+    mask = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        total_tokens = 8,
+    )
+
+    assert mask.shape == (1, 1, 8, 8)
+
+    # the real tokens must not be able to see the pad
+    assert torch.all(mask[0, 0, :7, 7] == float("-inf"))
+    # and no row may be entirely masked, which would be NaN out of the softmax
+    assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
+
+    query = torch.randn(1, 1, 8, 4)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        query,
+        torch.randn(1, 1, 8, 4),
+        torch.randn(1, 1, 8, 4),
+        attn_mask = mask,
+    )
+    assert out.shape == (1, 1, 8, 4)
+    assert not torch.isnan(out).any()
+
+
+def test_sdpa_packed_attention_mask_unpadded_is_unchanged():
+    seq_info = _make_seq_info([3, 4])
+    without = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+    )
+    packing_utils._SDPA_MASK_CACHE.clear()
+    exact = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        total_tokens = 7,
+    )
+
+    assert without.shape == (1, 1, 7, 7)
+    assert torch.equal(without, exact)
+
+
+def test_sdpa_packed_attention_mask_keeps_the_window_when_padded():
+    seq_info = _make_seq_info([5, 3])
+    mask = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        sliding_window = 3,
+        total_tokens = 10,
+    )
+
+    assert mask.shape == (1, 1, 10, 10)
+    assert mask[0, 0, 3, 0].item() == float("-inf")
+    assert mask[0, 0, 4, 2].item() > -math.inf
+    assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
+
+
 def test_xformers_block_mask_sliding_window(monkeypatch):
     class _FakeMask:
         def __init__(
@@ -321,6 +386,7 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
         dtype,
         device,
         sliding_window = None,
+        total_tokens = None,
     ):
         captured["window"] = sliding_window
         return original_builder(
@@ -328,6 +394,7 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
+            total_tokens = total_tokens,
         )
 
     monkeypatch.setattr(
@@ -397,6 +464,7 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
         *,
         sliding_window = None,
         base_mask = None,
+        total_tokens = None,
     ):
         captured["window"] = sliding_window
         captured["base"] = base_mask

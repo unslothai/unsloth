@@ -457,6 +457,7 @@ def run_attention(
             context.seq_info,
             sliding_window = sliding_window,
             base_mask = context.causal_mask,
+            total_tokens = K.shape[-2],
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -521,6 +522,7 @@ def run_attention(
                 dtype = Q.dtype,
                 device = Q.device,
                 sliding_window = sliding_window,
+                total_tokens = K.shape[-2],
             )
         else:
             q_len_local = Q.shape[-2]
