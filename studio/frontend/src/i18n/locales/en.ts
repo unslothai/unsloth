@@ -195,9 +195,54 @@ export const en = {
       connections: "Connections",
       data: "Data",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       agents: "Agents",
+      keyboardShortcuts: "Shortcuts",
       debugging: "Logs",
       about: "About",
+    },
+    keyboardShortcuts: {
+      title: "Keyboard shortcuts",
+      description:
+        "Change any shortcut, or clear one to free the chord for your browser or OS.",
+      searchPlaceholder: "Search shortcuts…",
+      noResults: "No shortcuts match that search.",
+      unassigned: "Unassigned",
+      recording: "Press keys…",
+      recordingHint: "Press the new chord, or Esc to cancel.",
+      needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
+      conflict: "Also used by another shortcut",
+      conflictShadowed: "Another shortcut has this chord and runs instead",
+      edit: "Change shortcut",
+      clear: "Remove shortcut",
+      reset: "Restore default",
+      resetAll: "Reset all to defaults",
+      groups: {
+        general: "General",
+        chat: "Chat",
+      },
+      actions: {
+        newChat: {
+          label: "New chat",
+          description: "Start a new chat",
+        },
+        searchChats: {
+          label: "Search chats",
+          description: "Open the chat search dialog",
+        },
+        toggleSidebar: {
+          label: "Toggle sidebar",
+          description: "Show or hide the sidebar",
+        },
+        openSettings: {
+          label: "Open settings",
+          description: "Open the settings dialog",
+        },
+        openKeyboardShortcuts: {
+          label: "Keyboard shortcuts",
+          description: "Open this shortcuts list",
+        },
+      },
     },
     debugging: {
       logSection: "Log file",
@@ -237,6 +282,16 @@ export const en = {
         engineModel: "Local transcription",
         engineModelDescription:
           "Runs a speech-to-text (STT) model locally and works offline. Download, load, then unloads after inactivity.",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "Sends recorded audio to an OpenAI-compatible STT server from your Connections.",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server and optional API key in Connections.",
+        connectionPlaceholder: "Select a connection",
+        connectionEmpty: "No connections available",
+        customModelLabel: "Model",
+        customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
         sttModelSearchPlaceholder: "Search any model on HF",
@@ -294,6 +349,7 @@ export const en = {
         languageLabel: "Dictation language",
         languageDescription: "Language to recognize",
         languageAuto: "Auto (browser language)",
+        languageAutoDetect: "Auto (detect language)",
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
@@ -368,6 +424,7 @@ export const en = {
         modelLabel: "TTS model",
         modelDescription:
           "Load an audio model from the model selector (e.g. Orpheus TTS)",
+        openAudioAction: "Open Audio",
         voiceLabel: "Voice",
         voiceDescription: "Best voices on this device",
         speedLabel: "Speed",
@@ -377,6 +434,7 @@ export const en = {
         previewDescription: "Play a short sample",
         previewFailed: "TTS preview failed",
         previewAction: "Preview",
+        preparingAction: "Generating…",
         stopAction: "Stop",
         ttsLabel: "Text to speech",
         notSupported: "Not supported in this browser",
@@ -819,6 +877,24 @@ export const en = {
         switchFailed: "Could not change the llama.cpp backend.",
         switchInterrupted: "The switch was interrupted before completion.",
         envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        customPath: {
+          label: "Custom llama.cpp folder",
+          description: "Use your own llama-server build.",
+          hint: "Choose the llama.cpp folder containing llama-server, or a build where it is under build/bin. The custom runtime is used for GGUF chat, embeddings, and supported voice models. Environment variables still take priority.",
+          automatic: "Automatic (bundled)",
+          bundled: "Uses the llama.cpp runtime installed by Unsloth.",
+          active: "Your custom llama-server will be used for the next model load.",
+          environmentManaged: "Managed by the {variable} environment variable.",
+          missingBinary: "llama-server is no longer available in this folder. Choose another folder or use the bundled runtime.",
+          reloadRequired: "Reload the model to use the selected llama-server.",
+          change: "Change",
+          saving: "Saving...",
+          useBundled: "Use bundled",
+          chooseTitle: "Choose llama.cpp folder",
+          chooseAction: "Use this folder",
+          saved: "llama.cpp folder updated",
+          saveError: "Couldn't update the llama.cpp folder",
+        },
         backends: {
           auto: "Automatic",
           cpu: "CPU",
@@ -831,11 +907,12 @@ export const en = {
           notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
           localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
           sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          customPath: "A custom llama.cpp folder is selected. Its build decides the compute backend.",
           unresolved: "The available backends could not be checked. Check your connection and try again.",
         },
         // Not rendered: extra terms the settings search matches these rows on.
         llamaBackendKeywords:
-          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
         title: "Model memory",
@@ -1164,6 +1241,11 @@ export const en = {
     connections: {
       title: "Connections",
       description: "Manage providers and external connections.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Reach this Unsloth from your other devices, over your local network or a temporary public URL.",
     },
     apiKeys: {
       title: "API",

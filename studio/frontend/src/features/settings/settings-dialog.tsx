@@ -24,6 +24,8 @@ import {
   DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
+  HomeWifiIcon,
+  KeyboardIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -67,7 +69,13 @@ const TAB_LOADERS = {
   connections: () =>
     import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "keyboard-shortcuts": () =>
+    import("./tabs/keyboard-shortcuts-tab").then((m) => ({
+      default: m.KeyboardShortcutsTab,
+    })),
   "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "remote-lan": () =>
+    import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
   agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
@@ -182,6 +190,11 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
   },
   {
+    id: "remote-lan",
+    labelKey: "settings.tabs.remoteLan",
+    icon: HomeWifiIcon,
+  },
+  {
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
@@ -203,6 +216,11 @@ const TABS: TabDef[] = [
     labelKey: "settings.tabs.data",
     icon: DatabaseSettingIcon,
     badgeKey: "common.new",
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: KeyboardIcon,
   },
   {
     id: "debugging",
@@ -344,8 +362,10 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    "keyboard-shortcuts": null,
     data: null,
     "api-keys": null,
+    "remote-lan": null,
     agents: null,
     debugging: null,
     about: null,

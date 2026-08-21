@@ -191,11 +191,56 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
+      remoteLan: "远程与局域网",
       about: "关于",
       voice: "语音",
       data: "数据",
       agents: "智能体",
       debugging: "日志",
+      keyboardShortcuts: "快捷键",
+    },
+    keyboardShortcuts: {
+      title: "键盘快捷键",
+      description:
+        "可以更改任意快捷键，或将其清除，把该组合让给浏览器或操作系统。",
+      searchPlaceholder: "搜索快捷键…",
+      noResults: "没有匹配的快捷键。",
+      unassigned: "未分配",
+      recording: "请按下按键…",
+      recordingHint: "按下新的组合键，或按 Esc 取消。",
+      needsModifier: "请加上 ⌘、Ctrl 或 Alt。单独一个按键会吞掉正常输入。",
+      conflict: "另一个快捷键也在使用该组合",
+      conflictShadowed: "该组合已被另一个快捷键占用，执行的是那一个",
+      edit: "更改快捷键",
+      clear: "移除快捷键",
+      reset: "恢复默认",
+      resetAll: "全部恢复默认",
+      groups: {
+        general: "通用",
+        chat: "聊天",
+      },
+      actions: {
+        newChat: {
+          label: "新建聊天",
+          description: "开始一个新的聊天",
+        },
+        searchChats: {
+          label: "搜索聊天",
+          description: "打开聊天搜索对话框",
+        },
+        toggleSidebar: {
+          label: "切换侧边栏",
+          description: "显示或隐藏侧边栏",
+        },
+        openSettings: {
+          label: "打开设置",
+          description: "打开设置对话框",
+        },
+        openKeyboardShortcuts: {
+          label: "键盘快捷键",
+          description: "打开该快捷键列表",
+        },
+      },
     },
     debugging: {
       logSection: "日志文件",
@@ -233,6 +278,17 @@ export const zhCN = {
         engineModel: "本地转写",
         engineModelDescription:
           "在本地运行语音转文字（STT）模型，可离线使用。下载并加载后，闲置一段时间会自动卸载。",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "将录制的音频发送到“连接”中的 OpenAI 兼容 STT 服务器。",
+        connectionLabel: "连接",
+        connectionDescription:
+          "在“连接”中添加 OpenAI 兼容服务器和可选的 API 密钥。",
+        connectionPlaceholder: "选择连接",
+        connectionEmpty: "没有可用的连接",
+        customModelLabel: "模型",
+        customModelDescription:
+          "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
         sttModelSearchPlaceholder: "搜索模型",
@@ -289,6 +345,7 @@ export const zhCN = {
         languageLabel: "语音输入语言",
         languageDescription: "要识别的语言",
         languageAuto: "自动（浏览器语言）",
+        languageAutoDetect: "自动（检测语言）",
       },
       dictionary: {
         sectionTitle: "语音输入词典",
@@ -358,6 +415,7 @@ export const zhCN = {
         customVoiceDescription: "端点所需的语音名称（可选）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
+        openAudioAction: "打开音频",
         voiceLabel: "音色",
         voiceDescription: "此设备上效果最好的音色",
         speedLabel: "语速",
@@ -366,6 +424,7 @@ export const zhCN = {
         previewLabel: "试听音色",
         previewDescription: "播放一段简短示例",
         previewAction: "试听",
+        preparingAction: "生成中…",
         previewFailed: "TTS 试听失败",
         stopAction: "停止",
         ttsLabel: "文字转语音",
@@ -801,6 +860,24 @@ export const zhCN = {
         switchFailed: "无法更改 llama.cpp 后端。",
         switchInterrupted: "切换在完成前中断。",
         envLocked: "已由环境变量 UNSLOTH_LLAMA_CPP_BACKEND 固定为 {backend}，其优先级高于此设置。",
+        customPath: {
+          label: "自定义 llama.cpp 文件夹",
+          description: "使用你自己的 llama-server 构建。",
+          hint: "选择包含 llama-server 的 llama.cpp 文件夹，或 llama-server 位于 build/bin 下的构建。自定义运行时用于 GGUF 聊天、嵌入和受支持的语音模型。环境变量仍然优先。",
+          automatic: "自动（内置）",
+          bundled: "使用 Unsloth 安装的 llama.cpp 运行时。",
+          active: "下次加载模型时将使用你的自定义 llama-server。",
+          environmentManaged: "由 {variable} 环境变量管理。",
+          missingBinary: "此文件夹中的 llama-server 已不可用。请选择其他文件夹或使用内置运行时。",
+          reloadRequired: "请重新加载模型以使用所选 llama-server。",
+          change: "更改",
+          saving: "正在保存...",
+          useBundled: "使用内置版本",
+          chooseTitle: "选择 llama.cpp 文件夹",
+          chooseAction: "使用此文件夹",
+          saved: "llama.cpp 文件夹已更新",
+          saveError: "无法更新 llama.cpp 文件夹",
+        },
         backends: {
           auto: "自动",
           cpu: "CPU",
@@ -813,6 +890,7 @@ export const zhCN = {
           notInstalled: "未找到受管理的 llama.cpp 安装，因此没有可切换的后端。",
           localLink: "llama.cpp 是你自己链接的本地目录，Unsloth 不会替换它。",
           sourceBuild: "此 llama.cpp 由源码编译，无法在这里切换后端。",
+          customPath: "已选择自定义 llama.cpp 文件夹。其构建决定计算后端。",
           unresolved: "无法检查可用的后端。请检查网络连接后重试。",
         },
         // 不显示：用于设置搜索的额外词条。
@@ -1136,6 +1214,11 @@ export const zhCN = {
     connections: {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
+    },
+    remoteLan: {
+      title: "远程与局域网",
+      description:
+        "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
       title: "API",

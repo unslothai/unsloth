@@ -193,11 +193,56 @@ export const ko = {
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
+      remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
       agents: "에이전트",
       debugging: "로그",
       voice: "음성",
+      keyboardShortcuts: "단축키",
+    },
+    keyboardShortcuts: {
+      title: "키보드 단축키",
+      description:
+        "단축키를 바꾸거나, 지워서 해당 조합을 브라우저나 운영체제에 넘길 수 있습니다.",
+      searchPlaceholder: "단축키 검색…",
+      noResults: "검색과 일치하는 단축키가 없습니다.",
+      unassigned: "지정 안 됨",
+      recording: "키를 누르세요…",
+      recordingHint: "새 조합을 누르거나 Esc로 취소하세요.",
+      needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
+      conflict: "다른 단축키도 이 조합을 사용합니다",
+      conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",
+      edit: "단축키 변경",
+      clear: "단축키 제거",
+      reset: "기본값 복원",
+      resetAll: "모두 기본값으로 초기화",
+      groups: {
+        general: "일반",
+        chat: "채팅",
+      },
+      actions: {
+        newChat: {
+          label: "새 채팅",
+          description: "새 채팅을 시작합니다",
+        },
+        searchChats: {
+          label: "채팅 검색",
+          description: "채팅 검색 창을 엽니다",
+        },
+        toggleSidebar: {
+          label: "사이드바 토글",
+          description: "사이드바를 표시하거나 숨깁니다",
+        },
+        openSettings: {
+          label: "설정 열기",
+          description: "설정 창을 엽니다",
+        },
+        openKeyboardShortcuts: {
+          label: "키보드 단축키",
+          description: "이 단축키 목록을 엽니다",
+        },
+      },
     },
     debugging: {
       logSection: "로그 파일",
@@ -235,6 +280,17 @@ export const ko = {
         engineModel: "로컬 음성 인식",
         engineModelDescription:
           "음성 인식(STT) 모델을 로컬에서 실행하며 오프라인으로 동작합니다. 다운로드 후 로드하고, 일정 시간 사용하지 않으면 자동으로 해제됩니다.",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 등록된 OpenAI 호환 STT 서버로 녹음된 오디오를 전송합니다.",
+        connectionLabel: "연결",
+        connectionDescription:
+          "연결에서 OpenAI 호환 서버와 선택적 API 키를 추가하세요.",
+        connectionPlaceholder: "연결 선택",
+        connectionEmpty: "사용 가능한 연결이 없습니다",
+        customModelLabel: "모델",
+        customModelDescription:
+          "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
         sttModelSearchPlaceholder: "모델 검색",
@@ -293,6 +349,7 @@ export const ko = {
         languageLabel: "받아쓰기 언어",
         languageDescription: "인식할 언어",
         languageAuto: "자동(브라우저 언어)",
+        languageAutoDetect: "자동(언어 감지)",
       },
       dictionary: {
         sectionTitle: "받아쓰기 사전",
@@ -367,6 +424,7 @@ export const ko = {
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
+        openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "이 기기에서 가장 좋은 음성",
         speedLabel: "속도",
@@ -375,6 +433,7 @@ export const ko = {
         previewLabel: "음성 미리 듣기",
         previewDescription: "짧은 샘플을 재생합니다",
         previewAction: "미리 듣기",
+        preparingAction: "생성 중…",
         previewFailed: "TTS 미리 듣기에 실패했습니다",
         stopAction: "정지",
         ttsLabel: "텍스트 음성 변환",
@@ -820,6 +879,24 @@ export const ko = {
         switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
         switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",
         envLocked: "환경 변수 UNSLOTH_LLAMA_CPP_BACKEND가 {backend}(으)로 고정했으며, 이 설정보다 우선합니다.",
+        customPath: {
+          label: "사용자 지정 llama.cpp 폴더",
+          description: "직접 빌드한 llama-server를 사용합니다.",
+          hint: "llama-server가 들어 있는 llama.cpp 폴더 또는 build/bin 아래에 있는 빌드를 선택하세요. 사용자 지정 런타임은 GGUF 채팅, 임베딩, 지원되는 음성 모델에 사용됩니다. 환경 변수가 계속 우선합니다.",
+          automatic: "자동(번들)",
+          bundled: "Unsloth가 설치한 llama.cpp 런타임을 사용합니다.",
+          active: "다음 모델 로드부터 사용자 지정 llama-server를 사용합니다.",
+          environmentManaged: "{variable} 환경 변수로 관리됩니다.",
+          missingBinary: "이 폴더에서 llama-server를 더 이상 사용할 수 없습니다. 다른 폴더를 선택하거나 번들 런타임을 사용하세요.",
+          reloadRequired: "선택한 llama-server를 사용하려면 모델을 다시 로드하세요.",
+          change: "변경",
+          saving: "저장 중...",
+          useBundled: "번들 사용",
+          chooseTitle: "llama.cpp 폴더 선택",
+          chooseAction: "이 폴더 사용",
+          saved: "llama.cpp 폴더가 업데이트되었습니다",
+          saveError: "llama.cpp 폴더를 업데이트하지 못했습니다",
+        },
         backends: {
           auto: "자동",
           cpu: "CPU",
@@ -832,6 +909,7 @@ export const ko = {
           notInstalled: "관리되는 llama.cpp 설치를 찾을 수 없어 전환할 백엔드가 없습니다.",
           localLink: "llama.cpp는 직접 연결한 로컬 디렉터리이므로 Unsloth가 교체하지 않습니다.",
           sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
+          customPath: "사용자 지정 llama.cpp 폴더가 선택되어 있습니다. 해당 빌드가 컴퓨팅 백엔드를 결정합니다.",
           unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
         },
         // 표시되지 않음: 설정 검색용 추가 키워드.
@@ -1168,6 +1246,11 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+    },
+    remoteLan: {
+      title: "원격 및 LAN",
+      description:
+        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",

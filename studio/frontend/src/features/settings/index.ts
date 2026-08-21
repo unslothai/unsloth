@@ -58,6 +58,12 @@ export type {
   PersonalizationAppearance,
   PersonalizationProfile,
 } from "./api/personalization";
+export { useShortcut, useShortcutLabel } from "./hooks/use-shortcut";
+export {
+  currentBinding,
+  useKeyboardShortcutsStore,
+} from "./stores/keyboard-shortcuts-store";
+export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
