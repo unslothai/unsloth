@@ -1640,6 +1640,35 @@ def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path,
     assert _launch(backend, gguf)["cmd"]
 
 
+@pytest.mark.parametrize(
+    "placement",
+    [
+        {"gpu_memory_mode": "manual", "gpu_layers": 0},
+        {"gpu_memory_mode": "manual", "gpu_layers": 8},
+        {"extra_args": ["--device", "none"]},
+        {"extra_args": ["-ngl", "0"]},
+    ],
+    ids = ["manual-zero-offload", "manual-partial-offload", "device-none", "extras-zero-offload"],
+)
+def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
+    tmp_path, monkeypatch, placement
+):
+    """The heap holds only the weights the finished command sends there. A zero
+    layer count, a partial pin and a --device naming no GPU each leave the model in
+    the 13 GiB the host has, so the GGUF the full offload above admits stays
+    refused: crediting the heap for these let a 16.5 GiB model onto a 13 GiB host."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 107 * 1024, 0)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, **placement)
+
+
 def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
     """A shared Vulkan heap remains host-backed inside a constrained container, so
     its host-wide free reading cannot override the process's cgroup ceiling."""

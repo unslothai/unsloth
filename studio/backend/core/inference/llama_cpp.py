@@ -8361,6 +8361,38 @@ class LlamaCppBackend:
         split_library = any(name.startswith((cpu_stem, base_stem)) for name in files)
         return split_library and not any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
 
+    def _argv_offloads_every_layer(
+        self, argv: Iterable[str], env: Optional[Mapping[str, str]] = None
+    ) -> bool:
+        """Whether the finished command puts every weight on the GPU.
+
+        The argv-side twin of ``_offloads_every_layer``, which answers for the
+        request. ``--device none``, a zero layer count, a CPU tensor placement and
+        llama.cpp's own fitter each leave some or all of the model in host RAM, so
+        none of them reads as a full offload. Every unknown answers False too, so
+        an unreadable block count keeps the weights priced against RAM instead of
+        crediting a device pool they may never reach.
+        """
+        args = [str(a) for a in argv or ()]
+        if _device_selection_is_cpu(args, env):
+            return False
+        if _args_place_tensors_on_cpu(args) or _env_places_tensors_on_cpu(env):
+            return False
+        # The fitter owns placement while it runs and offloads whatever it cannot
+        # fit, so only an explicit "off" leaves the layer count as the last word.
+        if fit_is_effectively_on(args, env):
+            return False
+        try:
+            requested = parse_gpu_layers_override(args)
+        except ValueError:
+            return False
+        if requested is None:
+            return False
+        # -1 is llama.cpp's "every layer"; a concrete count has to clear the block
+        # count, which is what the picker's maximum (block_count + 1) sends.
+        n_layers = self.n_layers
+        return requested == -1 or (bool(n_layers) and requested > n_layers)
+
     def _launch_host_shortfall_message(
         self,
         cmd: Iterable[str],
@@ -8425,9 +8457,17 @@ class LlamaCppBackend:
             return None
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
-        shared_free_mib = max(
-            (max(0, row[1]) for row in gpus if row[0] in shared),
-            default = 0,
+        # The shared heap counts only for a launch that actually sends the weights
+        # there. A zero layer count and a CPU device pin leave them in host RAM,
+        # where the arm below prices them, so crediting the heap for one of those
+        # would readmit the very paging this refusal exists to prevent.
+        shared_free_mib = (
+            max(
+                (max(0, row[1]) for row in gpus if row[0] in shared),
+                default = 0,
+            )
+            if self._argv_offloads_every_layer(argv, _env)
+            else 0
         )
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
         # A carved-out UMA heap may be absent from psutil's host availability even
