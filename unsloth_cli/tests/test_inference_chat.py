@@ -420,6 +420,9 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         {"repo_id": "org/Pinned", "task": None, "load_id": "/snap/path"},
         # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
         {"repo_id": "org/Embedder", "task": None, "can_chat": False},
+        # An untrusted diffusion repo carries no task either, and its pipeline root has no
+        # config for can_chat to read, so only its own flag keeps it out of chat.
+        {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
     fake_cfg = types.ModuleType("utils.models.model_config")
     fake_cfg._is_mmproj = lambda name: "mmproj" in name.lower()

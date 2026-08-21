@@ -142,6 +142,10 @@ def cached_entries() -> List[ModelEntry]:
         # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
         if row.get("can_chat") is False:
             continue
+        # An untrusted or unrecognised diffusion repo carries no task either, and its pipeline
+        # root has no config for can_chat to read, so neither of the gates above catches it.
+        if row.get("diffusers"):
+            continue
         entries.append(
             ModelEntry("Downloaded", row["repo_id"], "", row.get("load_id") or row["repo_id"])
         )

@@ -48,6 +48,9 @@ class CachedModelRepo(BaseModel):
     model_format: Optional[str] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
+    # True for an image/video diffusion repo. Not the same question as task, which says only
+    # whether this backend can load it as a pipeline; an untrusted or unrecognised one has none.
+    diffusers: Optional[bool] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -4907,16 +4910,24 @@ def _repo_model_format(repo_info, selected: Optional[Path] = None) -> Optional[s
     return None
 
 
-def _repo_model_can_chat(repo_info) -> Optional[bool]:
+def _repo_model_can_chat(repo_info, selected: Optional[Path] = None) -> Optional[bool]:
     """``False`` for a cached encoder-only repo (embedding, CLIP, ViT), else ``None``.
 
     The classification the hub inventory already applies to its own rows. ``task`` is
     ``None`` for everything not diffusion, so a cached BERT or CLIP otherwise read as an
     ordinary chat model. ``None`` when nothing is conclusive, so unknowns are never hidden.
+
+    The selected revision answers first, so capability describes the copy the pin will
+    load rather than whichever snapshot sorts newest. The others still stand in when it
+    says nothing: a weights-only selection carries no config, and dropping the fallback
+    would readmit every encoder-only repo whose pin happens to be metadata-free.
     """
     from hub.services.models.common import _local_transformers_can_chat
 
-    for snapshot in _repo_model_snapshots(repo_info):
+    ordered = _repo_model_snapshots(repo_info)
+    if selected is not None:
+        ordered = [selected, *(s for s in ordered if s != selected)]
+    for snapshot in ordered:
         verdict = _local_transformers_can_chat(snapshot)
         if verdict is not None:
             return verdict
@@ -4996,8 +5007,12 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     if model_format:
                         row["model_format"] = model_format
                     # Without this the picker offers an embedding or CLIP repo as a chat model.
-                    if _repo_model_can_chat(repo_info) is False:
+                    if _repo_model_can_chat(repo_info, selected) is False:
                         row["can_chat"] = False
+                    # task stays None for a diffusion repo this backend cannot load as a
+                    # pipeline, and None is what every chat repo carries, so say it plainly.
+                    if _repo_is_diffusers(repo_info):
+                        row["diffusers"] = True
                     if is_partial:
                         row["partial"] = True
                     # Listed, so tens of GB of companion weights stay visible and deletable,

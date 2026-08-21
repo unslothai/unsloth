@@ -6114,3 +6114,87 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monk
     assert "model_format" not in rows["Org/Tuned"]
     # refs/main names the merge, so that is the revision the pick reads.
     assert models_route._repo_model_selection(repo, active.resolve())[0] == merged
+
+
+def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkeypatch, tmp_path):
+    """A newer metadata-only encoder snapshot must not speak for a repo whose pin is an
+    older complete causal-LM: capability has to describe the copy the load will read, or
+    the row is flagged unchattable and the valid model disappears from the picker."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Repurposed"
+    old = repo_dir / "snapshots" / "aaaold"
+    old.mkdir(parents = True)
+    (old / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]})
+    )
+    (old / "model.safetensors").write_bytes(b"\0" * 32)
+    new = repo_dir / "snapshots" / "bbbnew"
+    new.mkdir(parents = True)
+    (new / "config.json").write_text(
+        json.dumps({"model_type": "bert", "architectures": ["BertModel"]})
+    )
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(new, (2_000_000, 2_000_000))
+    repo = _repo(
+        "Org/Repurposed",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("model.safetensors", 9_000)], snapshot_path = old),
+            SimpleNamespace(files = [_file("config.json", 12)], snapshot_path = new),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    # The pin already reads the complete causal-LM, so the row must not read as unchattable.
+    assert models_route._repo_model_selection(repo, active.resolve())[0] == old
+    assert rows["Org/Repurposed"].get("can_chat") is not False
+
+
+def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkeypatch, tmp_path):
+    """An untrusted or unrecognised diffusion repo carries no task, exactly like a chat
+    repo, and its pipeline root has no config for can_chat to read. Without a flag of its
+    own the chat picker offered an ordinary community SDXL checkpoint as a chat model."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--someuser--my-sdxl-finetune"
+    snap = repo_dir / "snapshots" / "rev"
+    (snap / "unet").mkdir(parents = True)
+    (snap / "model_index.json").write_text(json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
+    (snap / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 32)
+    repo = _repo(
+        "someuser/my-sdxl-finetune",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("unet/diffusion_pytorch_model.safetensors", 9_000)],
+                snapshot_path = snap,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+    row = rows["someuser/my-sdxl-finetune"]
+
+    # Still listed, since Studio's Images picker consumes these rows; only chat excludes it.
+    assert row["diffusers"] is True
+    # The trust rule leaves task None on purpose, which is why the flag is needed.
+    assert row.get("task") is None
