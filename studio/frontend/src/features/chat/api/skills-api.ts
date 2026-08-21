@@ -25,13 +25,12 @@ function notifySkillCatalogChanged(): void {
 }
 
 function broadcastSkillCatalogChanged(): void {
-  catalogRevision += 1;
+  notifySkillCatalogChanged();
   getCatalogChannel()?.postMessage("changed");
 }
 
 export function announceSkillCatalogChanged(): void {
-  notifySkillCatalogChanged();
-  getCatalogChannel()?.postMessage("changed");
+  broadcastSkillCatalogChanged();
 }
 
 function getCatalogChannel(): BroadcastChannel | null {

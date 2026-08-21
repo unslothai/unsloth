@@ -112,10 +112,8 @@ export function ChatSkillsDialog({
   const toggleSkill = async (skill: AgentSkill, enabled: boolean) => {
     setBusyName(skill.name);
     try {
-      const updated = await setSkillEnabled(skill.name, enabled);
-      setSkills((current) =>
-        current.map((entry) => (entry.name === updated.name ? updated : entry)),
-      );
+      await setSkillEnabled(skill.name, enabled);
+      await refresh();
     } catch (error) {
       toast.error("Could not update skill", {
         description: error instanceof Error ? error.message : String(error),

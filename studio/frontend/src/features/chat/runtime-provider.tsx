@@ -33,6 +33,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { toast } from "sonner";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
@@ -42,6 +43,7 @@ import {
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import { subscribeSkillCatalogChanges } from "./api/skills-api";
 import { getResearchThreadState } from "./api/research-api";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import {
@@ -1947,11 +1949,20 @@ function ThreadContextUsageRecount({
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const catalogRecountPending = useRef(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribeSkillCatalogChanges(() => {
+      catalogRecountPending.current = true;
+      setCatalogRevision((revision) => revision + 1);
+    });
+  }, [enabled]);
 
   useEffect(() => {
     if (
       !enabled ||
-      !activeThreadId ||
       modelLoading ||
       runActive ||
       !checkpoint ||
@@ -1959,11 +1970,21 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
+    if (catalogRecountPending.current) {
+      catalogRecountPending.current = false;
+      void refreshContextUsage({
+        threadId: activeThreadId ?? undefined,
+        supersedeInFlight: true,
+      });
+      return;
+    }
+    if (!activeThreadId) return;
     // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
     if (useChatRuntimeStore.getState().contextUsage != null) return;
     void refreshContextUsage({ threadId: activeThreadId });
   }, [
     activeThreadId,
+    catalogRevision,
     checkpoint,
     enabled,
     ggufContextLength,

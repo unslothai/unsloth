@@ -500,6 +500,32 @@ def test_repository_files_do_not_count_toward_bundle_limits(tmp_path: Path):
     assert not (tmp_path / "skills/unsloth/source").exists()
 
 
+def test_rejects_too_many_archive_entries_before_opening_zipfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    archive = _bundle(
+        tmp_path / "entry-heavy.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "outside/one.txt": "",
+            "outside/two.txt": "",
+        },
+    )
+    monkeypatch.setattr(skills, "MAX_ARCHIVE_ENTRIES", 2)
+    payload = bytearray(archive.read_bytes())
+    end_record = payload.rfind(b"PK\x05\x06")
+    struct.pack_into("<HH", payload, end_record + 8, 1, 1)
+    archive.write_bytes(payload)
+    monkeypatch.setattr(
+        skills.zipfile,
+        "ZipFile",
+        lambda *_args, **_kwargs: pytest.fail("ZipFile materialized the central directory"),
+    )
+
+    with pytest.raises(skills.SkillError, match = "2-entry limit"):
+        skills.import_skill_archive(archive)
+
+
 def test_rejects_oversized_manifest_before_inflating_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

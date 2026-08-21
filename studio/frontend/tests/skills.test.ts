@@ -18,6 +18,33 @@ const adapterSource = readFileSync(
   ),
   "utf8",
 );
+const dialogSource = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/chat-skills-dialog.tsx", import.meta.url),
+  ),
+  "utf8",
+);
+const skillsApiSource = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/api/skills-api.ts", import.meta.url),
+  ),
+  "utf8",
+);
+const runtimeSource = readFileSync(
+  fileURLToPath(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+  ),
+  "utf8",
+);
+const refreshContextUsageSource = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/chat/utils/refresh-context-usage.ts",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
 
 test("read_skill calls explain progressive skill loading", () => {
   assert.deepEqual(readSkillToolDisplay({ name: "pr-9355-smoke" }), {
@@ -78,5 +105,32 @@ test("chat requests and tool results keep skill wiring", () => {
   assert.match(
     adapterSource,
     /isSuccessfulCreateSkillResult\(completedToolName, rawEvent\)[\s\S]{0,80}announceSkillCatalogChanged\(\)/,
+  );
+});
+
+test("skill toggles settle from a revision-guarded catalog refresh", () => {
+  assert.match(
+    dialogSource,
+    /await setSkillEnabled\(skill\.name, enabled\);\s*await refresh\(\);/,
+  );
+  assert.doesNotMatch(dialogSource, /const updated = await setSkillEnabled/);
+});
+
+test("skill catalog changes recount context after active runs finish", () => {
+  assert.match(
+    skillsApiSource,
+    /function broadcastSkillCatalogChanged\(\): void \{\s*notifySkillCatalogChanged\(\);\s*getCatalogChannel\(\)\?\.postMessage/,
+  );
+  assert.match(
+    runtimeSource,
+    /subscribeSkillCatalogChanges\(\(\) => \{\s*catalogRecountPending\.current = true;\s*setCatalogRevision/,
+  );
+  assert.match(
+    runtimeSource,
+    /runActive[\s\S]{0,300}catalogRecountPending\.current[\s\S]{0,240}supersedeInFlight: true[\s\S]{0,80}!activeThreadId/,
+  );
+  assert.match(
+    refreshContextUsageSource,
+    /countsInFlight\.has\(capturedThreadId\)[\s\S]{0,160}options\?\.supersedeInFlight\) nextGeneration\(capturedThreadId\);[\s\S]{0,40}return;/,
   );
 });

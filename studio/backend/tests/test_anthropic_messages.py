@@ -45,6 +45,7 @@ from routes.inference import (
     _anthropic_plain_non_streaming,
     _anthropic_tool_non_streaming,
     _monitor_anthropic_sse_line,
+    anthropic_count_tokens,
     anthropic_messages,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
@@ -2312,6 +2313,46 @@ class TestAnthropicMessagesToolRouting:
         assert entry["reply_preview"] == "ok"
         assert entry["context_length"] == 2048
         assert monitor.active_count() == 0
+
+    def test_count_tokens_includes_selected_skill_schema_and_catalog(self, monkeypatch):
+        import core.inference.skills as skills_mod
+        import core.inference.tools as tools_mod
+
+        captured = {}
+
+        def count_tokens(_messages, _system, tools, **_kwargs):
+            captured["tools"] = tools
+            return 17
+
+        _mock_backend(monkeypatch, count_chat_tokens = count_tokens)
+        monkeypatch.setattr(
+            skills_mod,
+            "list_skills",
+            lambda: [
+                {
+                    "name": "review-helper",
+                    "description": "Review pull requests.",
+                    "enabled": True,
+                }
+            ],
+        )
+        read_skill = next(
+            tool
+            for tool in tools_mod.ALL_TOOLS
+            if tool["function"]["name"] == "read_skill"
+        )
+        monkeypatch.setattr(tools_mod, "ALL_TOOLS", [read_skill])
+        payload = _basic_payload(enable_tools = True, enabled_tools = ["read_skill"])
+
+        response = _drive(
+            anthropic_count_tokens(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert json.loads(response.body) == {"input_tokens": 17}
+        assert [tool["function"]["name"] for tool in captured["tools"]] == ["read_skill"]
+        assert "Enabled skills:\n- review-helper: Review pull requests." in captured["tools"][0][
+            "function"
+        ]["description"]
 
     @pytest.mark.parametrize("stream", [False, True])
     @pytest.mark.parametrize("with_tools", [False, True])

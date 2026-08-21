@@ -21340,6 +21340,37 @@ async def anthropic_count_tokens(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
+    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    has_client_tool = any(
+        (tool if isinstance(tool, dict) else tool.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(tool) is not None
+        for tool in payload.tools or []
+    )
+    if (
+        _anthropic_selects_server_tools(payload, requested_studio_tools, has_client_tool)
+        and not _anthropic_request_has_image(payload)
+        and llama_backend.supports_tools
+    ):
+        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+
+        openai_tools = await _filter_unavailable_skill_tool(
+            _select_anthropic_server_tools(
+                ALL_TOOLS, requested_studio_tools, payload.enabled_tools
+            )
+        )
+        if payload.bypass_permissions:
+            openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        if openai_tools:
+            openai_messages = _append_to_system_message(
+                openai_messages,
+                _build_tool_action_nudge(
+                    tools = openai_tools,
+                    model_name = _llama_public_model_id(llama_backend, payload.model),
+                    full_access = bool(payload.bypass_permissions),
+                ),
+            )
+        else:
+            openai_tools = None
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the
