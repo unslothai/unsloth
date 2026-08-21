@@ -384,7 +384,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           }
           // Hold the send gate across registration too. Between the drop and the
           // intents reaching the queue there is nothing for the composer to see,
-          // so an Enter in that window would send the text without the image.
+          // so an Enter in that window would send the text without the attachment.
           const store = useNativeIntentStore.getState();
           if (needsComposerAttachments) store.beginImageDropRegistration();
           if (needsAudio) store.beginAudioDropRegistration();
@@ -420,8 +420,8 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.videoFailed > 0 && failureKey) {
               store.failVideoDropRegistration(failureKey);
             }
-            // A failed document cancels a send parked behind the image, audio or
-            // video gate too, or the draft goes out with only what survived.
+            // A failed document cancels a send parked behind the attachment, audio
+            // or video gates too, or the draft goes out with only what survived.
             if (registered.docsFailed > 0 && failureKey) {
               if (needsComposerAttachments) {
                 store.failImageDropRegistration(failureKey);
