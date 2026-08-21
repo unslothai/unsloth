@@ -404,9 +404,7 @@ def _validate_archive_entry_count(archive_path: Path) -> None:
                 return
             entries = int.from_bytes(record[10:12], "little")
             if entries > MAX_ARCHIVE_ENTRIES:
-                raise SkillError(
-                    f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit."
-                )
+                raise SkillError(f"Skill archive exceeds the {MAX_ARCHIVE_ENTRIES}-entry limit.")
             central_size = int.from_bytes(record[12:16], "little")
             central_end = archive_size - len(tail) + offset
             central_start = central_end - central_size
@@ -417,14 +415,10 @@ def _validate_archive_entry_count(archive_path: Path) -> None:
             actual_entries = 0
             while remaining:
                 header = handle.read(_ZIP_CENTRAL_SIZE)
-                if (
-                    len(header) != _ZIP_CENTRAL_SIZE
-                    or header[:4] != _ZIP_CENTRAL_SIGNATURE
-                ):
+                if len(header) != _ZIP_CENTRAL_SIZE or header[:4] != _ZIP_CENTRAL_SIGNATURE:
                     return
                 variable_size = sum(
-                    int.from_bytes(header[index : index + 2], "little")
-                    for index in (28, 30, 32)
+                    int.from_bytes(header[index : index + 2], "little") for index in (28, 30, 32)
                 )
                 record_size = _ZIP_CENTRAL_SIZE + variable_size
                 if record_size > remaining:
