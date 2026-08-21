@@ -560,6 +560,10 @@ async (timeoutMs) => {
     bubbles: true, cancelable: true, composed: true,
     button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
   };
+  // Establish keyboard focus outside the recorder so focus styles are not charged to the menu.
+  trigger.focus();
+  await window.__nextPaint();
+  const triggerFocusedBeforeOpen = document.activeElement === trigger;
   window.__hv.begin();
   const openStarted = performance.now();
   trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
@@ -593,6 +597,9 @@ async (timeoutMs) => {
     bodyPointerEventsAfterClose: getComputedStyle(document.body).pointerEvents,
     itemsWhileOpen,
     triggersWhileHovered,
+    triggerFocusedBeforeOpen,
+    focusReturnedToTrigger: document.activeElement === trigger,
+    activeElementAfterClose: document.activeElement?.tagName || null,
     metrics,
   };
 }
@@ -974,7 +981,15 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
             merged[key] = median([r.get(key) for r in rows])
         # Values that are not numbers are proofs the action really happened, not timings, so the
         # last repetition's is kept verbatim rather than aggregated.
-        for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
+        for key in (
+            "domText",
+            "runtimeText",
+            "bodyPointerEvents",
+            "bodyPointerEventsAfterClose",
+            "triggerFocusedBeforeOpen",
+            "focusReturnedToTrigger",
+            "activeElementAfterClose",
+        ):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
         # The headline value from each repetition, unaggregated, so a median can be checked
@@ -1270,6 +1285,9 @@ TABLE_ROWS = TABLE_ROWS + (
     ("menu body pe while open", _action("menu", "bodyPointerEvents")),
     ("menu body pe after close", _action("menu", "bodyPointerEventsAfterClose")),
     ("menu triggers hovered", _action("menu", "triggersWhileHovered")),
+    ("menu trigger focused", _action("menu", "triggerFocusedBeforeOpen")),
+    ("menu focus returned", _action("menu", "focusReturnedToTrigger")),
+    ("menu active after close", _action("menu", "activeElementAfterClose")),
     ("delete ms", _action("delete", "ms")),
     ("delete messages before", _action("delete", "before")),
     ("delete messages after", _action("delete", "after")),
@@ -1783,6 +1801,13 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 # An empty popover satisfies "the menu opened" and costs nothing to render.
                 elif not menu["itemsWhileOpen"]:
                     failures.append(f"{where} opened an action menu with no items in it")
+                elif not menu["triggerFocusedBeforeOpen"]:
+                    failures.append(f"{where} could not focus the message action menu trigger")
+                elif not menu["focusReturnedToTrigger"]:
+                    failures.append(
+                        f"{where} left focus on {menu['activeElementAfterClose']} instead of "
+                        "returning it to the message action menu trigger after Escape"
+                    )
                 if not menu["triggersWhileHovered"] and counts["actionBars"] <= 0:
                     failures.append(
                         f"{where} mounted no action bar at rest and none under the pointer either"

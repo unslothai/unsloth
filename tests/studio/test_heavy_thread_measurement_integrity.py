@@ -374,16 +374,21 @@ const notify = () => {
   queueMicrotask(() => { if (observer) { notifications += 1; observer([]); } });
 };
 const trigger = {
+  tagName: "BUTTON",
+  focus: () => { document.activeElement = trigger; },
   dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } },
 };
 globalThis.document = {
   body: {},
+  activeElement: null,
   querySelector: (sel) => {
     querySelectorCalls += 1;
     return sel === ".aui-action-bar-more-content" && menuOpen ? {} : null;
   },
   querySelectorAll: () => { querySelectorAllCalls += 1; return []; },
-  dispatchEvent: (e) => { if (e.type === "keydown") { menuOpen = false; notify(); } },
+  dispatchEvent: (e) => {
+    if (e.type === "keydown") { menuOpen = false; document.activeElement = trigger; notify(); }
+  },
 };
 window.__heavyThread = { actionButton: () => trigger, openMenuItemCount: () => 5 };
 const menu = eval("(" + MENU_JS + ")");
@@ -437,12 +442,19 @@ globalThis.getComputedStyle = () => ({ pointerEvents: menuOpen ? "none" : "auto"
 // under this metric: the settle loop's first comparison runs before the callback has updated the
 // flag, so it always waits out one __nextPaint() even when the menu opened instantly.
 const notify = () => { queueMicrotask(() => { if (observer) observer(); }); };
-const trigger = { dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } } };
+const trigger = {
+  tagName: "BUTTON",
+  focus: () => { document.activeElement = trigger; },
+  dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } },
+};
 globalThis.document = {
   body: {},
+  activeElement: null,
   querySelector: (sel) => (sel === ".aui-action-bar-more-content" && menuOpen ? {} : null),
   querySelectorAll: () => [],
-  dispatchEvent: (e) => { if (e.type === "keydown") { menuOpen = false; notify(); } },
+  dispatchEvent: (e) => {
+    if (e.type === "keydown") { menuOpen = false; document.activeElement = trigger; notify(); }
+  },
 };
 window.__heavyThread = {
   actionButton: () => trigger,
@@ -584,6 +596,9 @@ def clean_cell() -> dict:
                 "triggersWhileHovered": 3,
                 "bodyPointerEvents": "none",
                 "bodyPointerEventsAfterClose": "auto",
+                "triggerFocusedBeforeOpen": True,
+                "focusReturnedToTrigger": True,
+                "activeElementAfterClose": "BUTTON",
             },
             "delete": {**action, "ms": 100.0, "before": 20, "after": 19},
             "reopen": {
@@ -642,6 +657,14 @@ def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
     cell["actions"]["jump"]["settleMs"] = None
     failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
     assert any("jump action but it never reached a settled state" in f for f in failures), failures
+
+
+def test_escape_must_return_focus_to_the_menu_trigger() -> None:
+    cell = copy.deepcopy(clean_cell())
+    cell["actions"]["menu"]["focusReturnedToTrigger"] = False
+    cell["actions"]["menu"]["activeElementAfterClose"] = "BODY"
+    failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
+    assert any("returning it to the message action menu trigger" in f for f in failures), failures
 
 
 # ── the per-repetition fixture ────────────────────────────────────────
