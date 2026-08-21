@@ -552,6 +552,25 @@ def test_thumbnail_bytes_unknown_id():
     assert search_images.thumbnail_bytes("0123456789ab") is None
 
 
+def test_thumbnail_fetch_keeps_the_website_policy_of_the_search(monkeypatch):
+    # register_images checks the policy, but the proxy fetch happens on a later
+    # request: without carrying it, every redirect hop off an allowed image host
+    # was re-checked against no policy at all.
+    policy = {"allowedDomains": ["tse1.mm.bing.net", "akc.org"]}
+    entry = search_images.register_images(RAW_IMAGES, policy)[0]
+    seen = {}
+
+    def fake_fetch(url, **kwargs):
+        seen["url"] = url
+        seen["website_policy"] = kwargs.get("website_policy")
+        return None, _png_bytes((40, 30)), "image/png"
+
+    monkeypatch.setattr(tools, "_fetch_url_raw", fake_fetch)
+    assert search_images.thumbnail_bytes(entry["id"]) is not None
+    assert seen["url"] == "https://tse1.mm.bing.net/th?id=golden"
+    assert seen["website_policy"] == policy
+
+
 @pytest.fixture
 def client():
     app = FastAPI()

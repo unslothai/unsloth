@@ -221,6 +221,42 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
     assert captured_operation_ids == ["clear-operation-1"]
 
 
+def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
+    """DELETE /api/chat is clear-all either way, and the frontend always sends a body.
+
+    Gating the thumbnail reap on `payload is None` meant it never ran, so "Clear all
+    chats" left every cached thumbnail — which says what was searched for — on disk.
+    """
+    from core.inference import search_images
+
+    reaped: list[bool] = []
+    monkeypatch.setattr(search_images, "clear_cache", lambda: reaped.append(True))
+
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(
+        chat_history, "clear_chat_history", lambda thread_ids = (), operation_id = None: ([], [])
+    )
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    asyncio.run(
+        chat_history.clear_history(
+            request,
+            chat_history.ChatClearRequest(ids = [], operationId = "clear-operation-2"),
+            current_subject = "test-user",
+        )
+    )
+
+    assert reaped == [True]
+
+
 def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
     project = {
         "id": "project-1",

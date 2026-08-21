@@ -1383,10 +1383,13 @@ async def clear_history(
     # the user's, but a caller clearing everything can ask for them too.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
     # Search thumbnails are keyed by id, not thread, so this is the one place they
-    # can be reaped; they reveal what was searched for.
-    if payload is None:
-        from core.inference.search_images import clear_cache
-        await run_in_threadpool(clear_cache)
+    # can be reaped; they reveal what was searched for. Unconditional because this
+    # route is clear-all either way -- both _clear_rows branches call
+    # clear_chat_history(), which drops every thread -- and the frontend always
+    # sends a body, so gating on `payload is None` never reaped anything.
+    from core.inference.search_images import clear_cache
+
+    await run_in_threadpool(clear_cache)
     return {
         "status": "deleted",
         "deletedThreadIds": cleared,

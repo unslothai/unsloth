@@ -114,6 +114,24 @@ export function rewriteSearchImageTokens(
   });
 }
 
+/**
+ * Drop every `[[img:<id>]]` the model wrote. The tokens are markup for the renderer,
+ * so anything that hands the answer to the user as plain text — clipboard, markdown
+ * export, read-aloud — has to strip them or they show up verbatim.
+ */
+export function stripSearchImageTokens(text: string): string {
+  if (!text.includes("[[img:")) return text;
+  const codeRegions = findCodeBlockRegions(text);
+  // One pass over the original, so the code-region offsets stay valid. A token sits
+  // in its own block, so the first branch takes the blank line that introduces it
+  // too; dropping the token alone would leave a widening gap. Code is left alone, as
+  // in rewriteSearchImageTokens: there the token is prose about the feature.
+  return text.replace(
+    /\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?$)|\[\[img:[0-9a-f]{12}\]\]/g,
+    (match, offset: number) => (isInRegion(offset, codeRegions) ? match : ""),
+  );
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -121,17 +139,37 @@ function escapeRegExp(value: string): string {
 const LIST_MARKER_RE = /^(\s*(?:[-*+•]|\d{1,2}[.)])\s+)/;
 const HEADING_LINE_RE = /^\s*#{1,6}\s/;
 const BLOCK_BREAK_RE = /^(?:\s*$|\s*(?:[-*+•]|\d{1,2}[.)])\s|\s*#{1,6}\s|\s*(?:```|~~~))/;
+// Display math, which BLOCK_BREAK_RE cannot see: a blank line inside `$$ ... $$`
+// read as the end of the block, and the card was spliced into the equation, so
+// KaTeX got markup instead of LaTeX. Bounded like latex.ts, so an unclosed `$$`
+// cannot run the scan over the whole answer.
+const DISPLAY_MATH_RE = /\$\$[\s\S]{0,4096}?\$\$|\\\[[\s\S]{0,4096}?\\\]/g;
+
+function findDisplayMathRegions(text: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  if (!text.includes("$$") && !text.includes("\\[")) return regions;
+  DISPLAY_MATH_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = DISPLAY_MATH_RE.exec(text)) !== null) {
+    regions.push([match.index, match.index + match[0].length]);
+  }
+  return regions;
+}
 
 /**
  * End of the block containing `index` — models wrap a list item across several
  * lines, and inserting at the end of the first one splits the sentence in half.
  */
-function blockEndFrom(text: string, index: number): number {
+function blockEndFrom(
+  text: string,
+  index: number,
+  mathRegions: Array<[number, number]> = [],
+): number {
   let at = text.indexOf("\n", index);
   while (at !== -1) {
     const nextBreak = text.indexOf("\n", at + 1);
     const line = text.slice(at + 1, nextBreak === -1 ? text.length : nextBreak);
-    if (BLOCK_BREAK_RE.test(line)) return at;
+    if (BLOCK_BREAK_RE.test(line) && !isInRegion(at + 1, mathRegions)) return at;
     at = nextBreak;
   }
   return text.length;
@@ -168,6 +206,7 @@ export function placeSubjectImages(
   if (bySubject.size === 0) return text;
 
   const codeRegions = findCodeBlockRegions(text);
+  const mathRegions = findDisplayMathRegions(text);
   const insertions: Array<{ at: number; chunk: string }> = [];
   for (const [key, entry] of bySubject) {
     if (text.includes(`[[img:${entry.id}]]`)) continue;
@@ -193,12 +232,12 @@ export function placeSubjectImages(
       // item rather than a lazy continuation of its sentence, and the list keeps
       // its numbering.
       insertions.push({
-        at: blockEndFrom(text, match.index),
+        at: blockEndFrom(text, match.index, mathRegions),
         chunk: `\n\n${" ".repeat(marker[1].length)}[[img:${entry.id}]]`,
       });
     } else {
       insertions.push({
-        at: blockEndFrom(text, match.index),
+        at: blockEndFrom(text, match.index, mathRegions),
         chunk: `\n\n[[img:${entry.id}]]`,
       });
     }
@@ -213,9 +252,16 @@ export function placeSubjectImages(
   return out;
 }
 
+// Split marker from subject, and never let two whitespace quantifiers span the same
+// run: the single-regex form nested `\s+`, `\s*` and a body class that also matched
+// spaces, which backtracked at ~O(n^3.5) -- 250 spaces in one bullet froze the thread
+// for 13s. The body is anchored on non-space edges so the surrounding runs cannot
+// overlap it; `.trim()` below made those edges dead weight anyway.
+const LIST_ITEM_MARKER_RE = /^[ \t]*(?:\d{1,2}[.)]|[-*+•])[ \t]+/;
 const LIST_ITEM_RE =
-  /^\s*(?:\d{1,2}[.)]|[-*+•])\s+(?:\*\*|__)?\s*([^*_\n]{2,60}?)\s*(?:\*\*|__)?\s*(?::|[-–—]\s|\(|$)/;
-const HEADING_RE = /^\s*#{2,4}\s+(?:\d{1,2}[.)]\s+)?([^\n#]{2,60}?)\s*#*\s*$/;
+  /^(?:\*\*|__)?[ \t\r]*([^\s*_\n][^*_\n]{0,58}?[^\s*_\n])(?:[ \t\r]*(?:\*\*|__))?[ \t\r]*(?::|[-–—][ \t\r]|\(|$)/;
+const HEADING_RE =
+  /^[ \t]*#{2,4}[ \t]+(?:\d{1,2}[.)][ \t]+)?([^\s\n#][^\n#]{0,58}?[^\s\n#])(?:[ \t\r]*#*)?[ \t\r]*$/;
 const MAX_AUTO_SUBJECTS = 5;
 // Items that start with an instruction: "Install Python", "Preheat the oven".
 const STEP_VERBS = new Set([
@@ -374,7 +420,10 @@ export function extractListSubjects(text: string): string[] {
     const at = offset;
     offset += line.length + 1;
     if (isInRegion(at, codeRegions)) continue;
-    const match = LIST_ITEM_RE.exec(line) ?? HEADING_RE.exec(line);
+    const marker = LIST_ITEM_MARKER_RE.exec(line);
+    const match = marker
+      ? LIST_ITEM_RE.exec(line.slice(marker[0].length))
+      : HEADING_RE.exec(line);
     if (!match) continue;
     const name = match[1].replace(/[\s:.,;!?]+$/g, "").trim();
     const words = name.split(/\s+/);

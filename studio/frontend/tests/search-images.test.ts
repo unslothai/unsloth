@@ -20,6 +20,7 @@ import {
   searchImagePath,
   searchImagesSignature,
   searchResultText,
+  stripSearchImageTokens,
 } from "../src/features/chat/search-images/search-images.ts";
 import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
@@ -452,5 +453,63 @@ test("thumbnails load from Studio's own endpoint, which the img policy allows", 
   assert.equal(
     safeMarkdownUrl("//img.example.com/x.png", "src", imgNode),
     null,
+  );
+});
+
+test("extractListSubjects stays linear on a bullet padded with whitespace", () => {
+  // The single-regex form backtracked at ~O(n^3.5): 250 leading spaces in one
+  // bullet blocked the render thread for 13 s, and this runs on every finished
+  // answer while the setting is on.
+  const padded = `- ${" ".repeat(5000)}${"x".repeat(80)}y\n- Beagle: small`;
+  const started = Date.now();
+  assert.deepEqual(extractListSubjects(padded), []);
+  assert.ok(Date.now() - started < 1000, "must not backtrack");
+});
+
+test("extractListSubjects reads the same leads after the marker split", () => {
+  const text = [
+    "1. **German Shepherd:** loyal",
+    "  10. Golden Retriever: great family dog",
+    "3) Poodle (standard)",
+    "* Labrador Retriever - friendly",
+  ].join("\n");
+  assert.deepEqual(extractListSubjects(text), [
+    "German Shepherd",
+    "Golden Retriever",
+    "Poodle",
+    "Labrador Retriever",
+  ]);
+});
+
+test("placeSubjectImages never splices a token into display math", () => {
+  const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
+  const images = new Map([[pug.id, pug]]);
+  // A blank line inside `$$ ... $$` used to read as the end of the block, so the
+  // card landed mid-equation and KaTeX was handed markup instead of LaTeX.
+  const text = "The Pug weighs:\n$$\na = 1\n\nb = 2\n$$\nDone.";
+  const out = placeSubjectImages(text, images, false);
+  assert.ok(!/a = 1\n\n\s*\[\[img:/.test(out), "the equation must stay intact");
+  assert.ok(out.includes("$$\na = 1\n\nb = 2\n$$"));
+  assert.ok(out.includes("[[img:cccccccccccc]]"));
+});
+
+test("stripSearchImageTokens takes the tokens and their blank line", () => {
+  assert.equal(
+    stripSearchImageTokens("Golden Retriever\n\n[[img:0123456789ab]]\n\nDone."),
+    "Golden Retriever\n\nDone.",
+  );
+  // Untouched without a token, and an unknown-length id is not a token.
+  assert.equal(stripSearchImageTokens("plain answer"), "plain answer");
+  assert.equal(stripSearchImageTokens("[[img:nothex]]"), "[[img:nothex]]");
+  // Two cards in a row collapse to one gap, not three blank lines.
+  assert.equal(
+    stripSearchImageTokens("A\n\n[[img:0123456789ab]]\n\n[[img:abcdef012345]]\n\nB"),
+    "A\n\nB",
+  );
+  // Inline, and inside code — the same rule rewriteSearchImageTokens follows.
+  assert.equal(stripSearchImageTokens("see [[img:0123456789ab]] here"), "see  here");
+  assert.equal(
+    stripSearchImageTokens("```\n[[img:0123456789ab]]\n```"),
+    "```\n[[img:0123456789ab]]\n```",
   );
 });

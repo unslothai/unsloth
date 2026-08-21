@@ -186,6 +186,7 @@ export { extractYoutubeVideoId } from "./utils/youtube-url";
 export {
   isSearchImagesToolResult,
   searchImagePath,
+  stripSearchImageTokens,
   type SearchImageEntry,
 } from "./search-images/search-images";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";

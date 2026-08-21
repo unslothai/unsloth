@@ -127,6 +127,9 @@ def register_images(
                 "thumbnail": thumbnail,
                 "source": source,
                 "created": now,
+                # Kept with the entry: the proxy fetch happens on a later request, and
+                # without it every redirect hop would be re-checked against no policy.
+                "policy": website_policy,
             }
             entry = {
                 "id": image_id,
@@ -265,7 +268,7 @@ def _encode_thumbnail(raw: bytes) -> bytes | None:
         return None
 
 
-def _fetch_thumbnail_bytes(url: str) -> bytes | None:
+def _fetch_thumbnail_bytes(url: str, website_policy: dict | None = None) -> bytes | None:
     from . import tools
 
     error, body, _content_type = tools._fetch_url_raw(
@@ -274,6 +277,7 @@ def _fetch_thumbnail_bytes(url: str) -> bytes | None:
         extra_headers = {"Accept": "image/*"},
         deadline = time.monotonic() + THUMBNAIL_FETCH_TIMEOUT_S * 2,
         raw_bytes_max = MAX_THUMBNAIL_BYTES,
+        website_policy = website_policy,
     )
     if error is not None or not isinstance(body, (bytes, bytearray)) or not body:
         if error is not None:
@@ -306,7 +310,7 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
             except OSError:
                 pass
             with _fetch_slots:
-                data = _fetch_thumbnail_bytes(entry["thumbnail"])
+                data = _fetch_thumbnail_bytes(entry["thumbnail"], entry.get("policy"))
             if data is None:
                 return None
             try:
