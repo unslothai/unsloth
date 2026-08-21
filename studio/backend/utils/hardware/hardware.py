@@ -1174,7 +1174,9 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
         return None
 
 
-def _rocm_props_total_is_carve_out(props: Any) -> bool:
+def _rocm_props_total_is_carve_out(
+    props: Any, classification: Optional[tuple[str, bool, bool]] = None
+) -> bool:
     """True when ``props.total_memory`` may understate what torch can actually use.
 
     On a unified-memory ROCm APU the two totals are NOT the same number:
@@ -1187,6 +1189,12 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
     free inventory. Same classifier the training worker and the llama.cpp backend
     use, so all three agree on what an APU is.
 
+    ``classification``, when given, is the ``(gcn_arch, is_unified)`` tuple from
+    that same classifier, so callers that already classified the device do not
+    pay for a second pass. When omitted (or when classification failed and the
+    caller passes None) the classifier runs here and a failure is treated as
+    carve-out, exactly as before.
+
     "Not unified" is not the same answer as "discrete". That classifier knows an APU
     by the driver's integrated flag or by a hardcoded arch set, so a gfx1103 Phoenix
     iGPU on a runtime that leaves the flag at 0 reads as discrete and would publish
@@ -1196,12 +1204,14 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
     """
     if not IS_ROCM:
         return False
-    try:
-        from core.training.worker import _rocm_classify_unified_memory
-        if _rocm_classify_unified_memory(props)[1]:
+    if classification is None:
+        try:
+            from core.training.worker import _rocm_classify_unified_memory
+            classification = _rocm_classify_unified_memory(props)
+        except Exception as e:
+            logger.debug("ROCm unified-memory classification failed: %s", e)
             return True
-    except Exception as e:
-        logger.debug("ROCm unified-memory classification failed: %s", e)
+    if classification[1]:
         return True
     hip_version = _hip_runtime_version()
     return (
@@ -1209,6 +1219,96 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
         or hip_version is None
         or hip_version < _HIP_INTEGRATED_FLAG_MIN
     )
+
+
+def _rocm_probe_and_classify(
+    mod: Any, device_indices: list[int]
+) -> tuple[dict[int, tuple[int, Any, Optional[tuple[str, bool, bool]]]], bool]:
+    """Probe each visible device's props once and classify each device once.
+
+    Returns ``(probed, hybrid_rocm)``: ``probed[ordinal]`` is
+    ``(phys_idx, props, classification)`` where ``classification`` is the
+    ``(gcn_arch, is_unified)`` tuple from the shared worker classifier, or None
+    when the probe or the classification failed.
+
+    Failed probes are omitted entirely rather than counted as "discrete": a
+    single-APU host with one dead probe must not be misread as a hybrid set
+    (that would strip the APU of its GTT pool). Each device classifies in its
+    own try/except, so one props object that raises on attribute access cannot
+    collapse the decision for the whole set. ``hybrid_rocm`` is True when at
+    least two probed ROCm devices mix unified and non-unified members.
+    """
+    if mod is None:
+        return {}, False
+    probed: dict[int, tuple[int, Any, Optional[tuple[str, bool, bool]]]] = {}
+    for ordinal, phys_idx in enumerate(device_indices):
+        try:
+            # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
+            props = mod.get_device_properties(ordinal)
+        except Exception as e:
+            logger.debug("torch inventory probe failed for ordinal %d: %s", ordinal, e)
+            continue
+        classification: Optional[tuple[str, bool, bool]] = None
+        if IS_ROCM:
+            try:
+                from core.training.worker import _rocm_classify_unified_memory
+                classification = _rocm_classify_unified_memory(props)
+            except Exception as e:
+                logger.debug(
+                    "ROCm unified-memory classification failed for ordinal %d: %s",
+                    ordinal,
+                    e,
+                )
+        if IS_ROCM:
+            logger.debug(
+                "ROCm device ordinal %d (phys %d): name=%r arch=%r is_integrated=%r -> unified=%s",
+                ordinal,
+                phys_idx,
+                getattr(props, "name", None),
+                classification[0] if classification else None,
+                getattr(props, "is_integrated", None),
+                classification[1] if classification else None,
+            )
+        probed[ordinal] = (phys_idx, props, classification)
+    hybrid_rocm = False
+    if IS_ROCM and len(probed) >= 2:
+        unified_flags = [cls is not None and cls[1] for _, _, cls in probed.values()]
+        hybrid_rocm = any(unified_flags) and not all(unified_flags)
+        if hybrid_rocm:
+            logger.debug(
+                "ROCm hybrid set detected (unified_flags=%s); integrated members keep their carve-out",
+                unified_flags,
+            )
+    return probed, hybrid_rocm
+
+
+def _rocm_hybrid_keeps_carve_out(
+    classification: Optional[tuple[str, bool, bool]], hybrid_rocm: bool
+) -> bool:
+    """True when the GTT substitution must be skipped for this device.
+
+    The integrated member of a hybrid ROCm set (unified + discrete visible
+    together, e.g. a desktop Radeon dGPU beside a Ryzen iGPU) keeps its dedicated
+    carve-out: its GTT/shared pool is system RAM, not VRAM (unslothai/unsloth
+    #8942). The genuine shared-pool arches (gfx1150/51/52 Strix Point/Halo/
+    Krackan, and their Radeon 8xxM/80xxS names) are exempt: their GTT pool IS
+    the real VRAM, so the substitution stands even when a discrete card is
+    visible -- reporting the carve-out would budget a 128 GiB Strix Halo as
+    ~8 GiB and hide models. A device the classifier calls discrete (or that
+    failed to classify) is also untouched: it keeps today's behaviour.
+
+    The arch/name table lives in ``_rocm_classify_unified_memory`` (single
+    source of truth); this function consumes its ``is_shared_pool`` answer
+    instead of re-listing the arches and names.
+    """
+    if not hybrid_rocm:
+        return False
+    if classification is None or not classification[1]:
+        return False
+    # Genuine shared-pool arch: GTT is the real VRAM, keep the substitution.
+    if classification[2]:
+        return False
+    return True
 
 
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:
@@ -1221,28 +1321,43 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     not be what pins that, so callers that need name and capacity but not live
     occupancy come here instead of _torch_get_per_device_info.
 
-    ``props.total_memory`` is the same number ``mem_get_info`` returns as its total
-    half everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), so
-    totals are unchanged. ``used_gb`` is always None, the value this module already
-    uses for "telemetry unavailable".
+    ``props.total_memory`` is the same number ``mem_get_info`` returns as its
+    total half everywhere except a ROCm APU (see _rocm_props_total_is_carve_out)
+    and except the integrated member of a hybrid ROCm set, which keeps its
+    carve-out (see _rocm_hybrid_keeps_carve_out); both endpoints decide the
+    same way, so the rows /api/system merges stay self-consistent.
+    ``used_gb`` is always None, the value this module already uses for
+    "telemetry unavailable".
     """
     mod, _ = _torch_get_device_module()
     if mod is None:
         return []
 
+    # Fetch every device's props once, classify each once, and detect a hybrid
+    # ROCm set (integrated + discrete visible together, e.g. a desktop Radeon
+    # dGPU beside a Ryzen iGPU) up front. On a hybrid host the integrated
+    # member's GTT/shared pool is NOT its real VRAM: the carve-out→GTT
+    # correction below exists so unified-only APU hosts budget their whole pool;
+    # applying it to the iGPU of a hybrid host reports a system-RAM share as the
+    # card's capacity (unslothai/unsloth#8942). Skip the correction for the
+    # integrated member of a hybrid set only; every other case keeps today's
+    # behaviour.
+    probed, hybrid_rocm = _rocm_probe_and_classify(mod, device_indices)
+
     devices = []
-    for ordinal, phys_idx in enumerate(device_indices):
+    for ordinal, (phys_idx, props, classification) in probed.items():
         try:
-            # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
-            props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
-                try:
-                    total_bytes = mod.mem_get_info(ordinal)[1]
-                except Exception as e:
-                    # Keep the carve-out rather than dropping the device: an
-                    # understated total still beats no device at all.
-                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
+            if _rocm_props_total_is_carve_out(props, classification) and hasattr(
+                mod, "mem_get_info"
+            ):
+                if not _rocm_hybrid_keeps_carve_out(classification, hybrid_rocm):
+                    try:
+                        total_bytes = mod.mem_get_info(ordinal)[1]
+                    except Exception as e:
+                        # Keep the carve-out rather than dropping the device: an
+                        # understated total still beats no device at all.
+                        logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             devices.append(
                 {
                     "index": phys_idx,
@@ -2299,14 +2414,24 @@ def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: 
 
     amd-smi reports only the dedicated slice; torch sees the full GTT pool. When
     torch total > smi total, overwrite per-device VRAM fields with the real value.
+    On a hybrid ROCm host the integrated member keeps its carve-out here too
+    (mirrors _torch_get_device_inventory): both endpoints must decide the same
+    way, or /api/system rows contradict themselves (a device whose free exceeds
+    its total) and the reported capacity flips with amd-smi availability.
     """
     torch_devices = _torch_get_per_device_info(device_indices)
     if not torch_devices:
         return
+    probed, hybrid_rocm = _rocm_probe_and_classify(_torch_get_device_module()[0], device_indices)
+    keep_carve_out = {
+        probed[ordinal][0]
+        for ordinal in probed
+        if _rocm_hybrid_keeps_carve_out(probed[ordinal][2], hybrid_rocm)
+    }
     torch_by_index = {td["index"]: td for td in torch_devices}
     for dev in utilization.get("devices", []):
         td = torch_by_index.get(dev.get("index"))
-        if td is None:
+        if td is None or dev.get("index") in keep_carve_out:
             continue
         _apply_unified_memory_correction(dev, td)
 
