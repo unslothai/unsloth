@@ -275,6 +275,7 @@ async (timeoutMs) => {
     bubbles: true, cancelable: true, composed: true,
     button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
   };
+  const triggerFocusedBeforeOpen = document.activeElement === trigger;
   const openStarted = performance.now();
   trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
   trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
@@ -302,6 +303,9 @@ async (timeoutMs) => {
     bodyPointerEventsAfterClose: getComputedStyle(document.body).pointerEvents,
     itemsWhileOpen,
     triggersWhileHovered,
+    triggerFocusedBeforeOpen,
+    focusReturnedToTrigger: document.activeElement === trigger,
+    activeElementAfterClose: document.activeElement?.tagName || null,
   };
   watcher.disconnect();
   return result;
@@ -483,6 +487,12 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             timeout = ACTION_TIMEOUT_MS,
         )
         page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
+        page.evaluate(
+            """async () => {
+                window.__threadWeight.actionButton("More")?.focus();
+                await window.__nextPaint();
+            }"""
+        )
         reset_long_tasks(page)
         before = metrics(cdp)
         menu = page.evaluate(MENU_JS, SETTLE_TIMEOUT_MS)
@@ -497,6 +507,13 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
             ),
             "items_while_open": None if menu is None else menu["itemsWhileOpen"],
             "triggers_while_hovered": None if menu is None else menu["triggersWhileHovered"],
+            "trigger_focused_before_open": (
+                None if menu is None else menu["triggerFocusedBeforeOpen"]
+            ),
+            "focus_returned_to_trigger": (None if menu is None else menu["focusReturnedToTrigger"]),
+            "active_element_after_close": (
+                None if menu is None else menu["activeElementAfterClose"]
+            ),
             **counters(before, after),
             **long_task_summary(page),
         }
@@ -626,6 +643,9 @@ TABLE_ROWS = (
     ("menu body pe while open", lambda r: r["menu"]["body_pointer_events_while_open"]),
     ("menu body pe after close", lambda r: r["menu"]["body_pointer_events_after_close"]),
     ("menu items while open", lambda r: r["menu"]["items_while_open"]),
+    ("menu trigger focused", lambda r: r["menu"]["trigger_focused_before_open"]),
+    ("menu focus returned", lambda r: r["menu"]["focus_returned_to_trigger"]),
+    ("menu active after close", lambda r: r["menu"]["active_element_after_close"]),
     ("menu layouts", lambda r: r["menu"]["layout_count"]),
     ("menu layout ms", lambda r: r["menu"]["layout_ms"]),
     ("menu recalcs", lambda r: r["menu"]["recalc_style_count"]),
@@ -796,6 +816,13 @@ def harness_failures(results: dict) -> list[str]:
         # An empty popover satisfies "the menu opened" and costs nothing to render.
         elif not menu["items_while_open"]:
             failures.append(f"N={size} opened an action menu with no items in it")
+        elif not menu["trigger_focused_before_open"]:
+            failures.append(f"N={size} could not focus the message action menu trigger")
+        elif not menu["focus_returned_to_trigger"]:
+            failures.append(
+                f"N={size} left focus on {menu['active_element_after_close']} instead of "
+                "returning it to the message action menu trigger after Escape"
+            )
         layers.add(menu["body_pointer_events_while_open"])
         deleted = row["delete"]
         if deleted["ms"] is None:
