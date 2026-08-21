@@ -882,11 +882,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "LoftQ is not supported for MLX training yet.",
         )
-    if request.use_dora:
-        raise HTTPException(
-            status_code = 400,
-            detail = "DoRA is not supported for MLX training yet.",
-        )
 
 
 _RESUME_DATASET_DEFAULTS = {
