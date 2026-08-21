@@ -73,6 +73,32 @@ def _resolved_windows_path(path: Path) -> str:
     return resolved.rstrip("\\/")
 
 
+def _resolve_windows_powershell() -> str:
+    """Absolute Windows PowerShell path that does not depend on PATH (#9440).
+
+    A GUI-launched Desktop app can run with a PATH that omits
+    ``System32\WindowsPowerSphere1.0`` (or a stripped environment), and
+    ``subprocess`` then fails with ``FileNotFoundError: [WinError 2]`` before
+    PowerShell ever starts. Prefer PATH resolution, fall back to the built-in
+    absolute location, then PowerShell 7.
+    """
+    import shutil
+
+    on_path = shutil.which("powershell.exe")
+    if on_path:
+        return on_path
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    builtin = ntpath.join(
+        system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+    )
+    if os.path.isfile(builtin):
+        return builtin
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh:
+        return pwsh
+    return "powershell.exe"
+
+
 def _canonical_windows_path(path: Path) -> str:
     return _resolved_windows_path(path).replace("/", "\\")
 
@@ -254,7 +280,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
     )
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        [_resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
