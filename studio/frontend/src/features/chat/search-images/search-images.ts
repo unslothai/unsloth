@@ -136,6 +136,19 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Whether a `[[img:<id>]]` the model wrote sits somewhere it will actually render. */
+function tokenPlacedOutsideCode(
+  text: string,
+  id: string,
+  codeRegions: Array<[number, number]>,
+): boolean {
+  const needle = `[[img:${id}]]`;
+  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
+    if (!isInRegion(at, codeRegions)) return true;
+  }
+  return false;
+}
+
 /** Offset of the first match outside `regions`, or null. Resets `pattern` for reuse. */
 function firstMatchOutsideCode(
   pattern: RegExp,
@@ -228,7 +241,10 @@ export function placeSubjectImages(
   const insertions: Array<{ at: number; chunk: string }> = [];
   const namedRegions = findCodeBlockRegions(alreadyNamed);
   for (const [key, entry] of bySubject) {
-    if (text.includes(`[[img:${entry.id}]]`)) continue;
+    // Outside code only, the same rule the subject match follows:
+    // rewriteSearchImageTokens leaves a token inside a fence as literal text, so
+    // counting that as "the model already placed it" showed no picture at all.
+    if (tokenPlacedOutsideCode(text, entry.id, codeRegions)) continue;
     // On the original text: lowercasing can change length and shift every offset.
     // Global, so a mention inside code can be stepped over rather than ending the
     // search: `\`Go\`` in a snippet used to abandon the subject that a later prose

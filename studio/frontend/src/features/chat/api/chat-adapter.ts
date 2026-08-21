@@ -6793,13 +6793,23 @@ export function createOpenAIStreamAdapter(
         // missing ones and record the web_search call they should have made.
         // Local tool loop only (a hosted provider would be replayed a tool it never
         // saw), never over the user's own documents, never behind an approval prompt.
-        // The SCOPE, not just this turn's calls. A follow-up answers from a
-        // search_knowledge_base result replayed in context without retrieving again,
-        // so gating on current-turn tool calls let subjects lifted from private
-        // documents reach the image engines on the very next message.
+        // The THREAD, not this turn and not the current toggle state. A follow-up
+        // answers from a search_knowledge_base result replayed in context without
+        // retrieving again, and turning RAG off afterwards clears both flags while
+        // those names are still sitting in the conversation -- so "list those product
+        // names" could hand private-document subjects to the image engines. Once a
+        // chat has retrieved private documents it stays ineligible.
+        const threadUsedPrivateDocs = messages.some((message) =>
+          (message.content ?? []).some(
+            (part) =>
+              part.type === "tool-call" &&
+              (part as { toolName?: string }).toolName === "search_knowledge_base",
+          ),
+        );
         const answerUsedPrivateDocs =
           ragEnabled ||
           projectRagEnabled ||
+          threadUsedPrivateDocs ||
           toolCallParts.some((part) => part.toolName === "search_knowledge_base");
         const toolCallsNeedApproval =
           useChatRuntimeStore.getState().confirmToolCalls &&

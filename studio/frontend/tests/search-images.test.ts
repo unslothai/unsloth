@@ -537,3 +537,20 @@ test("placeSubjectImages ignores an earlier part that only named a subject in co
     "Go is compiled.",
   );
 });
+
+test("placeSubjectImages still places a subject whose token only sits in code", () => {
+  const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
+  const images = new Map([[pug.id, pug]]);
+  // rewriteSearchImageTokens leaves a token inside a fence alone, so it renders no
+  // picture; counting it as "already placed" meant the answer showed nothing at all.
+  const text = "Here is the token:\n\n```\n[[img:cccccccccccc]]\n```\n\nThe Pug is small.";
+  const out = placeSubjectImages(text, images, false);
+  assert.ok(out.includes("```\n[[img:cccccccccccc]]\n```"), "the fence stays as written");
+  assert.ok(
+    out.endsWith("The Pug is small.\n\n[[img:cccccccccccc]]"),
+    `a real card must still be placed, got ${JSON.stringify(out)}`,
+  );
+  // A token the model placed in prose still wins, so nothing is placed twice.
+  const placed = "The Pug is small.\n\n[[img:cccccccccccc]]";
+  assert.equal(placeSubjectImages(placed, images, false), placed);
+});
