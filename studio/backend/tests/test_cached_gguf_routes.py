@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import threading
 import time
@@ -5279,6 +5280,44 @@ def test_a_cached_row_listed_from_the_hub_still_drops_its_speech_quant(monkeypat
 
 
 _UNSET = object()
+
+
+def test_a_speech_quant_in_an_older_snapshot_is_dropped_too(monkeypatch, tmp_path):
+    """The runnable quant sits in the newest revision, the CSM one only in an older sibling.
+    Reading a single snapshot could not see the CSM file, yet the online listing marks quants
+    downloaded across every snapshot and ``cached_gguf_for_load`` resolves a load the same way,
+    so it stayed both listed and loadable. Every cached revision is read now."""
+    repo_dir = tmp_path / "models--someone--mixed-GGUF"
+    older = repo_dir / "snapshots" / "old111"
+    newest = repo_dir / "snapshots" / "new222"
+    _arch_gguf(older / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(newest / "flux1-dev-Q4_K_M.gguf", "flux")
+    os.utime(older, (1, 1))
+    os.utime(newest, (9, 9))
+
+    async def hub_answer(repo_id, **kwargs):
+        return _speech_mix_answer(repo_id, newest, default_variant = "Q4_K_M", source = None)
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", hub_answer)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "someone/mixed-GGUF",
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+
+    # A row pinned to the newest snapshot resolves inside it and nothing else, so the older
+    # revision's file is not its business.
+    pinned = models_route._cached_snapshot_roots("someone/mixed-GGUF", str(newest))
+    assert pinned == [str(newest)]
 
 
 def _speech_mix_answer(

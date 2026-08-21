@@ -3653,12 +3653,13 @@ async def get_gguf_variants(
         # local row already is; a cached Hub row expanded online is not, because a successful Hub
         # listing leaves context_source empty and a repo-directory cache_path pins no snapshot,
         # so context_model falls back to the repo id. Resolving the answering snapshot puts that
-        # row back under the filter. Absent bytes read as no architecture and are kept, so an
+        # row back under the filter, and every cached revision is offered because the listing and
+        # the loader both span them. Absent bytes read as no architecture and are kept, so an
         # undownloaded quant is never dropped on a guess.
-        speech_root = context_model if local else _cached_snapshot_root(repo_id, local_path)
+        speech_roots = [context_model] if local else _cached_snapshot_roots(repo_id, local_path)
         listed = (
-            _without_mixed_folder_speech_variants(speech_root, list(response.variants))
-            if speech_root
+            _without_mixed_folder_speech_variants(speech_roots, list(response.variants))
+            if speech_roots
             else list(response.variants)
         )
         default_variant = response.default_variant
@@ -4402,33 +4403,48 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         return None
 
 
-def _cached_snapshot_root(repo_id: str, local_path: Optional[str]) -> Optional[str]:
-    """The on-disk snapshot a cached Hub row's variants live in, or None.
+def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]:
+    """Every cached snapshot a Hub row's variants may live in, newest first.
 
     A cached row hands the route its REPO directory (``models--org--name``, routes report
     ``repo_info.repo_path``), not a snapshot, so the pin resolves to nothing and the speech filter
-    would skip exactly the rows most likely to hold a downloaded CSM file. Resolves to the newest
-    snapshot, the same one ``/api/hub/local-models`` names, so the listing and the filter read one
-    copy rather than two revisions. None when nothing is cached, which leaves the listing alone."""
+    would skip exactly the rows most likely to hold a downloaded CSM file.
+
+    All snapshots, not just the newest, because the rest of the stack already spans revisions: the
+    online listing counts a quant as downloaded across every snapshot (``iter_hf_cache_snapshots``
+    when nothing is pinned) and ``cached_gguf_for_load`` resolves a load the same way. Reading one
+    revision would leave a CSM quant that lives only in an older sibling both listed and loadable.
+    A pinned snapshot path stays alone, since that row resolves inside it and nothing else."""
+
+    def _newest_first(paths: list[str]) -> list[str]:
+        def _mtime(s: str) -> float:
+            try:
+                return os.path.getmtime(s)
+            except OSError:
+                return 0.0
+
+        return sorted(paths, key = _mtime, reverse = True)
+
     try:
         if local_path:
             base = Path(local_path).expanduser()
             if base.parent.name == "snapshots" and base.is_dir():
-                return str(base)
-            resolved = _resolve_hf_cache_realpath(base)
-            if resolved:
-                return resolved
-        if _is_valid_repo_id(repo_id):
-            from hub.utils.hf_cache_state import repo_cache_dir_name
-            return _resolve_hf_cache_realpath(
-                _resolve_hf_cache_dir() / repo_cache_dir_name("model", repo_id)
-            )
+                return [str(base)]
+            # The repo directory this row named: read ITS revisions, not the active cache's, so a
+            # row pointing at another cache root is still answered from the copy it named.
+            snapshots = base / "snapshots"
+            if snapshots.is_dir():
+                return _newest_first([str(d) for d in snapshots.iterdir() if d.is_dir()])
+        if not _is_valid_repo_id(repo_id):
+            return []
+        from hub.utils.gguf import iter_hf_cache_snapshots
+
+        return _newest_first([str(snap) for snap in iter_hf_cache_snapshots(repo_id)])
     except Exception:
-        return None
-    return None
+        return []
 
 
-def _without_mixed_folder_speech_variants(root: str, variants: list) -> list:
+def _without_mixed_folder_speech_variants(roots: list, variants: list) -> list:
     """The listed quants minus the speech GGUFs, when a runnable one is listed beside them.
 
     ``_gguf_folder_task`` ranks speech BELOW a loadable image/video checkpoint so a folder holding
@@ -4443,9 +4459,13 @@ def _without_mixed_folder_speech_variants(root: str, variants: list) -> list:
     that plainly has one. Bounded by the classify cap and fails open, like the walk that tags the
     folder; the header reads are cached by path/mtime/size, so the tagging walk has usually paid
     for them already."""
-    try:
-        base = Path(root)
-    except (TypeError, ValueError):
+    bases: list[Path] = []
+    for root in roots:
+        try:
+            bases.append(Path(root))
+        except (TypeError, ValueError):
+            continue
+    if not bases:
         return variants
     kept: list = []
     dropped = 0
@@ -4455,10 +4475,18 @@ def _without_mixed_folder_speech_variants(root: str, variants: list) -> list:
         filename = getattr(variant, "filename", None)
         arch = None
         if filename:
-            try:
-                arch = (_gguf_architecture(str(base / filename)) or "").strip().lower()
-            except Exception:
-                arch = None
+            # The revision that HOLDS this quant answers for it; the others do not have the file
+            # at all, so an absent copy is skipped rather than read as no architecture.
+            for base in bases:
+                try:
+                    candidate = base / filename
+                    if not candidate.is_file():
+                        continue
+                    arch = (_gguf_architecture(str(candidate)) or "").strip().lower()
+                except Exception:
+                    arch = None
+                if arch:
+                    break
         if arch in _SPEECH_GGUF_ARCHS:
             dropped += 1
             continue
