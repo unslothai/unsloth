@@ -1250,3 +1250,36 @@ def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
     sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok")
 
     assert seen == [(CSM_REPO, CSM_FILE, "tok"), (CSM_REPO, CSM_FILE, "tok")]
+
+
+def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
+    """The other direction, and the one that matters more. A stale REFUSAL only costs a pick the
+    user could have made; a stale ALLOW hands csm bytes to a media loader after the download and
+    the teardown, which is what this preflight exists to prevent. So the revalidation cannot be
+    the cheap side of an asymmetry the way the size pairing's is."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / CSM_FILE
+    # On disk this is still the runnable denoiser the row was offering.
+    cached.write_bytes(_arch_header("flux"))
+
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    # The Hub has since replaced it with a speech checkpoint at the same filename.
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def test_an_uncached_pick_never_spends_a_revision_head(monkeypatch):
+    """No cached copy means no revision to be behind, so the symmetric revalidation must not turn
+    every remote pick into an extra Hub round trip."""
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+    asked: list = []
+    monkeypatch.setattr(
+        diffusion_compat, "_hub_revision", lambda *a, **k: asked.append(a) or "newsha"
+    )
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert asked == []

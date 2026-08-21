@@ -391,19 +391,29 @@ def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
 
 
 def _revalidated_speech_arch(
-    repo_id: str, gguf_filename: str, hf_token: Optional[str], arch: Optional[str]
+    repo_id: str,
+    gguf_filename: str,
+    token: Optional[str],
+    local: Optional[str],
+    arch: Optional[str],
 ) -> Optional[str]:
     """*arch* again, re-read off the Hub when it came from a cached copy the Hub has moved past.
 
     ``try_to_load_from_cache`` resolves the LOCAL ``refs/main``, so a checkpoint republished at
-    the same filename would otherwise refuse a pick the loader's own ``hf_hub_download`` refreshes
-    into something runnable. Runs only on a would-be refusal, like the size pairing's
-    revalidation: an unknown revision keeps *arch*, and a live header we cannot read is no
-    opinion. A pick with no cached copy has no revision to be behind, so it is left alone."""
-    cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
+    the same filename is judged here off bytes the loader's own ``hf_hub_download`` is about to
+    replace. BOTH directions, unlike the size pairing's revalidation, which runs only on a
+    would-be refusal: there a stale allow is caught by the loader's own guard, whereas here it
+    means csm bytes reach a media loader after the download and the teardown -- the precise
+    outcome this preflight exists to prevent, so it cannot be the cheap side of an asymmetry.
+
+    An unknown revision keeps *arch* and a live header we cannot read is no opinion, so an
+    offline host never flips a verdict. A pick with no CACHED copy has no revision to be behind:
+    that covers both an uncached remote pick and an On Device file, neither of which spends the
+    HEAD. The caller folds the result into the probe memo, so this costs one HEAD per cached copy
+    per token per session, not one per pick."""
+    cached = _snapshot_revision(local)
     if cached is None:
         return arch
-    token = (hf_token or "").strip() or None
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
         return arch
@@ -432,6 +442,9 @@ def _speech_probe_architecture(
         _read_local_header(local) if local else _read_gguf_header(repo_id, gguf_filename, token)
     )
     arch = _arch_from_prefix(prefix, gguf_filename)
+    # Inside the memo, so a republished checkpoint is caught in either direction and the HEAD is
+    # spent once per cached copy rather than on every pick.
+    arch = _revalidated_speech_arch(repo_id, gguf_filename, token, local, arch)
     with _CACHE_LOCK:
         if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
             _SPEECH_ARCH_CACHE.clear()
@@ -462,9 +475,6 @@ def speech_pick_refusal(
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token)
-    if arch is not None and arch in _SPEECH_GGUF_ARCHS:
-        # Only now, so the Hub is asked once per would-be refusal rather than once per pick.
-        arch = _revalidated_speech_arch(repo_id, gguf_filename, hf_token, arch)
     if arch is not None and arch in _SPEECH_GGUF_ARCHS:
         return (
             f"'{os.path.basename(gguf_filename)}' is a {arch} speech checkpoint, which no image "
