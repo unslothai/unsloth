@@ -304,3 +304,131 @@ def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
     page.evaluate("() => { document.getElementById('vp').scrollTop = 900; }")
     got = _capture(page)
     assert 3 in got["ever_visible"], got["ever_visible"]
+
+
+# ── where the virtualizer publishes its ordinals is not a UI change ──
+#
+# `runtime/readiness.py` accepts `aria-posinset` / `aria-setsize` on the `[data-role]` message OR on
+# an ancestor row wrapper -- it walks with `closest()`, because the ordinal belongs on whichever
+# element is the member of the set, and refusing the first option would refuse a correctly
+# implemented arm for putting the attribute in a place the gate itself calls right.
+#
+# The visible-region digest then read every attribute on the message, so an arm that took that
+# option differed from the fully mounted arm on EVERY message -- which publishes neither attribute
+# anywhere -- while the rendered content was identical. Auto-mode parity was unusable for a DOM
+# shape the gate explicitly permits, and a wall of differences that are all the same non-finding
+# buries anything real underneath it.
+
+
+def _arm_html(ordinals: str, suffix: str = "") -> str:
+    """One thread of twenty messages, with the virtualization ordinals published `on_the_message`,
+    `on_the_row` wrapper, or `nowhere` -- which is what the shipped build does."""
+    return """
+<!doctype html><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .aui-thread-viewport { height: 400px; overflow-y: auto; }
+  [data-role] { height: 500px; }
+</style>
+<div class="aui-thread-root">
+  <div class="aui-thread-viewport" id="vp"></div>
+</div>
+<script>
+  const WHERE = "__WHERE__";
+  const vp = document.getElementById("vp");
+  for (let i = 1; i <= 20; i++) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const msg = document.createElement("div");
+    msg.setAttribute("data-role", i % 2 ? "user" : "assistant");
+    msg.textContent = "message " + i + "__SUFFIX__";
+    row.appendChild(msg);
+    if (WHERE !== "nowhere") {
+      const owner = WHERE === "on_the_message" ? msg : row;
+      owner.setAttribute("aria-posinset", String(i));
+      owner.setAttribute("aria-setsize", "20");
+    }
+    vp.appendChild(row);
+  }
+</script>
+""".replace("__WHERE__", ordinals).replace("__SUFFIX__", suffix)
+
+
+def _capture_arm(
+    browser,
+    ordinals: str,
+    suffix: str = "",
+) -> dict:
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg.set_content(_arm_html(ordinals, suffix))
+    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    try:
+        _watch(pg)
+        return _capture(pg)
+    finally:
+        pg.close()
+
+
+def _thread_digests(browser, ordinals: str) -> dict:
+    """The WHOLE-DOCUMENT structural digest of the same page, per message."""
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg.set_content(_arm_html(ordinals))
+    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    try:
+        got = pg.evaluate("() => window.__sb.parity.capture()")
+        return {row["i"]: row["digest"] for row in got["messages"]}
+    finally:
+        pg.close()
+
+
+def test_ordinals_on_the_message_do_not_make_every_message_differ(browser):
+    """THE DEFECT. Same twenty messages, same text, same everything a user can see -- one arm
+    publishing the ordinals the gate requires of it, the other publishing none."""
+    from studiobench.analysis import parity as P
+
+    windowed = _capture_arm(browser, "on_the_message")
+    full = _capture_arm(browser, "nowhere")
+    shared = sorted(set(windowed["messages"]) & set(full["messages"]))
+    assert shared, (windowed["messages"], full["messages"])
+    for key in shared:
+        assert (
+            windowed["messages"][key]["digest"] == full["messages"][key]["digest"]
+        ), f"ordinal {key} differed on the virtualization bookkeeping alone"
+    verdict = P.compare_visible(full, windowed)
+    assert verdict["verdict"] == P.MATCH, verdict
+
+
+def test_ordinals_on_the_row_wrapper_are_unaffected_as_they_always_were(browser):
+    """The other permitted placement, which was never inside the message's subtree and so was never
+    part of the defect. It must stay comparable."""
+    from studiobench.analysis import parity as P
+    assert (
+        P.compare_visible(_capture_arm(browser, "nowhere"), _capture_arm(browser, "on_the_row"))[
+            "verdict"
+        ]
+        == P.MATCH
+    )
+
+
+def test_a_real_rendering_difference_is_still_caught(browser):
+    """THE POSITIVE CONTROL, without which the test above passes on a digest that stopped looking
+    at anything. One arm renders different text; that is a visible difference and must still be."""
+    from studiobench.analysis import parity as P
+
+    verdict = P.compare_visible(
+        _capture_arm(browser, "nowhere"), _capture_arm(browser, "on_the_message", suffix = " (v2)")
+    )
+    assert verdict["verdict"] == P.DIFFER, verdict
+
+
+def test_the_structural_digest_still_sees_the_ordinals(browser):
+    """THE SCOPING DECISION, in the browser. The exclusion is passed in by the visible-region
+    caller and is NOT baked into the shared `signature`: the structural digest only ever scores
+    pairs where neither arm is windowing, and there an ordinal appearing on every message is a real
+    change that somebody should be shown."""
+    numbered = _thread_digests(browser, "on_the_message")
+    plain = _thread_digests(browser, "nowhere")
+    assert set(numbered) == set(plain)
+    assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)

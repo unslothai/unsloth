@@ -358,6 +358,15 @@ Reusing the gate rather than writing a second definition of "ready" is deliberat
 definitions in one harness would be a defect of its own. The cost is a floor of one
 `STABLE_GAP_MS`, paid equally by both arms.
 
+**A rebuild that never finished is not a passed invariant.** When the gate times out, the row keeps
+`ran = True` with `expect_ok = False`, a null `reopen_ms` and the outstanding conditions under
+`expect.reopen_readiness` -- and `messages_before` and `messages_after` UNCHANGED, because both are
+`threadTotal()`, the total the store declared. `analysis/behaviour.py` therefore requires evidence
+that the rebuild completed (`reopen_readiness.ready`, or `expect_ok` on a payload that predates it)
+before it counts equal counts as the invariant holding; without it the pair is NOT COMPARABLE, not
+a match. Counts that DISAGREE stay BROKEN whatever the gate said, because a thread that came back
+shorter than it left is the data loss this invariant exists for.
+
 **When the New chat control cannot be clicked**, `thread_reopen` declines the substitute rather
 than detecting it afterwards. `_click_or_navigate` takes `allow_navigate` (default True, so every
 other caller is unchanged) and the LEAVE call passes False: nothing is clicked, nothing is
@@ -437,7 +446,10 @@ exit status combines every mode that ran.
 Whether a pair is windowed is MEASURED from its parity capture where one exists, and falls back to
 the run's own DECLARATION -- the `windowed_readiness:{arm}` gate rows and the per-cell `readiness`
 metadata -- where it does not. Without the fallback a declared windowed run whose captures all
-failed looks unwindowed, gets scored structurally, and exits 0 having compared nothing.
+failed looks unwindowed, gets scored structurally, and exits 0 having compared nothing. The
+declaration is consulted for BOTH expected arms by name, including an arm that emitted no action
+row at all: an arm that died before the film leaves the pair one-sided, and reading the declaration
+off the rows that are present asks the surviving arm whether the missing one was windowed.
 
 Pairs are keyed by rung as well as by rep. They were keyed on the last dotted segment of the cell
 id, so `r1K.base.rep0` and `r100K.base.rep0` collided: a payload carrying more than one rung
@@ -461,6 +473,17 @@ ignore everything the user saw on the way. The per-message digest is still the o
 close, which is a real limitation: a message visible mid-action and since unmounted appears in
 `ever_visible` but not in `messages`, and is reported as `unmounted_at_capture` rather than counted
 as agreement.
+
+**`aria-posinset` and `aria-setsize` are normalised out of the VISIBLE digest, and only that one.**
+The readiness gate accepts those attributes on the `[data-role]` message or on an ancestor row
+wrapper, so an arm may legitimately carry them on the message -- where the fully mounted arm
+carries neither, and every message then differs on bookkeeping while the rendered content is
+identical. The exclusion is passed in by the visible-region caller; the shared `signature` used by
+the thread digest, the per-message rows and the overlays keeps them, because those pairs are only
+ever scored when neither arm is windowing and an ordinal appearing there is a real change. What it
+gives up: a wrong ordinal on a windowed arm is no longer visible in this digest, and is instead the
+readiness gate's `posinset_ordinals_valid` / `posinset_reaches_end` and the completeness probe's
+coverage, which are the checks that can say what a right ordinal would be.
 
 **Visibility is read with `IntersectionObserver` and never with geometry.**
 `getBoundingClientRect()` / `getClientRects()` on content inside a `content-visibility` locked

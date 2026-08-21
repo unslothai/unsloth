@@ -251,6 +251,125 @@ def test_a_reopen_measured_through_a_page_navigation_is_broken():
     assert "reopen_used_the_control:treatment" in got["reason"]
 
 
+# ── a rebuild that never finished is not a held invariant ───────────
+
+
+def _reopen_row(
+    mounted,
+    *,
+    before = 18,
+    after = 18,
+    ready = True,
+):
+    """A `thread_reopen` row in the shape scene/actions.py writes one.
+
+    `ready = False` is what a rebuild that timed out produces: `ran` stays TRUE so the outstanding
+    conditions travel with the row, `expect_ok` is false, `reopen_ms` is null, and the two message
+    counts are UNCHANGED -- because both of them are `threadTotal()`, which is the total the store
+    DECLARED and which the first reopened row publishes.
+    """
+    row = _row(
+        "thread_reopen",
+        _capture(mounted, 18),
+        messages_before = before,
+        messages_after = after,
+        reopened_via = "click",
+        reopen_ready_mode = "windowed" if mounted < 18 else "full",
+        reopen_readiness = {
+            "ready": ready,
+            "mode": "windowed" if mounted < 18 else "full",
+            "expected_messages": before,
+            "conditions": {"settled": True, "end_present": bool(ready)},
+            "probe": {"mounted": mounted, "setsize": after},
+            "reason": None if ready else "the thread was not ready: end_present",
+        },
+    )
+    row["expect_ok"] = bool(ready) and before == after
+    row["timings"] = {"close_ms": 120.0, "reopen_ms": 900.0 if ready else None}
+    if not row["expect_ok"]:
+        row["reason"] = "the reopened thread never reached a ready state"
+    return row
+
+
+def test_a_reopen_that_never_became_ready_is_not_a_passed_invariant():
+    """THE FALSE GREEN. The rebuild timed out at three of eighteen messages mounted, so the action
+    reported `ran = True`, `expect_ok = False`, a null `reopen_ms` and the failed conditions -- and
+    left `messages_before` and `messages_after` equal, because both are the total the store
+    declared rather than a count of a rebuilt thread. Scored as equality that read as a held
+    invariant, the route check passed because the sidebar click had worked, and the pair came out
+    MATCH over a rebuild that never happened."""
+    base = _reopen_row(18)
+    treat = _reopen_row(3, ready = False)
+    got = B.compare_behaviour(base, treat)
+    assert got["verdict"] != P.MATCH, got
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["reopen_keeps_every_message:treatment"]["ok"] is None, checks
+    assert checks["reopen_keeps_every_message:treatment"]["required"] is True
+    assert "never reached a ready state" in got["reason"], got["reason"]
+    assert "end_present" in got["reason"], got["reason"]
+    # The route check still passed, which is exactly what used to carry the pair to a MATCH.
+    assert checks["reopen_used_the_control:treatment"]["ok"] is True
+
+
+def test_a_reopen_that_lost_messages_is_still_broken_when_the_gate_also_refused_it():
+    """The other half of the decision, and the reason it is not a blanket refusal. An arm whose
+    store came back with six of eighteen messages FAILS the windowed readiness gate too -- its
+    `aria-setsize` no longer matches the seeded count -- so a rule that voided every unready reopen
+    would have turned the one finding this action exists for into "not comparable"."""
+    base = _reopen_row(18)
+    treat = _reopen_row(6, after = 6, ready = False)
+    got = B.compare_behaviour(base, treat)
+    assert got["verdict"] == B.BROKEN, got
+    assert "reopen_keeps_every_message:treatment" in got["reason"]
+
+
+def test_a_finished_rebuild_with_matching_counts_still_holds():
+    """The control. A check that never passes is as useless as one that never fails: a thread that
+    really did come back, past the same readiness gate that admitted the cell, still counts."""
+    got = B.compare_behaviour(_reopen_row(18), _reopen_row(6))
+    assert got["verdict"] == P.MATCH, got
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["reopen_keeps_every_message:treatment"]["ok"] is True
+
+
+def test_an_old_payload_that_records_no_rebuild_evidence_is_not_a_pass():
+    """A row from a checkout that predates the readiness gate carries neither `reopen_readiness`
+    nor a meaningful `expect_ok`. Back then `messages_after` was read the moment the store published
+    its total, which is the reading the gate was added to refuse, so those rows cannot support this
+    invariant either and must not be counted as having held it."""
+    base = _reopen_row(18)
+    treat = _reopen_row(6)
+    for row in (base, treat):
+        row["expect"].pop("reopen_readiness")
+        row["expect_ok"] = None
+    got = B.compare_behaviour(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE, got
+
+
+def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path, capsys):
+    """THE CONSEQUENCE, through the command that reports it. This pair was the run's only one, so
+    counting it as a held invariant produced `invariants held: 1` and exit 0 over a rebuild that
+    never finished. It is now the third outcome, and a run that compared nothing exits 2."""
+    import json
+
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready = False))):
+        row["cell_id"] = f"r100K.{side}.rep0"
+        rows.append(row)
+    shard = tmp_path / "payload.jsonl"
+    shard.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+
+    code = U.behaviour_report([shard], "UI PARITY: stalled reopen")
+    out = capsys.readouterr().out
+    assert "invariants held:            0" in out, out
+    assert "NOT COMPARABLE:             1" in out, out
+    assert "NOTHING WAS COMPARED" in out, out
+    assert code == 2, out
+
+
 def test_an_action_with_no_declared_invariant_is_unchecked_and_not_a_pass():
     """The scroll extent is a property of the THREAD and holds identically on all eighteen
     actions. Letting it carry an action to a pass would report `model_change` as verified on a
@@ -957,6 +1076,118 @@ def test_an_arm_declared_windowed_is_still_digested_where_it_mounted_everything(
     shard = _write(tmp_path, "declared_but_mounted", rows)
     assert all(mode == U.STRUCTURAL for mode, _why in U.decide_modes([shard]).values())
     assert U.any_windowed([shard]) is None
+
+
+# ── the declared arm that never produced a row at all ───────────────
+
+
+def _one_sided_shard(
+    tmp_path,
+    name,
+    *,
+    gate = True,
+    cell_row = False,
+):
+    """A mixed-rung payload whose declared-windowed TREATMENT arm died at the large rung.
+
+    The 1K rung is a clean, fully mounted pair that both arms recorded, so the structural report
+    has something to pass on. At 100K only the base arm ever emitted an action row: `sides` holds
+    one side, and the only thing left that can say the missing arm mounts a window is the run's own
+    declaration -- the `--windowed-arm` gate row, or the cell row's `readiness.mode`.
+    """
+    rows = []
+    if gate:
+        rows.append(
+            {
+                "row_type": "gate",
+                "name": "windowed_readiness:treatment",
+                "passed": True,
+                "detail": {"arm": "treatment"},
+            }
+        )
+    if cell_row:
+        rows.append(
+            {
+                "row_type": "cell",
+                "cell_id": "r100K.treatment.rep0",
+                "completed": False,
+                "readiness": {"ready": True, "mode": "windowed", "expected_messages": 18},
+            }
+        )
+    for side in ("base", "treatment"):
+        rows.append(
+            _action(
+                "select_all_copy",
+                f"r1K.{side}.rep0",
+                parity = _capture(mounted = 18, total = 18),
+                visible = _visible([1], [1]),
+                expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+            )
+        )
+    rows.append(
+        _action(
+            "select_all_copy",
+            "r100K.base.rep0",
+            parity = _capture(mounted = 18, total = 18),
+            visible = _visible([1], [1]),
+            expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+        )
+    )
+    return _write(tmp_path, name, rows)
+
+
+def test_a_declared_windowed_arm_with_no_row_is_not_scored_structurally(tmp_path):
+    """THE ONE-SIDED HOLE. The declaration fallback was read off the rows the pair HAS, so an arm
+    that failed before emitting an action row was never asked about: the loop saw the base row,
+    found no declaration for the base arm, and classified the pair structural."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _one_sided_shard(tmp_path, "one_sided")
+    modes = {rep: (mode, why) for (_s, rep, _a), (mode, why) in U.decide_modes([shard]).items()}
+    assert modes["r100K.rep0"][0] == U.WINDOWED, modes
+    assert "DECLARED, not measured" in modes["r100K.rep0"][1], modes
+    # And the rung that really did mount everything on both arms is still owed its digest.
+    assert modes["r1K.rep0"][0] == U.STRUCTURAL, modes
+
+
+def test_a_windowed_cell_row_declares_the_arm_even_when_that_arm_has_no_action_row(tmp_path):
+    """The other declaration, and the one that needs the missing arm's cell id to be derived at
+    all: a run without `--windowed-arm` whose treatment cell was admitted by the WINDOWED readiness
+    gate records that on the cell row, under a cell id no surviving row carries."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _one_sided_shard(tmp_path, "one_sided_cell", gate = False, cell_row = True)
+    modes = {rep: mode for (_s, rep, _a), (mode, _why) in U.decide_modes([shard]).items()}
+    assert modes["r100K.rep0"] == U.WINDOWED, modes
+    assert modes["r1K.rep0"] == U.STRUCTURAL, modes
+
+
+def test_a_missing_windowed_arm_does_not_exit_zero_on_the_strength_of_the_other_rung(
+    tmp_path, capsys
+):
+    """THE CONSEQUENCE. The fully mounted 1K pair supplies `matched > 0`, the 100K pair is filed as
+    structurally NOT COMPARABLE, and the command exits 0 -- having never run a windowed report for
+    the rung whose treatment arm produced nothing at all."""
+    from studiobench.sweep import ui_parity as U
+
+    _one_sided_shard(tmp_path, "one_sided_main")
+    code = U.main([str(tmp_path / "one_sided_main")])
+    out = capsys.readouterr().out
+    assert "windowed:   " in out and "r100K.rep0" in out, out
+    assert "NOTHING WAS COMPARED" in out, out
+    assert code == 2, out
+
+
+def test_a_pair_missing_an_arm_with_no_declaration_anywhere_is_still_structural(tmp_path):
+    """The fallback must not become an override in the other direction: with nothing declaring a
+    window, a pair one arm failed to record is the structural report's problem, and it refuses it
+    there. Otherwise every crashed cell in an ordinary A/B would be routed to a mode that cannot
+    say anything about it either."""
+    from studiobench.sweep import ui_parity as U
+
+    shard = _one_sided_shard(tmp_path, "one_sided_undeclared", gate = False)
+    modes = {rep: mode for (_s, rep, _a), (mode, _why) in U.decide_modes([shard]).items()}
+    assert modes == {"r1K.rep0": U.STRUCTURAL, "r100K.rep0": U.STRUCTURAL}, modes
 
 
 def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_path):

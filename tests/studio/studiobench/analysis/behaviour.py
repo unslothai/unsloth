@@ -266,18 +266,83 @@ def _same_number(base_row: dict, treat_row: dict, key: str, name: str) -> dict:
     )
 
 
+def _reopen_completed(row: dict) -> Optional[bool]:
+    """Did the reopened thread finish REBUILDING, or does this row not say?
+
+    Three values, and the third is the one that matters. `None` is a row that carries no evidence
+    either way, which is what a payload written before `thread_reopen` waited on
+    runtime/readiness.py looks like -- and back then `messages_after` was read off whatever was on
+    screen when the store published its total, so those rows cannot support the invariant below
+    either.
+
+    `reopen_readiness.ready` first, because it is the gate's OWN verdict on the rebuilt thread.
+    `expect_ok` second: on this action it is `reopen_ms is not None and after == before`, so a true
+    value means the action's own assertion about the rebuild held under whatever gate that checkout
+    applied.
+    """
+    readiness = _expect(row, "reopen_readiness")
+    if isinstance(readiness, dict) and isinstance(readiness.get("ready"), bool):
+        return readiness["ready"]
+    ok = row.get("expect_ok")
+    return ok if isinstance(ok, bool) else None
+
+
 def thread_survives_reopen(base_row: dict, treat_row: dict) -> list[dict]:
     """thread_reopen: the thread came back the same length, and by the same route."""
     out = []
     for label, row in (("base", base_row), ("treatment", treat_row)):
         before, after = _expect(row, "messages_before"), _expect(row, "messages_after")
-        out.append(
-            _check(
-                f"reopen_keeps_every_message:{label}",
-                None if before is None or after is None else before == after,
-                f"the thread had {before} messages and came back with {after}",
+        completed = _reopen_completed(row)
+        detail = f"the thread had {before} messages and came back with {after}"
+        # MATCHING COUNTS ARE ONLY AN INVARIANT IF THE THREAD ACTUALLY CAME BACK.
+        #
+        # `messages_after` is `threadTotal()`, which is `aria-setsize` -- the store's DECLARATION of
+        # how long the conversation is, published by the very first reopened row. When the rebuild
+        # times out, scene/actions.py records `ran = True`, `expect_ok = False`, a null `reopen_ms`
+        # and the outstanding conditions, and leaves the two counts equal because both are that same
+        # declaration. Scored as equality it read as a held invariant, the route check passed
+        # because the sidebar click had worked, and the pair came out MATCH with the rebuild having
+        # timed out at three of eighteen messages mounted. "A declaration is not a rebuild" is the
+        # defect the action itself was fixed for; this is the same defect one layer up.
+        #
+        # NOT COMPARABLE RATHER THAN BROKEN, AND ONLY FOR THE EQUAL CASE:
+        #
+        #   counts DISAGREE     BROKEN, whatever the gate said. The thread came back shorter than it
+        #                       left, which is the data loss this invariant exists for, and a
+        #                       readiness failure corroborates it rather than excusing it. Routing
+        #                       this to NOT COMPARABLE would have downgraded the one finding the
+        #                       whole action is written to catch.
+        #   counts AGREE, no
+        #   finished rebuild    NOT COMPARABLE. The comparison was not made: both numbers are the
+        #                       same declaration read off a thread that never finished building. And
+        #                       the timeout that produced it is bounded by the harness's OWN
+        #                       remaining budget (a 10 s floor, a 60 s ceiling, against the 180 s the
+        #                       cell's opening gate had), so calling it BROKEN would file a budget
+        #                       exhaustion on a shared machine as a user-visible defect of the arm.
+        #
+        # The arm's failure is not lost by this: `ran = True, expect_ok = False` already excludes
+        # the cell from scoring through `report/payload.py`, and the reason travels with the row.
+        if before is None or after is None:
+            ok: Optional[bool] = None
+            required = False
+        elif before != after:
+            ok, required = False, False
+        elif completed:
+            ok, required = True, False
+        else:
+            ok, required = None, True
+            readiness = _expect(row, "reopen_readiness")
+            failed = (
+                sorted(k for k, v in (readiness.get("conditions") or {}).items() if v is False)
+                if isinstance(readiness, dict)
+                else []
             )
-        )
+            detail += (
+                ", but both numbers are the total the store DECLARED and the reopened thread never "
+                "reached a ready state, so nothing here says the thread came back "
+                f"(outstanding {failed or 'unrecorded'})"
+            )
+        out.append(_check(f"reopen_keeps_every_message:{label}", ok, detail, required = required))
         # The route matters as much as the count. A row measured after a full page navigation is a
         # row about a page load; see `_click_or_navigate` in scene/actions.py.
         via = _expect(row, "reopened_via")

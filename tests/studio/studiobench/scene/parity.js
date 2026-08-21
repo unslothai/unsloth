@@ -120,6 +120,12 @@
   // Attributes that carry no rendered meaning at all.
   const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot"]);
 
+  // VIRTUALIZATION BOOKKEEPING. Dropped -- name and value -- from the VISIBLE-REGION digest only,
+  // and passed in by that caller rather than applied here, because the two comparisons want
+  // different things from these two attributes. The whole argument is at the call site, in
+  // `parityVisible.capture()`.
+  const VIRTUALIZATION_ATTRS = new Set(["aria-posinset", "aria-setsize"]);
+
   // Attributes whose value is a URL. The origin is stripped and the path kept, so a genuinely
   // different asset still moves the digest while the arm's own port does not.
   const URL_ATTRS = new Set(["src", "href", "srcset", "action", "poster", "data-src", "formaction"]);
@@ -166,7 +172,11 @@
     return normText(raw);
   };
 
-  const signature = (root) => {
+  // `dropAttrs`, when given, is a Set of attribute names this digest does not compare AT ALL --
+  // neither presence nor value, unlike VOLATILE_ATTRS which keeps the presence. Optional and off
+  // by default: every existing caller (the whole-thread digest, the per-message rows, the overlays
+  // and the node-driven unit tests) passes nothing and gets exactly what it got before.
+  const signature = (root, dropAttrs) => {
     if (!root) return "";
     const parts = [];
     const walk = (el, depth) => {
@@ -178,6 +188,7 @@
       const names = [];
       for (const attr of el.attributes) {
         if (IGNORED_ATTRS.has(attr.name)) continue;
+        if (dropAttrs && dropAttrs.has(attr.name)) continue;
         names.push(attr.name);
       }
       names.sort();
@@ -437,7 +448,32 @@
           const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i);
           if (!VIS.ever.has(ord)) continue;
           mounted_ever_visible += 1;
-          const sig = signature(el);
+          // WITHOUT THE VIRTUALIZATION BOOKKEEPING, and the asymmetry is the reason.
+          //
+          // runtime/readiness.py deliberately accepts `aria-posinset` / `aria-setsize` either on
+          // the `[data-role]` message or on an ancestor row wrapper -- it walks with `closest()`,
+          // because the ordinal belongs on whichever element is the member of the set. An arm that
+          // takes the first option therefore carries two attributes on EVERY message that the
+          // fully mounted arm publishes on none, so the per-message digests differed on every
+          // message while the rendered content was identical, and visible-region parity reported a
+          // wall of differences for a DOM shape the gate explicitly permits. That makes auto-mode
+          // parity unusable for the very arm it exists to score.
+          //
+          // NOT normalised in the whole-document structural digest, which is a separate decision
+          // and a deliberate one. That digest is only ever applied to pairs where NEITHER arm is
+          // windowing (see `decide_modes`), and between two fully mounted arms an ordinal that
+          // appears, disappears or changes IS a change worth seeing. `signature` is shared with
+          // the thread digest, the per-message rows, the overlays and the node-driven unit tests,
+          // so the exclusion is passed in HERE by the one caller that wants it rather than baked
+          // into the function every caller uses.
+          //
+          // What this gives up: a windowed arm publishing a WRONG ordinal on a message is no
+          // longer visible in this digest. It is not unchecked -- runtime/readiness.py gates on
+          // the ordinals being real positions (at least 1, distinct, no larger than the declared
+          // set size, reaching the seeded total) and `probe_thread_completeness` walks them for
+          // holes -- and those are the checks that can say what a right ordinal would be, which a
+          // digest comparison against an arm that publishes none never could.
+          const sig = signature(el, VIRTUALIZATION_ATTRS);
           byOrdinal[String(ord)] = {
             role: el.getAttribute("data-role") || "?",
             digest: hash(sig),

@@ -181,6 +181,26 @@ def doctor(args) -> int:
 # ── the run ─────────────────────────────────────────────────────────
 
 
+def _windowed_arms(spec: str, labels: list) -> set:
+    """The arms `--windowed-arm` names, checked against the arms this run will actually have.
+
+    A PURE ARGUMENT CHECK, WHICH IS WHY IT RUNS BEFORE ANYTHING IS STARTED. It used to run after
+    both Studio installs had been launched, the pacer bound and the browser opened -- and the
+    `SystemExit` it raises for a typo (`--windowed-arm treatments`) left every one of them running,
+    because the cleanup `finally` does not begin until the cell loop much further down. No
+    `bundle.close()`, no `pacer.stop()`, no `stop_studio()`, no watchdog cancellation: a mistyped
+    flag cost a browser and up to two Studio servers, still holding their ports.
+    """
+    names = {name.strip() for name in (spec or "").split(",") if name.strip()}
+    unknown = names - set(labels)
+    if unknown:
+        raise SystemExit(
+            f"--windowed-arm names {sorted(unknown)}, which is not an arm in this run "
+            f"({sorted(labels)})"
+        )
+    return names
+
+
 def run(args, ab_ref = None) -> int:
     from .fixture.corpus import Corpus
     from .instruments import build as build_instruments  # noqa: F401
@@ -204,6 +224,13 @@ def run(args, ab_ref = None) -> int:
     from .runtime import resources
     from .runtime.types import Paths
 
+    # THE ARM NAMES, BEFORE A SINGLE PROCESS EXISTS. Nothing below this line can be undone without
+    # the cleanup `finally`, and that block is a long way down; see `_windowed_arms`. The labels
+    # are the ones `specs` builds with a few lines further on, and they are decided here so the two
+    # cannot drift into disagreeing about what an arm is called.
+    arm_labels = ["base"] + (["treatment"] if ab_ref else [])
+    windowed = _windowed_arms(getattr(args, "windowed_arm", ""), arm_labels)
+
     out = Path(args.out or f"studiobench-{args.tier}-{int(time.time())}").resolve()
     paths = Paths.under(out)
     _log(f"studiobench {TOOL_VERSION}  tier={args.tier}  out={paths.out}")
@@ -216,9 +243,9 @@ def run(args, ab_ref = None) -> int:
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
     # One spec per side. Without --ab there is exactly one and everything below is the old path.
-    specs = [("base", args.branch, args.attach, args.port)]
+    specs = [(arm_labels[0], args.branch, args.attach, args.port)]
     if ab_ref:
-        specs.append(("treatment", ab_ref, args.attach_b, args.port + 1))
+        specs.append((arm_labels[1], ab_ref, args.attach_b, args.port + 1))
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
             return 2
@@ -427,17 +454,9 @@ def run(args, ab_ref = None) -> int:
     # would let a base arm that failed to finish mounting sail through and be compared against a
     # treatment that did the same, which is the exact "flattering garbage" the gate exists to
     # refuse -- on both arms at once, so the ratio would still look fine.
-    windowed = {
-        name.strip()
-        for name in (getattr(args, "windowed_arm", "") or "").split(",")
-        if name.strip()
-    }
-    unknown = windowed - {s["label"] for s in sides}
-    if unknown:
-        raise SystemExit(
-            f"--windowed-arm names {sorted(unknown)}, which is not an arm in this run "
-            f"({sorted(s['label'] for s in sides)})"
-        )
+    #
+    # `windowed` was parsed and validated at the top of this function, before the installs, the
+    # pacer and the browser existed. Only the application of it is left here.
     for side in sides:
         side["readiness_mode"] = MODE_WINDOWED if side["label"] in windowed else MODE_FULL
         if side["readiness_mode"] == MODE_WINDOWED:

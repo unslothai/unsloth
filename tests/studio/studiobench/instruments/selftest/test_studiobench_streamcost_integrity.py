@@ -165,6 +165,95 @@ def test_a_clean_window_stays_scoreable(page):
     assert out["reply_chars_delta"] == len("all good")
 
 
+# ── a frame split INSIDE the "data:" prefix ─────────────────────────
+#
+# The hook starts buffering when a chunk contains a complete `data:`. The socket does not respect
+# that boundary: it can cut a frame anywhere, including between the "da" and the "ta:". Neither
+# half then contains the marker and neither completes a buffered frame, so both were discarded --
+# and the frame's characters left the denominator WITHOUT incrementing `wireParseFailures`, so the
+# window-integrity check above could not see it either. Later frames make the window look
+# scoreable while the count underneath it is short, which inflates every cost-per-character
+# derived from it, at exactly the moment the instrument exists to measure: chunks arrive ragged
+# when the renderer is jammed.
+
+
+def _halves(text: str, at: int) -> tuple:
+    return text[:at], text[at:]
+
+
+def test_the_counter_survives_a_split_inside_the_data_prefix(page):
+    """THE DEFECT. Two chunks, neither of which contains `data:`, and one whole frame between
+    them."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    head, tail = _halves(_frame("split marker"), 2)
+    assert "data:" not in head and "data:" not in tail, (head, tail)
+    _feed(page, head)
+    _feed(page, tail)
+    assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("split marker")
+    got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
+    assert got == {"failures": 0, "pending_chars": 0}, got
+
+
+def test_a_held_marker_fragment_is_reported_as_buffered_rather_than_lost(page):
+    """While the second half has not arrived, the frame is not counted -- so a window closing here
+    has a short denominator and has to say so. Dropping the fragment reported `pending_chars: 0`,
+    which is the instrument stating that nothing was outstanding while a frame was."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, _frame("orphan")[:3])
+    got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
+    assert got["pending_chars"] > 0, got
+    assert got["failures"] == 0, got
+
+
+def test_a_marker_split_three_ways_is_still_one_frame(page):
+    """The socket is under no obligation to cut in a convenient place, and a fix that only handles
+    a two-way split is a fix for the example rather than for the defect."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    text = _frame("three ways")
+    for part in (text[:1], text[1:2], text[2:4], text[4:]):
+        _feed(page, part)
+    assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("three ways")
+
+
+def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_frame(page):
+    """THE WAY THIS FIX COULD HAVE BEEN WORSE THAN THE BUG. Any page traffic may end in "d", "da"
+    or "data", and gluing that onto the front of a real frame makes "ddata: {...}", which no longer
+    starts with the marker and would be skipped in silence."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    _feed(page, "an unrelated chunk that ends in a d")
+    _feed(page, _frame("counted anyway"))
+    assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("counted anyway")
+    got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
+    assert got == {"failures": 0, "pending_chars": 0}, got
+
+
+def test_the_speculative_buffer_cannot_grow_with_unrelated_traffic(page):
+    """The memory bound, asserted rather than argued. A fix that buffered every chunk in the page
+    on the chance that one of them was an SSE frame would be worse than the bug it fixes: a tail
+    short enough to be a partial `data:` is at most four characters."""
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    for i in range(50):
+        _feed(page, f"chunk {i} of unrelated traffic, ending in data")
+    got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
+    assert got["pending_chars"] <= 4, got
+    assert got["failures"] == 0, got
+
+
+def test_a_window_whose_only_frame_was_split_in_the_marker_still_counts_it(page):
+    """THE CONSEQUENCE at the window boundary, which is where the number is used. The window used
+    to close scoreable, with a `reply_chars_delta` of zero over a frame that really was delivered:
+    a denominator short by an unknown amount wearing a clean bill of health."""
+    inst = _instrument(page)
+    page.evaluate("() => window.__sb.streamcost.reset()")
+    inst.open(_Window())
+    head, tail = _halves(_frame("inside the window"), 3)
+    _feed(page, head)
+    _feed(page, tail)
+    out = inst.close(_Window())
+    assert out["reply_chars_delta"] == len("inside the window"), out
+    assert out["reply_chars_scoreable"] is True, out
+
+
 def test_a_failure_before_the_window_does_not_taint_it(page):
     """Attribution matters: a window is scoreable or not on its OWN evidence. Counting total
     failures rather than the delta would condemn every window after the first bad frame."""

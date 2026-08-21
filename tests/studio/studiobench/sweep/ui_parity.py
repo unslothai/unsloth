@@ -81,6 +81,12 @@ MODE_WINDOWED = "windowed"
 WINDOWED = "windowed"
 STRUCTURAL = "structural"
 
+#: The arms a pair is expected to have. Consulted BY NAME rather than by walking the rows that are
+#: present, because the case that matters is the arm with NO row: an arm that died before it emitted
+#: an action row leaves `sides` holding only the other one, and reading the declaration off the rows
+#: present asks the surviving arm whether the missing one was windowed.
+ARMS = ("base", "treatment")
+
 
 def rows(path: Path) -> list[dict]:
     return [
@@ -181,6 +187,25 @@ def _mount_measured(parity: Optional[dict]) -> bool:
     return total > 0
 
 
+def _cell_id_for(sides: dict, arm: str) -> str:
+    """This pair's cell id ON `arm`, derived when that arm recorded no row.
+
+    `make_cell_id` writes `r{rung}.{arm}.rep{n}`, so the counterpart of a row that IS present is
+    the same id with the arm segment swapped. Without this an arm that never reached the film has
+    no cell id to look up in the per-cell declarations, and the only declaration left is the
+    run-wide one from `--windowed-arm`.
+    """
+    row = sides.get(arm)
+    if isinstance(row, dict) and row.get("cell_id"):
+        return str(row["cell_id"])
+    for other in sides.values():
+        parts = str(other.get("cell_id") or "").split(".")
+        if len(parts) >= 3:
+            parts[1] = arm
+            return ".".join(parts)
+    return ""
+
+
 def decide_modes(paths: list[Path]) -> dict[tuple, tuple[str, str]]:
     """{(shard, rep, action): (mode, why)} -- how each action pair is to be scored, and why.
 
@@ -216,10 +241,19 @@ def decide_modes(paths: list[Path]) -> dict[tuple, tuple[str, str]]:
         if len(sides) == 2 and all(_mount_measured(r.get("parity")) for r in sides.values()):
             decided[key] = (STRUCTURAL, "")
             continue
+        # EITHER EXPECTED ARM, INCLUDING ONE THAT HAS NO ROW AT ALL.
+        #
+        # The declaration fallback used to be read off the rows this pair actually has, which
+        # covers a declared-windowed arm whose captures failed and misses the case one step worse:
+        # the arm failed before it emitted an action row, so `sides` holds only the other side, the
+        # loop never asks about the arm that is missing, and the pair is scored structurally. In a
+        # mixed-rung payload the fully mounted pairs then supply `matched > 0`, the missing windowed
+        # pair is filed as structurally NOT COMPARABLE, and the command exits 0 without ever running
+        # a windowed report for the rung that has no verdict at all.
         why = ""
-        for _label, row in sorted(sides.items()):
-            cid = str(row.get("cell_id") or "")
-            why = cells.get(cid) or arms.get(arm_of(cid)) or ""
+        for label in ARMS:
+            cid = _cell_id_for(sides, label)
+            why = (cells.get(cid) if cid else "") or arms.get(label) or ""
             if why:
                 break
         decided[key] = (

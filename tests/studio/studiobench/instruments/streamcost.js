@@ -99,6 +99,40 @@
   // that runs fourteen times a second.
   const MAX_PENDING_CHARS = 262144;
 
+  // ── the frame marker, and the halves of it a split can leave ──────────────────────────────────
+  //
+  // The socket can cut a frame ANYWHERE, including inside these five characters: one decode()
+  // returns "da" and the next "ta: {...}\n\n". Neither chunk contains the marker, so the detector
+  // below saw two unrelated chunks, discarded both, and lost the frame WITHOUT counting a parse
+  // failure -- which left the wire character count short with nothing anywhere to say so, and
+  // `reply_chars_scoreable` reporting the window as sound. The denominator going quietly short
+  // inflates every cost-per-character above it, and it goes short exactly when the renderer is
+  // jammed and chunks arrive ragged, which is the moment the instrument exists to measure.
+  const SSE_MARKER = "data:";
+  // The fragment of the marker the last chunk MIGHT have ended on. At most four characters ("d",
+  // "da", "dat", "data"), so this cannot become the memory hazard MAX_PENDING_CHARS guards
+  // `pending` against: buffering whole unrelated TextDecoder chunks on the chance that one of them
+  // is an SSE frame would be a worse bug than the one being fixed.
+  let markerTail = "";
+
+  //: The longest tail of `s` that is a PROPER PREFIX of the marker, or "".
+  const partialMarkerTail = (s) => {
+    for (let n = Math.min(SSE_MARKER.length - 1, s.length); n > 0; n -= 1) {
+      if (s.endsWith(SSE_MARKER.slice(0, n))) return SSE_MARKER.slice(0, n);
+    }
+    return "";
+  };
+
+  //: Does `s` CONTINUE the marker that `frag` started? This is what keeps a speculative fragment
+  //: harmless. Unrelated traffic ending in "d" would otherwise be glued onto the front of the next
+  //: chunk, and a real frame arriving there would become "ddata: {...}", which does not start with
+  //: the marker and would be skipped in silence -- the same defect one step to the left.
+  const continuesMarker = (frag, s) => {
+    const rest = SSE_MARKER.slice(frag.length);
+    const n = Math.min(rest.length, s.length);
+    return n > 0 && s.slice(0, n) === rest.slice(0, n);
+  };
+
   const now = () => performance.now();
   const streaming = () => S.lastSseAt > 0 && now() - S.lastSseAt < IDLE_GAP_MS;
 
@@ -201,7 +235,14 @@
     const t = now();
     S.decodeCalls += 1;
     if (typeof out === "string" && out.length > 0 && out.length <= MAX_SSE_CHUNK_CHARS) {
-      const looksSse = out.indexOf("data:") >= 0;
+      // The fragment the previous chunk ended on, but only if THIS chunk continues it. A split
+      // inside the marker is repaired here rather than in the buffer, so a fragment that turns out
+      // to be ordinary text ending in "d" is dropped instead of corrupting the frame behind it.
+      // `markerTail` is only ever set when `pending` is empty, so the two can never both hold a
+      // half of the same frame.
+      const chunk = markerTail && continuesMarker(markerTail, out) ? markerTail + out : out;
+      markerTail = "";
+      const looksSse = chunk.indexOf(SSE_MARKER) >= 0;
       if (looksSse) noteSse();
       // `looksSse || pending` and not just `looksSse`. THE SECOND HALF OF A SPLIT FRAME CONTAINS
       // NO "data:" -- it is the tail of a JSON body and a blank line -- so gating the counter on
@@ -215,7 +256,12 @@
       // TextDecoder traffic can therefore land in the buffer; it cannot be counted, because it
       // will not parse as a frame, and it is bounded by MAX_PENDING_CHARS and reported through
       // wire_parse_failures rather than absorbed.
-      if (looksSse || pending.length > 0) countDeltaChars(out);
+      //
+      // AND THE CHUNK THAT IS NEITHER is kept only as far as it could be the START of a marker.
+      // That is the third case, the one a complete-marker test cannot see: "da" carries no marker
+      // and completes no buffered frame, and discarding it loses the frame that arrives next.
+      if (looksSse || pending.length > 0) countDeltaChars(chunk);
+      else markerTail = partialMarkerTail(chunk);
     }
     S.overheadMs += now() - t;
     return out;
@@ -321,7 +367,12 @@
     // The two things that can make `wireChars` short by an unknown amount, read at the same O(1)
     // cost as the counter itself so a window boundary can capture both ends.
     wireIntegrity() {
-      return { failures: S.wireParseFailures, pending_chars: pending.length };
+      // The marker fragment counts as buffered, because it is: the frame it begins has not been
+      // counted yet, so a window closing on it has a denominator that is short by that frame. The
+      // cost of being honest here is that a stray one to four characters of unrelated traffic can
+      // mark a window unscoreable, which is the direction to err in -- an unscoreable window is
+      // "we could not tell", and a silently short denominator is "it was fine".
+      return { failures: S.wireParseFailures, pending_chars: pending.length + markerTail.length };
     },
     replyChars() {
       return S.wireChars;
@@ -347,7 +398,7 @@
         wire_chars: S.wireChars,
         wire_frames: S.wireFrames,
         wire_parse_failures: S.wireParseFailures,
-        wire_pending_chars: pending.length,
+        wire_pending_chars: pending.length + markerTail.length,
       };
     },
 
