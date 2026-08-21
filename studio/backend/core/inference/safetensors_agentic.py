@@ -455,7 +455,6 @@ def _accepts_output_callback(func: Callable[..., str]) -> bool:
 
 def _search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, bool]:
     from core.inference.tool_stream_exec import search_images_kwargs
-
     return search_images_kwargs(func, tool_name)
 
 

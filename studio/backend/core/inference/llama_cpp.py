@@ -25148,9 +25148,7 @@ class LlamaCppBackend:
                                 )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
-                            kwargs.update(
-                                search_images_kwargs(execute_tool, _decision.tool_name)
-                            )
+                            kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,
