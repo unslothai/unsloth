@@ -340,8 +340,32 @@ gate row, not raised.
 
 New payload keys, all additive: `readiness` and `completeness` on the cell row, `mounted_messages`
 and `thread_total` on every parity capture, `mounted_before` / `mounted_after` on `send_turn`,
-`delete_message` and `thread_reopen`, `left_via` / `reopened_via` on `thread_reopen`, and the gate
-rows `thread_ready:{mode}`, `thread_complete` and `windowed_readiness:{arm}`.
+`delete_message` and `thread_reopen`, `left_via` / `reopened_via` / `reopen_ready_mode` /
+`reopen_readiness` on `thread_reopen`, `visible` on every action row, `observation_ms` on every
+action row, `stream_samples` / `attached_fraction_of_stream` / `reattachments` on the cell's
+`follow`, `reply_chars_scoreable` / `wire_parse_failures_in_window` /
+`wire_pending_chars_at_close` on every `stream_cost` window, and the gate rows
+`thread_ready:{mode}`, `thread_complete`, `follows_the_stream` and `windowed_readiness:{arm}`.
+
+**What `thread_reopen` measures.** `reopen_ms` runs from the click on the thread's sidebar row
+until the reopened thread satisfies the SAME readiness gate the cell opened with -- composer
+present, end present, and settled across two samples -- in whichever mode that arm's own mount is
+in. It deliberately does not treat the thread's declared total as completion: on a windowed arm
+`threadTotal()` returns `aria-setsize`, which is the store's claim about how long the conversation
+is and not evidence that anything has been rebuilt, so the old condition could be satisfied by the
+first reopened row and the action timed a half-built DOM while still passing its own assertion.
+Reusing the gate rather than writing a second definition of "ready" is deliberate: two disagreeing
+definitions in one harness would be a defect of its own. The cost is a floor of one
+`STABLE_GAP_MS`, paid equally by both arms.
+
+**When the New chat control cannot be clicked**, `thread_reopen` declines the substitute rather
+than detecting it afterwards. `_click_or_navigate` takes `allow_navigate` (default True, so every
+other caller is unchanged) and the LEAVE call passes False: nothing is clicked, nothing is
+navigated, and the thread stays mounted for the slots that follow. Refusing to score a measurement
+must not cost the actions after it -- the earlier version navigated first and then refused, leaving
+the scene on an empty thread and taking `delete_message` down with it. The RETURN leg keeps its
+navigation, because from an empty new-chat page that is what puts the thread back; it is still
+reported NOT RUN with no timing.
 
 `window.__sb.dom.threadTotal()` is the thread's LENGTH as opposed to how much of it is mounted:
 `aria-setsize` when published, `messageCount()` otherwise. On the shipped build the two are the
