@@ -676,9 +676,7 @@ def test_a_warning_arm_names_the_arch_only_when_a_probe_found_one(tmp_path):
             + _extract_function(SETUP_SH, "_setup_step_amd_warn")
             + '\n_setup_step_amd_warn "PyTorch cannot use it"\n'
         )
-        result = subprocess.run(
-            ["bash", str(probe)], capture_output = True, text = True, timeout = 30
-        )
+        result = subprocess.run(["bash", str(probe)], capture_output = True, text = True, timeout = 30)
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
@@ -1457,6 +1455,8 @@ def test_the_rocm_probe_environment_is_seeded_before_the_repair_probe():
     summary = src.index("# ── GPU detection summary")
     assert export < probe < summary
     assert path_append < probe
+
+
 # ── Collection-time environment isolation ──
 
 

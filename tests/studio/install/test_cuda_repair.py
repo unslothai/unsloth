@@ -444,9 +444,7 @@ class TestTorchBackendDerivationFromPin:
 
     def test_an_exported_backend_wins_over_a_pin(self):
         assert (
-            self._derive(
-                {"UNSLOTH_TORCH_BACKEND": "rocm", "UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}
-            )
+            self._derive({"UNSLOTH_TORCH_BACKEND": "rocm", "UNSLOTH_TORCH_INDEX_FAMILY": "cu128"})
             == "rocm"
         )
 
