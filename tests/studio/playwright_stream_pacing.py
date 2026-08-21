@@ -62,11 +62,9 @@ def _exercise_open_fence(
     source_code_units: int,
     expect_highlight: bool,
     name: str,
-
     code_highlighting: str = "syntax",
     followed_by_prose: bool = False,
     global_scoped: bool = True,
-
     expect_rich_prefix: bool = True,
     source_ends_with_line_ending: bool = True,
 ) -> dict:
@@ -120,11 +118,8 @@ def _exercise_open_fence(
         {
             "codeHighlighting": code_highlighting,
             "marker": marker,
-
             "followedByProse": followed_by_prose,
-
             "globalScoped": global_scoped,
-
             "richPrefix": expect_rich_prefix,
             "sourceCodeUnits": source_code_units,
             "sourceEndsWithLineEnding": source_ends_with_line_ending,
@@ -192,9 +187,7 @@ def _exercise_open_fence(
         or open_state["sourceLength"] != open_state["expectedLength"]
         or open_state["sourceHash"] != open_state["expectedHash"]
     ):
-        raise AssertionError(
-            f"{marker} open fence changed source bytes: {open_state}"
-        )
+        raise AssertionError(f"{marker} open fence changed source bytes: {open_state}")
     if open_state["spans"] != 0:
         raise AssertionError(
             f"{marker} open fence mounted {open_state['spans']} Shiki spans; expected 0"
@@ -401,10 +394,7 @@ def _exercise_open_fence(
     ):
         raise AssertionError(f"{name} invoked or mounted Shiki: {final_state}")
 
-    if (
-        marker == "`"
-        and final_state["completionFps"] < MIN_MODERATE_HIGHLIGHT_FPS
-    ):
+    if marker == "`" and final_state["completionFps"] < MIN_MODERATE_HIGHLIGHT_FPS:
         raise AssertionError(f"{name} fell below the 50-FPS floor: {final_state}")
     if final_state["maxFrameMs"] >= 100:
         raise AssertionError(f"{name} completion blocked a frame: {final_state}")
@@ -421,9 +411,6 @@ def _exercise_open_fence(
         "open": open_state,
         "completed": final_state,
     }
-
-
-
 
 
 def run() -> dict:

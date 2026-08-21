@@ -31,7 +31,6 @@ def _message(message_id: str, thread_id: str) -> chat_history.ChatMessage:
     )
 
 
-
 def test_fence_provenance_survives_single_and_batch_route_models(monkeypatch):
     content = [
         {
