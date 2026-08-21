@@ -326,6 +326,28 @@ test("the armed pointer's own click is still swallowed, once", () => {
   });
 });
 
+test("a new gesture supersedes an armed no-click gesture after menu cleanup", () => {
+  const remove = installDismissingClickGuard();
+  try {
+    down(11, "mouse", OUTSIDE);
+    up(11, "mouse");
+    // Radix unmounts the menu content after the outside press. The first gesture pressed a
+    // disabled native button, so it produced no click, but the swallower remains armed in grace.
+    remove();
+
+    down(12, "mouse", OUTSIDE);
+    up(12, "mouse");
+    assert.equal(
+      clickReachedTheControl(OUTSIDE),
+      true,
+      "the first click of a new gesture was swallowed after the menu's watcher unmounted",
+    );
+  } finally {
+    remove();
+    fakeWindow.advance(5000);
+  }
+});
+
 test("the armed pointer's own cancel still disarms", () => {
   withOpenMenu(() => {
     down(11, "touch", OUTSIDE);

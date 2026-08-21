@@ -196,6 +196,7 @@ const disarm = (): void => {
   keyboardOnly = false;
   armedPressTarget = undefined;
   focusBeforePress = null;
+  document.removeEventListener("pointerdown", disarmOnNewPointerDown, true);
   document.removeEventListener("click", swallowClick, true);
   document.removeEventListener("pointerup", startGrace, true);
   document.removeEventListener("pointercancel", disarmOnPointerCancel, true);
@@ -266,6 +267,12 @@ function releaseFocusTakenByTheGuardedPress(): void {
 function disarmAndReleaseFocus(): void {
   releaseFocusTakenByTheGuardedPress();
   disarm();
+}
+
+/** Keep watching for the gesture that supersedes this one after the menu has unmounted. */
+function disarmOnNewPointerDown(event: PointerEvent): void {
+  if (pointerIsDown && isAnotherPointer(event)) return;
+  disarmAndReleaseFocus();
 }
 
 function swallowClick(event: Event): void {
@@ -347,6 +354,10 @@ const arm = (touch: boolean, pointerId: number, pressTarget: Node): void => {
   keyboardOnly = false;
   armedPressTarget = pressTarget;
   focusBeforePress = document.activeElement;
+  // The menu content unmounts as soon as this outside press dismisses it, but a no-click
+  // gesture can leave the module-level swallower armed. Its next pointerdown watcher therefore
+  // belongs to the armed gesture, not to the menu content's lifetime.
+  document.addEventListener("pointerdown", disarmOnNewPointerDown, true);
   // Capture, so this runs before React's root-container delegation reaches any control.
   document.addEventListener("click", swallowClick, true);
   // A gesture that never becomes a click must not leave the swallower waiting for an unrelated
