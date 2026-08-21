@@ -47,6 +47,9 @@ class CachedModelRepo(BaseModel):
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
+    # False for an encoder-only repo (embedding / CLIP / ViT) that cannot answer a chat
+    # turn. Declared here or response_model drops it and the chat pickers never see it.
+    can_chat: Optional[bool] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -4392,6 +4395,19 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
     return tuple(n for n in needles if n)
 
 
+def _local_model_can_chat(model: "LocalModelInfo") -> Optional[bool]:
+    """``False`` for a local encoder-only checkpoint (embedding, CLIP, ViT), else ``None``.
+
+    The scan-folder twin of ``_repo_model_can_chat``: the compatibility row carries no
+    capabilities and ``_local_model_task`` classifies only diffusion, so an embedding
+    export in ``./models`` or an LM Studio folder is otherwise indistinguishable from a
+    chat model. ``None`` for a GGUF or an unreadable config, which fails open.
+    """
+    from hub.services.models.common import _local_transformers_can_chat
+
+    return _local_transformers_can_chat(Path(model.path))
+
+
 def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
     """Classify a local model into an HF pipeline task so the Images picker can filter.
 
@@ -4805,6 +4821,24 @@ def _repo_model_format(repo_info) -> Optional[str]:
     return None
 
 
+def _repo_model_can_chat(repo_info) -> Optional[bool]:
+    """``False`` for a cached encoder-only repo (embedding, CLIP, ViT), else ``None``.
+
+    The classification the hub inventory already applies to its own cache rows; the
+    compatibility row carried none, and its ``task`` is ``None`` for everything that is
+    not diffusion, so a cached BERT or CLIP checkpoint read as an ordinary chat model.
+    ``None`` where the snapshot says nothing conclusive, so an unfamiliar architecture is
+    never hidden.
+    """
+    from hub.services.models.common import _local_transformers_can_chat
+
+    for snapshot in _repo_model_snapshots(repo_info):
+        verdict = _local_transformers_can_chat(snapshot)
+        if verdict is not None:
+            return verdict
+    return None
+
+
 def cached_model_rows(cache_scans = None) -> list[dict]:
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
     if cache_scans is None:
@@ -4878,6 +4912,10 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                     model_format = _repo_model_format(repo_info)
                     if model_format:
                         row["model_format"] = model_format
+                    # Encoder-only weights load by format alone, so without this the picker
+                    # offers an embedding or CLIP repo as a chat model.
+                    if _repo_model_can_chat(repo_info) is False:
+                        row["can_chat"] = False
                     if is_partial:
                         row["partial"] = True
                     # Listed, so tens of GB of companion weights stay visible and deletable,

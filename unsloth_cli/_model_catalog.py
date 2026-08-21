@@ -139,6 +139,10 @@ def cached_entries() -> List[ModelEntry]:
             continue
         if row.get("model_format") == "adapter":
             continue
+        # A cached embedding/CLIP checkpoint carries task None like every chat repo, so
+        # only the row's own classification keeps it out of a chat picker.
+        if row.get("can_chat") is False:
+            continue
         entries.append(
             ModelEntry("Downloaded", row["repo_id"], "", row.get("load_id") or row["repo_id"])
         )
@@ -146,7 +150,7 @@ def cached_entries() -> List[ModelEntry]:
 
 
 def local_folder_entries() -> List[ModelEntry]:
-    from routes.models import _local_model_task, collect_local_models
+    from routes.models import _local_model_can_chat, _local_model_task, collect_local_models
 
     entries = []
     for model in collect_local_models(Path("./models").resolve()):
@@ -158,6 +162,10 @@ def local_folder_entries() -> List[ModelEntry]:
         # a "safetensors" literal matched nothing and dropped every non-GGUF local model,
         # which is the bulk of what ./models, LM Studio and custom scan folders hold.
         if _local_model_task(model) in NON_CHAT_TASKS:
+            continue
+        # Dropping the format gate above let every non-GGUF folder through, embedding and
+        # CLIP exports included; only this classification separates them from a chat model.
+        if _local_model_can_chat(model) is False:
             continue
         entries.append(
             ModelEntry(

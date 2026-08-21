@@ -418,6 +418,9 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         {"repo_id": "org/Half", "task": None, "partial": True},
         {"repo_id": "org/Image", "task": "text-to-image"},
         {"repo_id": "org/Pinned", "task": None, "load_id": "/snap/path"},
+        # An embedding/CLIP repo carries task None like any chat repo; can_chat is what
+        # separates them.
+        {"repo_id": "org/Embedder", "task": None, "can_chat": False},
     ]
     fake_cfg = types.ModuleType("utils.models.model_config")
     fake_cfg._is_mmproj = lambda name: "mmproj" in name.lower()
@@ -461,11 +464,16 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
         _LocalModelInfo("/models/Qwen3-0.6B", "Qwen3-0.6B", "/models/Qwen3-0.6B", "models_dir"),
         _LocalModelInfo("/m/Tiny.gguf", "Tiny", "/m/Tiny.gguf", "lmstudio", model_format = "gguf"),
         _LocalModelInfo("/models/Half", "Half", "/models/Half", "models_dir", partial = True),
+        _LocalModelInfo("/models/MiniLM", "MiniLM", "/models/MiniLM", "models_dir"),
     ]
 
     fake_routes = types.ModuleType("routes.models")
     fake_routes.collect_local_models = lambda root: rows
     fake_routes._local_model_task = lambda model: None
+    # An embedding export scans like any other safetensors folder; only this says otherwise.
+    fake_routes._local_model_can_chat = lambda model: (
+        False if model.display_name == "MiniLM" else None
+    )
     monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
 
     entries = cat.local_folder_entries()

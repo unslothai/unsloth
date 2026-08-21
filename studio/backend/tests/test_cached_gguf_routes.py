@@ -5744,3 +5744,62 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
 
     assert rows["Org/Lora"]["model_format"] == "adapter"
     assert "model_format" not in rows["Org/Merged"]
+
+
+def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp_path):
+    """A cached embedding/CLIP repo has task None exactly like a chat repo, so the row
+    must carry the classification the hub inventory already applies or every chat picker
+    offers it as a model to talk to."""
+    active = tmp_path / "active"
+
+    def _cached(repo_id, config, *, modules_json = False):
+        owner, name = repo_id.split("/")
+        snap = active / f"models--{owner}--{name}" / "snapshots" / "rev"
+        snap.mkdir(parents = True)
+        (snap / "config.json").write_text(json.dumps(config))
+        if modules_json:
+            (snap / "modules.json").write_text("[]")
+        return _repo(
+            repo_id,
+            [],
+            active / f"models--{owner}--{name}",
+            revisions = [
+                SimpleNamespace(
+                    files = [_file("model.safetensors", 9_000)],
+                    snapshot_path = snap,
+                ),
+            ],
+        )
+
+    # Configs as published on the Hub.
+    embedder = _cached(
+        "sentence-transformers/all-MiniLM-L6-v2",
+        {"model_type": "bert", "architectures": ["BertModel"]},
+        modules_json = True,
+    )
+    clip = _cached(
+        "openai/clip-vit-base-patch32",
+        {"model_type": "clip", "architectures": ["CLIPModel"]},
+    )
+    chat = _cached(
+        "unsloth/Qwen3-0.6B",
+        {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(
+        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder, clip, chat])],
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["sentence-transformers/all-MiniLM-L6-v2"]["can_chat"] is False
+    assert rows["openai/clip-vit-base-patch32"]["can_chat"] is False
+    # Fails open: a chat repo is never flagged, and neither is an unreadable snapshot.
+    assert "can_chat" not in rows["unsloth/Qwen3-0.6B"]
