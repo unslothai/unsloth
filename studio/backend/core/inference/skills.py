@@ -263,10 +263,14 @@ def _normalize_archive_name(name: str) -> PurePosixPath:
     return path
 
 
-def _portable_archive_key(path: PurePosixPath) -> str:
-    return "/".join(
+def _portable_archive_parts(path: PurePosixPath) -> tuple[str, ...]:
+    return tuple(
         unicodedata.normalize("NFKC", part).rstrip(" .").casefold() for part in path.parts
     )
+
+
+def _portable_archive_key(path: PurePosixPath) -> str:
+    return "/".join(_portable_archive_parts(path))
 
 
 def _validate_bundle_layout(
@@ -350,14 +354,15 @@ def _archive_source(
         manifest_raw,
         source_root.name if source_root.parts else None,
     )
-    source_root_key = _portable_archive_key(source_root)
+    source_root_parts = _portable_archive_parts(source_root)
     if source_root.parts and any(
-        _portable_archive_key(path) == source_root_key for _, path in files
+        _portable_archive_parts(path) == source_root_parts for _, path in files
     ):
         raise SkillError("Archive contains conflicting file paths.")
     selected_files = []
     for entry, path in files:
-        if source_root.parts and not _portable_archive_key(path).startswith(f"{source_root_key}/"):
+        path_parts = _portable_archive_parts(path)
+        if source_root_parts and path_parts[: len(source_root_parts)] != source_root_parts:
             continue
         normalized_path = _normalize_archive_name(entry.filename)
         relative_path = (
