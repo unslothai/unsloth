@@ -431,6 +431,10 @@ export function VoiceTab() {
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
+  const hasSttConnections = sttConnections.length > 0;
+  const hasSelectedSttConnection = sttConnections.some(
+    (connection) => connection.id === sttProviderId,
+  );
 
   const navigate = useNavigate();
   const { devices, hasLabels, requestAccess } = useAudioInputDevices();
@@ -449,6 +453,12 @@ export function VoiceTab() {
   const [selectedDictationId, setSelectedDictationId] = useState<string | null>(
     null,
   );
+
+  useEffect(() => {
+    if (sttProviderId && !hasSelectedSttConnection) {
+      setSttProviderId("");
+    }
+  }, [hasSelectedSttConnection, setSttProviderId, sttProviderId]);
 
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
@@ -960,9 +970,9 @@ export function VoiceTab() {
               description={t("settings.voice.dictation.connectionDescription")}
             >
               <Select
-                value={sttProviderId || undefined}
+                value={hasSelectedSttConnection ? sttProviderId : undefined}
                 onValueChange={setSttProviderId}
-                disabled={!connectionsEnabled}
+                disabled={!connectionsEnabled || !hasSttConnections}
               >
                 <SelectTrigger
                   aria-label={t("settings.voice.dictation.connectionLabel")}
@@ -971,7 +981,9 @@ export function VoiceTab() {
                 >
                   <SelectValue
                     placeholder={t(
-                      "settings.voice.dictation.connectionPlaceholder",
+                      hasSttConnections
+                        ? "settings.voice.dictation.connectionPlaceholder"
+                        : "settings.voice.dictation.connectionEmpty",
                     )}
                   />
                 </SelectTrigger>
@@ -981,14 +993,6 @@ export function VoiceTab() {
                       {connection.name}
                     </SelectItem>
                   ))}
-                  {sttProviderId &&
-                  !sttConnections.some(
-                    (connection) => connection.id === sttProviderId,
-                  ) ? (
-                    <SelectItem value={sttProviderId} disabled={true}>
-                      {sttProviderId}
-                    </SelectItem>
-                  ) : null}
                 </SelectContent>
               </Select>
             </SettingsRow>

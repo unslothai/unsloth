@@ -289,6 +289,7 @@ export const en = {
         connectionDescription:
           "Add an OpenAI-compatible server and optional API key in Connections.",
         connectionPlaceholder: "Select a connection",
+        connectionEmpty: "No connections available",
         customModelLabel: "Model",
         customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",

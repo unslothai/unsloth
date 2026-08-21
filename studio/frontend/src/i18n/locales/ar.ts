@@ -287,6 +287,7 @@ export const ar = {
         connectionDescription:
           "أضف خادمًا متوافقًا مع OpenAI ومفتاح API اختياريًا في الاتصالات.",
         connectionPlaceholder: "اختر اتصالًا",
+        connectionEmpty: "لا توجد اتصالات متاحة",
         customModelLabel: "النموذج",
         customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",

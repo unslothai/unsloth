@@ -256,6 +256,7 @@ export const it = {
         connectionDescription:
           "Aggiungi un server compatibile con OpenAI e una chiave API facoltativa in Connessioni.",
         connectionPlaceholder: "Seleziona una connessione",
+        connectionEmpty: "Nessuna connessione disponibile",
         customModelLabel: "Modello",
         customModelDescription:
           "Nome del modello inviato a /v1/audio/transcriptions.",

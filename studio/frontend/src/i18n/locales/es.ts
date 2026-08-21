@@ -290,6 +290,7 @@ export const es = {
         connectionDescription:
           "Añade un servidor compatible con OpenAI y una clave API opcional en Conexiones.",
         connectionPlaceholder: "Selecciona una conexión",
+        connectionEmpty: "No hay conexiones disponibles",
         customModelLabel: "Modelo",
         customModelDescription:
           "Nombre del modelo enviado a /v1/audio/transcriptions.",

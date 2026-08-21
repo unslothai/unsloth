@@ -289,6 +289,7 @@ export const ru = {
         connectionDescription:
           "Добавьте OpenAI-совместимый сервер и при необходимости ключ API в разделе «Подключения».",
         connectionPlaceholder: "Выберите подключение",
+        connectionEmpty: "Нет доступных подключений",
         customModelLabel: "Модель",
         customModelDescription:
           "Имя модели, отправляемое в /v1/audio/transcriptions.",

@@ -289,6 +289,7 @@ export const ptBR = {
         connectionDescription:
           "Adicione um servidor compatível com OpenAI e uma chave de API opcional em Conexões.",
         connectionPlaceholder: "Selecione uma conexão",
+        connectionEmpty: "Nenhuma conexão disponível",
         customModelLabel: "Modelo",
         customModelDescription:
           "Nome do modelo enviado para /v1/audio/transcriptions.",

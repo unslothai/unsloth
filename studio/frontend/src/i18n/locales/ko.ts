@@ -287,6 +287,7 @@ export const ko = {
         connectionDescription:
           "연결에서 OpenAI 호환 서버와 선택적 API 키를 추가하세요.",
         connectionPlaceholder: "연결 선택",
+        connectionEmpty: "사용 가능한 연결이 없습니다",
         customModelLabel: "모델",
         customModelDescription:
           "/v1/audio/transcriptions에 전송할 모델 이름입니다.",

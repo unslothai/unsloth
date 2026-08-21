@@ -289,6 +289,7 @@ export const ja = {
         connectionDescription:
           "接続で OpenAI 互換サーバーと任意の API キーを追加してください。",
         connectionPlaceholder: "接続を選択",
+        connectionEmpty: "利用可能な接続はありません",
         customModelLabel: "モデル",
         customModelDescription:
           "/v1/audio/transcriptions に送信するモデル名です。",

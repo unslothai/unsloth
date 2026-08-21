@@ -290,6 +290,7 @@ export const hi = {
         connectionDescription:
           "कनेक्शन में OpenAI-संगत सर्वर और वैकल्पिक API कुंजी जोड़ें।",
         connectionPlaceholder: "कनेक्शन चुनें",
+        connectionEmpty: "कोई कनेक्शन उपलब्ध नहीं है",
         customModelLabel: "मॉडल",
         customModelDescription:
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",

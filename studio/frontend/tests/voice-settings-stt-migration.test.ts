@@ -82,3 +82,34 @@ test("custom transcription uses a saved connection without loading local STT", (
   assert.match(adapterSource, CONNECTIONS_ENABLED_SEND_GUARD);
   assert.match(adapterSource, LEGACY_KEY_FALLBACK);
 });
+
+test("the custom dictation connection picker handles deleted and empty connections", () => {
+  const voiceTabSource = readFileSync(
+    new URL(
+      "../src/features/settings/tabs/voice-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    voiceTabSource,
+    /if \(sttProviderId && !hasSelectedSttConnection\) \{\s*setSttProviderId\(""\);/,
+  );
+  assert.match(
+    voiceTabSource,
+    /value=\{hasSelectedSttConnection \? sttProviderId : undefined\}/,
+  );
+  assert.match(
+    voiceTabSource,
+    /disabled=\{!connectionsEnabled \|\| !hasSttConnections\}/,
+  );
+  assert.match(
+    voiceTabSource,
+    /"settings\.voice\.dictation\.connectionEmpty"/,
+  );
+  assert.doesNotMatch(
+    voiceTabSource,
+    /<SelectItem value=\{sttProviderId\}/,
+  );
+});

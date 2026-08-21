@@ -285,6 +285,7 @@ export const zhCN = {
         connectionDescription:
           "在“连接”中添加 OpenAI 兼容服务器和可选的 API 密钥。",
         connectionPlaceholder: "选择连接",
+        connectionEmpty: "没有可用的连接",
         customModelLabel: "模型",
         customModelDescription:
           "发送到 /v1/audio/transcriptions 的模型名称。",
