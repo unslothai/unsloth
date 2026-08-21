@@ -28,12 +28,12 @@ import {
 } from "react";
 import type { ComponentProps } from "react";
 import { Streamdown, type Components } from "streamdown";
+import { stripColorFontTriggers } from "../lib/color-font-triggers";
 import {
   createReadmeUrlTransform,
   fetchReadme,
   readmeBaseUrl,
   stripChromeHeadings,
-  stripColorFontTriggers,
   stripFrontmatter,
 } from "../lib/hf-readme";
 
