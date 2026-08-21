@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import errno
+import importlib
 import json
 import lzma
 import os
@@ -20,11 +21,9 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 try:
-    from compression.zstd import ZstdError as _ZstdError
+    _ZSTD_ERRORS = (importlib.import_module("compression.zstd").ZstdError,)
 except ImportError:
     _ZSTD_ERRORS = ()
-else:
-    _ZSTD_ERRORS = (_ZstdError,)
 
 import yaml
 
@@ -390,7 +389,8 @@ def _install_staged_skill(skill_dir: Path, *, replace: bool) -> dict:
     backup: Optional[Path] = None
     try:
         if target.exists():
-            backup = root / f".backup-{os.getpid()}-{threading.get_ident()}"
+            backup = Path(tempfile.mkdtemp(prefix = ".backup-", dir = root))
+            backup.rmdir()
             os.replace(target, backup)
         os.replace(skill_dir, target)
         try:
