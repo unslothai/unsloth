@@ -5752,7 +5752,12 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
     offers it as a model to talk to."""
     active = tmp_path / "active"
 
-    def _cached(repo_id, config, *, modules_json = False):
+    def _cached(
+        repo_id,
+        config,
+        *,
+        modules_json = False,
+    ):
         owner, name = repo_id.split("/")
         snap = active / f"models--{owner}--{name}" / "snapshots" / "rev"
         snap.mkdir(parents = True)

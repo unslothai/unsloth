@@ -4430,7 +4430,6 @@ def _local_model_can_chat(model: "LocalModelInfo") -> Optional[bool]:
     chat model. ``None`` for a GGUF or an unreadable config, which fails open.
     """
     from hub.services.models.common import _local_transformers_can_chat
-
     return _local_transformers_can_chat(Path(model.path))
 
 
