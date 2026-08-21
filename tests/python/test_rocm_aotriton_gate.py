@@ -318,3 +318,12 @@ def test_uninstall_ps1_clears_only_the_installer_created_value():
     # The marker lives under HKCU\Software\Unsloth, which the uninstaller then deletes.
     key_removal = source.index("Remove-Item -LiteralPath 'HKCU:\\Software\\Unsloth'")
     assert clear < key_removal
+
+
+def test_uninstall_ps1_keeps_the_marker_when_the_value_survives():
+    """A value we could not clear stays identifiable for the next run."""
+    source = _UNINSTALL_PS1.read_text(encoding = "utf-8")
+    failure = source.index("$aotritonCleared = $false")
+    key_removal = source.index("Remove-Item -LiteralPath 'HKCU:\\Software\\Unsloth'")
+    gate = source.rfind("if ($aotritonCleared) {", failure, key_removal)
+    assert gate > failure, "the key removal must be gated on a successful clear"
