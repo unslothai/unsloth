@@ -3891,7 +3891,10 @@ class FastLlamaModel:
                 m._saved_temp_tokenizer.padding_side = "right"
             # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"):
-                del m._flag_for_generation
+                try:
+                    del m._flag_for_generation
+                except AttributeError:
+                    pass
 
         m = model
         while hasattr(m, "model"):
