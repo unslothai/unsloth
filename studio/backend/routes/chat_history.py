@@ -358,6 +358,13 @@ class ChatInferenceSettings(BaseModel):
     systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
+    # The UI's InferenceParams carries `checkpoint` (the model id) inside params,
+    # and preset save bodies include it. Without declaring it here, extra="forbid"
+    # rejects the WHOLE PUT /api/chat/settings body, so every preset
+    # create/copy/edit 400s and nothing persists (issue #9500). Same bug family as
+    # fastMode before it (fixed by declaring the field). It names the model rather
+    # than being a tuning knob, so it is stored but never treated as a setting.
+    checkpoint: Optional[str] = None
 
 
 class ChatPresetLoadConfig(BaseModel):
