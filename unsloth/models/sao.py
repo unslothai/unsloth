@@ -376,6 +376,23 @@ class SAOTrainer(_SAOTrainerBase):
             data_collator = lambda features: features,
             **kwargs,
         )
+        # SAOConfig is a trl.PPOConfig (via OnPolicyConfig), which redeclares
+        # `world_size` as a plain dataclass field defaulting to None - it
+        # deliberately shadows transformers.TrainingArguments' computed
+        # `world_size` property, because the real PPOTrainer sets it manually
+        # during its own bespoke setup (see trl's PPOTrainer.__init__). SAOTrainer
+        # instead drives training through the generic Trainer.train() inner loop,
+        # which reads args.world_size expecting it to be populated; left at None
+        # this crashes immediately in get_total_train_batch_size. Set it the same
+        # way PPOTrainer does, right after self.accelerator exists.
+        if getattr(args, "world_size", "unset") is None:
+            try:
+                args.world_size = self.accelerator.num_processes
+            except AttributeError:
+                # world_size is a read-only property on plain
+                # transformers.TrainingArguments (no trl installed); nothing
+                # to patch in that case.
+                pass
         self.reward_funcs = list(reward_funcs)
         self.sao_args = args
 
