@@ -11,6 +11,9 @@ const BLOCK_BOUNDARY_SEARCH_CHARACTERS = 1_024;
 
 const MAX_SYNTHETIC_FENCE_MARKER = 256;
 const MAX_SYNTHETIC_FENCE_INFO = 128;
+
+const MAX_SYNTHETIC_HTML_OPENING = 256;
+const PAGE_BOUNDARY_CONTEXT_CHARACTERS = 128;
 const FENCE_LINE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 const TABLE_DELIMITER_CELL_RE = /^:?-+:?$/;
 const DISPLAY_MATH_LINE_RE = /^( {0,3})(\${2,})(.*)$/;
@@ -104,6 +107,43 @@ export type ReasoningMarkdownPage = {
   canonicalCodeSources: readonly (string | null)[];
   start: number;
 };
+
+export type ReasoningPageBoundary = {
+  after: string;
+  before: string;
+  end: number;
+};
+
+export function createReasoningPageBoundary(
+  markdown: string,
+  end: number,
+): ReasoningPageBoundary {
+  const boundedEnd = Math.max(0, Math.min(markdown.length, Math.floor(end)));
+  return {
+    after: markdown.slice(
+      boundedEnd,
+      boundedEnd + PAGE_BOUNDARY_CONTEXT_CHARACTERS,
+    ),
+    before: markdown.slice(
+      Math.max(0, boundedEnd - PAGE_BOUNDARY_CONTEXT_CHARACTERS),
+      boundedEnd,
+    ),
+    end: boundedEnd,
+  };
+}
+
+export function isReasoningPageBoundaryValid(
+  markdown: string,
+  boundary: ReasoningPageBoundary,
+): boolean {
+  return (
+    boundary.end <= markdown.length &&
+    markdown.slice(boundary.end, boundary.end + boundary.after.length) ===
+      boundary.after &&
+    markdown.slice(boundary.end - boundary.before.length, boundary.end) ===
+      boundary.before
+  );
+}
 
 type ReasoningMarkdownPageOptions = {
   enabled: boolean;
@@ -297,8 +337,10 @@ function rawHtmlStart(
             container,
 
             syntheticClosing: `</${tag}>`,
-            syntheticOpening:
+            syntheticOpening: boundedRawHtmlOpening(
               content.match(HTML_OPENING_TAG_RE)?.[1] ?? `<${tag}>`,
+              tag,
+            ),
             syntheticTag: tag,
           },
     };
@@ -339,7 +381,7 @@ function rawHtmlStart(
       syntheticClosing: `</${syntheticTag}>`,
       syntheticOpening:
         openingTag && !openingTag.trimEnd().endsWith("/>")
-          ? openingTag
+          ? boundedRawHtmlOpening(openingTag, syntheticTag)
           : `<${syntheticTag}>`,
       syntheticTag,
     },
@@ -556,6 +598,13 @@ function syntheticFenceOpening(state: FenceState): string {
   );
   const info = state.info.slice(0, MAX_SYNTHETIC_FENCE_INFO);
   return `${state.container.openingPrefix}${state.indent}${marker}${info}`;
+}
+
+function boundedRawHtmlOpening(opening: string, tag: string): string {
+  if (opening.length <= MAX_SYNTHETIC_HTML_OPENING) return opening;
+  const keepsDetailsOpen =
+    tag === "details" && /\sopen(?:\s|=|\/?\s*>)/i.test(opening);
+  return `<${tag}${keepsDetailsOpen ? " open" : ""}>`;
 }
 
 function syntheticFenceClosing(state: FenceState): string {

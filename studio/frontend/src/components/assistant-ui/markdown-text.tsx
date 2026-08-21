@@ -53,7 +53,12 @@ import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { OversizedStreamingCodeBlock } from "./oversized-streaming-code-block";
-import { selectReasoningMarkdownPage } from "./reasoning-pagination";
+import {
+  createReasoningPageBoundary,
+  isReasoningPageBoundaryValid,
+  type ReasoningPageBoundary,
+  selectReasoningMarkdownPage,
+} from "./reasoning-pagination";
 import {
   getCodeFenceFilename,
   getStreamingCodeFence,
@@ -934,16 +939,16 @@ function PartitionedMarkdownText({
     () => new IncrementalMarkdownCache(persistedTrailingLfOrdinals),
   );
   const t = useT();
-  const [reasoningPageEnds, setReasoningPageEnds] = useState<readonly number[]>(
-    [],
+  const [reasoningPageBoundaries, setReasoningPageBoundaries] = useState<
+    readonly ReasoningPageBoundary[]
+  >([]);
+  const pageHistoryInvalid = reasoningPageBoundaries.some(
+    (boundary) => !isReasoningPageBoundaryValid(markdown, boundary),
   );
-  const pageHistoryInvalid = reasoningPageEnds.some(
-    (end) => end > markdown.length,
-  );
-  if (pageHistoryInvalid) setReasoningPageEnds([]);
+  if (pageHistoryInvalid) setReasoningPageBoundaries([]);
   const reasoningPageEnd = pageHistoryInvalid
     ? null
-    : (reasoningPageEnds.at(-1) ?? null);
+    : (reasoningPageBoundaries.at(-1)?.end ?? null);
   const reasoningPage = useMemo(
     () =>
       selectReasoningMarkdownPage(markdown, {
@@ -956,10 +961,13 @@ function PartitionedMarkdownText({
   );
   const showEarlierReasoning = useCallback(() => {
     if (!reasoningPage.hasEarlier) return;
-    setReasoningPageEnds((current) => [...current, reasoningPage.start]);
-  }, [reasoningPage.hasEarlier, reasoningPage.start]);
+    setReasoningPageBoundaries((current) => [
+      ...current,
+      createReasoningPageBoundary(markdown, reasoningPage.start),
+    ]);
+  }, [markdown, reasoningPage.hasEarlier, reasoningPage.start]);
   const showNewerReasoning = useCallback(() => {
-    setReasoningPageEnds((current) => current.slice(0, -1));
+    setReasoningPageBoundaries((current) => current.slice(0, -1));
   }, []);
 
   // An older page is immutable even if the live tail keeps growing. Only the

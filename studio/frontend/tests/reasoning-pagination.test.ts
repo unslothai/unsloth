@@ -5,9 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createReasoningPageBoundary,
+  isReasoningPageBoundaryValid,
   REASONING_PAGE_CHARACTERS,
   selectReasoningMarkdownPage,
 } from "../src/components/assistant-ui/reasoning-pagination.ts";
+import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
+import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const richReasoning = Array.from(
   { length: 3_000 },
@@ -89,21 +93,40 @@ test("a nearby blank line keeps the page on a Markdown block boundary", () => {
   assert.ok(page.markdown.length <= 8_192);
 });
 
-test("a fixed earlier page remains stable while new reasoning streams", () => {
+test("page history stays stable on append and rejects retroactive rewrites", () => {
   const latest = selectReasoningMarkdownPage(richReasoning, { enabled: true });
+  const boundary = createReasoningPageBoundary(richReasoning, latest.start);
   const earlier = selectReasoningMarkdownPage(richReasoning, {
     enabled: true,
-    end: latest.start,
+    end: boundary.end,
   });
-  const afterAppend = selectReasoningMarkdownPage(
-    `${richReasoning}\n- newly streamed tail`,
-    {
-      enabled: true,
-      end: latest.start,
-    },
-  );
+  const appended = `${richReasoning}\n- newly streamed tail`;
+  const afterAppend = selectReasoningMarkdownPage(appended, {
+    enabled: true,
+    end: boundary.end,
+  });
 
   assert.deepEqual(afterAppend, earlier);
+  assert.equal(isReasoningPageBoundaryValid(appended, boundary), true);
+
+  const unclosedSource =
+    "p".repeat(5_000) + "\\[" + "x".repeat(88) + "\n\n" + "y".repeat(3_908);
+  const unclosed = stabilizeStreamingMarkdown(
+    preprocessLaTeX(unclosedSource),
+    true,
+  );
+  const livePage = selectReasoningMarkdownPage(unclosed, {
+    enabled: true,
+    streaming: true,
+  });
+  const latexBoundary = createReasoningPageBoundary(unclosed, livePage.start);
+  const closed = stabilizeStreamingMarkdown(
+    preprocessLaTeX(`${unclosedSource}\\] tail`),
+    true,
+  );
+
+  assert.ok(livePage.start > 0);
+  assert.equal(isReasoningPageBoundaryValid(closed, latexBoundary), false);
 });
 
 test("pages cut a giant fence safely instead of mounting the whole fence", () => {
@@ -195,6 +218,14 @@ test("opaque and block HTML keep inner Markdown inert across cuts", () => {
     assert.equal(page.markdown.endsWith(close), true);
     assert.deepEqual(page.canonicalCodeSources, []);
   }
+
+  const hugeDetails = selectReasoningMarkdownPage(
+    `<details open data-x="${"x".repeat(100_000)}">\n${body}</details>`,
+    { enabled: true, maxCharacters: 2_048 },
+  );
+  assert.ok(hugeDetails.markdown.length <= 2_304);
+  assert.equal(hugeDetails.markdown.startsWith("<details open>\n"), true);
+  assert.equal(hugeDetails.markdown.endsWith("</details>\n"), true);
 });
 
 test("containerized code and math retain wrappers across cuts", () => {
