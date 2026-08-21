@@ -274,9 +274,16 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
     from huggingface_hub import HfApi
 
-    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
 
-    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
+    files = [
+        f
+        for f in drop_shadowed_appledouble_names(
+            list(HfApi(token = hf_token).list_repo_files(repo_id))
+        )
+        # An imatrix is not adapter weights, and it would be the fallback pick below.
+        if not is_imatrix_filename(f)
+    ]
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]

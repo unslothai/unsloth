@@ -163,6 +163,7 @@ export const it = {
       connections: "Connessioni",
       data: "Dati",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       agents: "Agenti",
       debugging: "Log",
       about: "Informazioni",
@@ -1241,6 +1242,11 @@ export const it = {
     connections: {
       title: "Connessioni",
       description: "Gestisci provider e connessioni esterne.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     apiKeys: {
       title: "API",

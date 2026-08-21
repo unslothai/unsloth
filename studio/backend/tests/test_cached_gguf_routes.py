@@ -4220,14 +4220,16 @@ def _write_cached_gguf(
     filename: str,
     mtime: float | None = None,
     revision: str = "rev",
+    size: int = 36,
 ) -> Path:
-    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks."""
+    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks,
+    *size* tells two revisions' copies of one filename apart."""
     import os
 
     repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
     snapshot = repo_dir / "snapshots" / revision
     snapshot.mkdir(parents = True, exist_ok = True)
-    (snapshot / filename).write_bytes(b"GGUF" + b"\0" * 32)
+    (snapshot / filename).write_bytes(b"GGUF" + b"\0" * (size - 4))
     if mtime is not None:
         os.utime(snapshot, (mtime, mtime))
     return repo_dir
@@ -4404,6 +4406,275 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert context_calls == [(str(repo_dir / "snapshots" / "newer"), True)]
+
+
+def _point_ref_at(repo_dir: Path, revision: str) -> None:
+    """Widening needs this ref to name the answering revision."""
+    refs = repo_dir / "refs"
+    refs.mkdir(parents = True, exist_ok = True)
+    (refs / "main").write_text(revision)
+
+
+def _cached_repo_variants(
+    monkeypatch,
+    hub_cache,
+    repo_dir,
+    *,
+    local_path = None,
+    active = None,
+    prefer_local_cache = True,
+):
+    _pin_caches(monkeypatch, active or hub_cache, [active, hub_cache] if active else [hub_cache])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+    return asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            # True is what the on-device card sends; False falls back through the dead Hub.
+            prefer_local_cache = prefer_local_cache,
+            local_path = str(local_path or repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+
+def test_a_quant_only_an_older_revision_holds_is_still_listed(monkeypatch, tmp_path):
+    """The hidden quant is still cached and still loadable."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
+    assert all(v.downloaded for v in response.variants)
+
+
+def test_merged_unlabelled_quants_are_told_apart(monkeypatch, tmp_path):
+    """Two revisions each hold the only unnamed quant they can see."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "foo.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "bar.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert sorted(v.quant for v in response.variants) == ["bar", "foo"]
+    labels = [v.display_label for v in response.variants]
+    assert labels == ["GGUF \u00b7 bar.gguf", "GGUF \u00b7 foo.gguf"]
+
+
+def test_a_quant_cached_twice_is_listed_once(monkeypatch, tmp_path):
+    """Described by the answering revision, the copy a load opens."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M.gguf",
+        mtime = 1_000_000_000,
+        revision = "older",
+        size = 128,
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M.gguf",
+        mtime = 2_000_000_000,
+        revision = "newer",
+        size = 64,
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    # The answering revision's copy, not the sibling's, so the row matches what a load opens.
+    assert response.variants[0].size_bytes == 64
+
+
+def test_a_sibling_revisions_torn_quant_is_listed_but_not_ready(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 1_000_000_000,
+        revision = "older",
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    by_quant = {v.quant: v for v in response.variants}
+    assert set(by_quant) == {"Q8_0", "Q4_K_M"}
+    assert by_quant["Q8_0"].downloaded is True
+    assert by_quant["Q4_K_M"].downloaded is False
+
+
+def test_a_whole_sibling_copy_replaces_a_torn_one(monkeypatch, tmp_path):
+    """A load skips the shard-short copy for the whole one, so the row must too."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 2_000_000_000,
+        revision = "newer",
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    by_quant = {v.quant: v for v in response.variants}
+    assert by_quant["Q4_K_M"].downloaded is True
+    assert by_quant["Q4_K_M"].filename == "m-Q4_K_M.gguf"
+
+
+def test_a_projector_alone_in_a_sibling_does_not_claim_vision(monkeypatch, tmp_path):
+    """A projector serves only its own revision's quants, and this sibling merges none."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 2_000_000_000,
+        revision = "newer",
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 1_000_000_000,
+        revision = "older",
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert response.has_vision is False
+
+
+def test_a_merged_rows_projector_still_flags_vision(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
+    assert response.has_vision is True
+
+
+def test_a_replaced_row_does_not_keep_its_donors_vision(monkeypatch, tmp_path):
+    """Its revision is superseded by a whole copy with no projector, so the flag goes too."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 3_000_000_000, revision = "newest"
+    )
+    _write_cached_gguf(
+        hub_cache,
+        "org/repo",
+        "m-Q4_K_M-00001-of-00002.gguf",
+        mtime = 2_000_000_000,
+        revision = "middle",
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 2_000_000_000, revision = "middle"
+    )
+    _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "oldest"
+    )
+    _point_ref_at(repo_dir, "newest")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
+
+    by_quant = {v.quant: v for v in response.variants}
+    assert by_quant["Q4_K_M"].downloaded is True
+    assert response.has_vision is False
+
+
+def test_the_unreachable_hub_fallback_also_unions(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir, prefer_local_cache = False)
+
+    assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
+
+
+def test_a_repo_outside_the_active_cache_gains_no_siblings(monkeypatch, tmp_path):
+    """Such a row loads by the directory it names, not by id."""
+    active = tmp_path / "active"
+    other = tmp_path / "other"
+    active.mkdir()
+    other.mkdir()
+    repo_dir = _write_cached_gguf(
+        other, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(other, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(monkeypatch, other, repo_dir, active = active)
+
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+
+
+def test_a_row_pinned_to_one_revision_gains_no_siblings(monkeypatch, tmp_path):
+    """A pinned row loads out of that directory alone, so nothing else may be offered on it."""
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_dir = _write_cached_gguf(
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _point_ref_at(repo_dir, "newer")
+
+    response = _cached_repo_variants(
+        monkeypatch, hub_cache, repo_dir, local_path = repo_dir / "snapshots" / "newer"
+    )
+
+    assert [v.quant for v in response.variants] == ["Q8_0"]
 
 
 def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path):
