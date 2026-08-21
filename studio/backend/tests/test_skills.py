@@ -78,10 +78,7 @@ def _corrupt_compressed_member(
     return path
 
 
-def _mock_windows_reparse(
-    monkeypatch: pytest.MonkeyPatch,
-    target: Path,
-) -> None:
+def _mock_windows_reparse(monkeypatch: pytest.MonkeyPatch, target: Path) -> None:
     reparse_point = 0x400
     real_lstat = skills.os.lstat
 

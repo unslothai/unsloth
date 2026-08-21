@@ -330,10 +330,10 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
             """
         )
     )
-    assert "search_knowledge_base" in (out.get("enabledTools") or []), (
-        "the Docs pill must still ask for the tool"
-    )
-    assert out.get("keys"), (
-        "an empty rag_scope is falsy server-side and drops the tool and the nudge"
-    )
+    assert "search_knowledge_base" in (
+        out.get("enabledTools") or []
+    ), "the Docs pill must still ask for the tool"
+    assert out.get(
+        "keys"
+    ), "an empty rag_scope is falsy server-side and drops the tool and the nudge"
     assert (out.get("scope") or {}).get("thread_id") == expected_thread_id
