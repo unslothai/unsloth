@@ -316,7 +316,7 @@ def _archive_source(
             raise SkillError(f"Archive contains duplicate path '{entry.filename}'.")
         seen.add(portable_key)
         mode = entry.external_attr >> 16
-        if stat.S_ISLNK(mode):
+        if stat.S_ISLNK(mode) and path.name == "SKILL.md":
             raise SkillError("Skill archives cannot contain symbolic links.")
         if entry.flag_bits & 0x1:
             raise SkillError("Encrypted skill archives are not supported.")
@@ -360,6 +360,8 @@ def _archive_source(
         for entry, path in files
         if not source_root.parts or _portable_archive_key(path).startswith(f"{source_root_key}/")
     ]
+    if any(stat.S_ISLNK(entry.external_attr >> 16) for entry, _ in selected_files):
+        raise SkillError("Skill archives cannot contain symbolic links.")
     _validate_bundle_layout(
         [(path, entry.file_size) for entry, path in selected_files],
         conflict_source = "Archive",

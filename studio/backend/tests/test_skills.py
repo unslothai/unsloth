@@ -334,6 +334,7 @@ def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
             "unsloth-pr/skills/unsloth/assets/train.yaml": "model: llama\n",
             "unsloth-pr/README.md": "repository file outside the skill bundle",
         },
+        symlink = "unsloth-pr/vendor/link.md",
     )
 
     imported = skills.import_skill_archive(archive)
