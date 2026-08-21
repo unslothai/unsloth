@@ -46,6 +46,17 @@ function canAttachImages(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachImages);
 }
 
+function canAttachDocumentPaths(
+  paths: string[],
+  options: NativeModelDropOptions,
+): boolean {
+  return paths.every((path) =>
+    isOpenDocumentAttachmentName(path)
+      ? canAttachImages(options)
+      : canAttachDocs(options),
+  );
+}
+
 function canAttachAudio(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachAudio);
 }
@@ -100,7 +111,7 @@ function dropStateForPaths(
     return { status: "invalid", reason: options.dropsUnsupportedReason };
   }
   if (dropped.kind === "docs") {
-    return canAttachDocs(options)
+    return canAttachDocumentPaths(dropped.paths, options)
       ? { status: "attach", count: dropped.paths.length, kind: "docs" }
       : { status: "invalid" };
   }
@@ -120,7 +131,7 @@ function dropStateForPaths(
       : { status: "invalid" };
   }
   if (dropped.kind === "attach") {
-    const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
+    const docsSupported = canAttachDocumentPaths(dropped.docs, options);
     const imagesSupported =
       dropped.images.length === 0 || canAttachImages(options);
     const audioSupported = dropped.audio.length === 0 || canAttachAudio(options);
@@ -298,18 +309,21 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           dropped.kind === "video" ||
           dropped.kind === "attach"
         ) {
-          const needsDocs =
-            dropped.kind === "docs" ||
-            (dropped.kind === "attach" && dropped.docs.length > 0);
           const needsImages =
             dropped.kind === "images" ||
             (dropped.kind === "attach" && dropped.images.length > 0);
-          const openDocumentPaths =
+          const documentPaths =
             dropped.kind === "docs"
-              ? dropped.paths.filter(isOpenDocumentAttachmentName)
+              ? dropped.paths
               : dropped.kind === "attach"
-                ? dropped.docs.filter(isOpenDocumentAttachmentName)
+                ? dropped.docs
                 : [];
+          const openDocumentPaths = documentPaths.filter(
+            isOpenDocumentAttachmentName,
+          );
+          const needsRagDocuments = documentPaths.some(
+            (path) => !isOpenDocumentAttachmentName(path),
+          );
           const needsOpenDocuments = openDocumentPaths.length > 0;
           const needsComposerAttachments = needsImages || needsOpenDocuments;
           const needsAudio =
@@ -318,7 +332,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           const needsVideo =
             dropped.kind === "video" ||
             (dropped.kind === "attach" && dropped.video.length > 0);
-          if (needsDocs && !canAttachDocs(currentOptions)) {
+          if (needsRagDocuments && !canAttachDocs(currentOptions)) {
             toast.error("Attaching files needs the desktop backend", {
               description: "Retry once Studio has finished starting up.",
             });

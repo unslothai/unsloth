@@ -57,6 +57,8 @@ const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
   /const openDocuments = registered\.docs\.filter[\s\S]*?const composerAttachments = \[[\s\S]*?\.\.\.registered\.images,[\s\S]*?\.\.\.openDocuments,[\s\S]*?await attachOptions\.onAttachImages\?\.\(composerAttachments\)/;
 const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
   /const needsOpenDocuments = openDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments = needsImages \|\| needsOpenDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
+const OPEN_DOCUMENT_BACKEND_GATE_RE =
+  /function canAttachDocumentPaths[\s\S]*?isOpenDocumentAttachmentName\(path\)[\s\S]*?\? canAttachImages\(options\)[\s\S]*?: canAttachDocs\(options\)[\s\S]*?const needsRagDocuments = documentPaths\.some[\s\S]*?if \(needsRagDocuments && !canAttachDocs\(currentOptions\)\)/;
 
 function attachmentIntent(id: string): NativeIntent {
   return {
@@ -116,6 +118,7 @@ test("OpenDocument picker types are accepted by native drops", () => {
   );
   assert.match(nativeDropSource, OPEN_DOCUMENT_DROP_TO_COMPOSER_RE);
   assert.match(nativeDropSource, OPEN_DOCUMENT_IMAGE_REGISTRATION_RE);
+  assert.match(nativeDropSource, OPEN_DOCUMENT_BACKEND_GATE_RE);
 
   const rustSource = readFileSync(
     new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
