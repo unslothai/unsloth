@@ -5939,7 +5939,20 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
     assert rows["Org/Chatty"]["load_id"] == str(complete)
 
 
-def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "ref_files",
+    [
+        {"config.json": b"{}"},
+        {
+            "config.json": b"{}",
+            "model-00001-of-00002.safetensors": b"\0" * 64,
+        },
+    ],
+    ids = ["metadata-only", "torn-shards"],
+)
+def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
+    monkeypatch, tmp_path, ref_files
+):
     """An active-cache row is only safe as a bare id while refs/main can serve the load.
 
     repo_id_will_not_resolve only catches a ref naming no directory; a ref naming an
@@ -5954,15 +5967,16 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypa
     (complete / "config.json").write_text("{}")
     (complete / "model.safetensors").write_bytes(b"\0" * 64)
 
-    metadata_only = repo_dir / "snapshots" / "metadata"
-    metadata_only.mkdir(parents = True)
-    (metadata_only / "config.json").write_text("{}")
+    broken_ref = repo_dir / "snapshots" / "broken"
+    broken_ref.mkdir(parents = True)
+    for filename, payload in ref_files.items():
+        (broken_ref / filename).write_bytes(payload)
 
     (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("metadata")
+    (repo_dir / "refs" / "main").write_text("broken")
 
     os.utime(complete, (1_000_000, 1_000_000))
-    os.utime(metadata_only, (2_000_000, 2_000_000))
+    os.utime(broken_ref, (2_000_000, 2_000_000))
 
     repo = _repo(
         "Org/Chatty",
@@ -5970,7 +5984,10 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypa
         repo_dir,
         revisions = [
             SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
-            SimpleNamespace(files = [_file("config.json", 100)], snapshot_path = metadata_only),
+            SimpleNamespace(
+                files = [_file(filename, len(payload)) for filename, payload in ref_files.items()],
+                snapshot_path = broken_ref,
+            ),
         ],
     )
 

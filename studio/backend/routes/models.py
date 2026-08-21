@@ -4794,12 +4794,12 @@ _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
 
 def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
-    """Whether this snapshot dir can be loaded on its own: metadata AND real weights.
+    """Whether this snapshot has metadata and a complete weight payload.
 
-    ``_is_model_directory`` already answers exactly that for the local scanners (config
-    beside a weight file, ``.bin`` held to ``_WEIGHT_BIN_PREFIXES`` so a Trainer
-    ``training_args.bin`` is not read as a checkpoint), so reusing it keeps every weight
-    check in agreement. Its ``.gguf`` arm cannot fire here: ``cached_model_rows`` skips
+    ``_is_model_directory`` supplies the local scanners' config-plus-weight check, with
+    ``.bin`` held to ``_WEIGHT_BIN_PREFIXES`` so a Trainer ``training_args.bin`` is not
+    read as a checkpoint. The payload check also rejects a shard family short of its own
+    stated total. The ``.gguf`` arm cannot fire here because ``cached_model_rows`` skips
     repos carrying GGUF files before any pin is computed.
 
     huggingface_hub keeps one snapshot per commit, so a partial fetch leaves an unloadable
@@ -4807,15 +4807,11 @@ def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
     only (AutoConfig/AutoTokenizer at a newer revision) and weights only (Unsloth's base
     model pre-warm fetches the shards plus index, no config.json).
     """
-    return _is_model_directory(snapshot)
+    return _is_model_directory(snapshot) and not _snapshot_payload_is_torn(snapshot)
 
 
 def _snapshot_payload_is_torn(snapshot: Optional[Path]) -> bool:
-    """See hub.utils.inventory_scan; True when a snapshot's own files prove it cannot serve.
-
-    Finer than ``_snapshot_can_serve_a_load``, which only asks for a config beside some
-    weight: a shard naming its own total proves the set is short one.
-    """
+    """See hub.utils.inventory_scan; True when the snapshot proves its payload incomplete."""
     from hub.utils.inventory_scan import _snapshot_cannot_serve_its_payload
     return _snapshot_cannot_serve_its_payload(snapshot)
 
@@ -4977,9 +4973,6 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         recovered_pin is not None
                         and recovered is not None
                         and _snapshot_can_serve_a_load(recovered)
-                        # A shard short of its own stated total still has a config beside a
-                        # .safetensors, so the coarse check alone would advertise a torn set.
-                        and not _snapshot_payload_is_torn(recovered)
                     ):
                         continue
                 if _repo_has_gguf_files(repo_info):

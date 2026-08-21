@@ -2570,10 +2570,6 @@ def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, mon
     legacy_repo = _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active),
-    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     inventory_scan.invalidate_hf_cache_scans()
 
@@ -2586,10 +2582,6 @@ def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, mon
 
     # Control: the broken copy in the other cache leaves the active one publishable.
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [legacy, active])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = legacy),
-    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: legacy)
     inventory_scan.invalidate_hf_cache_scans()
 
