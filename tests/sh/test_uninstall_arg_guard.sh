@@ -25,8 +25,11 @@ UNINSTALL_SH="$_TMP_ROOT/uninstall.sh"
 sed 's/^[[:space:]]*echo "Stopping any running Unsloth Studio servers\.\.\."$/    echo "__UNSLOTH_TEST_BODY_REACHED__"; return 99/' \
     "$SOURCE_UNINSTALL_SH" > "$UNINSTALL_SH"
 
-# Isolate every environment-controlled removal path.
+# Keep uninstall tests away from the host profile directory.
 unset UNSLOTH_STUDIO_HOME STUDIO_HOME UNSLOTH_UNINSTALL_ROCM
+UNSLOTH_PROFILE_D="$_TMP_ROOT/profile.d"
+export UNSLOTH_PROFILE_D
+mkdir -p "$UNSLOTH_PROFILE_D"
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"

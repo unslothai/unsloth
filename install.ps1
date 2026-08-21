@@ -4827,8 +4827,20 @@ exit 0
         } else {
             # Set process scope first because the User-scope write can fail under policy.
             Set-Item -Path "Env:$aotritonVar" -Value "1"
+            # Record ownership first, then roll it back if the User-scope write fails.
+            $aotritonOwnerKey = "HKCU:\Software\Unsloth"
+            $aotritonOwnerName = "AotritonUserEnvOwned"
             try {
-                [Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")
+                New-Item -Path $aotritonOwnerKey -Force -ErrorAction Stop | Out-Null
+                New-ItemProperty -Path $aotritonOwnerKey -Name $aotritonOwnerName `
+                    -Value 1 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+                try {
+                    [Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")
+                } catch {
+                    Remove-ItemProperty -Path $aotritonOwnerKey -Name $aotritonOwnerName `
+                        -Force -ErrorAction SilentlyContinue
+                    throw
+                }
                 substep "$aotritonVar=1 (AOTriton attention; unset it to fall back to MATH)" "Cyan"
             } catch {
                 # The process copy still enables AOTriton for this run.

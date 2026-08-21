@@ -33,6 +33,11 @@ beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,.cache}. The
 Hugging Face cache at ~/.cache/huggingface is left in place, as is anything
 else you keep under ~/.unsloth.
 
+On Linux it uses sudo to delete /etc/profile.d/unsloth-rocm-aotriton.sh, the
+AOTriton attention drop-in install.sh writes on a ROCm install, when that file
+is still exactly as install.sh wrote it. A drop-in edited or added to in any way
+is left alone.
+
 On WSL it also removes this distro's Windows-side shortcuts under /mnt/*/Users,
 strips the Unsloth block from ~/.bashrc, and uses sudo to delete
 /etc/profile.d/unsloth-rocm-wsl.sh.
@@ -47,6 +52,9 @@ Environment:
   UNSLOTH_STUDIO_HOME       Also remove this custom install root. Pass the value
                             used at install time.
   STUDIO_HOME               Alias for the above, ignored when both are set.
+  UNSLOTH_PROFILE_D         Where install.sh put the AOTriton drop-in. Defaults
+                            to /etc/profile.d; pass the value used at install
+                            time.
   UNSLOTH_UNINSTALL_ROCM=1  Also remove system ROCm (WSL only). Off by default
                             because ROCm is a shared prerequisite.
 EOF
@@ -505,6 +513,31 @@ _bundle_id_owner() {
     done | head -n 1
 }
 
+# Remove the installer-created drop-in on native Linux and WSL. Best effort.
+_remove_rocm_aotriton_dropin() {
+    # Match install.sh's configurable profile directory.
+    _ad_dropin="${UNSLOTH_PROFILE_D:-/etc/profile.d}/unsloth-rocm-aotriton.sh"
+    grep -q '^# >>> Unsloth ROCm AOTriton attention >>>$' "$_ad_dropin" 2>/dev/null || return 0
+    # Preserve the file if it no longer exactly matches install.sh's output.
+    _ad_expected="$(
+        printf '# >>> Unsloth ROCm AOTriton attention >>>\n'
+        printf '# Unset or set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
+        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
+        printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
+    )"
+    if [ "$(cat "$_ad_dropin" 2>/dev/null)" != "$_ad_expected" ]; then
+        echo "Keeping $_ad_dropin: edited since install."
+        return 0
+    fi
+    echo "Removing the AOTriton attention drop-in..."
+    _ad_sudo=""
+    if [ "$(id -u 2>/dev/null || echo 0)" != "0" ] && command -v sudo >/dev/null 2>&1; then
+        _ad_sudo="sudo"
+    fi
+    $_ad_sudo rm -f "$_ad_dropin" 2>/dev/null || true
+    return 0
+}
+
 _unsloth_uninstall_main() {
     # Reject unknown arguments before destructive work.
     for _arg in "$@"; do
@@ -690,6 +723,7 @@ _unsloth_uninstall_main() {
             fi
             ;;
         Linux)
+            _remove_rocm_aotriton_dropin
             if [ "$_is_wsl" = "1" ]; then
                 echo "Removing WSL Windows-side shortcuts..."
                 # install.sh creates per-distro 'Unsloth Studio (WSL - <distro>).lnk'

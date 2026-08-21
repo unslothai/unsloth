@@ -808,7 +808,20 @@ Environment:
     } catch {
         _Substep "could not update user PATH: $($_.Exception.Message)" "Yellow"
     }
-    # Remove HKCU\Software\Unsloth (PathBackup lives here; install.ps1 owns it).
+    # Remove only the unmodified User-scope value created by install.ps1.
+    $aotritonVar = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
+    try {
+        $aotritonOwned = Get-ItemPropertyValue -LiteralPath 'HKCU:\Software\Unsloth' `
+            -Name 'AotritonUserEnvOwned' -ErrorAction SilentlyContinue
+        if ($aotritonOwned -eq 1 -and
+            [Environment]::GetEnvironmentVariable($aotritonVar, "User") -eq "1") {
+            [Environment]::SetEnvironmentVariable($aotritonVar, [NullString]::Value, "User")
+            _Substep "removed installer-created $aotritonVar" "Green"
+        }
+    } catch {
+        _Substep "could not remove $aotritonVar : $($_.Exception.Message)" "Yellow"
+    }
+    # Remove HKCU\Software\Unsloth, which install.ps1 owns.
     try {
         Remove-Item -LiteralPath 'HKCU:\Software\Unsloth' -Recurse -Force -ErrorAction SilentlyContinue
     } catch { }

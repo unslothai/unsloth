@@ -21,6 +21,10 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 # Deterministic deny-list checks: keep $HOME clear of the fixture trees.
 HOME="$_TMP_ROOT/home"
 mkdir -p "$HOME"
+# Keep uninstall tests away from the host profile directory.
+UNSLOTH_PROFILE_D="$_TMP_ROOT/profile.d"
+export UNSLOTH_PROFILE_D
+mkdir -p "$UNSLOTH_PROFILE_D"
 
 assert_nodir() { _l="$1"; [ -d "$2" ] && { echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 assert_dir()   { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing dir $2)"; FAIL=$((FAIL+1)); }; }

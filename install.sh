@@ -4160,9 +4160,12 @@ _persist_rocm_aotriton_env() {
         return 0
     fi
     export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+    # Keep redirected installs removable by scripts/uninstall.sh.
+    _aot_profile_d="${UNSLOTH_PROFILE_D:-/etc/profile.d}"
+    [ -d "$_aot_profile_d" ] || return 0
     # The WSL drop-in already exports it; a second file would be dead weight.
-    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && return 0
-    [ -r /etc/profile.d/unsloth-rocm-aotriton.sh ] && return 0
+    [ -r "$_aot_profile_d/unsloth-rocm-wsl.sh" ] && return 0
+    [ -r "$_aot_profile_d/unsloth-rocm-aotriton.sh" ] && return 0
     _aot_dropin="$(
         printf '# >>> Unsloth ROCm AOTriton attention >>>\n'
         printf '# Unset or set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
@@ -4170,9 +4173,9 @@ _persist_rocm_aotriton_env() {
         printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
     )"
     if [ "$(id -u)" = "0" ]; then
-        printf '%s\n' "$_aot_dropin" > /etc/profile.d/unsloth-rocm-aotriton.sh 2>/dev/null || true
+        printf '%s\n' "$_aot_dropin" > "$_aot_profile_d/unsloth-rocm-aotriton.sh" 2>/dev/null || true
     elif command -v sudo >/dev/null 2>&1; then
-        printf '%s\n' "$_aot_dropin" | sudo tee /etc/profile.d/unsloth-rocm-aotriton.sh >/dev/null 2>&1 || true
+        printf '%s\n' "$_aot_dropin" | sudo tee "$_aot_profile_d/unsloth-rocm-aotriton.sh" >/dev/null 2>&1 || true
     fi
     return 0
 }
