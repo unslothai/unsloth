@@ -56,7 +56,12 @@ _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\]
 
 # `pip install`, but also `pip3 install` and `"$VENV/bin/pip" install`, which
 # mlx-ci.yml:439 already uses. Matching the literal text `pip install` missed both.
-_PIP_INSTALL = re.compile(r"""(?:^|[\s"'/])pip[0-9.]*["']?\s+install(?:\s|$)""")
+# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator,
+# quoted or not. mlx-ci.yml:439 uses "$STUDIO_VENV/bin/pip"; the Windows workflows can
+# use pip.exe, which neither a `/`-only separator nor a digits-only suffix would match.
+_PIP_INSTALL = re.compile(
+    r"""(?:^|[\s"'/\\])pip[0-9]*(?:\.[0-9]+)*(?:\.exe)?["']?\s+install(?:\s|$)"""
+)
 
 # The whole version token, suffix included. Capturing only the numeric prefix silently
 # turned `<4.post1` into `<4`, and a post-release or local-version bound is LOOSER than
@@ -65,6 +70,27 @@ _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[^,\s'\"]+)")
 _NUMERIC = re.compile(r"^[0-9][0-9.]*$")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
 _COMPATIBLE = re.compile(r"~=(?P<version>[0-9][0-9.]*)")
+
+
+def _strip_inline_comment(line: str) -> str:
+    """Drop a trailing shell comment, respecting quotes.
+
+    Only whole-line comments were dropped before, so `run: echo ok  # pip install
+    'openai<4'` was scanned as a real install: commented text could satisfy the bound
+    and anti-vacuity checks, and merely naming a bare guarded package after a `#` could
+    fail CI. A `#` only opens a comment at the start of a word, so `git+https://x#egg=y`
+    survives.
+    """
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index]
+    return line
 
 
 def _install_commands_in(text: str) -> list[tuple[int, str]]:
@@ -81,7 +107,8 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
     pending: list[str] = []
     start = 0
     for number, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith("#"):
+        line = _strip_inline_comment(line)
+        if not line.strip():
             continue
         if not pending:
             start = number
@@ -128,7 +155,7 @@ def _requirements_in(command: str, package: str) -> list[str]:
         tokens = command.split()
     found = []
     for token in tokens:
-        if token.startswith("-") or "/" in token:
+        if token.startswith("-") or "/" in token or "\\" in token:
             continue
         match = _REQUIREMENT.match(token)
         if not match:
@@ -370,3 +397,32 @@ def test_a_compatible_pin_keeps_its_written_precision() -> None:
     assert _excludes("~=3.0.0", GUARDED["openai"])
     assert _release("3.0.0") == (3, 0, 0)
     assert _version("3.0.0") == (3,)
+
+
+def test_a_trailing_comment_is_not_an_install() -> None:
+    """Only whole-line comments were dropped, which cut both ways.
+
+    Commented text could satisfy the bound and anti-vacuity checks after the real
+    installs were gone, and merely naming a bare guarded package after a `#` could fail
+    CI. A `#` only opens a comment at the start of a word, so a URL fragment survives.
+    """
+    assert _install_commands_in("      - run: echo ok  # pip install 'openai<4'\n") == []
+    assert _install_commands_in("          pip install 'openai>=1.50,<4'  # below 4\n")
+    assert _strip_inline_comment("pip install 'git+https://x#egg=y'") == (
+        "pip install 'git+https://x#egg=y'"
+    )
+    assert _strip_inline_comment("pip install git+https://x#egg=y") == (
+        "pip install git+https://x#egg=y"
+    )
+
+
+def test_a_windows_pip_executable_is_recognized() -> None:
+    """`pip.exe` matched neither the digits-only suffix nor the `/`-only separator."""
+    for command in (
+        "pip.exe install openai",
+        '"$VENV\\Scripts\\pip.exe" install openai',
+        "pip3.12.exe install openai",
+    ):
+        assert _PIP_INSTALL.search(command), command
+    assert not _PIP_INSTALL.search("npm install openai")
+    assert not _PIP_INSTALL.search("pip download openai")
