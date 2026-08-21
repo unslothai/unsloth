@@ -1776,14 +1776,10 @@ def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkey
     """``none`` sends the whole model to one --main-gpu index, in llama.cpp's own
     enumeration, so beside a 6 GiB Vulkan0 this cannot claim the 94 GiB Vulkan1 heap
     receives it. Crediting it admitted a 30 GiB model onto the 6 GiB card."""
-    backend, gguf = _mixed_vulkan(
-        tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)]
-    )
+    backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33, extra_args = extras
-        )
+        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33, extra_args = extras)
 
 
 def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatch):
