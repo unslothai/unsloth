@@ -78,6 +78,30 @@ def _corrupt_compressed_member(
     return path
 
 
+def _mock_windows_reparse(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Path,
+) -> None:
+    reparse_point = 0x400
+    real_lstat = skills.os.lstat
+
+    class ReparsePointStatus:
+        st_mode = stat.S_IFDIR
+        st_file_attributes = reparse_point
+
+    monkeypatch.setattr(
+        skills.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_point,
+        raising = False,
+    )
+    monkeypatch.setattr(
+        skills.os,
+        "lstat",
+        lambda path: ReparsePointStatus() if Path(path) == target else real_lstat(path),
+    )
+
+
 def test_create_skill_installs_markdown_and_text_resources(tmp_path: Path):
     created = skills.create_skill(
         "unsloth",
@@ -132,8 +156,6 @@ def test_create_skill_rejects_a_linked_skills_root(tmp_path: Path, monkeypatch: 
     from core.inference.tools import execute_tool
 
     root = tmp_path / "skills"
-    outside = tmp_path / "outside"
-    outside.mkdir()
     real_lstat = skills.os.lstat
 
     def linked_root_lstat(path):
@@ -151,29 +173,35 @@ def test_create_skill_rejects_a_linked_skills_root(tmp_path: Path, monkeypatch: 
 
     assert result == "Error: Skills directory cannot be a symbolic link or reparse point."
     assert not root.exists()
-    assert list(outside.iterdir()) == []
     with pytest.raises(skills.SkillError, match = "symbolic link"):
         skills.list_skills()
 
 
-def test_skills_root_link_detector_recognizes_a_windows_reparse_point(
+def test_link_detector_recognizes_a_windows_reparse_point(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    reparse_point = 0x400
+    root = tmp_path / "skills"
+    _mock_windows_reparse(monkeypatch, root)
 
-    class ReparsePointStatus:
-        st_mode = stat.S_IFDIR
-        st_file_attributes = reparse_point
+    assert skills._is_linked_path(root) is True
 
-    monkeypatch.setattr(
-        skills.stat,
-        "FILE_ATTRIBUTE_REPARSE_POINT",
-        reparse_point,
-        raising = False,
-    )
-    monkeypatch.setattr(skills.os, "lstat", lambda _path: ReparsePointStatus())
 
-    assert skills._is_linked_skills_root(tmp_path / "skills") is True
+@pytest.mark.parametrize(
+    ("relative_path", "message"),
+    [
+        ("unsloth", "missing or unsafe"),
+        ("unsloth/SKILL.md", "contain SKILL.md"),
+    ],
+)
+def test_installed_skills_reject_windows_reparse_points(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_path: str, message: str
+):
+    skills.create_skill("unsloth", SKILL_MD)
+    target = tmp_path / "skills" / relative_path
+    _mock_windows_reparse(monkeypatch, target)
+
+    with pytest.raises(skills.SkillError, match = message):
+        skills._validate_installed_skill(tmp_path / "skills/unsloth")
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX symbolic-link regression")
@@ -197,6 +225,8 @@ def test_create_skill_allows_a_symlinked_studio_root_parent(
         ("Bad Name", SKILL_MD, [], "lowercase letters"),
         ("unsloth", SKILL_MD.replace("name: unsloth", "name: other"), [], "must match"),
         ("unsloth", SKILL_MD, [{"path": "/tmp/out", "content": "x"}], "unsafe path"),
+        ("unsloth", SKILL_MD, [{"path": ".", "content": "x"}], "unsafe path"),
+        ("unsloth", SKILL_MD, [{"path": "./", "content": "x"}], "unsafe path"),
         ("unsloth", SKILL_MD, [{"path": "SKILL.md", "content": "x"}], "one SKILL.md"),
         (
             "unsloth",
@@ -502,7 +532,26 @@ def test_rejects_invalid_utf8_archive_filenames(tmp_path: Path):
     "member",
     ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
 )
-def test_translates_corrupt_deflate_streams(tmp_path: Path, member: str):
+@pytest.mark.parametrize(
+    ("compression", "corruption_offset"),
+    [
+        pytest.param(zipfile.ZIP_DEFLATED, 0, id = "deflate"),
+        pytest.param(zipfile.ZIP_BZIP2, 0, id = "bzip2"),
+        pytest.param(zipfile.ZIP_LZMA, 9, id = "lzma"),
+        pytest.param(
+            getattr(zipfile, "ZIP_ZSTANDARD", zipfile.ZIP_STORED),
+            0,
+            id = "zstandard",
+            marks = pytest.mark.skipif(
+                not hasattr(zipfile, "ZIP_ZSTANDARD"),
+                reason = "Zstandard requires Python 3.14",
+            ),
+        ),
+    ],
+)
+def test_translates_corrupt_compressed_streams(
+    tmp_path: Path, member: str, compression: int, corruption_offset: int
+):
     archive = _corrupt_compressed_member(
         tmp_path / "corrupt.zip",
         {
@@ -510,64 +559,8 @@ def test_translates_corrupt_deflate_streams(tmp_path: Path, member: str):
             "unsloth/references/config-reference.md": "Use bf16.\n",
         },
         member,
-    )
-
-    with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
-        skills.import_skill_archive(archive)
-    assert not (tmp_path / "skills/unsloth").exists()
-
-
-def test_translates_a_corrupt_bzip2_resource(tmp_path: Path):
-    archive = _corrupt_compressed_member(
-        tmp_path / "corrupt-bzip2.zip",
-        {
-            "unsloth/SKILL.md": SKILL_MD,
-            "unsloth/references/config-reference.md": "Use bf16.\n",
-        },
-        "unsloth/references/config-reference.md",
-        zipfile.ZIP_BZIP2,
-    )
-
-    with pytest.raises(skills.SkillError, match = "valid ZIP"):
-        skills.import_skill_archive(archive)
-    assert not (tmp_path / "skills/unsloth").exists()
-
-
-@pytest.mark.skipif(not hasattr(zipfile, "ZIP_ZSTANDARD"), reason = "Zstandard requires Python 3.14")
-@pytest.mark.parametrize(
-    "member",
-    ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
-)
-def test_translates_corrupt_zstandard_streams(tmp_path: Path, member: str):
-    archive = _corrupt_compressed_member(
-        tmp_path / "corrupt-zstandard.zip",
-        {
-            "unsloth/SKILL.md": SKILL_MD,
-            "unsloth/references/config-reference.md": "Use bf16.\n",
-        },
-        member,
-        compression = zipfile.ZIP_ZSTANDARD,
-    )
-
-    with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
-        skills.import_skill_archive(archive)
-    assert not (tmp_path / "skills/unsloth").exists()
-
-
-@pytest.mark.parametrize(
-    "member",
-    ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
-)
-def test_translates_corrupt_lzma_streams(tmp_path: Path, member: str):
-    archive = _corrupt_compressed_member(
-        tmp_path / "corrupt-lzma.zip",
-        {
-            "unsloth/SKILL.md": SKILL_MD,
-            "unsloth/references/config-reference.md": "Use bf16.\n",
-        },
-        member,
-        zipfile.ZIP_LZMA,
-        9,
+        compression,
+        corruption_offset,
     )
 
     with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
@@ -635,17 +628,23 @@ def test_progressively_reads_enabled_skill_resources(tmp_path: Path):
     skills.import_skill_archive(archive)
 
     manifest = skills.read_skill_resource("unsloth")
+    whitespace_manifest = skills.read_skill_resource("unsloth", " \t")
     reference = skills.read_skill_resource("unsloth", "references/config-reference.md")
+    backslash_reference = skills.read_skill_resource("unsloth", "references\\config-reference.md")
     leading = skills.read_skill_resource("unsloth", " references/leading.md")
 
     assert "Resource: SKILL.md" in manifest
+    assert whitespace_manifest == manifest
     assert "Read [the configuration reference]" in manifest
     assert reference.endswith("Config\nUse bf16.\n")
+    assert backslash_reference == reference
     assert leading.endswith("Leading space\n")
     skills.set_skill_enabled("unsloth", False)
     assert not any(skill["enabled"] for skill in skills.list_skills())
     with pytest.raises(skills.SkillError, match = "disabled"):
         skills.read_skill_resource("unsloth")
+    with pytest.raises(skills.SkillError, match = "not installed"):
+        skills.read_skill_resource("missing")
 
 
 def test_large_resources_are_read_in_bounded_pages(tmp_path: Path):
@@ -751,7 +750,9 @@ def test_rejects_an_enabled_catalog_over_the_context_budget(
     )
 
 
-def test_tool_routes_always_offer_create_and_gate_read_on_enabled_skills(tmp_path: Path):
+def test_tool_routes_always_offer_create_and_gate_read_on_enabled_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL, is_always_safe_tool
     from routes import inference
 
@@ -771,6 +772,16 @@ def test_tool_routes_always_offer_create_and_gate_read_on_enabled_skills(tmp_pat
     assert "read_skill" in inference._ANTHROPIC_UNPROMPTED_SAFE_TOOLS
     assert is_always_safe_tool("read_skill") is True
     assert is_always_safe_tool("create_skill") is False
+
+    monkeypatch.setattr(
+        skills,
+        "list_skills",
+        lambda: (_ for _ in ()).throw(OSError("storage unavailable")),
+    )
+    selected = asyncio.run(
+        inference._filter_unavailable_skill_tool([READ_SKILL_TOOL, CREATE_SKILL_TOOL])
+    )
+    assert [tool["function"]["name"] for tool in selected] == ["create_skill"]
 
 
 def test_token_count_selection_keeps_the_create_skill_schema():

@@ -1783,7 +1783,6 @@ class InferenceOrchestrator:
         from core.inference.tools import execute_tool
 
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
-        generation_stats_holder = stats_holder if stats_holder is not None else {}
 
         def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # ``conv`` already carries any system message. ``active_tools`` lets
@@ -1809,7 +1808,7 @@ class InferenceOrchestrator:
                 # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
                 # last turn wins, like the GGUF tool loop
-                stats_holder = generation_stats_holder,
+                stats_holder = stats_holder,
                 presence_penalty = presence_penalty,
             )
             if use_adapter is not None:

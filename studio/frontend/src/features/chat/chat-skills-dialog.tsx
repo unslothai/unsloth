@@ -39,6 +39,10 @@ import {
   subscribeSkillCatalogChanges,
 } from "./api/skills-api";
 
+type PendingAction =
+  | { type: "delete"; skill: AgentSkill }
+  | { type: "replace"; file: File };
+
 export function ChatSkillsDialog({
   open,
   onOpenChange,
@@ -50,10 +54,9 @@ export function ChatSkillsDialog({
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [busyName, setBusyName] = useState<string | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState<AgentSkill | null>(
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(
     null,
   );
-  const [replaceFile, setReplaceFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -87,7 +90,7 @@ export function ChatSkillsDialog({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!replace && message.includes("already installed")) {
-        setReplaceFile(file);
+        setPendingAction({ type: "replace", file });
       } else {
         toast.error("Could not import skill", { description: message });
       }
@@ -211,7 +214,9 @@ export function ChatSkillsDialog({
                       variant="ghost"
                       size="icon"
                       disabled={busyName === skill.name}
-                      onClick={() => setConfirmingDelete(skill)}
+                      onClick={() =>
+                        setPendingAction({ type: "delete", skill })
+                      }
                       aria-label={`Delete ${skill.name}`}
                     >
                       <Trash2Icon size={14} />
@@ -225,67 +230,51 @@ export function ChatSkillsDialog({
       </Dialog>
 
       <AlertDialog
-        open={confirmingDelete !== null}
+        open={pendingAction !== null}
         onOpenChange={(next) => {
           if (!next) {
-            setConfirmingDelete(null);
+            setPendingAction(null);
           }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete skill</AlertDialogTitle>
+            <AlertDialogTitle>
+              {pendingAction?.type === "delete"
+                ? "Delete skill"
+                : "Replace installed skill?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Delete &quot;{confirmingDelete?.name}&quot; and all of its files?
-              This cannot be undone.
+              {pendingAction?.type === "delete" ? (
+                <>
+                  Delete &quot;{pendingAction.skill.name}&quot; and all of its
+                  files? This cannot be undone.
+                </>
+              ) : (
+                <>
+                  A skill with this name is already installed. Replace its full
+                  bundle with the uploaded version?
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              variant="destructive"
+              variant={
+                pendingAction?.type === "delete" ? "destructive" : "default"
+              }
               onClick={() => {
-                const skill = confirmingDelete;
-                setConfirmingDelete(null);
-                if (skill) {
-                  removeSkill(skill);
+                const action = pendingAction;
+                setPendingAction(null);
+                if (action?.type === "delete") {
+                  removeSkill(action.skill);
+                } else if (action?.type === "replace") {
+                  importBundle(action.file, true);
                 }
               }}
             >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog
-        open={replaceFile !== null}
-        onOpenChange={(next) => {
-          if (!next) {
-            setReplaceFile(null);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Replace installed skill?</AlertDialogTitle>
-            <AlertDialogDescription>
-              A skill with this name is already installed. Replace its full
-              bundle with the uploaded version?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const file = replaceFile;
-                setReplaceFile(null);
-                if (file) {
-                  importBundle(file, true);
-                }
-              }}
-            >
-              Replace
+              {pendingAction?.type === "delete" ? "Delete" : "Replace"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

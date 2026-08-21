@@ -16,7 +16,7 @@ import {
 } from "@/features/chat/utils/mcp-tool-name";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
-import { readSkillToolDisplay } from "./read-skill-tool-display";
+import { readSkillToolDisplay } from "@/features/chat/skill-tools";
 import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,

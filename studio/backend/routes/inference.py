@@ -3919,33 +3919,27 @@ async def _filter_unavailable_skill_tool(tools: list[dict]) -> list[dict]:
     from core.inference.skills import SkillError, format_skill_catalog, list_skills
 
     try:
-        enabled_skills = [
-            skill for skill in await asyncio.to_thread(list_skills) if skill["enabled"]
-        ]
-    except SkillError:
+        catalog = format_skill_catalog(await asyncio.to_thread(list_skills))
+    except (OSError, SkillError):
+        catalog = ""
+    if not catalog:
         return [tool for tool in tools if tool["function"]["name"] != "read_skill"]
-    if not enabled_skills:
-        return [tool for tool in tools if tool["function"]["name"] != "read_skill"]
-    try:
-        catalog = format_skill_catalog(enabled_skills)
-    except SkillError:
-        return [tool for tool in tools if tool["function"]["name"] != "read_skill"]
-    selected: list[dict] = []
-    for tool in tools:
-        if tool["function"]["name"] != "read_skill":
-            selected.append(tool)
-            continue
-        function = tool["function"]
-        selected.append(
+    return [
+        (
             {
                 **tool,
                 "function": {
-                    **function,
-                    "description": f"{function['description']}\n\nEnabled skills:\n{catalog}",
+                    **tool["function"],
+                    "description": (
+                        f"{tool['function']['description']}\n\nEnabled skills:\n{catalog}"
+                    ),
                 },
             }
+            if tool["function"]["name"] == "read_skill"
+            else tool
         )
-    return selected
+        for tool in tools
+    ]
 
 
 async def _select_request_tools(

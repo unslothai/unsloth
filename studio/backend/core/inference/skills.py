@@ -75,9 +75,9 @@ def _normalize_skill_name(name: str) -> str:
     return normalized
 
 
-def _is_linked_skills_root(root: Path) -> bool:
+def _is_linked_path(path: Path) -> bool:
     try:
-        status = os.lstat(root)
+        status = os.lstat(path)
     except FileNotFoundError:
         return False
     attributes = getattr(status, "st_file_attributes", 0)
@@ -87,21 +87,17 @@ def _is_linked_skills_root(root: Path) -> bool:
 
 def _skills_root() -> Path:
     root = studio_root() / "skills"
-    if _is_linked_skills_root(root):
+    if _is_linked_path(root):
         raise SkillError("Skills directory cannot be a symbolic link or reparse point.")
     ensure_dir(root)
-    if _is_linked_skills_root(root):
+    if _is_linked_path(root):
         raise SkillError("Skills directory cannot be a symbolic link or reparse point.")
     return root
 
 
-def _registry_path() -> Path:
-    return _skills_root() / _REGISTRY_NAME
-
-
 def _load_registry() -> dict[str, bool]:
     try:
-        payload = json.loads(_registry_path().read_text(encoding = "utf-8"))
+        payload = json.loads((_skills_root() / _REGISTRY_NAME).read_text(encoding = "utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -130,7 +126,7 @@ def _save_registry(registry: dict[str, bool]) -> None:
             json.dump(registry, handle, sort_keys = True, separators = (",", ":"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_name, _registry_path())
+        os.replace(temporary_name, _skills_root() / _REGISTRY_NAME)
     except Exception:
         try:
             os.unlink(temporary_name)
@@ -152,7 +148,7 @@ def _read_limited(path: Path, limit: int) -> bytes:
         raise SkillError(f"Could not read {path.name}.") from exc
 
 
-def _parse_skill_markdown(raw: bytes, parent_name: str) -> dict:
+def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict:
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
@@ -177,8 +173,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: str) -> dict:
     name = frontmatter.get("name")
     description = frontmatter.get("description")
     name = _normalize_skill_name(name)
-    normalized_parent = _normalize_skill_name(parent_name)
-    if name != normalized_parent:
+    if parent_name is not None and name != _normalize_skill_name(parent_name):
         raise SkillError(f"Skill name '{name}' must match its parent directory '{parent_name}'.")
     if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise SkillError("Skill description must be 1-1024 characters.")
@@ -220,10 +215,10 @@ def _parse_skill_markdown(raw: bytes, parent_name: str) -> dict:
 
 
 def _validate_installed_skill(skill_dir: Path) -> dict:
-    if not skill_dir.is_dir() or skill_dir.is_symlink():
+    if _is_linked_path(skill_dir) or not skill_dir.is_dir():
         raise SkillError("Skill directory is missing or unsafe.")
     manifest = skill_dir / "SKILL.md"
-    if manifest.is_symlink() or not manifest.is_file():
+    if _is_linked_path(manifest) or not manifest.is_file():
         raise SkillError("Skill bundle must contain SKILL.md at its root.")
     return _parse_skill_markdown(_read_limited(manifest, MAX_SKILL_MD_BYTES), skill_dir.name)
 
@@ -244,6 +239,7 @@ def _normalize_archive_name(name: str) -> PurePosixPath:
     path = PurePosixPath(normalized)
     if (
         not normalized
+        or not path.parts
         or normalized.startswith("/")
         or PureWindowsPath(name).is_absolute()
         or any(PureWindowsPath(part).drive for part in path.parts)
@@ -272,6 +268,27 @@ def _portable_archive_key(path: PurePosixPath) -> str:
     return "/".join(
         unicodedata.normalize("NFKC", part).rstrip(" .").casefold() for part in path.parts
     )
+
+
+def _validate_bundle_layout(
+    files: list[tuple[PurePosixPath, int]], *, conflict_source: str
+) -> None:
+    if len(files) > MAX_ARCHIVE_FILES:
+        raise SkillError(f"Skill bundle exceeds the {MAX_ARCHIVE_FILES}-file limit.")
+    oversized = next(
+        (path for path, size in files if path.name != "SKILL.md" and size > MAX_SKILL_FILE_BYTES),
+        None,
+    )
+    if oversized is not None:
+        raise SkillError(f"{oversized.name} exceeds the {MAX_SKILL_FILE_BYTES // 1024} KB limit.")
+    keys = {_portable_archive_key(path) for path, _ in files}
+    if any(
+        any("/".join(parts[:index]) in keys for index in range(1, len(parts)))
+        for parts in (key.split("/") for key in keys)
+    ):
+        raise SkillError(f"{conflict_source} contains conflicting file paths.")
+    if sum(size for _, size in files) > MAX_EXTRACTED_BYTES:
+        raise SkillError("Skill bundle exceeds the 100 MB extracted-size limit.")
 
 
 def _validate_extraction_paths(root: Path, destinations: list[Path]) -> None:
@@ -328,21 +345,10 @@ def _archive_source(
         *_ZSTD_ERRORS,
     ) as exc:
         raise SkillError("Could not read SKILL.md from the archive.") from exc
-    provisional_name = source_root.name if source_root.parts else ""
-    if provisional_name:
-        metadata = _parse_skill_markdown(manifest_raw, provisional_name)
-    else:
-        try:
-            text = manifest_raw.decode("utf-8")
-            lines = text.splitlines()
-            closing = next(
-                index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"
-            )
-            raw_metadata = yaml.safe_load("\n".join(lines[1:closing]))
-            root_name = raw_metadata.get("name") if isinstance(raw_metadata, dict) else ""
-        except (UnicodeDecodeError, StopIteration, yaml.YAMLError, RecursionError, ValueError):
-            root_name = ""
-        metadata = _parse_skill_markdown(manifest_raw, root_name)
+    metadata = _parse_skill_markdown(
+        manifest_raw,
+        source_root.name if source_root.parts else None,
+    )
     source_root_key = _portable_archive_key(source_root)
     if source_root.parts and any(
         _portable_archive_key(path) == source_root_key for _, path in files
@@ -356,27 +362,10 @@ def _archive_source(
         for entry, path in files
         if not source_root.parts or _portable_archive_key(path).startswith(f"{source_root_key}/")
     ]
-    if len(selected_files) > MAX_ARCHIVE_FILES:
-        raise SkillError(f"Skill bundle exceeds the {MAX_ARCHIVE_FILES}-file limit.")
-    oversized_resource = next(
-        (
-            path
-            for entry, path in selected_files
-            if entry is not manifest_entry and entry.file_size > MAX_SKILL_FILE_BYTES
-        ),
-        None,
+    _validate_bundle_layout(
+        [(path, entry.file_size) for entry, path in selected_files],
+        conflict_source = "Archive",
     )
-    if oversized_resource is not None:
-        raise SkillError(
-            f"{oversized_resource.name} exceeds the {MAX_SKILL_FILE_BYTES // 1024} KB limit."
-        )
-    selected_keys = {_portable_archive_key(path) for _, path in selected_files}
-    for key in selected_keys:
-        parts = key.split("/")
-        if any("/".join(parts[:index]) in selected_keys for index in range(1, len(parts))):
-            raise SkillError("Archive contains conflicting file paths.")
-    if sum(entry.file_size for entry, _ in selected_files) > MAX_EXTRACTED_BYTES:
-        raise SkillError("Skill bundle exceeds the 100 MB extracted-size limit.")
     return metadata, selected_files
 
 
@@ -501,7 +490,6 @@ def create_skill(
 
     selected_files: list[tuple[PurePosixPath, bytes]] = []
     seen = {_portable_archive_key(PurePosixPath("SKILL.md"))}
-    total_size = len(manifest_raw)
     for entry in files:
         if not isinstance(entry, dict):
             raise SkillError("Each skill file must contain a path and text content.")
@@ -520,16 +508,12 @@ def create_skill(
             raw = content.encode("utf-8")
         except UnicodeEncodeError as exc:
             raise SkillError(f"Skill file '{path_value}' must be UTF-8 text.") from exc
-        if len(raw) > MAX_SKILL_FILE_BYTES:
-            raise SkillError(f"{path.name} exceeds the {MAX_SKILL_FILE_BYTES // 1024} KB limit.")
-        total_size += len(raw)
         selected_files.append((path, raw))
-    for key in seen:
-        parts = key.split("/")
-        if any("/".join(parts[:index]) in seen for index in range(1, len(parts))):
-            raise SkillError("Skill bundle contains conflicting file paths.")
-    if total_size > MAX_EXTRACTED_BYTES:
-        raise SkillError("Skill bundle exceeds the 100 MB extracted-size limit.")
+    _validate_bundle_layout(
+        [(PurePosixPath("SKILL.md"), len(manifest_raw))]
+        + [(path, len(raw)) for path, raw in selected_files],
+        conflict_source = "Skill bundle",
+    )
 
     with _LOCK:
         root = _skills_root()
@@ -623,25 +607,22 @@ def read_skill_resource(
     if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
         raise SkillError("Skill resource page size must be a positive integer.")
     with _LOCK:
-        skills = {skill["name"]: skill for skill in list_skills()}
-        skill = skills.get(name)
-        if skill is None:
-            raise SkillError(f"Skill '{name}' is not installed.")
-        if not skill["enabled"]:
+        skill_dir = _skills_root() / name
+        try:
+            _validate_installed_skill(skill_dir)
+        except SkillError as exc:
+            raise SkillError(f"Skill '{name}' is not installed.") from exc
+        if not _load_registry().get(name, True):
             raise SkillError(f"Skill '{name}' is disabled.")
 
         normalized = resource.replace("\\", "/")
         if not normalized.strip():
             normalized = "SKILL.md"
-        path = PurePosixPath(normalized)
-        if (
-            "\x00" in normalized
-            or normalized.startswith("/")
-            or PureWindowsPath(resource).is_absolute()
-            or any(part in ("", ".", "..") for part in path.parts)
-        ):
-            raise SkillError("Skill resource path must stay inside the skill directory.")
-        root = (_skills_root() / name).resolve()
+        try:
+            path = _normalize_archive_name(normalized)
+        except SkillError as exc:
+            raise SkillError("Skill resource path must stay inside the skill directory.") from exc
+        root = skill_dir.resolve()
         candidate = root.joinpath(*path.parts)
         try:
             resolved = candidate.resolve(strict = True)

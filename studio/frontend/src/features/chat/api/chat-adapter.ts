@@ -42,6 +42,11 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
+  isSuccessfulCreateSkillResult,
+  STUDIO_SKILL_TOOL_NAMES,
+} from "../skill-tools";
+import { announceSkillCatalogChanged } from "./skills-api";
+import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -1707,8 +1712,7 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
-      "create_skill",
-      "read_skill",
+      ...STUDIO_SKILL_TOOL_NAMES,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
@@ -5391,7 +5395,7 @@ export function createOpenAIStreamAdapter(
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
                       ...(skillToolsAvailableForThisTurn
-                        ? ["create_skill", "read_skill"]
+                        ? STUDIO_SKILL_TOOL_NAMES
                         : []),
                       // Hosted tools Studio has no local stand-in for. Their
                       // pills stay lit whether or not a Studio tool is on, so
@@ -5631,7 +5635,7 @@ export function createOpenAIStreamAdapter(
                       ? ["render_html"]
                       : []),
                     ...(skillToolsAvailableForThisTurn
-                      ? ["create_skill", "read_skill"]
+                      ? STUDIO_SKILL_TOOL_NAMES
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -6028,8 +6032,15 @@ export function createOpenAIStreamAdapter(
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
+                  const rawEvent = (toolEvent.result as string) ?? "";
+                  const completedToolName =
+                    toolCallParts[idx]?.toolName ?? toolEvent.tool_name;
+                  if (
+                    isSuccessfulCreateSkillResult(completedToolName, rawEvent)
+                  ) {
+                    announceSkillCatalogChanged();
+                  }
                   if (idx !== -1) {
-                    const rawEvent = (toolEvent.result as string) ?? "";
                     // Pulled out first, ahead of __IMAGES__, so the image
                     // slice below is unchanged. Only from the tools that emit
                     // it: elsewhere that line is content, not an envelope.

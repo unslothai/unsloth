@@ -29,6 +29,11 @@ function broadcastSkillCatalogChanged(): void {
   getCatalogChannel()?.postMessage("changed");
 }
 
+export function announceSkillCatalogChanged(): void {
+  notifySkillCatalogChanged();
+  getCatalogChannel()?.postMessage("changed");
+}
+
 function getCatalogChannel(): BroadcastChannel | null {
   if (catalogChannel !== undefined) {
     return catalogChannel;
@@ -103,11 +108,7 @@ export async function deleteSkill(name: string): Promise<void> {
   const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const detail = (body as { detail?: string } | null)?.detail;
-    throw new Error(detail ?? `Delete failed (${response.status})`);
-  }
+  await parseJsonOrThrow<null>(response);
   broadcastSkillCatalogChanged();
 }
 

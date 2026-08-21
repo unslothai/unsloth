@@ -102,10 +102,10 @@ const state: any = {
   reasoningEffortLevels: ["low", "medium", "high"],
   supportsPreserveThinking: false,
   preserveThinking: false,
-  skillsEnabled: false,
 };
 
 const useChatRuntimeStore: any = { getState: () => state };
+const STUDIO_SKILL_TOOL_NAMES = ["create_skill", "read_skill"];
 
 export function seed(patch: any): void {
   Object.assign(state, patch);
@@ -135,10 +135,6 @@ async function resolveProjectId(_threadId: any): Promise<string | null> {
 
 async function projectHasSources(_projectId: any): Promise<boolean> {
   return false;
-}
-
-async function hasEnabledSkills(): Promise<boolean> {
-  return state.skillsEnabled;
 }
 
 // A stand-in for the server-side tokenizer: proportional to the rendered prompt, so a
@@ -334,10 +330,10 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
             """
         )
     )
-    assert "search_knowledge_base" in (
-        out.get("enabledTools") or []
-    ), "the Docs pill must still ask for the tool"
-    assert out.get(
-        "keys"
-    ), "an empty rag_scope is falsy server-side and drops the tool and the nudge"
+    assert "search_knowledge_base" in (out.get("enabledTools") or []), (
+        "the Docs pill must still ask for the tool"
+    )
+    assert out.get("keys"), (
+        "an empty rag_scope is falsy server-side and drops the tool and the nudge"
+    )
     assert (out.get("scope") or {}).get("thread_id") == expected_thread_id

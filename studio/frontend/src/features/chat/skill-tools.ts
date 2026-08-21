@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+export const STUDIO_SKILL_TOOL_NAMES = ["create_skill", "read_skill"] as const;
+
+export function isSuccessfulCreateSkillResult(
+  toolName: unknown,
+  result: unknown,
+): boolean {
+  return (
+    toolName === "create_skill" &&
+    typeof result === "string" &&
+    result.trimStart().startsWith("Installed skill '")
+  );
+}
+
 type ReadSkillArgs = {
   name?: unknown;
   resource?: unknown;
