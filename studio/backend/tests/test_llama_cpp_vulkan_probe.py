@@ -166,14 +166,28 @@ def test_integrated_gpu_free_is_bounded_by_what_the_host_can_back(tmp_path, monk
 def test_integrated_gpu_keeps_a_heap_the_os_cannot_see(tmp_path, monkeypatch):
     """#9454: Variable Graphics Memory carves 96 GiB out before Windows boots, so
     psutil sees 31 GiB total and 13 GiB available while Vulkan reports 108 GiB free.
-    Whatever the pool holds beyond MemTotal is memory the host figure cannot know
-    about, and the weights do fit there."""
+    Whatever that free reading holds beyond MemTotal is memory the host figure cannot
+    know about, and the weights do fit there."""
     binary = _make_vulkan_install(tmp_path)
     _host_memory(monkeypatch, available_mib = 13312, total_mib = 32154)
     rows = [_row(0, 108782 * MIB, is_igpu = 1, total_bytes = 114507 * MIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus == [(0, (114507 - 32154) + 13312 - 1024, 0)], gpus
+    assert gpus == [(0, (108782 - 32154) + 13312 - 1024, 0)], gpus
+
+
+def test_a_carve_out_another_process_holds_is_not_credited(tmp_path, monkeypatch):
+    """The floor is read from the FREE figure, so a carve-out most of which another
+    Vulkan process already holds credits what is left of it, not its capacity. Sized
+    from the device total instead, this promised 21 GiB on a host with 4 GiB free."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 4096, total_mib = 32768)
+    # a 96 GiB carve-out plus a 16 GiB GTT heap, with all but 6 GiB of the carve-out
+    # resident in someone else: nothing is left above MemTotal to credit
+    rows = [_row(0, 22528 * MIB, is_igpu = 1, total_bytes = 114688 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 4096 - 1024, 0)], gpus
 
 
 def test_wsl_credits_no_heap_beyond_its_own_memtotal(tmp_path, monkeypatch):

@@ -8112,7 +8112,7 @@ class LlamaCppBackend:
             # headroom); a discrete card passes its real total through.
             total_mib = 0 if is_igpu else row["total_mib"]
             if is_igpu:
-                backed = LlamaCppBackend._igpu_backed_free_mib(free_mib, row["total_mib"])
+                backed = LlamaCppBackend._igpu_backed_free_mib(free_mib)
                 if backed < free_mib:
                     logger.info(
                         f"Vulkan device VK{idx} reports {free_mib}MiB free across its "
@@ -8136,7 +8136,7 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
-    def _igpu_backed_free_mib(free_mib: int, total_mib: int) -> int:
+    def _igpu_backed_free_mib(free_mib: int) -> int:
         """An integrated device's free reading, bounded by what the host can back.
 
         ggml sums EVERY heap for an integrated device (ggml-vulkan.cpp skips the
@@ -8151,16 +8151,21 @@ class LlamaCppBackend:
         662 MiB.
 
         The split is not readable, but every heap that IS system RAM is bounded
-        by ``MemTotal``, so whatever the pool has beyond ``MemTotal`` is memory
-        the OS cannot see -- a floor on the carve-out. Credit that, plus the RAM
-        that is actually available, and never the reading itself. Only ever
-        reduces, and an unreadable host figure leaves the reading alone rather
-        than guessing it down.
+        by ``MemTotal``, so whatever the FREE reading has beyond ``MemTotal`` is
+        free memory the OS cannot see -- a floor on the carve-out still going
+        spare. Read from the free figure and not the device total: a total
+        derives the carve-out's CAPACITY, which credits the part another Vulkan
+        process is already holding, and since the driver's GTT figure stays high
+        while ``MemAvailable`` falls, the pair would then promise memory neither
+        pool can supply. Credit that floor, plus the RAM that is actually
+        available, and never the reading itself. Only ever reduces, and an
+        unreadable host figure leaves the reading alone rather than guessing it
+        down.
 
         That inference needs ``MemTotal`` to describe the machine the heaps live
         on, which is exactly what WSL breaks: .wslconfig hands the VM a slice of
         the host's RAM, and the adapter still reports a shared pool sized from
-        the whole host, so a pool larger than ``MemTotal`` there is ordinary
+        the whole host, so a free pool larger than ``MemTotal`` there is ordinary
         Windows RAM the VM cannot reach. No carve-out is credited under WSL, so
         the VM cap stays the ceiling it is today.
         """
@@ -8168,7 +8173,7 @@ class LlamaCppBackend:
         total_ram = LlamaCppBackend._total_system_memory_mib()
         if available is None or total_ram is None:
             return free_mib
-        unseen = 0 if _is_wsl() else max(0, total_mib - total_ram)
+        unseen = 0 if _is_wsl() else max(0, free_mib - total_ram)
         return min(free_mib, unseen + available)
 
     @staticmethod
