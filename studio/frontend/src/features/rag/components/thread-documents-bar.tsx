@@ -568,6 +568,10 @@ export function ThreadDocumentsBar({
     if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
       return;
     }
+    // Hold the batch rather than draining it before the chat's project scope is known.
+    if (projectUnresolved) {
+      return;
+    }
     const store = useNativeIntentStore.getState();
     const intents = store.takeAttachments(nativeAttachmentTargetKey);
     if (intents.length === 0) {
@@ -583,12 +587,6 @@ export function ThreadDocumentsBar({
       void attachOpenDocuments(openDocuments);
     }
     if (ragDocuments.length === 0) {
-      return;
-    }
-    // Hold RAG files rather than uploading them into an unresolved project
-    // scope. OpenDocument files above go through the composer, like the picker.
-    if (projectUnresolved) {
-      store.addAttachments(nativeAttachmentTargetKey, ragDocuments);
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
