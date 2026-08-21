@@ -99,6 +99,17 @@ export function isToolEnabledChatGenerationAdmissionError(
   );
 }
 
+export function isLegacyFallbackChatGenerationAdmissionError(
+  error: unknown,
+): boolean {
+  return (
+    isToolEnabledChatGenerationAdmissionError(error) ||
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message === "Credentials cannot be persisted")
+  );
+}
+
 async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {

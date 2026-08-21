@@ -1063,9 +1063,13 @@ export async function getChatMessage(
 
 export async function saveChatMessage(
   message: MessageRecord,
+  options: { allowGenerationEdit?: boolean } = {},
 ): Promise<MessageRecord> {
+  const editQuery = options.allowGenerationEdit
+    ? "?allowGenerationEdit=true"
+    : "";
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

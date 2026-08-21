@@ -20,6 +20,7 @@ const {
   createChatGenerationRun,
   createChatGenerationRunUntilAbort,
   explicitStopSignal,
+  isLegacyFallbackChatGenerationAdmissionError,
   isToolEnabledChatGenerationAdmissionError,
   followChatGenerationRun,
   supportsChatGenerationRuns,
@@ -203,6 +204,32 @@ test("tool-enabled durable admission errors select the legacy stream", async () 
       }),
       (error: unknown) => {
         assert.equal(isToolEnabledChatGenerationAdmissionError(error), true);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("credential-safe durable admission errors select the legacy stream", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ detail: "Credentials cannot be persisted" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  try {
+    await assert.rejects(
+      createChatGenerationRun({
+        runId: "run-1",
+        threadId: "thread-1",
+        userMessageId: "user-1",
+        assistantMessageId: "assistant-1",
+        requestPayload: run("queued", 1).requestPayload,
+      }),
+      (error: unknown) => {
+        assert.equal(isLegacyFallbackChatGenerationAdmissionError(error), true);
         return true;
       },
     );

@@ -234,7 +234,7 @@ import {
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
-  isToolEnabledChatGenerationAdmissionError,
+  isLegacyFallbackChatGenerationAdmissionError,
   type ChatGenerationRun,
   type ChatGenerationStatus,
   createChatGenerationRunUntilAbort,
@@ -5822,7 +5822,7 @@ export function createOpenAIStreamAdapter(
                       runSignal,
                     );
                   } catch (error) {
-                    if (!isToolEnabledChatGenerationAdmissionError(error)) {
+                    if (!isLegacyFallbackChatGenerationAdmissionError(error)) {
                       throw error;
                     }
                     // Durable recovery does not yet replay server-side tool events.

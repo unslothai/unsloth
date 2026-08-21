@@ -213,6 +213,37 @@ def test_generation_message_writes_are_run_bound_and_monotonic(chat_home):
     assert preserved["responseDetails"] == {"durationMs": 1}
 
 
+def test_settled_generation_response_can_be_explicitly_edited(chat_home):
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run(
+        "run-1", worker_token = token, status = "completed", finish_reason = "stop"
+    )
+    run = runs_db.get_run("run-1", "alice")
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    stored["metadata"].update(
+        {
+            "generationSeq": run["lastEventSeq"],
+            "generationStatus": "completed",
+            "generationSettled": True,
+        }
+    )
+    studio_db.upsert_chat_message(stored)
+    authoritative = studio_db.get_chat_message("thread-1", "assistant-1")
+    edited = {key: value for key, value in authoritative.items() if key != "metadata"}
+    edited["content"] = [{"type": "text", "text": "edited"}]
+
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(edited)
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "edited"}]
+    assert saved.get("metadata") is None
+    assert runs_db.get_run("run-1", "alice") is None
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(authoritative)
+
+
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     run, _created = _create()
     worker_token = runs_db.get_worker_token("run-1")

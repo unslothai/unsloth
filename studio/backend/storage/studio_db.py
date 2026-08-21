@@ -2902,6 +2902,42 @@ def _guard_server_managed_messages(
             raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
 
 
+def _detach_terminal_generation_for_edit(
+    conn: sqlite3.Connection, thread_id: str, message: dict
+) -> bool:
+    row = conn.execute(
+        """SELECT r.id AS run_id, r.status AS run_status,
+                  m.parent_id, m.role, m.metadata_json, m.attachments_json, m.created_at
+           FROM chat_generation_runs r
+           JOIN chat_messages m ON m.id = r.assistant_message_id
+           WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None or str(row["run_status"]) not in _GENERATION_TERMINAL_STATUSES:
+        return False
+    stored_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    incoming_metadata = message.get("metadata")
+    if (
+        not isinstance(stored_metadata, dict)
+        or stored_metadata.get("serverManaged") is not True
+        or stored_metadata.get("generationRunId") != row["run_id"]
+        or stored_metadata.get("generationSettled") is not True
+        or isinstance(incoming_metadata, dict)
+        and incoming_metadata.get("serverManaged") is True
+        or str(message.get("role")) != str(row["role"])
+        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
+    ):
+        return False
+    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
+    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
+        stored_attachments, sort_keys = True
+    ):
+        return False
+    conn.execute("DELETE FROM chat_generation_runs WHERE id = ?", (row["run_id"],))
+    return True
+
+
 _CONTENT_PART_ID_PREFIX = "content-part-sha256-"
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
@@ -3173,7 +3209,12 @@ def _ensure_chat_attachment_inventory_current(conn: sqlite3.Connection) -> None:
         raise
 
 
-def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -> dict:
+def upsert_chat_message(
+    message: dict,
+    *,
+    allow_research_update: bool = False,
+    allow_generation_edit: bool = False,
+) -> dict:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3182,6 +3223,8 @@ def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -
             raise ChatMessageProtectedError(
                 "deleted server-managed generation messages cannot be restored"
             )
+        if allow_generation_edit:
+            _detach_terminal_generation_for_edit(conn, message["threadId"], message)
         _guard_server_managed_messages(
             conn,
             message["threadId"],

@@ -97,6 +97,26 @@ def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
     assert "Research prompts and responses" in str(exc_info.value.detail)
 
 
+def test_save_thread_message_forwards_explicit_generation_edit(monkeypatch):
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "thread-1"})
+    captured = {}
+
+    def save(message, *, allow_generation_edit = False):
+        captured["allow_generation_edit"] = allow_generation_edit
+        return message
+
+    monkeypatch.setattr(chat_history, "upsert_chat_message", save)
+    payload = _message("assistant-1", "thread-1").model_copy(update = {"role": "assistant"})
+    chat_history.save_thread_message(
+        "thread-1",
+        "assistant-1",
+        payload,
+        allow_generation_edit = True,
+        current_subject = "test-user",
+    )
+    assert captured == {"allow_generation_edit": True}
+
+
 def test_save_thread_message_returns_404_when_thread_is_deleted_during_write(monkeypatch):
     parent_reads = iter(({"id": "thread-1"}, None))
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: next(parent_reads))
