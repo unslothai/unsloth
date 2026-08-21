@@ -154,6 +154,26 @@ test("a page inside a raw pre block stays literal Markdown", () => {
   assert.deepEqual(page.canonicalCodeSources, []);
 });
 
+test("pages preserve display math across cuts", () => {
+  const markdown = `$$$\n${Array.from(
+    { length: 1_500 },
+    (_, index) => `x_{${index}} = ${index}`,
+  ).join("\n")}\n$$$\n`;
+  const latest = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    maxCharacters: 2_048,
+  });
+  const earlier = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    end: latest.start,
+    maxCharacters: 2_048,
+  });
+
+  for (const page of [latest, earlier]) {
+    assert.equal(page.markdown.startsWith("$$$\n"), true);
+    assert.equal(page.markdown.endsWith("\n$$$\n"), true);
+  }
+});
 test("a giant single line is hard-bounded", () => {
   const markdown = "continuous reasoning ".repeat(20_000);
   const page = selectReasoningMarkdownPage(markdown, {

@@ -13,6 +13,8 @@ const MAX_SYNTHETIC_FENCE_MARKER = 256;
 const MAX_SYNTHETIC_FENCE_INFO = 128;
 const FENCE_LINE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 
+const DISPLAY_MATH_LINE_RE = /^( {0,3})(\${2,})(.*)$/;
+
 const RAW_HTML_OPEN_RE = /^(?: {0,3})<(pre|script|style|textarea)(?:\s|>|$)/i;
 
 type FenceState = {
@@ -22,12 +24,17 @@ type FenceState = {
   length: number;
   openingOffset: number;
 };
+type DisplayMathState = {
+  indent: string;
+  length: number;
+};
 
 type RawHtmlState = {
   tag: string;
 };
 
 type BoundaryState = {
+  displayMath: DisplayMathState | null;
   fence: FenceState | null;
   rawHtml: RawHtmlState | null;
 };
@@ -75,6 +82,22 @@ function nextFenceState(
   };
 }
 
+function nextDisplayMathState(
+  line: string,
+  state: DisplayMathState | null,
+): DisplayMathState | null {
+  const match = line.match(DISPLAY_MATH_LINE_RE);
+  if (!match) return state;
+
+  if (state) {
+    return match[2].length >= state.length && match[3].trim().length === 0
+      ? null
+      : state;
+  }
+  return match[3].includes("$")
+    ? null
+    : { indent: match[1], length: match[2].length };
+}
 function rawHtmlCloses(line: string, tag: string): boolean {
   return line.toLowerCase().includes(`</${tag}>`);
 }
@@ -92,15 +115,24 @@ function nextBoundaryState(
   }
   if (state.rawHtml) {
     return rawHtmlCloses(line, state.rawHtml.tag)
-      ? { fence: null, rawHtml: null }
+      ? { ...state, rawHtml: null }
       : state;
+  }
+  if (state.displayMath) {
+    return {
+      ...state,
+      displayMath: nextDisplayMathState(line, state.displayMath),
+    };
   }
 
   const rawHtmlOpening = line.match(RAW_HTML_OPEN_RE);
   if (rawHtmlOpening) {
     const tag = rawHtmlOpening[1].toLowerCase();
-    return rawHtmlCloses(line, tag) ? state : { fence: null, rawHtml: { tag } };
+    return rawHtmlCloses(line, tag) ? state : { ...state, rawHtml: { tag } };
   }
+
+  const displayMath = nextDisplayMathState(line, null);
+  if (displayMath) return { ...state, displayMath };
 
   return {
     ...state,
@@ -110,7 +142,11 @@ function nextBoundaryState(
 
 function boundaryStateAt(markdown: string, offset: number): BoundaryState {
   let lineStart = 0;
-  let state: BoundaryState = { fence: null, rawHtml: null };
+  let state: BoundaryState = {
+    displayMath: null,
+    fence: null,
+    rawHtml: null,
+  };
 
   while (lineStart < offset) {
     const newline = markdown.indexOf("\n", lineStart);
@@ -174,6 +210,11 @@ function syntheticFenceClosing(state: FenceState): string {
   return state.character.repeat(
     Math.min(state.length, MAX_SYNTHETIC_FENCE_MARKER),
   );
+}
+function syntheticDisplayMathDelimiter(state: DisplayMathState): string {
+  return `${state.indent}${"$".repeat(
+    Math.min(state.length, MAX_SYNTHETIC_FENCE_MARKER),
+  )}`;
 }
 
 function pageStart(
@@ -246,11 +287,15 @@ export function selectReasoningMarkdownPage(
     pageMarkdown = `<${openingState.rawHtml.tag}>\n${pageMarkdown}`;
   } else if (openingState.fence) {
     pageMarkdown = `${syntheticFenceOpening(openingState.fence)}\n${pageMarkdown}`;
+  } else if (openingState.displayMath) {
+    pageMarkdown = `${syntheticDisplayMathDelimiter(openingState.displayMath)}\n${pageMarkdown}`;
   }
   if (closingState.rawHtml) {
     pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}</${closingState.rawHtml.tag}>\n`;
   } else if (closingState.fence) {
     pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticFenceClosing(closingState.fence)}\n`;
+  } else if (closingState.displayMath) {
+    pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticDisplayMathDelimiter(closingState.displayMath)}\n`;
   }
 
   const canonicalCodeSources = getCompletedCodeFences(pageMarkdown).map(
