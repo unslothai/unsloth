@@ -934,3 +934,20 @@ def test_delete_rolls_back_when_registry_cannot_be_saved(
 
     assert (tmp_path / "skills/unsloth/SKILL.md").is_file()
     assert skills.list_skills()[0]["name"] == "unsloth"
+
+
+def test_delete_reports_quarantine_cleanup_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    skills.create_skill("unsloth", SKILL_MD)
+    real_rmtree = skills.shutil.rmtree
+
+    def fail_quarantine_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith(".delete-"):
+            if kwargs.get("ignore_errors"):
+                return
+            raise PermissionError("file is in use")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(skills.shutil, "rmtree", fail_quarantine_cleanup)
+
+    with pytest.raises(PermissionError, match = "file is in use"):
+        skills.delete_skill("unsloth")

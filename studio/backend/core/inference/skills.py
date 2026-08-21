@@ -601,7 +601,7 @@ def delete_skill(name: str) -> None:
             raise
         finally:
             if cleanup_quarantine:
-                shutil.rmtree(quarantine, ignore_errors = True)
+                shutil.rmtree(quarantine)
 
 
 def read_skill_resource(
