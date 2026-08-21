@@ -2358,6 +2358,7 @@ type ContextUsageSnapshot = {
   cachedTokens: number;
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
+  estimated?: boolean;
 };
 
 /**

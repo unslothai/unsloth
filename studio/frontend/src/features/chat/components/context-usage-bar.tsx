@@ -31,6 +31,7 @@ export const ContextUsageBar: FC<
   cacheWrites,
   promptTokens,
   completionTokens,
+  estimated,
   className,
 }) => {
   const state = deriveContextUsageBar({
@@ -40,6 +41,7 @@ export const ContextUsageBar: FC<
     cacheWrites,
     promptTokens,
     completionTokens,
+    estimated,
   });
   if (!state) return null;
 
@@ -77,9 +79,11 @@ export const ContextUsageBar: FC<
         <div className="grid min-w-44 gap-1.5 text-xs">
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Context usage</span>
+              <span className="text-muted-foreground">
+                {state.estimated ? "Estimated context usage" : "Context usage"}
+              </span>
               <span className={cn("font-mono tabular-nums font-medium", severity.text)}>
-                {percent.toFixed(1)}%
+                {state.estimated ? `~${percent.toFixed(1)}%` : `${percent.toFixed(1)}%`}
               </span>
             </div>
           ) : null}
@@ -122,6 +126,11 @@ export const ContextUsageBar: FC<
             <span className="text-muted-foreground">{state.totalRowName}</span>
             <span className="font-mono tabular-nums">{state.totalRowValue}</span>
           </div>
+          {state.estimated ? (
+            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
+              Estimated from chat history character length before model load.
+            </div>
+          ) : null}
           {percent !== null && percent > 85 ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
               Close to the context limit. Generation will stop at 100%.
