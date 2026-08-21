@@ -511,13 +511,32 @@ def _download(
 
 def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     """``extractall`` with a per-member containment check, so an archive carrying an
-    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip)."""
+    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip).
+
+    Symlink members are recreated after extraction: CPython's ``zipfile`` writes
+    a symlink's payload (the link target text) as a regular file, which flattens
+    the ``lib*.so`` links upstream sd.cpp releases ship and leaves ``sd-cli``
+    with ``file too short`` libraries (#9268)."""
+    import stat
+
     base = target.resolve()
+    links: list[tuple[Path, str, str]] = []
     for member in zf.infolist():
         dest = (base / member.filename).resolve()
         if dest != base and base not in dest.parents:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+        if stat.S_ISLNK(member.external_attr >> 16):
+            links.append(
+                (dest, zf.read(member).decode("utf-8", "surrogateescape"), member.filename)
+            )
     zf.extractall(target)
+    for dest, link_target, filename in links:
+        resolved = (dest.parent / link_target).resolve()
+        if resolved != base and base not in resolved.parents:
+            raise RuntimeError(f"unsafe symlink in archive: {filename!r} -> {link_target!r}")
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+        dest.symlink_to(link_target)
 
 
 def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:

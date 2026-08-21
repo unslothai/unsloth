@@ -376,6 +376,63 @@ def test_safe_extractall_rejects_path_traversal(tmp_path):
     assert not (tmp_path / "escape.txt").exists()
 
 
+def test_safe_extractall_restores_symlink_members(tmp_path):
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "libs.zip"
+    # A symlink member carries the Unix symlink mode in external_attr and the
+    # link target as its data — the shape CPython's zipfile writes when zipping
+    # a symlink, and what upstream sd.cpp release zips ship for lib*.so.
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("libwebpmux.so.3.1.2", b"ELFpayload")
+        info = zipfile.ZipInfo("libwebpmux.so.3")
+        info.create_system = 3
+        info.external_attr = (0o120777 << 16) | 0o777
+        zf.writestr(info, "libwebpmux.so.3.1.2")
+
+    with zipfile.ZipFile(archive) as zf:
+        _safe_extractall(zf, target)
+
+    link = target / "libwebpmux.so.3"
+    real = target / "libwebpmux.so.3.1.2"
+    assert link.is_symlink()
+    assert link.readlink().name == "libwebpmux.so.3.1.2"
+    # The pre-fix behaviour: a 19-byte regular file holding the target text,
+    # which ldd reports as "file too short".
+    assert link.stat().st_size == real.stat().st_size
+
+
+def _can_create_symlinks(tmp_path) -> bool:
+    probe = tmp_path / "_link_probe"
+    try:
+        probe.symlink_to("target.txt")
+    except OSError:
+        return False
+    probe.unlink(missing_ok = True)
+    return True
+
+
+def test_safe_extractall_rejects_escaping_symlink(tmp_path):
+    import stat as stat_mod
+
+    # The escape check runs before any link creation, so it must hold even
+    # where symlinks need privilege to create.
+    target = tmp_path / "install"
+    target.mkdir()
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("libescape.so")
+        info.create_system = 3
+        info.external_attr = (stat_mod.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "../../outside.so")
+    with zipfile.ZipFile(archive) as zf:
+        with pytest.raises(RuntimeError, match = "unsafe symlink"):
+            _safe_extractall(zf, target)
+    assert not (tmp_path / "outside.so").exists()
+
+
 def test_safe_extractall_extracts_normal_members(tmp_path):
     target = tmp_path / "install"
     target.mkdir()
