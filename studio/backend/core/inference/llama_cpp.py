@@ -354,7 +354,7 @@ from state.tool_approvals import (
     new_approval_id,
     wait_tool_decision,
 )
-from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -8111,6 +8111,15 @@ class LlamaCppBackend:
             # fit stays on free*frac (the host reserve below is its
             # headroom); a discrete card passes its real total through.
             total_mib = 0 if is_igpu else row["total_mib"]
+            if is_igpu:
+                backed = LlamaCppBackend._igpu_backed_free_mib(free_mib, row["total_mib"])
+                if backed < free_mib:
+                    logger.info(
+                        f"Vulkan device VK{idx} reports {free_mib}MiB free across its "
+                        f"heaps, more than this host can back; reading it as "
+                        f"{backed}MiB (memory outside the OS pool, plus available RAM)"
+                    )
+                free_mib = backed
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             if capped < free_mib:
                 logger.info(
@@ -8125,6 +8134,42 @@ class LlamaCppBackend:
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
         return gpus
+
+    @staticmethod
+    def _igpu_backed_free_mib(free_mib: int, total_mib: int) -> int:
+        """An integrated device's free reading, bounded by what the host can back.
+
+        ggml sums EVERY heap for an integrated device (ggml-vulkan.cpp skips the
+        device-local test when ``is_integrated_gpu``), so one number covers two
+        unlike pools. Part of it can be a firmware carve-out the OS never sees:
+        96 GiB of AMD Variable Graphics Memory on a Strix Halo laptop, leaving
+        Windows 31 GiB and ``MemAvailable`` around 13 GiB while Vulkan reports
+        108 GiB free (#9454). The rest is ordinary system RAM lent to the GPU,
+        and the driver prices that against its own GTT ceiling rather than
+        against what the machine has free: measured on a gfx1151 under RADV, the
+        reading sat at 97277 MiB unchanged while MemAvailable fell from 49908 to
+        662 MiB.
+
+        The split is not readable, but every heap that IS system RAM is bounded
+        by ``MemTotal``, so whatever the pool has beyond ``MemTotal`` is memory
+        the OS cannot see -- a floor on the carve-out. Credit that, plus the RAM
+        that is actually available, and never the reading itself. Only ever
+        reduces, and an unreadable host figure leaves the reading alone rather
+        than guessing it down.
+
+        That inference needs ``MemTotal`` to describe the machine the heaps live
+        on, which is exactly what WSL breaks: .wslconfig hands the VM a slice of
+        the host's RAM, and the adapter still reports a shared pool sized from
+        the whole host, so a pool larger than ``MemTotal`` there is ordinary
+        Windows RAM the VM cannot reach. No carve-out is credited under WSL, so
+        the VM cap stays the ceiling it is today.
+        """
+        available = LlamaCppBackend._available_system_memory_mib()
+        total_ram = LlamaCppBackend._total_system_memory_mib()
+        if available is None or total_ram is None:
+            return free_mib
+        unseen = 0 if _is_wsl() else max(0, total_mib - total_ram)
+        return min(free_mib, unseen + available)
 
     @staticmethod
     def _cgroup_available_memory_mib() -> Optional[int]:
@@ -8387,7 +8432,10 @@ class LlamaCppBackend:
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
         # A carved-out UMA heap may be absent from psutil's host availability even
         # though Vulkan can hold the weights. Count that heap once, never again as RAM.
-        if offload_bytes <= shared_free_mib * 1024 * 1024:
+        # A load with nothing left to place (offload <= 0) is not that case and takes
+        # the arm below, which abstains on it: routing it here would price a negative
+        # need against a container's remaining budget and refuse a resident model.
+        if 0 < offload_bytes <= shared_free_mib * 1024 * 1024:
             # A finite cgroup remains an independent ceiling on host-backed GPU
             # allocations. Reuse the RAM check so its system headroom still applies.
             cgroup_mib = self._cgroup_available_memory_mib()

@@ -1626,7 +1626,8 @@ def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path,
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
-        # The device reported 108 GiB free; the iGPU host reserve leaves 107 GiB.
+        # What the reader hands over once it has bounded the device's own reading
+        # against the host (_igpu_backed_free_mib) and taken the iGPU host reserve.
         memory = [(0, 107 * 1024, 0)],
     )
     _restore_host_guard(backend)
@@ -1659,6 +1660,24 @@ def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match = "unified-memory APU"):
         _launch(backend, gguf)
+
+
+def test_a_card_resident_model_is_not_refused_by_a_container_ceiling(tmp_path, monkeypatch):
+    """Nothing is left to place, so no host memory is at stake and the cgroup has no
+    say. Routing this through the APU check priced a NEGATIVE need against the
+    remaining budget and refused a 23.4 GiB model on a 24 GiB card with 'needs about
+    -1 GB', on a discrete NVIDIA card at that."""
+    backend, gguf = _offload_backend(
+        tmp_path,
+        gguf_gb = 23.4,
+        free_mib = 24 * 1024,
+        avail_mib = 1024,
+        monkeypatch = monkeypatch,
+    )
+    backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 1024))
+
+    assert _launch(backend, gguf)["cmd"]
 
 
 def test_unknown_available_ram_abstains(tmp_path, monkeypatch):

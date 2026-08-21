@@ -127,10 +127,73 @@ def _row(
     return f"{row}\t{name}" if name is not None else row
 
 
-def test_integrated_gpu_leaves_host_margin(tmp_path):
+def _host_memory(monkeypatch, *, available_mib, total_mib):
+    """Pin the host figures the iGPU reading is bounded against, so these cases
+    describe a machine instead of whatever the runner happens to have free."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: total_mib)
+    )
+
+
+def test_integrated_gpu_leaves_host_margin(tmp_path, monkeypatch):
     binary = _make_vulkan_install(tmp_path)
     # iGPU with 30 GiB free; reserve a flat 1024 MiB (llama.cpp --fit-target).
     # total stays 0: shared system RAM is not a VRAM budget for the fit.
+    _host_memory(monkeypatch, available_mib = 31 * 1024, total_mib = 32 * 1024)
+    rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 30 * 1024 - 1024, 0)], gpus
+
+
+def test_integrated_gpu_free_is_bounded_by_what_the_host_can_back(tmp_path, monkeypatch):
+    """A stock APU's pool is all system RAM, and the driver prices it against its
+    own GTT ceiling: measured on a gfx1151 under RADV, the reading sat at 97277 MiB
+    while MemAvailable fell to 662 MiB. With nothing beyond MemTotal to credit, the
+    reading is worth no more than the RAM the host actually has."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 4000, total_mib = 31000)
+    # 512 MiB of UMA plus a GTT heap half the size of RAM
+    rows = [_row(0, 15900 * MIB, is_igpu = 1, total_bytes = 16012 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 4000 - 1024, 0)], gpus
+
+
+def test_integrated_gpu_keeps_a_heap_the_os_cannot_see(tmp_path, monkeypatch):
+    """#9454: Variable Graphics Memory carves 96 GiB out before Windows boots, so
+    psutil sees 31 GiB total and 13 GiB available while Vulkan reports 108 GiB free.
+    Whatever the pool holds beyond MemTotal is memory the host figure cannot know
+    about, and the weights do fit there."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 13312, total_mib = 32154)
+    rows = [_row(0, 108782 * MIB, is_igpu = 1, total_bytes = 114507 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, (114507 - 32154) + 13312 - 1024, 0)], gpus
+
+
+def test_wsl_credits_no_heap_beyond_its_own_memtotal(tmp_path, monkeypatch):
+    """.wslconfig hands the VM a slice of the host's RAM while the adapter still
+    reports a pool sized from the whole machine, so 'bigger than MemTotal' proves
+    nothing there. The VM cap stays the ceiling."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = 6000, total_mib = 8192)
+    monkeypatch.setattr(_llama_mod, "_is_wsl", lambda: True)
+    rows = [_row(0, 11000 * MIB, is_igpu = 1, total_bytes = 12000 * MIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 6000 - 1024, 0)], gpus
+
+
+def test_unreadable_host_memory_leaves_the_integrated_reading_alone(tmp_path, monkeypatch):
+    """No psutil and no /proc/meminfo is not evidence of a small host, so the bound
+    abstains rather than guessing the device down to nothing."""
+    binary = _make_vulkan_install(tmp_path)
+    _host_memory(monkeypatch, available_mib = None, total_mib = None)
     rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
