@@ -19,6 +19,7 @@ import {
   missingListSubjects,
   parseSearchImagesSignature,
   placeSubjectImages,
+  precedingTextForMessagePart,
   rewriteSearchImageTokens,
   searchImagePath,
   searchImagesSignature,
@@ -474,6 +475,23 @@ test("placeSubjectImages illustrates a subject once per message", () => {
   );
   // The later text part sees what the earlier one already named, so it adds nothing.
   assert.equal(placeSubjectImages("The Pug again.", images, false, first), "The Pug again.");
+});
+
+test("equal text parts derive preceding text from the current part position", () => {
+  const text = "A Pug is small.";
+  const parts = [
+    { type: "text", text },
+    { type: "tool-call", toolName: "web_search" },
+    { type: "text", text },
+  ];
+  const precedingText = precedingTextForMessagePart(parts, 2);
+  assert.equal(precedingText, text);
+
+  const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
+  assert.equal(
+    placeSubjectImages(text, new Map([[pug.id, pug]]), false, precedingText),
+    text,
+  );
 });
 
 test("a token in a later text part prevents an earlier duplicate card", () => {

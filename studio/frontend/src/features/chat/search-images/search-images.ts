@@ -457,6 +457,13 @@ export function answerTextFromParts(
     .join("\n\n");
 }
 
+export function precedingTextForMessagePart(
+  parts: ReadonlyArray<{ type: string; text?: unknown }>,
+  partIndex: number,
+): string {
+  return answerTextFromParts(parts.slice(0, partIndex));
+}
+
 /**
  * The lead of each listed item or small heading (`1. **German Shepherd:** …`).
  * Short names only; a procedure, a code answer or a single item yields nothing.

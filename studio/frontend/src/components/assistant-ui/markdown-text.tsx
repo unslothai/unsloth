@@ -18,6 +18,7 @@ import {
   holdBackPartialSearchImageToken,
   parseSearchImagesSignature,
   placeSubjectImages,
+  precedingTextForMessagePart,
   rewriteSearchImageTokens,
   SEARCH_IMAGE_TAG,
   searchImagesSignature,
@@ -29,7 +30,12 @@ import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
-import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+import {
+  INTERNAL,
+  useAui,
+  useAuiState,
+  useMessagePartText,
+} from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -498,7 +504,12 @@ export const SearchImagesEnabledContext = createContext(true);
 
 const MarkdownTextImpl = () => {
   const allowSearchImages = useContext(SearchImagesEnabledContext);
+  const aui = useAui();
   const { text, status } = useMessagePartText();
+  const partIndex =
+    aui.part.source === "message" && aui.part.query.type === "index"
+      ? aui.part.query.index
+      : 0;
   // Parts are keyed by index, so switching conversations hands this instance a
   // different message, and Streamdown only extends its parsed blocks: key it per
   // message. The cache generation joins the key for the case the Markdown string
@@ -517,14 +528,11 @@ const MarkdownTextImpl = () => {
     [searchImagesKey],
   );
   // What earlier text parts said, so a subject named in two of them gets one card.
-  const precedingText = useAuiState(({ message }) => {
-    if (!allowSearchImages) return "";
-    const texts = message.parts
-      .filter((part) => part.type === "text")
-      .map((part) => part.text);
-    const index = texts.indexOf(text);
-    return index > 0 ? texts.slice(0, index).join("\n\n") : "";
-  });
+  const precedingText = useAuiState(({ message }) =>
+    allowSearchImages
+      ? precedingTextForMessagePart(message.parts, partIndex)
+      : "",
+  );
   const messageTextKey = useAuiState(({ message }) =>
     allowSearchImages
       ? JSON.stringify(
