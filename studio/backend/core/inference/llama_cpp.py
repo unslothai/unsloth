@@ -8413,17 +8413,15 @@ class LlamaCppBackend:
 
         Every shared row reads the same host-backed pool, so the largest row IS the
         pool and summing them would count it twice. It counts at all only when the
-        finished command sends every weight to a device and can still reach that
-        device: a zero layer count leaves the weights in host RAM, and a ``--device``
-        pin naming other devices leaves the heap unreachable, so llama.cpp spills
-        them either way.
+        command is going to put weights there: a full offload, onto a device its
+        ``--device`` pin still reaches, with no per-device ratio making the share
+        unknowable. Otherwise llama.cpp spills them to host RAM instead.
 
-        The same pin decides the second figure. A card the pin leaves out takes none
-        of the model, so the pool has to cover everything the SELECTED cards cannot,
-        not just what the whole probed set cannot -- crediting an unselected 24 GiB
-        card left a 30 GiB model reading as a 6 GiB remainder that a 10 GiB heap
-        "held". A pool of 0 hands the remainder back to the host-RAM arm below,
-        which is what main charged for a shared device before any of this.
+        The pin decides the second figure too. A card it leaves out takes none of
+        the model, so the pool must cover what the SELECTED cards cannot: crediting
+        an unselected 24 GiB card left a 30 GiB model reading as a 6 GiB remainder
+        that a 10 GiB heap "held". A pool of 0 hands the remainder back to the
+        host-RAM arm below, which is what main charged for a shared device.
         """
         rows = [(row[0], max(0, row[1])) for row in gpus]
         pinned = _extra_args_main_device(argv)
@@ -8440,11 +8438,9 @@ class LlamaCppBackend:
         if (
             shared_gpu_ids
             and self._argv_offloads_every_layer(argv, env)
-            # An explicit per-device ratio hands out shares positionally, in llama.cpp's
-            # own enumeration order, which this cannot map onto probe indices -- the same
-            # reason --fit-target is broadcast rather than listed. A zero share for the
-            # shared device puts no weight in its heap at all, and no share is verifiable
-            # here, so any split leaves the pool uncredited.
+            # Shares are positional, in llama.cpp's own enumeration order, which this
+            # cannot map onto probe indices -- the same reason --fit-target is broadcast
+            # rather than listed -- so no share is verifiable here, a zero one included.
             and not _extra_args_set_any_flag(argv, _TENSOR_SPLIT_FLAGS)
             and not str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT") or "").strip()
         ):
