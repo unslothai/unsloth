@@ -92,9 +92,7 @@ def page(context):
     pg = context.new_page()
     pg.route(
         "**/*",
-        lambda route: route.fulfill(
-            status = 200, content_type = "text/html; charset=utf-8", body = BODY
-        ),
+        lambda route: route.fulfill(status = 200, content_type = "text/html; charset=utf-8", body = BODY),
     )
     pg.goto(ORIGIN + "/chat")
     pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
@@ -118,9 +116,7 @@ def _ctx(page, log = None) -> ActionContext:
 def _swallow_the_copy(page) -> None:
     """An engine that does not copy, reproduced faithfully: the keystroke is delivered, a `copy`
     event fires, and nothing reaches the clipboard."""
-    page.evaluate(
-        "() => document.addEventListener('copy', (e) => { e.preventDefault(); }, true)"
-    )
+    page.evaluate("() => document.addEventListener('copy', (e) => { e.preventDefault(); }, true)")
 
 
 def test_a_real_copy_is_still_measured(page):
@@ -160,9 +156,7 @@ def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():
     assert "sentinel" in src
     # EXECUTABLE LINES ONLY. The engine names belong in the comment that explains which engine was
     # observed failing and with what numbers; what must not exist is a BRANCH on one.
-    code = "\n".join(
-        line for line in src.splitlines() if not line.lstrip().startswith("#")
-    )
+    code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
     # The word "engine" is allowed: it appears in the refusal MESSAGE, which is where it belongs.
     # A specific engine's NAME is not, because that is what a branch would need.
     for name in ("webkit", "WebKit", "firefox", "Firefox", "browser_name", "browser_type"):
