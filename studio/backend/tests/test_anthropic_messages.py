@@ -2337,9 +2337,7 @@ class TestAnthropicMessagesToolRouting:
             ],
         )
         read_skill = next(
-            tool
-            for tool in tools_mod.ALL_TOOLS
-            if tool["function"]["name"] == "read_skill"
+            tool for tool in tools_mod.ALL_TOOLS if tool["function"]["name"] == "read_skill"
         )
         monkeypatch.setattr(tools_mod, "ALL_TOOLS", [read_skill])
         payload = _basic_payload(enable_tools = True, enabled_tools = ["read_skill"])
@@ -2350,9 +2348,10 @@ class TestAnthropicMessagesToolRouting:
 
         assert json.loads(response.body) == {"input_tokens": 17}
         assert [tool["function"]["name"] for tool in captured["tools"]] == ["read_skill"]
-        assert "Enabled skills:\n- review-helper: Review pull requests." in captured["tools"][0][
-            "function"
-        ]["description"]
+        assert (
+            "Enabled skills:\n- review-helper: Review pull requests."
+            in captured["tools"][0]["function"]["description"]
+        )
 
     @pytest.mark.parametrize("stream", [False, True])
     @pytest.mark.parametrize("with_tools", [False, True])

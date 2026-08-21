@@ -21354,9 +21354,7 @@ async def anthropic_count_tokens(
         from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
 
         openai_tools = await _filter_unavailable_skill_tool(
-            _select_anthropic_server_tools(
-                ALL_TOOLS, requested_studio_tools, payload.enabled_tools
-            )
+            _select_anthropic_server_tools(ALL_TOOLS, requested_studio_tools, payload.enabled_tools)
         )
         if payload.bypass_permissions:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
