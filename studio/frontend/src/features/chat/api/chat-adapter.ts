@@ -4478,7 +4478,7 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      // safetensors and mlx disable their server-side tool loop for vision turns.
+      // safetensors and mlx skip server-side tools on vision turns.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
       const skillToolsAvailableForThisTurn = Boolean(
         supportsStudioToolsForThisTurn &&
