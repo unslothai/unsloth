@@ -513,3 +513,27 @@ test("stripSearchImageTokens takes the tokens and their blank line", () => {
     "```\n[[img:0123456789ab]]\n```",
   );
 });
+
+test("placeSubjectImages steps past a subject that code mentions first", () => {
+  const go = { ...ENTRY, id: "cccccccccccc", subject: "Go" };
+  const images = new Map([[go.id, go]]);
+  // The first occurrence is inside code, which shows no card. Abandoning the subject
+  // there dropped the picture for the prose item that names it further down.
+  const text = "Run `Go` first.\n\n1. **Go:** compiled and fast\n2. **Rust:** strict";
+  const out = placeSubjectImages(text, images, false);
+  assert.ok(out.includes("Run `Go` first."), "the snippet must stay as written");
+  assert.ok(out.includes("compiled and fast\n\n   [[img:cccccccccccc]]"));
+});
+
+test("placeSubjectImages ignores an earlier part that only named a subject in code", () => {
+  const go = { ...ENTRY, id: "cccccccccccc", subject: "Go" };
+  const images = new Map([[go.id, go]]);
+  // A code-only mention earlier carries no card, so it must not suppress this one.
+  const out = placeSubjectImages("Go is compiled.", images, false, "Type `Go` to start.");
+  assert.equal(out, "Go is compiled.\n\n[[img:cccccccccccc]]");
+  // A real earlier mention still wins: one card per message.
+  assert.equal(
+    placeSubjectImages("Go is compiled.", images, false, "Go is a language."),
+    "Go is compiled.",
+  );
+});

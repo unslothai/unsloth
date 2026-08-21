@@ -7,7 +7,7 @@ import {
   committedServerTuningState,
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
-import { getAuthToken } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
 import {
@@ -6821,15 +6821,16 @@ export function createOpenAIStreamAdapter(
             runAbort.signal.addEventListener("abort", onRunAbort, { once: true });
             const lookupTimer = setTimeout(() => lookupAbort.abort(), 15_000);
             try {
-              const token = getAuthToken();
-              const response = await fetch(
-                apiUrl("/api/inference/search-images/lookup"),
+              // authFetch, not a raw fetch: an access token that expired during a long
+              // generation is refreshed and the call retried, where a stale bearer just
+              // 401s into the catch below and the pictures never arrive. Unlike the
+              // cancel POST above, a login redirect here is right -- the answer is
+              // already finished, so nothing is interrupted by it.
+              const response = await authFetch(
+                "/api/inference/search-images/lookup",
                 {
                   method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                  },
+                  headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ subjects }),
                   signal: lookupAbort.signal,
                 },

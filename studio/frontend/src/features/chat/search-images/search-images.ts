@@ -136,6 +136,24 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Offset of the first match outside `regions`, or null. Resets `pattern` for reuse. */
+function firstMatchOutsideCode(
+  pattern: RegExp,
+  text: string,
+  regions: Array<[number, number]>,
+): number | null {
+  if (!text) return null;
+  pattern.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    // The leading group is a boundary char, not part of the name.
+    const at = match.index + match[1].length;
+    if (!isInRegion(at, regions)) return at;
+    // Zero-width matches cannot happen (the name is non-empty), so no manual bump.
+  }
+  return null;
+}
+
 const LIST_MARKER_RE = /^(\s*(?:[-*+•]|\d{1,2}[.)])\s+)/;
 const HEADING_LINE_RE = /^\s*#{1,6}\s/;
 const BLOCK_BREAK_RE = /^(?:\s*$|\s*(?:[-*+•]|\d{1,2}[.)])\s|\s*#{1,6}\s|\s*(?:```|~~~))/;
@@ -208,19 +226,26 @@ export function placeSubjectImages(
   const codeRegions = findCodeBlockRegions(text);
   const mathRegions = findDisplayMathRegions(text);
   const insertions: Array<{ at: number; chunk: string }> = [];
+  const namedRegions = findCodeBlockRegions(alreadyNamed);
   for (const [key, entry] of bySubject) {
     if (text.includes(`[[img:${entry.id}]]`)) continue;
     // On the original text: lowercasing can change length and shift every offset.
+    // Global, so a mention inside code can be stepped over rather than ending the
+    // search: `\`Go\`` in a snippet used to abandon the subject that a later prose
+    // item names, and the picture was silently dropped.
     const pattern = new RegExp(
       `(^|[^\\p{L}\\p{N}])${escapeRegExp(key)}(?![\\p{L}\\p{N}])`,
-      "iu",
+      "giu",
     );
-    // An earlier text part already carries this subject's card.
-    if (pattern.test(alreadyNamed)) continue;
-    const match = pattern.exec(text);
-    if (!match || isInRegion(match.index, codeRegions)) continue;
-    const lineStart = text.lastIndexOf("\n", match.index) + 1;
-    const newline = text.indexOf("\n", match.index);
+    // An earlier text part already carries this subject's card -- unless it only
+    // said so in code, which shows no card and so must not suppress this one.
+    if (firstMatchOutsideCode(pattern, alreadyNamed, namedRegions) !== null) continue;
+    // Where the NAME starts, not the boundary char before it: same line either way,
+    // and the code-region test is about the name.
+    const at = firstMatchOutsideCode(pattern, text, codeRegions);
+    if (at === null) continue;
+    const lineStart = text.lastIndexOf("\n", at) + 1;
+    const newline = text.indexOf("\n", at);
     const lineEnd = newline === -1 ? text.length : newline;
     const line = text.slice(lineStart, lineEnd);
     const marker = LIST_MARKER_RE.exec(line);
@@ -232,12 +257,12 @@ export function placeSubjectImages(
       // item rather than a lazy continuation of its sentence, and the list keeps
       // its numbering.
       insertions.push({
-        at: blockEndFrom(text, match.index, mathRegions),
+        at: blockEndFrom(text, at, mathRegions),
         chunk: `\n\n${" ".repeat(marker[1].length)}[[img:${entry.id}]]`,
       });
     } else {
       insertions.push({
-        at: blockEndFrom(text, match.index, mathRegions),
+        at: blockEndFrom(text, at, mathRegions),
         chunk: `\n\n[[img:${entry.id}]]`,
       });
     }
