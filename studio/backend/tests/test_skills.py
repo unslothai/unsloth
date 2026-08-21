@@ -341,6 +341,7 @@ def test_imports_pr_style_nested_agent_skill_bundle(tmp_path: Path):
             "unsloth-pr/README.md": "repository file outside the skill bundle",
             "unsloth-pr/docs/Guide.md": "first",
             "unsloth-pr/docs/guide.md": "second",
+            "unsloth-pr/docs/report:2026.md": "source-platform file",
         },
         symlink = "unsloth-pr/vendor/link.md",
     )
