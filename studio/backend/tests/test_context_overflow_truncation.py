@@ -538,8 +538,7 @@ def test_an_irreducible_fit_keeps_the_original_while_it_still_fits_the_window():
 
 def test_an_irreducible_fit_refuses_an_eviction_that_fills_the_window():
     """An eviction landing on `n_ctx` exactly is refused, so it is not a rescue."""
-    # 500 chars in a 500-token window: llama-server rejects at n_ctx, so serving this
-    # would drop the turns and still fail.
+    # 500 chars in a 500-token window: serving this would drop turns and still fail.
     messages = [
         {"role": "user", "content": "o" * 300},
         {"role": "assistant", "content": "a" * 600},
