@@ -161,7 +161,11 @@ BLOCK_JS = """
 # clicks that MUST still land.
 WATCH_ITEM_JS = """
 () => {
-  const item = document.querySelector(".aui-action-bar-more-item");
+  // The first item forks into a new chat, so a fast runner can navigate before this probe reads
+  // its counter. Export closes the same Radix menu without replacing the page under the probe.
+  const item = [...document.querySelectorAll(".aui-action-bar-more-item")].find(
+    (candidate) => candidate.textContent?.includes("Export as markdown")
+  );
   if (!item) return null;
   window.__dismissProbe = { itemClicks: 0 };
   item.addEventListener("click", () => { window.__dismissProbe.itemClicks += 1; });
