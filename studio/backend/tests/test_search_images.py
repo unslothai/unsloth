@@ -461,7 +461,12 @@ def test_clear_all_chats_invalidates_an_image_lookup_already_in_a_thread(monkeyp
         def __init__(self, **_kwargs):
             pass
 
-        def images(self, query, max_results = 5, **kwargs):
+        def images(
+            self,
+            query,
+            max_results = 5,
+            **kwargs,
+        ):
             started.set()
             release.wait(2)
             return RAW_IMAGES
