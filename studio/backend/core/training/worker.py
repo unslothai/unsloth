@@ -735,6 +735,34 @@ def _pre_detect_training_model(
         local_files_only = local_files_only,
         model_revision = model_revision,
     )
+    _check_finetune_targets_after_detect(trainer, config)
+
+
+def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
+    """Reject a LoRA run that selects no adapter layers, once detection has settled which
+    branch it takes. models/training.py gates the image case from the request alone, but an
+    audio request is ambiguous there: is_audio_vlm reads all four selectors while the
+    codec/ASR branches (csm, snac, whisper, bicodec, dac) ignore them, and only the probe in
+    pre_detect tells them apart. Running here keeps the error early -- pre_detect is
+    config/tokenizer only, so this still fires before any weights load, instead of surfacing
+    as get_peft_regex's "No layers to finetune" after the model is in memory."""
+    if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
+        return  # Full Finetuning / CPT build adapters from target_modules alone
+    if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
+        return
+    if any(
+        config.get(key, True)
+        for key in (
+            "finetune_language_layers",
+            "finetune_attention_modules",
+            "finetune_mlp_modules",
+        )
+    ) or config.get("finetune_vision_layers", False):
+        return
+    raise ValueError(
+        "Nothing to train: enable at least one of finetune_language_layers, "
+        "finetune_attention_modules, finetune_mlp_modules, or finetune_vision_layers."
+    )
 
 
 def _reload_dataset_with_remote_model_tokenizer(

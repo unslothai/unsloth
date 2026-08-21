@@ -649,14 +649,14 @@ class TrainingStartRequest(BaseModel):
             "Continued Pretraining",
         ):
             return self
-        # is_vlm is `not is_audio_vlm and vision and is_dataset_image` and is_audio_vlm is
-        # `is_dataset_audio` on an audio-VLM model -- it never consults is_dataset_image --
-        # so audio has to gate this too or an all-false Gemma-3N-style run slips through and
-        # dies in get_peft_regex ("No layers to finetune") after the model is loaded. Which
-        # audio model it is only becomes known after that load, so a codec/TTS run (csm,
-        # snac, whisper, bicodec, dac), whose branch ignores these flags, is also asked to
-        # turn one on; that is a no-op there and costs nothing.
-        if not (self.is_dataset_image or self.is_dataset_audio):
+        # Image-tagged runs are gated here because is_dataset_image is a necessary condition
+        # for trainer.is_vlm, so the request alone settles it. Audio is NOT gated here: the
+        # audio-VLM branch does read these four, but the codec/ASR branches (csm, snac,
+        # whisper, bicodec, dac) ignore them, and only a config/tokenizer probe tells the two
+        # apart -- so an is_dataset_audio gate would reject valid codec runs. That case is
+        # checked in worker.py's _pre_detect_training_model, after detection and still before
+        # any weights load.
+        if not self.is_dataset_image:
             return self
         if not (
             self.finetune_vision_layers
