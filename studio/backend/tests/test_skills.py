@@ -260,6 +260,14 @@ def test_create_skill_rejects_recursive_yaml_frontmatter():
         skills.create_skill("unsloth", manifest)
 
 
+@pytest.mark.parametrize("tagged_value", ["!!bool nope", "!!timestamp nope"])
+def test_create_skill_rejects_invalid_yaml_tags(tagged_value: str):
+    manifest = f"---\nname: unsloth\ndescription: {tagged_value}\n---\n"
+
+    with pytest.raises(skills.SkillError, match = "invalid YAML frontmatter"):
+        skills.create_skill("unsloth", manifest)
+
+
 def test_import_rejects_recursive_root_yaml_frontmatter(tmp_path: Path):
     nested = "[" * 500 + "0" + "]" * 500
     manifest = SKILL_MD.replace("metadata:\n", f"metadata:\n  nested: {nested}\n")
