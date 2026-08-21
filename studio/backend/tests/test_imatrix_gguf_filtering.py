@@ -157,9 +157,7 @@ def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path)
 
     (repo / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
     rows = _scan_models_dir(tmp_path)
-    assert [(Path(r.path).name, r.model_format) for r in rows] == [
-        ("Qwen3.8-27B-GGUF", "gguf")
-    ]
+    assert [(Path(r.path).name, r.model_format) for r in rows] == [("Qwen3.8-27B-GGUF", "gguf")]
 
 
 def test_an_mmproj_only_child_still_decides_presence(tmp_path):
@@ -217,9 +215,7 @@ def test_the_lmstudio_scanner_does_not_publish_an_imatrix_only_model_dir(tmp_pat
 
     (model_dir / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
     rows = _scan_lmstudio_dir(tmp_path)
-    assert [(r.model_id, r.model_format) for r in rows] == [
-        ("unsloth/Qwen3.8-27B-GGUF", "gguf")
-    ]
+    assert [(r.model_id, r.model_format) for r in rows] == [("unsloth/Qwen3.8-27B-GGUF", "gguf")]
 
 
 def test_a_downloaded_imatrix_is_not_a_downloaded_gguf_repo(tmp_path):
