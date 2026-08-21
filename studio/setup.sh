@@ -134,9 +134,46 @@ _CAPTURE_LOG=""
 # lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
 # via UNSLOTH_NPM_REGISTRY. We never switch registries automatically -- we only guide.
 # $1 = path to a captured install log (may be empty/missing).
-_suggest_npm_registry() {
-    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
+# Local, non-network reasons an npm install dies: a locked or denied file in the
+# npm cache (antivirus, most often), a read-only tree, a full disk. npm reports
+# these with a POSIX errno and its own "rejected by your operating system"
+# wording. Checked BEFORE the network markers below, because npm's FetchError
+# line names registry.npmjs.org even when the cause is local -- that URL is what
+# made the registry hint fire on a plain permission error (issue #8725).
+_NPM_LOCAL_FAILURE_RE='EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE|operation was rejected by your operating system'
+
+# Print guidance for an npm failure the network cannot explain. Not gated on
+# UNSLOTH_NPM_REGISTRY: a mirror does not make a locked cache writable.
+# $1 = path to a captured install log.
+_suggest_npm_local_failure() {
     local _log="${1:-}"
+    local _node _npm
+    _node="$( (node -v) 2>/dev/null || true )"
+    _npm="$( (npm -v) 2>/dev/null || true )"
+    printf '\n' >&2
+    step "frontend" "npm was blocked by the operating system, not by the network" "$C_WARN" >&2
+    substep "npm reported a permission/lock error (EACCES/EPERM/EBUSY), so this is local." >&2
+    [ -n "$_node$_npm" ] && substep "Runtime in use: node ${_node:-?} | npm ${_npm:-?}" >&2
+    substep "Usual causes, in order:" >&2
+    substep "  1. Antivirus or a file watcher holding a file in the npm cache." >&2
+    substep "  2. A previous install left an unwritable npm cache." >&2
+    substep "  3. The install directory is read-only, or the disk is full." >&2
+    substep "Things that usually clear it:" >&2
+    substep "  npm cache clean --force" >&2
+    substep "  Or point npm at a writable cache: NPM_CONFIG_CACHE=\"\$HOME/.npm-cache\"" >&2
+    return 0
+}
+
+_suggest_npm_registry() {
+    local _log="${1:-}"
+    # A local permission/disk failure is not a registry problem. Checked first,
+    # and before the UNSLOTH_NPM_REGISTRY opt-out, so the user still hears about
+    # it when they have already pointed us at a mirror.
+    if [ -n "$_log" ] && [ -s "$_log" ] && grep -Eqi "$_NPM_LOCAL_FAILURE_RE" "$_log"; then
+        _suggest_npm_local_failure "$_log"
+        return 0
+    fi
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
     # If we captured output and it does NOT look like a registry/network problem, stay
     # quiet -- the raw error already shown is more useful than a misleading hint.
     if [ -n "$_log" ] && [ -s "$_log" ] \
