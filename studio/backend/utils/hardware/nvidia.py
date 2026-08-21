@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 import subprocess
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -46,6 +48,208 @@ def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[di
     if parent_visible_ids is None:
         return None
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
+
+
+# Failures aren't cached forever: a hung/missing nvidia-smi at Studio startup
+# (driver still initializing, momentary system load) can recover mid-session,
+# and the picker shouldn't stay hidden until a restart on the strength of one
+# bad probe. Successes also expire, just on a much longer horizon -- GPU
+# topology and MIG mode are effectively static, but not provably immutable
+# for a whole Studio session (an admin can toggle MIG on a running host) --
+# so a resolution is revalidated periodically rather than trusted forever.
+_FAILED_RESOLUTION_TTL_SECONDS = 30
+_RESOLVED_MASK_TTL_SECONDS = 300
+_uuid_mask_resolution_cache: dict[tuple[str, ...], tuple[Optional[list[int]], float]] = {}
+
+_GPU_UUID_PREFIX = "GPU-"
+# Python's int() accepts spellings CUDA's own decimal parser wouldn't -- most
+# notably PEP 515 digit-group underscores (int("0_0") == 0), but also a
+# leading "+" and surrounding whitespace. A mixed-mask numeric member must be
+# a plain, unsigned-lexically decimal token before it's trusted as one.
+_DECIMAL_TOKEN_RE = re.compile(r"^-?[0-9]+$")
+
+
+def _query_uuid_to_ordinal() -> Optional[dict[str, tuple[int, bool]]]:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,pci.bus_id,mig.mode.current",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed while resolving a UUID mask: %s", e)
+        return None
+    if result.returncode != 0:
+        return None
+
+    rows = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 4:
+            continue
+        idx_str, uuid, bus_id, mig_mode = parts
+        try:
+            idx = int(idx_str)
+        except (ValueError, TypeError):
+            continue
+        rows.append((idx, uuid, bus_id, mig_mode))
+
+    # get_visible_gpu_utilization() and get_backend_visible_gpu_info() below,
+    # and the "GPU index ordering" pin in hardware.py, all assume nvidia-smi's
+    # own index column already matches PCI bus order -- that's the load-bearing
+    # invariant this whole file leans on. NVIDIA's own docs stop short of
+    # guaranteeing it, so verify it here instead of silently trusting it (or
+    # silently computing an independent ordinal that would then disagree with
+    # every other index-keyed probe in this file): sort by pci.bus_id
+    # ourselves -- its fixed-width "domain:bus:device.function" hex format
+    # sorts correctly as plain text -- and confirm every row's index equals
+    # its position in that sort. If it does, resolving to nvidia-smi's own
+    # index is safe and stays consistent with those other probes. If it
+    # doesn't, the assumption this file depends on doesn't hold on this host
+    # and no ordinal from either source can be trusted to line up with the
+    # others, so fail closed rather than resolve to a value that only agrees
+    # with half the codebase's telemetry.
+    by_pci_order = sorted(rows, key = lambda row: row[2])
+    for expected_idx, (idx, _uuid, bus_id, _mig_mode) in enumerate(by_pci_order):
+        if idx != expected_idx:
+            logger.warning(
+                "nvidia-smi index does not match PCI bus order (index=%s, "
+                "pci.bus_id=%s, expected position=%s); declining to resolve "
+                "UUID masks on this host",
+                idx,
+                bus_id,
+                expected_idx,
+            )
+            return None
+
+    # (index, is_mig_enabled) per UUID, for every row -- including MIG-enabled
+    # roots. A MIG-enabled root is never itself a valid resolution (CUDA
+    # exposes its MIG instances instead of the whole card), but it must still
+    # be visible during *ambiguity* checking below: excluding it here first
+    # would let a prefix shared with a MIG root look falsely unambiguous.
+    uuid_info: dict[str, tuple[int, bool]] = {}
+    for idx, uuid, _bus_id, mig_mode in rows:
+        uuid_info[uuid] = (idx, mig_mode == "Enabled")
+    return uuid_info
+
+
+def _resolve_uuid_token(token: str, uuid_info: dict[str, tuple[int, bool]]) -> Optional[int]:
+    exact = uuid_info.get(token)
+    if exact is not None:
+        idx, is_mig_enabled = exact
+        return None if is_mig_enabled else idx
+    # NVIDIA accepts an unambiguous UUID prefix (e.g. "GPU-abcdef12") as a
+    # device identifier. Require the token to actually look like a GPU UUID
+    # before attempting a prefix match -- otherwise a malformed token like
+    # "G" or "GPU" (no trailing "-") could coincidentally prefix a real UUID
+    # on a single-GPU host and get treated as a valid, intentional selector.
+    if not (token.startswith(_GPU_UUID_PREFIX) and len(token) > len(_GPU_UUID_PREFIX)):
+        return None
+    # Checked against every root UUID, MIG-enabled or not -- a prefix shared
+    # by more than one card, MIG or otherwise, can't be trusted either way.
+    prefix_matches = [uuid for uuid in uuid_info if uuid.startswith(token)]
+    if len(prefix_matches) != 1:
+        return None
+    idx, is_mig_enabled = uuid_info[prefix_matches[0]]
+    return None if is_mig_enabled else idx
+
+
+def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
+    """Resolve a CUDA_VISIBLE_DEVICES mask that mixes numeric indices and GPU
+    UUIDs (e.g. ["0", "GPU-<uuid>"]) to physical indices, so a UUID mask is
+    exactly as selectable as the equivalent numeric one. A numeric token must
+    be a plain decimal (ASCII digits, optional leading "-") -- Python's int()
+    is more permissive than CUDA's own parser (e.g. int("0_0") == 0 via PEP
+    515 digit-group underscores) -- and is then validated against the GPUs
+    nvidia-smi actually reports and excludes MIG-enabled roots from (real
+    CUDA semantics truncate enumeration at the first invalid member of a
+    mixed mask, hiding everything after it -- rather than replicate that
+    exact truncation point, an invalid numeric member fails the whole
+    resolution); UUID tokens are resolved to the same index
+    get_visible_gpu_utilization() and get_backend_visible_gpu_info() already
+    key their own nvidia-smi rows by (see _query_uuid_to_ordinal()'s PCI-bus
+    cross-check). Order is preserved to match the mask, since it defines the
+    visible-ordinal mapping downstream. Returns None -- and the caller falls
+    back to relative ordinals -- if nvidia-smi is unavailable, its index
+    doesn't match PCI bus order, a numeric token is negative or not a
+    queried GPU, any UUID token doesn't match exactly one non-MIG physical
+    device (an actual MIG instance UUID, a MIG-enabled root's UUID, or a
+    UUID/prefix ambiguous across cards -- checked against every root
+    regardless of MIG state, so a MIG root can't make an otherwise-ambiguous
+    prefix look unambiguous), or two tokens resolve to the same physical ID
+    (a repeated or aliased UUID/index pair): _visible_ordinal_map() is keyed
+    by physical ID, so a duplicate silently collapses one of the mask's
+    visible ordinals rather than giving it its own device entry. Cached per
+    token tuple -- successes for _RESOLVED_MASK_TTL_SECONDS, since GPU
+    topology/MIG mode can change while Studio keeps running (an admin
+    enabling MIG on a previously plain card, without a restart); failures
+    for the much shorter _FAILED_RESOLUTION_TTL_SECONDS, since a hung or
+    missing nvidia-smi would otherwise cost its full timeout on every caller
+    of _get_parent_visible_gpu_spec() every poll cycle."""
+    cache_key = tuple(tokens)
+    cached = _uuid_mask_resolution_cache.get(cache_key)
+    if cached is not None:
+        value, cached_at = cached
+        ttl = _RESOLVED_MASK_TTL_SECONDS if value is not None else _FAILED_RESOLUTION_TTL_SECONDS
+        if time.monotonic() - cached_at < ttl:
+            return value
+
+    uuid_info = _query_uuid_to_ordinal()
+    if uuid_info is None:
+        _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
+        return None
+    # A MIG-enabled root is excluded from UUID resolution below (its own
+    # index isn't a valid selectable device); a plain numeric token equal to
+    # that same index must be rejected the same way, or a mixed mask could
+    # route around the UUID-side MIG protection entirely.
+    valid_indices = {idx for idx, is_mig_enabled in uuid_info.values() if not is_mig_enabled}
+
+    resolved = []
+    for token in tokens:
+        if _DECIMAL_TOKEN_RE.match(token):
+            numeric_idx = int(token)
+            # CUDA truncates enumeration at the first invalid member of a
+            # mixed mask (negative or not a real device) -- everything
+            # listed after it in the real CUDA_VISIBLE_DEVICES semantics is
+            # not visible at all, not merely skipped. Replicating that exact
+            # truncation point would mean returning a list shorter than the
+            # mask, which every caller of _get_parent_visible_gpu_spec()
+            # would then have to special-case, so fail the whole resolution
+            # instead: falling back to relative ordinals (no explicit
+            # selection) is safer than resolving a later UUID token that
+            # real CUDA_VISIBLE_DEVICES parsing would have hidden.
+            if numeric_idx < 0 or numeric_idx not in valid_indices:
+                _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
+                return None
+            resolved.append(numeric_idx)
+            continue
+        idx = _resolve_uuid_token(token, uuid_info)
+        if idx is None:
+            _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
+            return None
+        resolved.append(idx)
+
+    if len(set(resolved)) != len(resolved):
+        logger.warning(
+            "GPU mask %r resolved to duplicate physical IDs %r; a physical "
+            "ID mask can't represent this many distinct visible ordinals",
+            tokens,
+            resolved,
+        )
+        _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
+        return None
+
+    _uuid_mask_resolution_cache[cache_key] = (resolved, time.monotonic())
+    return resolved
 
 
 def get_physical_gpu_count() -> Optional[int]:

@@ -32,6 +32,7 @@ from utils.hardware import (
     prepare_gpu_selection,
     resolve_requested_gpu_ids,
 )
+from utils.hardware import nvidia
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -68,6 +69,7 @@ class _GpuCacheResetMixin:
     def tearDown(self):
         _hw_module._physical_gpu_count = None
         _hw_module._visible_gpu_count = None
+        nvidia._uuid_mask_resolution_cache.clear()
 
 
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
@@ -84,12 +86,67 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
 
-    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
+    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks_nvidia_smi_cannot_resolve(
+        self,
+    ):
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = None),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [])
+
+    def test_parent_visibility_resolves_uuid_masks_via_nvidia_smi(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch(
+                "utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = [2, 5]
+            ) as mock_resolve,
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [2, 5])
+            mock_resolve.assert_called_once_with(["GPU-aaa", "GPU-bbb"])
+
+    def test_parent_visibility_does_not_resolve_uuid_masks_on_rocm(self):
+        # ROCm has no nvidia-smi; a non-numeric mask there must stay unresolved
+        # rather than attempt an nvidia-only resolution path.
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.hardware.IS_ROCM", True),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask") as mock_resolve,
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [])
+            mock_resolve.assert_not_called()
+
+    def test_parent_visibility_does_not_resolve_uuid_masks_off_pci_bus_id_order(self):
+        # nvidia-smi always numbers by PCI bus id; trusting its indices while
+        # CUDA_DEVICE_ORDER=FASTEST_FIRST is in effect could select the wrong
+        # physical GPU once those indices are written back to
+        # CUDA_VISIBLE_DEVICES for a worker (see the P1 review on #8917).
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "FASTEST_FIRST"},
+                clear = True,
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask") as mock_resolve,
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [])
+            mock_resolve.assert_not_called()
 
     def test_invalid_requests_raise_clear_value_errors(self):
         cases = [
@@ -161,6 +218,302 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
             self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "5,6")
             self.assertEqual(os.environ["TEST_PARENT_ENV"], "keep-me")
+
+
+class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
+    # Real UUIDs from issue #8873's own nvidia-smi output. Every fixture here
+    # keeps index == its position when rows are sorted by pci.bus_id --
+    # get_visible_gpu_utilization() and get_backend_visible_gpu_info() key
+    # their own nvidia-smi rows by index, so resolve_gpu_uuid_mask() only
+    # ever hands back nvidia-smi's own index (verified consistent with PCI
+    # order), never an independently-computed ordinal that could disagree
+    # with those other probes. The one exception is the dedicated
+    # index-mismatch test below.
+    _UUID_A = "GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50"
+    _UUID_B = "GPU-2f902962-578c-0f96-69a5-3e18679211d7"
+
+    def test_resolves_and_preserves_mask_order(self):
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # Mask order is reversed relative to the PCI listing -- the
+            # resolved list must follow the mask, not the smi listing.
+            result = nvidia.resolve_gpu_uuid_mask([self._UUID_B, self._UUID_A])
+        self.assertEqual(result, [1, 0])
+
+    def test_fails_closed_when_nvidia_smi_index_does_not_match_pci_bus_order(self):
+        # UUID_A's PCI bus id sorts *after* UUID_B's, but nvidia-smi reports
+        # UUID_A at index 0 and UUID_B at index 1 -- an index that disagrees
+        # with PCI order. get_visible_gpu_utilization() and
+        # get_backend_visible_gpu_info() are both keyed by nvidia-smi's index
+        # elsewhere in this file, so a resolved index that doesn't match PCI
+        # order can't be trusted to line up with them; this must decline to
+        # resolve rather than guess which ordering the rest of the codebase
+        # will actually use for this host.
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:09:00.0, Disabled",
+                f"1, {self._UUID_B}, 00000000:02:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A, self._UUID_B])
+        self.assertIsNone(result)
+
+    def test_returns_none_when_a_token_does_not_match_any_device(self):
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # e.g. a MIG instance UUID nvidia-smi's uuid/pci.bus_id query never lists.
+            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A, "MIG-not-a-root-gpu"])
+        self.assertIsNone(result)
+
+    def test_returns_none_when_nvidia_smi_fails(self):
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
+            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_returns_none_when_nvidia_smi_is_missing(self):
+        with patch("utils.hardware.nvidia.subprocess.run", side_effect = FileNotFoundError()):
+            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_resolves_an_unambiguous_uuid_prefix(self):
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
+        self.assertEqual(result, [0])
+
+    def test_rejects_a_uuid_prefix_shared_by_two_devices(self):
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                "1, GPU-d18a14b7-aaaa-bbbb-cccc-000000000000, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # Both devices share this prefix -- neither is a safe match.
+            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
+        self.assertIsNone(result)
+
+    def test_rejects_a_malformed_token_that_coincidentally_prefixes_a_uuid(self):
+        # A single-GPU host where a bare "GPU" (no trailing "-") happens to
+        # string-prefix the one UUID present must not resolve it -- "GPU" is
+        # not a valid CUDA UUID identifier and this token was never meant as one.
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            self.assertIsNone(nvidia.resolve_gpu_uuid_mask(["GPU"]))
+            self.assertIsNone(nvidia.resolve_gpu_uuid_mask(["G"]))
+
+    def test_leaves_mig_enabled_root_uuid_unresolved(self):
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Enabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # UUID_A is MIG-enabled -- its root UUID must not resolve, even
+            # though nvidia-smi still lists it as a normal row.
+            self.assertIsNone(nvidia.resolve_gpu_uuid_mask([self._UUID_A]))
+            # UUID_B is unaffected and still resolves on its own.
+            self.assertEqual(nvidia.resolve_gpu_uuid_mask([self._UUID_B]), [1])
+
+    def test_prefix_ambiguous_with_a_mig_enabled_root_stays_unresolved(self):
+        # A normal GPU and a MIG-enabled root share the "GPU-d18a14b7" prefix.
+        # Excluding the MIG root before checking ambiguity would make this
+        # prefix look like it has exactly one candidate (the normal GPU) and
+        # resolve it -- it must instead be treated as ambiguous, the same as
+        # any prefix shared by two non-MIG cards.
+        mig_uuid = "GPU-d18a14b7-aaaa-bbbb-cccc-000000000000"
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                f"1, {mig_uuid}, 00000000:04:00.0, Enabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
+        self.assertIsNone(result)
+
+    def test_resolves_a_mixed_numeric_and_uuid_mask(self):
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # "0" is validated against the queried GPUs (a real, non-negative
+            # index -- see the invalid-numeric-member tests below for what
+            # happens when it isn't); only the UUID token goes through
+            # resolution proper. Distinct physical IDs here on purpose -- see
+            # the duplicate-rejection test below for what happens when they
+            # alias the same card.
+            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
+        self.assertEqual(result, [0, 1])
+
+    def test_rejects_a_mask_that_resolves_to_duplicate_physical_ids(self):
+        # "0" and UUID_A both name physical GPU 0 -- _visible_ordinal_map()
+        # is keyed by physical ID, so a duplicate would silently collapse one
+        # of the mask's two distinct visible ordinals onto the other.
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_rejects_a_mixed_mask_with_a_negative_numeric_member(self):
+        # Real CUDA_VISIBLE_DEVICES semantics: an invalid member (negative or
+        # out-of-range) truncates enumeration there, hiding everything listed
+        # after it. Rather than replicate that exact truncation point, this
+        # must fail the whole resolution -- falling back to relative ordinals
+        # (no explicit selection at all) rather than resolve a UUID that real
+        # CUDA parsing would never have exposed in the first place.
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0", "-1", self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_rejects_a_mixed_mask_with_an_out_of_range_numeric_member(self):
+        # "5" doesn't correspond to any GPU nvidia-smi actually reported --
+        # blindly trusting it (as opposed to the pure-numeric fast path,
+        # which never queries nvidia-smi at all to cross-check) would let a
+        # typo'd or stale index slip through resolution as if it were real.
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["5", self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_rejects_a_numeric_token_that_names_a_mig_enabled_root(self):
+        # "0" numerically names the same MIG-enabled root that UUID
+        # resolution would already reject -- a mixed mask must not be able
+        # to route around that protection just by spelling the index instead
+        # of the UUID.
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Enabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_B])
+        self.assertIsNone(result)
+
+    def test_rejects_a_python_only_integer_spelling(self):
+        # int("0_0") == 0 in Python (PEP 515 digit-group underscores), but
+        # that's not a decimal GPU identifier CUDA's own parser would accept
+        # -- it must fail closed rather than be silently normalized to "0".
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0_0", self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_caches_a_resolved_mask_and_does_not_requery(self):
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        tokens = [self._UUID_A]
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            first = nvidia.resolve_gpu_uuid_mask(tokens)
+            second = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertEqual(first, [0])
+        self.assertEqual(second, [0])
+        mock_run.assert_called_once()
+
+    def test_revalidates_a_resolved_mask_once_its_ttl_expires(self):
+        # GPU topology/MIG mode isn't provably immutable for a whole Studio
+        # session (an admin can enable MIG on a running host) -- a resolution
+        # from before that change must eventually be revalidated rather than
+        # kept forever.
+        tokens = [self._UUID_A]
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            first = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertEqual(first, [0])
+
+        # Simulate the TTL elapsing without a real sleep: back-date the
+        # cached success's timestamp past the expiry window.
+        cache_key = tuple(tokens)
+        _value, cached_at = nvidia._uuid_mask_resolution_cache[cache_key]
+        nvidia._uuid_mask_resolution_cache[cache_key] = (
+            _value,
+            cached_at - nvidia._RESOLVED_MASK_TTL_SECONDS - 1,
+        )
+
+        # UUID_A is now MIG-enabled -- the revalidated resolution must reflect
+        # that instead of trusting the stale cached success.
+        mig_smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Enabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = mig_smi_output)
+            second = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertIsNone(second)
+        mock_run.assert_called_once()
+
+    def test_caches_a_failed_resolution_within_the_ttl_and_does_not_requery(self):
+        tokens = [self._UUID_A]
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
+            first = nvidia.resolve_gpu_uuid_mask(tokens)
+            second = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        mock_run.assert_called_once()
+
+    def test_retries_a_failed_resolution_once_the_ttl_expires(self):
+        tokens = [self._UUID_A]
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
+            first = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertIsNone(first)
+
+        # Simulate the TTL elapsing without a real sleep: back-date the
+        # cached failure's timestamp past the expiry window.
+        cache_key = tuple(tokens)
+        _value, cached_at = nvidia._uuid_mask_resolution_cache[cache_key]
+        nvidia._uuid_mask_resolution_cache[cache_key] = (
+            _value,
+            cached_at - nvidia._FAILED_RESOLUTION_TTL_SECONDS - 1,
+        )
+
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            second = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertEqual(second, [0])
+        mock_run.assert_called_once()
 
 
 class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
@@ -377,13 +730,18 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
         with (
-            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
             patch(
                 "utils.hardware.hardware._torch_get_device_inventory",
                 return_value = fake_torch_devices,
             ),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = None),
         ):
             result = get_backend_visible_gpu_info()
 
@@ -391,6 +749,33 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(len(result["devices"]), 2)
         self.assertEqual(result["index_kind"], "relative")
+
+    def test_uuid_parent_visibility_resolves_to_physical_indices(self):
+        """A UUID mask nvidia-smi can resolve (issue #8873) must surface
+        physical indices, not fall back to relative torch ordinals."""
+        smi_output = "\n".join(
+            [
+                "0, GPU Zero, 10000",
+                "1, GPU One, 20000",
+            ]
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = [0, 1]),
+            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = get_backend_visible_gpu_info()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["parent_visible_gpu_ids"], [0, 1])
+        self.assertEqual(result["index_kind"], "physical")
+        self.assertEqual([device["index"] for device in result["devices"]], [0, 1])
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
