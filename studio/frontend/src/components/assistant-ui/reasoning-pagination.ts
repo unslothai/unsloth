@@ -12,6 +12,7 @@ const BLOCK_BOUNDARY_SEARCH_CHARACTERS = 1_024;
 const MAX_SYNTHETIC_FENCE_MARKER = 256;
 const MAX_SYNTHETIC_FENCE_INFO = 128;
 const FENCE_LINE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+const TABLE_DELIMITER_CELL_RE = /^:?-+:?$/;
 const DISPLAY_MATH_LINE_RE = /^( {0,3})(\${2,})(.*)$/;
 const BLOCK_QUOTE_PREFIX_RE = /^( {0,3}>[ \t]?)/;
 const LIST_PREFIX_RE = /^( {0,3})(?:[*+-]|\d{1,9}[.)])([ \t]{1,4})/;
@@ -21,6 +22,8 @@ const HTML_CDATA_RE = /^(?: {0,3})<!\[CDATA\[/;
 const HTML_PROCESSING_RE = /^(?: {0,3})<\?/;
 const HTML_DECLARATION_RE = /^(?: {0,3})<![A-Za-z]/;
 const HTML_TAG_RE = /^(?: {0,3})<\/?([A-Za-z][A-Za-z0-9-]*)(?:\s|\/?>|$)/;
+const HTML_OPENING_TAG_RE =
+  /^(?: {0,3})(<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^ "'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>)/;
 const HTML_COMPLETE_TAG_RE =
   /^(?: {0,3})(?:<\/[A-Za-z][A-Za-z0-9-]*\s*>|<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^ "'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>)\s*$/;
 const HTML_BLOCK_NAMES = new Set(
@@ -62,7 +65,17 @@ type DisplayMathState = {
 type RawHtmlState = {
   close: "blank" | { caseInsensitive: boolean; value: string };
   container: ContainerState;
+  syntheticOpening: string | null;
   syntheticTag: string | null;
+};
+
+type TableHeaderState = {
+  container: ContainerState;
+  markdown: string;
+};
+
+type TableState = TableHeaderState & {
+  delimiter: string;
 };
 
 type BoundaryState = {
@@ -70,6 +83,8 @@ type BoundaryState = {
   displayMath: DisplayMathState | null;
   fence: FenceState | null;
   rawHtml: RawHtmlState | null;
+  table: TableState | null;
+  tableHeader: TableHeaderState | null;
 };
 
 export type ReasoningMarkdownPage = {
@@ -125,6 +140,29 @@ function containerContent(
   return line === prefix.trimEnd() || line.trim().length === 0 ? "" : null;
 }
 
+function hasUnescapedTablePipe(content: string): boolean {
+  let backslashes = 0;
+  for (const character of content) {
+    if (character === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (character === "|" && backslashes % 2 === 0) return true;
+    backslashes = 0;
+  }
+  return false;
+}
+
+function isTableDelimiter(content: string): boolean {
+  const trimmed = content.trim();
+  if (!hasUnescapedTablePipe(trimmed)) return false;
+  const cells = trimmed.replace(/^\|/, "").replace(/\|$/, "").split("|");
+  return (
+    cells.length > 0 &&
+    cells.every((cell) => TABLE_DELIMITER_CELL_RE.test(cell.trim()))
+  );
+}
+
 function nextFenceState(
   line: string,
   state: FenceState | null,
@@ -134,7 +172,7 @@ function nextFenceState(
   const content = state
     ? containerContent(line, state.container)
     : (parsed?.content ?? null);
-  if (content === null) return state;
+  if (content === null) return null;
 
   const match = content.match(FENCE_LINE_RE);
   if (!match) return state;
@@ -165,7 +203,7 @@ function nextDisplayMathState(
   const content = state
     ? containerContent(line, state.container)
     : (parsed?.content ?? null);
-  if (content === null) return state;
+  if (content === null) return null;
 
   const match = content.match(DISPLAY_MATH_LINE_RE);
   if (!match) return state;
@@ -202,6 +240,8 @@ function rawHtmlStart(
         : {
             close: { caseInsensitive: true, value },
             container,
+            syntheticOpening:
+              content.match(HTML_OPENING_TAG_RE)?.[1] ?? `<${tag}>`,
             syntheticTag: tag,
           },
     };
@@ -216,6 +256,7 @@ function rawHtmlStart(
         : {
             close: { caseInsensitive: false, value: opaque[1] },
             container,
+            syntheticOpening: null,
             syntheticTag: null,
           },
     };
@@ -229,19 +270,25 @@ function rawHtmlStart(
   ) {
     return { recognized: false, state: null };
   }
+  const syntheticTag = tag && !VOID_HTML_NAMES.has(tag) ? tag : "div";
+  const openingTag = content.match(HTML_OPENING_TAG_RE)?.[1];
   return {
     recognized: true,
     state: {
       close: "blank",
       container,
-      syntheticTag: tag && !VOID_HTML_NAMES.has(tag) ? tag : "div",
+      syntheticOpening:
+        openingTag && !openingTag.trimEnd().endsWith("/>")
+          ? openingTag
+          : `<${syntheticTag}>`,
+      syntheticTag,
     },
   };
 }
 
 function rawHtmlContinues(line: string, state: RawHtmlState): boolean {
   const content = containerContent(line, state.container);
-  if (content === null) return true;
+  if (content === null) return false;
   if (state.close === "blank") return content.trim().length > 0;
   const haystack = state.close.caseInsensitive
     ? content.toLowerCase()
@@ -257,42 +304,101 @@ function nextBoundaryState(
   openingOffset: number,
   state: BoundaryState,
 ): BoundaryState {
-  if (state.fence) {
-    const fence = nextFenceState(line, state.fence, openingOffset);
-    return { ...state, atBlockBoundary: fence === null, fence };
-  }
-  if (state.rawHtml) {
-    const rawHtml = rawHtmlContinues(line, state.rawHtml)
-      ? state.rawHtml
-      : null;
-    return { ...state, atBlockBoundary: rawHtml === null, rawHtml };
-  }
-  if (state.displayMath) {
-    const displayMath = nextDisplayMathState(line, state.displayMath);
-    return {
-      ...state,
-      atBlockBoundary: displayMath === null,
-      displayMath,
+  let current = state;
+  if (current.table) {
+    const content = containerContent(line, current.table.container);
+    if (content !== null && hasUnescapedTablePipe(content)) {
+      return { ...current, atBlockBoundary: false, tableHeader: null };
+    }
+    current = {
+      ...current,
+      atBlockBoundary: true,
+      table: null,
+      tableHeader: null,
     };
+  }
+  if (current.fence) {
+    if (containerContent(line, current.fence.container) === null) {
+      current = { ...current, atBlockBoundary: true, fence: null };
+    } else {
+      const fence = nextFenceState(line, current.fence, openingOffset);
+      return { ...current, atBlockBoundary: fence === null, fence };
+    }
+  }
+  if (current.rawHtml) {
+    if (containerContent(line, current.rawHtml.container) === null) {
+      current = { ...current, atBlockBoundary: true, rawHtml: null };
+    } else {
+      const rawHtml = rawHtmlContinues(line, current.rawHtml)
+        ? current.rawHtml
+        : null;
+      return { ...current, atBlockBoundary: rawHtml === null, rawHtml };
+    }
+  }
+  if (current.displayMath) {
+    if (containerContent(line, current.displayMath.container) === null) {
+      current = { ...current, atBlockBoundary: true, displayMath: null };
+    } else {
+      const displayMath = nextDisplayMathState(line, current.displayMath);
+      return {
+        ...current,
+        atBlockBoundary: displayMath === null,
+        displayMath,
+      };
+    }
+  }
+
+  if (current.tableHeader) {
+    const content = containerContent(line, current.tableHeader.container);
+    if (content !== null && isTableDelimiter(content)) {
+      return {
+        ...current,
+        atBlockBoundary: false,
+        table: {
+          ...current.tableHeader,
+          delimiter: line,
+        },
+        tableHeader: null,
+      };
+    }
   }
 
   const parsed = parseContainerLine(line);
-  const rawHtml = rawHtmlStart(parsed, state.atBlockBoundary);
+  const rawHtml = rawHtmlStart(parsed, current.atBlockBoundary);
   if (rawHtml.recognized) {
     return {
-      ...state,
+      ...current,
       atBlockBoundary: rawHtml.state === null,
       rawHtml: rawHtml.state,
+      tableHeader: null,
     };
   }
 
   const displayMath = nextDisplayMathState(line, null);
   if (displayMath) {
-    return { ...state, atBlockBoundary: false, displayMath };
+    return {
+      ...current,
+      atBlockBoundary: false,
+      displayMath,
+      tableHeader: null,
+    };
   }
   const fence = nextFenceState(line, null, openingOffset);
-  if (fence) return { ...state, atBlockBoundary: false, fence };
-  return { ...state, atBlockBoundary: parsed.content.trim().length === 0 };
+  if (fence) {
+    return {
+      ...current,
+      atBlockBoundary: false,
+      fence,
+      tableHeader: null,
+    };
+  }
+  return {
+    ...current,
+    atBlockBoundary: parsed.content.trim().length === 0,
+    tableHeader: hasUnescapedTablePipe(parsed.content)
+      ? { container: parsed, markdown: line }
+      : null,
+  };
 }
 
 function boundaryStateAt(markdown: string, offset: number): BoundaryState {
@@ -302,6 +408,8 @@ function boundaryStateAt(markdown: string, offset: number): BoundaryState {
     displayMath: null,
     fence: null,
     rawHtml: null,
+    table: null,
+    tableHeader: null,
   };
 
   while (lineStart < offset) {
@@ -388,7 +496,7 @@ function syntheticDisplayMathClosing(state: DisplayMathState): string {
 }
 
 function syntheticRawHtmlOpening(state: RawHtmlState): string {
-  const marker = state.syntheticTag ? `<${state.syntheticTag}>` : "<!--";
+  const marker = state.syntheticOpening ?? "<!--";
   return `${state.container.openingPrefix}${marker}`;
 }
 
@@ -469,6 +577,17 @@ export function selectReasoningMarkdownPage(
     pageMarkdown = `${syntheticFenceOpening(openingState.fence)}\n${pageMarkdown}`;
   } else if (openingState.displayMath) {
     pageMarkdown = `${syntheticDisplayMathDelimiter(openingState.displayMath)}\n${pageMarkdown}`;
+  } else if (openingState.table) {
+    pageMarkdown = `${openingState.table.markdown}\n${openingState.table.delimiter}\n${pageMarkdown}`;
+  } else if (openingState.tableHeader) {
+    const firstLine = pageMarkdown.split("\n", 1)[0];
+    const content = containerContent(
+      firstLine,
+      openingState.tableHeader.container,
+    );
+    if (content !== null && isTableDelimiter(content)) {
+      pageMarkdown = `${openingState.tableHeader.markdown}\n${pageMarkdown}`;
+    }
   }
   if (closingState.rawHtml) {
     pageMarkdown += `${pageMarkdown.endsWith("\n") ? "" : "\n"}${syntheticRawHtmlClosing(closingState.rawHtml)}\n`;

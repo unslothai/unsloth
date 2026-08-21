@@ -162,9 +162,9 @@ test("opaque and block HTML keep inner Markdown inert across cuts", () => {
       open: "<!--\n",
     },
     {
-      close: "</div>\n",
-      markdown: `<div>\n${body}</div>`,
-      open: "<div>\n",
+      close: "</details>\n",
+      markdown: `<details open>\n${body}</details>`,
+      open: "<details open>\n",
     },
   ].map(({ close, markdown, open }) => ({
     close,
@@ -204,6 +204,23 @@ test("containerized code and math retain wrappers across cuts", () => {
   });
   assert.equal(mathPage.markdown.startsWith("- $$$\n"), true);
   assert.equal(mathPage.markdown.endsWith("\n  $$$\n"), true);
+  const topLevel = "top-level prose\n".repeat(1_000);
+  for (const opening of [
+    "> ```python\n> print(1)",
+    "> $$\n> x = 1",
+    "> <details open>\n> hidden",
+  ]) {
+    const page = selectReasoningMarkdownPage(`${opening}\n${topLevel}`, {
+      enabled: true,
+      maxCharacters: 2_048,
+    });
+    assert.equal(page.markdown.startsWith("top-level prose\n"), true);
+  }
+  const transitioned = selectReasoningMarkdownPage(
+    `> <details open>\n> hidden\n\`\`\`js\n${"const x = 1;\n".repeat(1_000)}`,
+    { enabled: true, maxCharacters: 2_048 },
+  );
+  assert.equal(transitioned.markdown.startsWith("```js\n"), true);
 });
 
 test("pages preserve display math across cuts", () => {
@@ -226,6 +243,29 @@ test("pages preserve display math across cuts", () => {
     assert.equal(page.markdown.endsWith("\n$$$\n"), true);
   }
 });
+test("long GFM tables retain their header across page cuts", () => {
+  const header = "| step | result |";
+  const delimiter = "| ---: | :--- |";
+  const markdown = `${header}\n${delimiter}\n${Array.from(
+    { length: 3_000 },
+    (_, index) => `| ${index} | ${"value ".repeat(4)} |`,
+  ).join("\n")}\n`;
+  const latest = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    maxCharacters: 2_048,
+  });
+  const earlier = selectReasoningMarkdownPage(markdown, {
+    enabled: true,
+    end: latest.start,
+    maxCharacters: 2_048,
+  });
+
+  for (const page of [latest, earlier]) {
+    assert.equal(page.markdown.startsWith(`${header}\n${delimiter}\n`), true);
+    assert.ok(page.markdown.length <= 2_100);
+  }
+});
+
 test("a giant single line is hard-bounded", () => {
   const markdown = "continuous reasoning ".repeat(20_000);
   const page = selectReasoningMarkdownPage(markdown, {
