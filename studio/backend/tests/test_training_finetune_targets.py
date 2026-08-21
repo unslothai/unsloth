@@ -106,10 +106,7 @@ def test_worker_rejects_audio_vlm_with_a_module_type_but_no_layer_family():
 
 def test_worker_allows_audio_vlm_with_a_family_and_a_module_type():
     from core.training.worker import _check_finetune_targets_after_detect
-
-    config = _config(
-        **{**_ALL_OFF, "finetune_language_layers": True, "finetune_mlp_modules": True}
-    )
+    config = _config(**{**_ALL_OFF, "finetune_language_layers": True, "finetune_mlp_modules": True})
     _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), config)
 
 
@@ -125,7 +122,6 @@ def test_worker_rejects_vision_family_with_no_module_type():
 
 def test_worker_allows_vision_family_with_a_module_type():
     from core.training.worker import _check_finetune_targets_after_detect
-
     config = _config(
         **{**_ALL_OFF, "finetune_vision_layers": True, "finetune_attention_modules": True}
     )
@@ -170,7 +166,6 @@ def test_worker_rejection_is_not_mistaken_for_a_cache_problem():
 
 def test_mlx_rejects_no_module_types():
     from core.training.worker import _check_mlx_finetune_targets
-
     with pytest.raises(ValueError, match = "Nothing to train"):
         _check_mlx_finetune_targets(_config(**_ALL_OFF))
 
@@ -179,7 +174,6 @@ def test_mlx_rejects_text_run_with_no_module_types():
     # No is_vlm gate on this path: FastMLXModel.get_peft_model is handed the selectors for
     # text models too, so an all-false text run fails there where CUDA would ignore them.
     from core.training.worker import _check_mlx_finetune_targets
-
     config = _config(**{**_ALL_OFF, "finetune_language_layers": True})
 
     with pytest.raises(ValueError, match = "Nothing to train"):
@@ -190,21 +184,18 @@ def test_mlx_allows_empty_layer_family_when_a_module_type_is_on():
     # The caller back-fills finetune_language_layers when a module type is selected, so this
     # trains fine and must not be rejected -- the CUDA guard would reject the same config.
     from core.training.worker import _check_mlx_finetune_targets
-
     config = _config(**{**_ALL_OFF, "finetune_attention_modules": True})
     _check_mlx_finetune_targets(config)
 
 
 def test_mlx_allows_defaults():
     from core.training.worker import _check_mlx_finetune_targets
-
     _check_mlx_finetune_targets(_config())
 
 
 def test_cuda_rejects_empty_layer_family():
     # get_peft_regex's first guard, which the MLX back-fill makes unreachable there.
     from core.training.worker import _check_finetune_targets_after_detect
-
     config = _config(**{**_ALL_OFF, "finetune_attention_modules": True})
 
     with pytest.raises(ValueError, match = "Nothing to train"):
@@ -213,5 +204,4 @@ def test_cuda_rejects_empty_layer_family():
 
 def test_cuda_text_run_is_untouched_by_either_guard():
     from core.training.worker import _check_finetune_targets_after_detect
-
     _check_finetune_targets_after_detect(_Trainer(), _config(**_ALL_OFF))
