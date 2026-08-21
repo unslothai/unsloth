@@ -125,7 +125,11 @@ def any_windowed(paths: list[Path]) -> Optional[str]:
     return None
 
 
-def behaviour_report(paths: list[Path], label: str) -> int:
+def behaviour_report(
+    paths: list[Path],
+    label: str,
+    windowed: bool = True,
+) -> int:
     """The windowed arm's report: behavioural invariants instead of a structural digest.
 
     Printed with the reason it is being printed, every time. The one way this could mislead is by
@@ -152,13 +156,27 @@ def behaviour_report(paths: list[Path], label: str) -> int:
         results.append((action, shard, rep, B.compare_behaviour(sides["base"], sides["treatment"])))
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
+    # WHICH REASON, and only if it is true. Forced behavioural mode on a payload that mounts its
+    # whole thread -- which is exactly how a NULL CONTROL is scored on the same scale as the
+    # windowed arm it is the control for -- used to print "one arm of this payload mounts a window
+    # of the thread" about a payload where neither arm does. A control that misdescribes itself in
+    # its own heading is not a small thing when the heading is what gets read.
+    if windowed:
+        print(
+            "  One arm of this payload mounts a window of the thread, so the structural DOM digest"
+            "\n  is NOT APPLICABLE: it compares what is on screen, and this arm changes what is on"
+            "\n  screen by design. It would report a difference on every action and prove nothing."
+        )
+    else:
+        print(
+            "  NEITHER arm of this payload mounts a window; behavioural mode was FORCED. The"
+            "\n  structural digest would have been applicable here and was not run, so nothing"
+            "\n  below says anything about whether the mounted messages render identically."
+        )
     print(
-        "  One arm of this payload mounts a window of the thread, so the structural DOM digest is\n"
-        "  NOT APPLICABLE: it compares what is on screen, and this arm changes what is on screen\n"
-        "  by design. It would report a difference on every action and prove nothing. What is\n"
-        "  scored instead is the scroll extent plus the behaviours a windowed mount breaks first.\n"
-        "  WHAT IS NO LONGER BEING ASKED: whether the mounted messages render identically. An arm\n"
-        "  that passes everything below can still have changed how a message looks."
+        "  What is scored is the scroll extent plus the behaviours a windowed mount breaks first.\n"
+        "  WHAT IS NOT BEING ASKED: whether the mounted messages render identically. An arm that\n"
+        "  passes everything below can still have changed how a message looks."
     )
     if not results:
         print("  NO ACTION DATA in this payload.")
@@ -457,7 +475,12 @@ def main(argv: list[str] | None = None) -> int:
             worst = 0
             for pattern, paths, why in decided:
                 print(f"WINDOWED MOUNT DETECTED in {pattern}: {why}")
-                worst = max(worst, behaviour_report(paths, f"UI PARITY: {pattern}"))
+                worst = max(
+                    worst,
+                    behaviour_report(
+                        paths, f"UI PARITY: {pattern}", windowed = any_windowed(paths) is not None
+                    ),
+                )
             remaining = [p for p in args.payloads if p not in {d[0] for d in decided}]
             if remaining:
                 # The rest still get the digest they were owed, in the same run.
