@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 from loggers import get_logger
 import os
@@ -572,6 +573,27 @@ def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> 
     return True
 
 
+def _backend_declares(
+    backend,
+    name: str,
+    method: str = "generate_chat_response",
+) -> bool:
+    """Whether this backend's *method* declares *name*.
+
+    A signature check, not a capability claim: a backend honoring the option
+    through **kwargs would read as False here. That is accurate for the backends
+    that ship today, and failing closed costs the option -- an ignored seed, or
+    a request sampled without its penalty -- never a crash.
+    """
+    generate = getattr(backend, method, None)
+    if generate is None:
+        return False
+    try:
+        return name in inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -611,6 +633,13 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        # These options are MLX-only. The transformers backend declares none of
+        # them and takes no **kwargs, so forwarding unconditionally would turn
+        # its documented "ignores them" behavior into a TypeError.
+        for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
+            if gated in cmd and _backend_declares(backend, gated):
+                gen_kwargs[gated] = cmd[gated]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -813,6 +842,11 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             use_adapter = cmd.get("use_adapter")
             if use_adapter is not None:
                 audio_kwargs["use_adapter"] = use_adapter
+            # MLX-only here too, for the reason the text branch gates it.
+            if "stop" in cmd and _backend_declares(
+                backend, "stop", "generate_audio_input_response"
+            ):
+                audio_kwargs["stop"] = cmd["stop"]
             generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)

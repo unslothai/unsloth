@@ -2042,7 +2042,11 @@ class ReasoningChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a naturally completed stream and close an open think block."""
+        """Flush a stream that ended and close an open think block.
+
+        Ended, not merely finished generating: a stop sequence ends a turn as a stop
+        token does, and the block it cut inside is still owed its close.
+        """
         output = self.drain()
         if self._in_reasoning:
             # Nothing generated: no block at all, rather than a close with no opener.

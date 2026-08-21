@@ -2864,3 +2864,96 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+
+
+# ── Per-request seed ────────────────────────────────────────────────
+
+
+def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
+    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
+    Studio's default min_p/top_k -- so the seed must ride on the sampler."""
+
+
+@pytest.mark.parametrize(
+    "factory_name, factory_args, vocab, sequence, expected",
+    [
+        # Frequency counts multiplicity where presence charges once.
+        (
+            "_make_mlx_frequency_penalty_processor",
+            (0.5,),
+            20,
+            [10, 11, 5, 5, 5, 6, 99, -1],
+            {5: -1.5, 6: -0.5, 10: 0.0, 19: 0.0, 0: 0.0},
+        ),
+        # Bias is history-free, so it also applies on the prompt-only first call.
+        (
+            "_make_mlx_logit_bias_processor",
+            ({1: 4.0, 3: -2.5, 99: 100.0, -1: 100.0},),
+            8,
+            [10, 11],
+            {1: 4.0, 3: -2.5, 0: 0.0, 7: 0.0},
+        ),
+    ],
+)
+def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
+    factory_name, factory_args, vocab, sequence, expected
+):
+    # MLX does no bounds checking, so a stray id is undefined behaviour.
+    mx = pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    proc = getattr(mlx_inference, factory_name)(*factory_args)
+    proc(mx.array([10, 11]), mx.zeros((1, vocab)))  # first call latches prompt_len
+    out = proc(mx.array(sequence), mx.zeros((1, vocab)))
+    for token, value in expected.items():
+        assert float(out[0, token]) == pytest.approx(value), token
+
+
+def test_finish_reason_separates_truncation_from_natural_end():
+    """At the limit the count alone is ambiguous -- a stop token sampled as the
+    final allowed token looks identical to exhaustion -- so the last token
+    decides, against the ids read from the source the runtime stops on. Those
+    sources disagree on real repos: Kimi-VL lists two config ids and a different
+    tokenizer id, and each may be a bare int (Qwen2-VL) rather than a list."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    model = SimpleNamespace(config = SimpleNamespace(eos_token_id = [163584, 163586]))
+    ids = _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 163594), model)
+    assert ids == (163584, 163586)
+    assert _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 151645)) == (151645,)
+    assert _mlx_stop_token_ids(SimpleNamespace()) == ()
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 3, 8) == "stop"
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 8, 8) == "length"
+    assert _mlx_finish_reason(SimpleNamespace(token = 163584), ids, 8, 8) == "stop"
+
+
+# ── Stop sequences ──────────────────────────────────────────────────
+
+
+def test_stop_sequences_cut_the_reply_and_never_show_a_partial_match():
+    """The matcher decides how much of a reply may be shown: text that could still
+    grow into a sequence is held back, since a client cannot unsee a fragment the
+    next token completes."""
+    from core.inference.mlx_inference import _mlx_stop_cut
+
+    # Held back while it could still grow into "ab"; released once it cannot.
+    assert [_mlx_stop_cut(t, ["ab"]) for t in ("xa", "xac", "xab")] == [
+        (1, False),
+        (3, False),
+        (1, True),
+    ]
+    # A sequence at position 0 ends the turn with nothing shown.
+    assert _mlx_stop_cut("abc", ["a"]) == (0, True)
+    # The longest partial across all sequences wins; a shorter one cannot release it.
+    assert _mlx_stop_cut("aaAB", ["ABC", "BX"]) == (2, False)
+    # The earliest match ends the turn, whether one sequence matches twice or two
+    # sequences match in a different order than they were declared.
+    assert _mlx_stop_cut("a then a", ["a"]) == (0, True)
+    assert _mlx_stop_cut("early late", ["late", "early"]) == (0, True)
+    # An unresolved character is not a character yet: it can neither be shown nor
+    # complete a sequence, and dropping it can uncover the start of one. Only the
+    # trailing run is unresolved -- one the reply has already written past is text.
+    assert _mlx_stop_cut("hi\ufffd", ["END"]) == (2, False)
+    assert _mlx_stop_cut("a\ufffd", ["a"]) == (0, True)
+    assert _mlx_stop_cut("a\ufffd\ufffd", ["\ufffd"]) == (1, False)
+    assert _mlx_stop_cut("a\ufffdb", ["\ufffd"]) == (1, True)
