@@ -492,7 +492,9 @@ def test_the_menu_growth_value_has_both_floors_removed() -> None:
 # ── a null repetition is a failure, not a sample to drop ──────────────
 
 
-def menu_repetition(open_ms: float | None) -> dict:
+def menu_repetition(
+    open_ms: float | None, focus_returned: bool = True, active_element: str = "BUTTON"
+) -> dict:
     close_ms = 40.0
     total = None if open_ms is None else open_ms + close_ms
     return {
@@ -506,6 +508,9 @@ def menu_repetition(open_ms: float | None) -> dict:
             "bodyPointerEventsAfterClose": "auto",
             "itemsWhileOpen": 5,
             "triggersWhileHovered": 3,
+            "triggerFocusedBeforeOpen": True,
+            "focusReturnedToTrigger": focus_returned,
+            "activeElementAfterClose": active_element,
         }
     }
 
@@ -533,6 +538,18 @@ def test_the_median_of_three_good_repetitions_is_unchanged() -> None:
         [menu_repetition(80.0), menu_repetition(100.0), menu_repetition(120.0)]
     )
     assert summary["menu"]["openMs"] == 100.0, summary["menu"]
+
+
+def test_one_focus_failure_poisons_the_summary() -> None:
+    summary = HARNESS.summarise(
+        [
+            menu_repetition(80.0),
+            menu_repetition(100.0, focus_returned = False, active_element = "BODY"),
+            menu_repetition(120.0),
+        ]
+    )
+    assert summary["menu"]["focusReturnedToTrigger"] is False, summary["menu"]
+    assert summary["menu"]["activeElementAfterClose"] == "BODY", summary["menu"]
 
 
 # ── the verdict must reject an action that never settled ──────────────
