@@ -1613,9 +1613,7 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, m
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf)
@@ -1636,9 +1634,7 @@ def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path,
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     assert _launch(backend, gguf)["cmd"]
 
