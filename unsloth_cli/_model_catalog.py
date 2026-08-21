@@ -175,9 +175,7 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     # A GGUF folder carries no config, and a diffusers pipeline keeps its weights in
     # component subdirs, so neither answers to _is_model_directory alone.
     return (
-        bool(_servable_gguf_names(path))
-        or _is_model_directory(path)
-        or _local_pipeline_index(path)
+        bool(_servable_gguf_names(path)) or _is_model_directory(path) or _local_pipeline_index(path)
     )
 
 

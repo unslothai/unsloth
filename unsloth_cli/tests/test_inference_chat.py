@@ -1637,7 +1637,15 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
     from unsloth_cli import _model_catalog as cat
 
     class _LocalModelInfo:
-        def __init__(self, id, display_name, path, source, model_format = None, partial = False):
+        def __init__(
+            self,
+            id,
+            display_name,
+            path,
+            source,
+            model_format = None,
+            partial = False,
+        ):
             self.id = id
             self.display_name = display_name
             self.path = path
@@ -1663,11 +1671,13 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
     rows = [
         _LocalModelInfo(str(real), "Real", str(real), "models_dir"),
         _LocalModelInfo(str(config_only), "ConfigOnly", str(config_only), "models_dir"),
-        _LocalModelInfo(str(gguf_folder), "GgufFolder", str(gguf_folder), "models_dir",
-                        model_format = "gguf"),
+        _LocalModelInfo(
+            str(gguf_folder), "GgufFolder", str(gguf_folder), "models_dir", model_format = "gguf"
+        ),
         _LocalModelInfo(str(pipeline), "Pipeline", str(pipeline), "custom"),
-        _LocalModelInfo(str(single_file), "Tiny", str(single_file), "lmstudio",
-                        model_format = "gguf"),
+        _LocalModelInfo(
+            str(single_file), "Tiny", str(single_file), "lmstudio", model_format = "gguf"
+        ),
     ]
 
     fake_routes = types.ModuleType("routes.models")
