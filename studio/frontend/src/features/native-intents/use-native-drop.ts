@@ -34,6 +34,7 @@ interface NativeModelDropOptions {
   onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
   onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachImages?: (intents: NativeIntent[]) => Promise<void> | void;
+  onAttachOpenDocuments?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachAudio?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachVideo?: (intents: NativeIntent[]) => Promise<void> | void;
 }
@@ -46,13 +47,17 @@ function canAttachImages(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachImages);
 }
 
+function canAttachOpenDocuments(options: NativeModelDropOptions): boolean {
+  return Boolean(options.onAttachOpenDocuments);
+}
+
 function canAttachDocumentPaths(
   paths: string[],
   options: NativeModelDropOptions,
 ): boolean {
   return paths.every((path) =>
     isOpenDocumentAttachmentName(path)
-      ? canAttachImages(options)
+      ? canAttachOpenDocuments(options)
       : canAttachDocs(options),
   );
 }
@@ -350,8 +355,17 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             });
             return;
           }
-          if (needsComposerAttachments && !canAttachImages(currentOptions)) {
+          if (needsImages && !canAttachImages(currentOptions)) {
             toast.error("Attaching images is unavailable right now", {
+              description: "Retry once this chat is ready for attachments.",
+            });
+            return;
+          }
+          if (
+            needsOpenDocuments &&
+            !canAttachOpenDocuments(currentOptions)
+          ) {
+            toast.error("Attaching files is unavailable right now", {
               description: "Retry once this chat is ready for attachments.",
             });
             return;
@@ -388,12 +402,13 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.docs.length > 0) {
               await attachOptions.onAttach?.(registered.docs);
             }
-            const composerAttachments = [
-              ...registered.images,
-              ...registered.openDocuments,
-            ];
-            if (composerAttachments.length > 0) {
-              await attachOptions.onAttachImages?.(composerAttachments);
+            if (registered.images.length > 0) {
+              await attachOptions.onAttachImages?.(registered.images);
+            }
+            if (registered.openDocuments.length > 0) {
+              await attachOptions.onAttachOpenDocuments?.(
+                registered.openDocuments,
+              );
             }
             const failureKey = attachOptions.attachmentTargetKey;
             if (registered.imagesFailed > 0 && failureKey) {
