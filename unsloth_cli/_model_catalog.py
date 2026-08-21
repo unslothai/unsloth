@@ -187,6 +187,7 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     # "Local folders" source, which is how one bad row once hid every local model.
     try:
         from routes.models import (
+            _is_main_gguf_filename,
             _is_model_directory,
             _local_pipeline_index,
             _servable_gguf_names,
@@ -194,10 +195,10 @@ def _local_dir_holds_a_payload(path: Path) -> bool:
     except ImportError:
         return True
 
-    # A GGUF folder carries no config, and a diffusers pipeline keeps its weights in
-    # component subdirs, so neither answers to _is_model_directory alone.
     return (
-        bool(_servable_gguf_names(path)) or _is_model_directory(path) or _local_pipeline_index(path)
+        any(_is_main_gguf_filename(name) for name in _servable_gguf_names(path))
+        or _is_model_directory(path)
+        or _local_pipeline_index(path)
     )
 
 

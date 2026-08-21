@@ -4493,14 +4493,14 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
 
 def _local_is_diffusers(model: "LocalModelInfo") -> bool:
     """True for a local diffusers image checkpoint, mirroring the cached-repo
-    ``_repo_is_diffusers`` heuristics: a full pipeline carries a top-level
-    ``model_index.json``, while single-file / safetensors image checkpoints ship none, so
+    ``_repo_is_diffusers`` heuristics: a full pipeline carries a top-level conventional or modular
+    index, while single-file / safetensors image checkpoints ship none, so
     fall back to the model id resolving to a known diffusion family (the same resolver the
     Images backend loads from). Family detection uses _local_family_needles (id / name / sole
     checkpoint filename, not the on-disk path), so a parent-dir keyword can't spuriously match."""
     try:
         p = Path(model.path)
-        if p.is_dir() and (p / "model_index.json").is_file():
+        if p.is_dir() and _local_pipeline_index(p):
             return True
     except Exception:
         pass

@@ -1638,11 +1638,8 @@ def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):
     assert calls[0]["mlx_distributed"] is True
 
 
-def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, tmp_path):
-    """_scan_models_dir lists a child on a config alone, so a weights-less config dir
-    reaches the picker unflagged and fails on selection. Every other local shape stays:
-    a GGUF folder carries no config, a pipeline keeps weights in component subdirs, and a
-    single-file GGUF is not a directory at all."""
+def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp_path):
+    """Config-only and GGUF-companion directories are not selectable model payloads."""
     from unsloth_cli import _model_catalog as cat
 
     class _LocalModelInfo:
@@ -1672,8 +1669,11 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
     config_only = _dir("ConfigOnly", ["config.json"])
     real = _dir("Real", ["config.json", "model.safetensors"])
     gguf_folder = _dir("GgufFolder", ["Qwen3-0.6B-Q4_K_M.gguf"])
+    companions = _dir("Companions", ["mmproj-F16.gguf", "mtp-drafter-Q8_0.gguf"])
     pipeline = _dir("Pipeline", ["model_index.json"])
     (pipeline / "unet").mkdir()
+    modular = _dir("OpaqueModular", ["modular_model_index.json"])
+    (modular / "transformer").mkdir()
     single_file = tmp_path / "Tiny.gguf"
     single_file.write_bytes(b"\0" * 8)
 
@@ -1683,7 +1683,9 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
         _LocalModelInfo(
             str(gguf_folder), "GgufFolder", str(gguf_folder), "models_dir", model_format = "gguf"
         ),
+        _LocalModelInfo(str(companions), "Companions", str(companions), "models_dir"),
         _LocalModelInfo(str(pipeline), "Pipeline", str(pipeline), "custom"),
+        _LocalModelInfo(str(modular), "OpaqueModular", str(modular), "custom"),
         _LocalModelInfo(
             str(single_file), "Tiny", str(single_file), "lmstudio", model_format = "gguf"
         ),
@@ -1693,23 +1695,30 @@ def test_catalog_local_folder_entries_drop_a_weightless_config_dir(monkeypatch, 
     fake_routes.collect_local_models = lambda root: rows
     fake_routes._local_model_task = lambda model: None
     fake_routes._local_model_can_chat = lambda model: None
-    # Mirror the real predicates: config beside a weight file, servable .gguf names, and a
-    # diffusers pipeline index. The real ones are covered by the backend suite.
+    # mirror the real payload and pipeline predicates; backend tests cover their implementations.
     fake_routes._is_model_directory = lambda d: (d / "config.json").is_file() and any(
         f.suffix == ".safetensors" for f in d.iterdir() if f.is_file()
     )
     fake_routes._servable_gguf_names = lambda d: [
         f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() == ".gguf"
     ]
-    fake_routes._local_pipeline_index = lambda d: (d / "model_index.json").is_file()
+    fake_routes._is_main_gguf_filename = lambda name: not name.lower().startswith(
+        ("mmproj", "mtp-")
+    )
+    fake_routes._local_pipeline_index = (
+        lambda d: (d / "model_index.json").is_file() or (d / "modular_model_index.json").is_file()
+    )
     fake_routes._local_is_diffusers = lambda model: (
-        Path(model.path) / "model_index.json"
-    ).is_file()
+        (Path(model.path) / "model_index.json").is_file()
+        or (Path(model.path) / "modular_model_index.json").is_file()
+    )
     monkeypatch.setitem(sys.modules, "routes.models", fake_routes)
 
     # The pipeline still HOLDS a payload; it is excluded from the chat picker for the
     # separate reason that a diffusers pipeline cannot answer a text turn.
     assert cat._local_dir_holds_a_payload(pipeline) is True
+    assert cat._local_dir_holds_a_payload(modular) is True
+    assert cat._local_dir_holds_a_payload(companions) is False
 
     assert [e.name for e in cat.local_folder_entries()] == ["Real", "GgufFolder", "Tiny"]
 

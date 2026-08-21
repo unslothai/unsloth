@@ -356,6 +356,10 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     (modular / "transformer").mkdir(parents = True)
     (modular / "modular_model_index.json").write_text("{}")
     assert _local_pipeline_index(modular) is True
+    assert (
+        models_route._local_is_diffusers(_local(modular, display_name = "opaque", id = str(modular)))
+        is True
+    )
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
