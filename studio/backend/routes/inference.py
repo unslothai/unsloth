@@ -4035,10 +4035,10 @@ def _apply_compaction_nudge(
     archive to search and stays a no-op for chats that never compacted.
 
     `checkpoint_fitted` is the CALLER's answer to "does this request go through
-    `_fit_context`, which can reset the epoch", not the process-wide policy. Only the
-    llama.cpp path fits that way; reading the global policy instead told a safetensors
-    model that a carried_forward block had removed its history when no such block exists.
-    Defaults to False so a new call site claims the reset rather than inheriting it."""
+    `_fit_context`, which can reset the epoch", not the process-wide policy. GGUF and MLX
+    opt in at their exact-token preflight call sites; other safetensors and external-provider
+    paths do not. Defaults to False so a new call site claims the reset rather than
+    inheriting it."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge
@@ -17067,10 +17067,36 @@ async def openai_chat_completions(
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
+    # A checkpointed MLX thread must be able to retrieve the epoch it compacted
+    # away even when ordinary tools are off. This is the same repair gate as the
+    # GGUF path: only re-admit search_conversation when an archive and a live
+    # checkpoint both exist on this branch.
+    if (
+        not _sf_use_tools
+        and _sf_model_info.get("is_mlx")
+        and not _tool_loop_unusable
+        and _sf_cli_policy is not False
+        and _sf_features.get("supports_tools", False)
+        and image is None
+        and not _sf_is_gptoss
+        and _sf_tool_budget > 0
+        and _rolling_context_policy(payload) is not None
+        and _checkpoint_needs_search()
+        and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+        and _thread_has_checkpoint(
+            getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+        )
+    ):
+        _sf_use_tools = True
 
     if _sf_use_tools:
         _sf_tools_to_use = await _select_request_tools(
-            payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
+            payload,
+            tools_on = _sf_tools_on,
+            mcp_allowed = _sf_mcp_allowed,
+            checkpoint_fitted = (
+                _sf_model_info.get("is_mlx") and _rolling_context_policy(payload) is not None
+            ),
         )
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
         # survived, so a model-emitted built-in call can't piggy-back on the
@@ -17110,9 +17136,13 @@ async def openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
-        # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
-        # is no reset and no carried_forward block to describe.
-        _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
+        _sf_nudge = _apply_compaction_nudge(
+            _sf_nudge,
+            _sf_tools_to_use,
+            checkpoint_fitted = (
+                _sf_model_info.get("is_mlx") and _rolling_context_policy(payload) is not None
+            ),
+        )
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
@@ -17188,6 +17218,8 @@ async def openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
+                context_overflow = _rolling_context_policy(payload),
+                supports_tools = bool(_sf_features.get("supports_tools", False)),
             )
 
         _sf_tool_sentinel = object()
@@ -17310,6 +17342,14 @@ async def openai_chat_completions(
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
+                    if event["type"] == "context_truncated":
+                        yield _context_truncated_sse_chunk(
+                            completion_id,
+                            model_name,
+                            {key: value for key, value in event.items() if key != "type"},
+                        )
+                        continue
+
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
                     clean_cumulative = _strip_tool_xml_for_display(
@@ -17418,8 +17458,10 @@ async def openai_chat_completions(
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
+            _sf_context_truncation = None
 
             def _drain_to_text():
+                nonlocal _sf_context_truncation
                 full_text = ""
                 # Only the resumed turn renders no generation prompt; later tool-loop turns
                 # prefill <think> again. The kept text is the LAST turn's, so track the
@@ -17452,6 +17494,10 @@ async def openai_chat_completions(
                         _event_type == "status" and not event.get("text")
                     ):
                         continued = False
+                    elif _event_type == "context_truncated":
+                        _sf_context_truncation = _accumulate_context_truncation(
+                            _sf_context_truncation, event
+                        )
                 return full_text, prefilled
 
             content_text, _sf_drain_prefilled = await asyncio.to_thread(_drain_to_text)
@@ -17488,7 +17534,7 @@ async def openai_chat_completions(
                     )
                 ],
             )
-            return _model_json_response(response)
+            return _model_json_response_with_context_truncation(response, _sf_context_truncation)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
@@ -17644,15 +17690,11 @@ async def openai_chat_completions(
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
+    _sf_context_truncation_holder: dict = {"value": None}
 
     if payload.use_adapter is not None:
 
-        def generate(messages_override = None):
-            kw = (
-                gen_kwargs
-                if messages_override is None
-                else {**gen_kwargs, "messages": messages_override}
-            )
+        def _sf_raw_generate(kw):
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
@@ -17661,17 +17703,54 @@ async def openai_chat_completions(
             )
     else:
 
-        def generate(messages_override = None):
-            kw = (
-                gen_kwargs
-                if messages_override is None
-                else {**gen_kwargs, "messages": messages_override}
-            )
+        def _sf_raw_generate(kw):
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **kw,
             )
+
+    def generate(messages_override = None):
+        base_kwargs = (
+            gen_kwargs
+            if messages_override is None
+            else {**gen_kwargs, "messages": messages_override}
+        )
+
+        def _run():
+            generation_kwargs = base_kwargs
+            if _sf_model_info.get("is_mlx"):
+                fitted = backend.compact_chat_context(
+                    base_kwargs.get("messages") or [],
+                    system_prompt = base_kwargs.get("system_prompt") or "",
+                    tools = base_kwargs.get("tools"),
+                    context_overflow = _rolling_context_policy(payload),
+                    max_tokens = effective_max_tokens or 2048,
+                    thread_id = payload.thread_id,
+                    cancel_event = cancel_event,
+                    enable_thinking = base_kwargs.get("enable_thinking"),
+                    reasoning_effort = base_kwargs.get("reasoning_effort"),
+                    preserve_thinking = base_kwargs.get("preserve_thinking"),
+                    continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
+                    # Client-owned tool contracts cannot be repaired by silently
+                    # adding search_conversation, so they keep the rolling window.
+                    supports_tools = bool(
+                        _sf_features.get("supports_tools", False)
+                        and not _tool_loop_unusable
+                        and not _sf_client_tools
+                    ),
+                    recall_style = "inline",
+                )
+                generation_kwargs = {
+                    **base_kwargs,
+                    "messages": fitted["messages"],
+                    "system_prompt": fitted["system_prompt"],
+                }
+                for event in fitted.get("events") or ():
+                    yield event
+            yield from _sf_raw_generate(generation_kwargs)
+
+        return _run()
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
@@ -17722,6 +17801,17 @@ async def openai_chat_completions(
                     _next_task = None
                     if cumulative is _DONE:
                         break
+                    if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "context_truncated":
+                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                                _sf_context_truncation_holder["value"], cumulative
+                            )
+                            yield _context_truncated_sse_chunk(
+                                completion_id,
+                                model_name,
+                                {key: value for key, value in cumulative.items() if key != "type"},
+                            )
+                        continue
                     if isinstance(cumulative, GenStreamError):
                         backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(cumulative)
@@ -17906,6 +17996,12 @@ async def openai_chat_completions(
             def _drain_generate(messages_override = None):
                 final = ""
                 for token in generate(messages_override):
+                    if isinstance(token, dict):
+                        if token.get("type") == "context_truncated":
+                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                                _sf_context_truncation_holder["value"], token
+                            )
+                        continue
                     if isinstance(token, GenStreamError):
                         return token
                     final = token
@@ -18033,7 +18129,9 @@ async def openai_chat_completions(
                     timings = _stats.get("timings"),
                 )
             api_monitor.finish(monitor_id)
-            return _model_json_response(response)
+            return _model_json_response_with_context_truncation(
+                response, _sf_context_truncation_holder["value"]
+            )
 
         except asyncio.CancelledError:
             cancel_event.set()

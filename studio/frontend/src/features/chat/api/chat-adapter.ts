@@ -5551,7 +5551,7 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
-            ...(activeModel?.isGguf === true
+            ...(activeModel?.isGguf === true || activeModel?.isMlx === true
               ? { context_overflow: "truncate_oldest" as const }
               : {}),
             temperature: params.temperature,

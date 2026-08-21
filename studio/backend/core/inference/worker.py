@@ -668,6 +668,43 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         )
 
 
+def _handle_count_chat_tokens(backend, cmd: dict, resp_queue: Any) -> None:
+    """Count a rendered chat prompt inside the model-owning subprocess."""
+    request_id = cmd.get("request_id", "")
+    try:
+        counter = getattr(backend, "count_chat_tokens", None)
+        if not callable(counter):
+            raise RuntimeError("The loaded inference backend cannot count chat tokens")
+        count = counter(
+            cmd.get("messages") or [],
+            cmd.get("system_prompt", ""),
+            cmd.get("tools"),
+            enable_thinking = cmd.get("enable_thinking"),
+            reasoning_effort = cmd.get("reasoning_effort"),
+            preserve_thinking = cmd.get("preserve_thinking"),
+            continue_final_message = bool(cmd.get("continue_final_message", False)),
+        )
+        _send_response(
+            resp_queue,
+            {
+                "type": "token_count",
+                "request_id": request_id,
+                "count": int(count),
+            },
+        )
+    except Exception as exc:
+        logger.warning("Chat token count failed: %s", exc)
+        _send_response(
+            resp_queue,
+            {
+                "type": "token_count_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+
+
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
     """Share a small Python object across MLX distributed ranks."""
     request_id = cmd.get("request_id", "")
@@ -1050,6 +1087,8 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "count_chat_tokens":
+                    _handle_count_chat_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "generate_audio_input":
                     # Drain discipline as in "generate" (see that branch).
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
@@ -1318,6 +1357,9 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "count_chat_tokens":
+                _handle_count_chat_tokens(backend, cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)
