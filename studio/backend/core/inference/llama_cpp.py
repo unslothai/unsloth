@@ -8436,9 +8436,7 @@ class LlamaCppBackend:
                 (free for idx, free in rows if idx in shared_gpu_ids and idx in reachable),
                 default = 0,
             )
-        on_cards = sum(
-            free for idx, free in rows if idx not in shared_gpu_ids and idx in reachable
-        )
+        on_cards = sum(free for idx, free in rows if idx not in shared_gpu_ids and idx in reachable)
         return pool, model_bytes - on_cards * 1024 * 1024
 
     def _launch_host_shortfall_message(
@@ -8505,9 +8503,7 @@ class LlamaCppBackend:
             return None
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
-        heap_free_mib, heap_bytes = self._shared_heap_budget(
-            gpus, shared, model_bytes, argv, _env
-        )
+        heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
         # A carved-out UMA heap may be absent from psutil's host availability even
         # though Vulkan can hold the weights. Count that heap once, never again as RAM.
