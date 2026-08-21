@@ -25,6 +25,12 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from ..runtime.readiness import (
+    MODE_FULL,
+    MODE_WINDOWED,
+    ThreadNotReady,
+    wait_for_thread_ready,
+)
 from ..runtime.types import ActionContext, ActionResult, not_run
 from . import register_action
 
@@ -1134,6 +1140,40 @@ def image_upload(ctx: ActionContext) -> ActionResult:
 
 # ── 13. thread reopen ───────────────────────────────────────────────
 
+#: The end of the thread, as a plain string that can be looked for again after the rebuild.
+#:
+#: NOT the seeder's `last_marker`, even though that is the string the readiness gate uses at the
+#: start of the cell. `send_turn` appends turns to the thread MID-FILM, twice in every scene, so by
+#: the time this slot opens the seeded marker sits several messages from the end -- and
+#: `end_present` requires the marker within two rows of the end, so it could never be satisfied.
+#: Reading the last user turn out of the DOM immediately before leaving gives the marker for the
+#: thread as it actually stands at this point in the film.
+#:
+#: `trim()` and then a prefix, never a whitespace-collapsing normalisation: readiness.PROBE_JS
+#: matches with `textContent.includes(marker)` against RAW text, and trimming plus slicing from the
+#: front leaves a genuine substring of that raw text while collapsing internal runs would not.
+_LAST_USER_TEXT_JS = """
+() => {
+  const rows = Array.from(document.querySelectorAll('[data-role="user"]'));
+  const last = rows.length ? rows[rows.length - 1] : null;
+  if (!last) return null;
+  const text = (last.textContent || "").trim();
+  return text ? text.slice(0, 120) : null;
+}
+"""
+
+#: How long the rebuilt thread is given to reach the readiness gate's definition of ready, in
+#: seconds: what is left of the SLOT, floored and capped.
+#:
+#: Bounded by the slot because the condition below is now one a broken arm can fail to satisfy
+#: forever -- a thread that never stops mutating never settles -- and the film's own last slot,
+#: `delete_message`, is the one place an overrun has nowhere to go (see scene/schedule.py, which
+#: records a sweep where exactly that lost delete on every base-arm cell). Floored at 10s so a
+#: tight budget still gives a 1M-token thread a fair chance, and capped at the flat minute the
+#: previous "declared its total" loop waited, so nothing waits longer than it used to.
+_REOPEN_READY_FLOOR_S = 10.0
+_REOPEN_READY_CEILING_S = 60.0
+
 
 @register_action(name = "thread_reopen", default_budget_ms = 30000)
 def thread_reopen(ctx: ActionContext) -> ActionResult:
@@ -1152,36 +1192,64 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     # of this action would then fail for a reason that has nothing to do with the rebuild.
     before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     mounted_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
-    if not before:
+    # AN INTEGER, not merely truthy. `_ev` hands back `{"__error": ...}` when the page throws, and
+    # a dict is truthy: it would reach the comparisons below and the readiness gate's own
+    # `expected_messages` as a length, and raise there instead of being reported here.
+    if not isinstance(before, int) or before <= 0:
         return not_run("the thread has no messages to rebuild")
+    # WHICH READINESS MODE THIS ARM IS HELD TO, decided from the mount that is on screen now and
+    # therefore before anything is torn down. A thread whose declared total is larger than what it
+    # has mounted IS a windowed mount -- that is `isWindowed()` in scene/dom.js -- and it is the
+    # same distinction runtime/readiness.py draws between its two modes. Read from the page rather
+    # than taken from a session flag so both arms are judged by one rule.
+    mode = (
+        MODE_WINDOWED if isinstance(mounted_before, int) and mounted_before < before else MODE_FULL
+    )
+    marker = _ev(ctx, _LAST_USER_TEXT_JS)
+    if not isinstance(marker, str) or not marker:
+        # Refused HERE, before a single thing has been touched, so a thread this action cannot
+        # verify is also a thread it has not disturbed. Without a string that identifies the end of
+        # the conversation there is no way to tell a rebuilt thread from a half-rebuilt one, which
+        # is the entire question the wait below exists to answer.
+        return not_run(
+            "the last user turn carried no text to identify the end of the thread with, so a "
+            "finished rebuild could not have been told from a partial one"
+        )
     started = time.monotonic()
+    # NO FALLBACK ON THE WAY OUT. Workspace task #102 and the defect it left behind.
+    #
+    # That task taught this action to REFUSE a substituted navigation, because a goto is a FULL
+    # DOCUMENT NAVIGATION -- the SPA is torn down and reparsed, the bundle re-executes, the runtime
+    # rehydrates -- while the click is a client-side route change that rebuilds one React subtree.
+    # They are not the same operation and they do not cost the same thing; read as though it were
+    # the click, the substitution produced thread_reopen at 6.0 fps, a number about a page load
+    # quoted as a number about a thread.
+    #
+    # But it refused AFTER THE FACT, by inspecting `path` once `page.goto` had already run. The row
+    # was then honest and the rest of the film was collateral damage: the scene carried on from an
+    # empty new chat, and `delete_message` -- the last slot of every film, three slots later --
+    # found no messages and went unexercised for a reason that had nothing to do with deleting.
+    #
+    # So the substitution is declined BEFORE it happens. Nothing is clicked, nothing is navigated,
+    # the thread is still on screen, and the slots after this one still have the thread they were
+    # written for.
     leave = _click_or_navigate(
-        ctx, 'button[aria-label="New chat"]', f"{ctx.args['base_url']}/chat?new=studiobench"
+        ctx,
+        'button[aria-label="New chat"]',
+        f"{ctx.args['base_url']}/chat?new=studiobench",
+        allow_navigate = False,
     )
     if not leave.ok:
-        return not_run(f"the thread could not be left: {leave.reason}")
-    if leave.navigated:
-        # LOUD, AND FATAL TO THE READING. Workspace task #102.
-        #
-        # This used to be a silent substitution: the New chat click failed, `page.goto` ran
-        # instead, and the action returned a perfectly normal-looking row. But a goto is a FULL
-        # DOCUMENT NAVIGATION -- the SPA is torn down and reparsed, the bundle re-executes, the
-        # runtime rehydrates from IndexedDB -- while the click is a client-side route change that
-        # rebuilds one React subtree. They are not the same operation and they do not cost the same
-        # thing. Read as though it were the click, the substitution produced thread_reopen at
-        # 6.0 fps, which is a number about a page load being quoted as a number about a thread.
-        #
-        # So it is `ran = False` now. The row says the surface went unmeasured, which is the truth,
-        # instead of contributing an instrument artefact to a table of user costs.
         ctx.log(
-            "    thread_reopen NOT MEASURED: the New chat button could not be clicked, so leaving "
-            f"the thread fell back to a full page navigation ({leave.reason}). A navigation "
-            "reloads the whole app and is not the operation this action exists to time."
+            "    thread_reopen NOT MEASURED: the New chat button could not be clicked "
+            f"({leave.reason}), and the only substitute available is a full page navigation, "
+            "which reloads the whole app and is not the operation this action exists to time. "
+            "It was NOT performed: the thread is untouched and the slots that follow still have it."
         )
         return not_run(
-            "the New chat control could not be clicked and a full page navigation was substituted; "
-            "a document reload is not a thread rebuild, so this reading is not a measurement of "
-            f"the action ({leave.reason})"
+            "the New chat control could not be clicked and the only available substitute is a full "
+            "page navigation; a document reload is not a thread rebuild, so the action was not run "
+            f"and no navigation was performed ({leave.reason})"
         )
     # Unmount FIRST, or "already back" is indistinguishable from "never left".
     closed_ms = None
@@ -1195,6 +1263,11 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         return not_run("the thread never unmounted, so the rebuild could not be timed")
 
     reopen_started = time.monotonic()
+    # THE FALLBACK IS ALLOWED ON THE WAY BACK, and refused on the way out, for one reason: what it
+    # does to the scene. From an empty new chat, a navigation to the thread's own URL is what puts
+    # the thread back on screen for the slots that follow, so as a REPAIR it is the right tool --
+    # where on the way out it was the thing that broke the scene. It is still not a measurement of
+    # a rebuild, which is what the `not_run` below says, and no timing is reported for it.
     back = _click_or_navigate(
         ctx, f'[data-thread-id="{thread_id}"]', f"{ctx.args['base_url']}/chat?thread={thread_id}"
     )
@@ -1203,19 +1276,67 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     if back.navigated:
         ctx.log(
             "    thread_reopen NOT MEASURED: the sidebar row for the thread could not be clicked, "
-            f"so reopening fell back to a full page navigation ({back.reason})."
+            f"so reopening fell back to a full page navigation ({back.reason}). The navigation "
+            "was allowed to stand so the thread is back for the slots that follow, but a document "
+            "reload is not a rebuild and no timing is reported for it."
         )
         return not_run(
             "the thread's sidebar row could not be clicked and a full page navigation was "
             f"substituted, so the rebuild was never timed ({back.reason})"
         )
+    # WHEN IS THE REBUILD OVER?
+    #
+    # NOT when `threadTotal()` reaches the length it had. On a windowed arm `threadTotal()` reads
+    # `aria-setsize`, which is the STORE'S CLAIM about how long the conversation is, and the very
+    # first reopened row publishes it: the condition was satisfied while three of eighteen messages
+    # were mounted, with no bottom window, no final assistant content and no syntax highlighting
+    # yet. The action then reported that as `reopen_ms`, took its census and its parity digest off
+    # a half-built DOM, and still passed its own assertion because `after == before` was a
+    # statement about the same declared total. A declaration is not a rebuild.
+    #
+    # WHAT `reopen_ms` MEASURES NOW: from the click on the thread's sidebar row until the reopened
+    # thread satisfies runtime/readiness.py's gate -- the composer is present, the END of the
+    # conversation is mounted (the last user turn, found by the marker captured above), and the
+    # mount has SETTLED, meaning two samples STABLE_GAP_MS apart agree on the mounted count, the
+    # element count and the laid-out height. Plus, in `windowed` mode, that the thread declares the
+    # right total on every row and is anchored at the end.
+    #
+    # THAT SAME FUNCTION, not a second definition of "ready" written here. Two disagreeing
+    # definitions in one harness is a defect of its own, and this is the definition the cell was
+    # already admitted under: the gate that let the cell start is the gate that decides the rebuild
+    # is finished, so the number is the cost of getting back to the state the cell began in.
+    #
+    # COMPARABILITY: every condition gated in `full` mode is one a fully mounted thread reaches by
+    # construction, and each arm is judged in the mode its own mount is in, exactly as the cell's
+    # opening gate judged it. The extra `windowed` conditions are a contract that arm already had
+    # to meet to be scored at all. What this costs is a floor of one STABLE_GAP_MS, paid equally by
+    # both arms, because "settled" is a claim about two samples and cannot be made from one.
+    left_ms = ctx.budget_ms - (time.monotonic() - started) * 1000
+    timeout_s = min(_REOPEN_READY_CEILING_S, max(_REOPEN_READY_FLOOR_S, left_ms / 1000))
     reopen_ms = None
-    deadline = reopen_started + 60
-    while time.monotonic() < deadline:
-        if (_ev(ctx, "() => window.__sb.dom.threadTotal()") or 0) >= before:
-            reopen_ms = (time.monotonic() - reopen_started) * 1000
-            break
-        ctx.page.wait_for_timeout(100)
+    try:
+        ready = wait_for_thread_ready(
+            ctx.page,
+            before,
+            marker = marker,
+            mode = mode,
+            timeout_s = timeout_s,
+            log = ctx.log,
+        )
+        reopen_ms = (time.monotonic() - reopen_started) * 1000
+        readiness = ready.as_dict()
+    except ThreadNotReady as exc:
+        # A REAL FINDING ABOUT THE ARM, and it keeps `ran = True` so the row carries which
+        # conditions were still outstanding. `timings["reopen_ms"]` stays null, which the scoring
+        # layer reads as "ran but recorded no reopen_ms" rather than as a fast rebuild.
+        readiness = exc.detail
+    except Exception as exc:  # noqa: BLE001
+        # The probe itself failed (a closed page, an uninstalled `window.__sb`). Nothing was
+        # learned about the rebuild, so nothing is claimed about it.
+        ctx.log(f"    the readiness probe failed during the reopen: {type(exc).__name__}: {exc}")
+        return not_run(
+            f"the reopened thread could not be probed for readiness: {type(exc).__name__}: {exc}"
+        )
     after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     mounted_after = _ev(ctx, "() => window.__sb.dom.messageCount()")
     spans = _ev(ctx, "() => document.querySelectorAll('pre span').length")
@@ -1231,12 +1352,27 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             "highlight_spans_after": spans,
             "left_via": leave.path,
             "reopened_via": back.path,
+            # WHICH GATE THE TIMING WAS TAKEN AGAINST, beside the timing itself. Two arms in
+            # different readiness modes are answering slightly different questions, and a reader
+            # comparing their `reopen_ms` has no other way to see that.
+            "reopen_ready_mode": mode,
+            # The gate's own verdict: every condition, the last probe reading and how many samples
+            # it took. When the rebuild did not finish, this is what says which condition was still
+            # outstanding -- "mounted 3 of 18, aria-setsize 18" is the difference between a slow
+            # app and an arm that publishes a total it has not built.
+            "reopen_readiness": readiness,
         },
         timings = {
             "close_ms": round(closed_ms, 1),
             "reopen_ms": None if reopen_ms is None else round(reopen_ms, 1),
         },
-        reason = None if ok else f"the thread came back with {after} of {before} messages",
+        reason = None
+        if ok
+        else (
+            f"the thread came back with {after} of {before} messages"
+            if reopen_ms is not None
+            else f"the reopened thread never reached a ready state: {readiness.get('reason')}"
+        ),
     )
 
 
@@ -1373,7 +1509,13 @@ def _reveal_by_hover(ctx: ActionContext, selector: str) -> tuple[float, float] |
     return None
 
 
-def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transition:
+def _click_or_navigate(
+    ctx: ActionContext,
+    selector: str,
+    url: str,
+    *,
+    allow_navigate: bool = True,
+) -> Transition:
     """Click the control a user would click; fall back to the URL it would produce, and SAY SO.
 
     A click is preferred because it exercises the app's own handler. Playwright's actionability
@@ -1385,6 +1527,14 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transitio
     caller must decide for itself whether a navigation still answers its question. `thread_reopen`
     decides that it does not, because a document reload and a subtree rebuild are the two things
     that action exists to tell apart.
+
+    `allow_navigate = False` lets a caller decide that BEFORE the substitution rather than after
+    it. Reading `path == "navigate"` afterwards is enough to keep the ROW honest and not enough to
+    keep the SCENE intact: by then the page has already left, and for the call that leaves the
+    thread that means every later slot in the film runs against an empty one. Declining up front
+    returns `path = "failed"` with the same explanation and leaves the page exactly where it was.
+    The default is `True`, so a caller that has not thought about it keeps the behaviour every
+    caller had.
     """
     handle = ctx.page.query_selector(selector)
     click_error = f"no element matched {selector}"
@@ -1416,7 +1566,19 @@ def _click_or_navigate(ctx: ActionContext, selector: str, url: str) -> Transitio
                 click_error += f"; the off-centre click also failed: {type(exc).__name__}"
         else:
             click_error += "; no point on the control hit-tests to it, even after hovering it"
-        ctx.log(f"    {click_error}; navigating instead")
+        ctx.log(
+            f"    {click_error}; "
+            + ("navigating instead" if allow_navigate else "NOT navigating, the caller refused it")
+        )
+    if not allow_navigate:
+        return Transition(
+            ok = False,
+            path = "failed",
+            reason = (
+                f"{click_error}, and the caller does not accept a page navigation as a substitute, "
+                "so none was performed and the page was left where it was"
+            ),
+        )
     try:
         ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
         return Transition(ok = True, path = "navigate", reason = click_error)
