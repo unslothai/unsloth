@@ -23,6 +23,7 @@ remove. Adding to this set needs that property; removing from it needs a reason.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -50,13 +51,17 @@ GUARDED = {
     "playwright": (2,),
 }
 
-# 'name>=1.2' / "name>=1.2,<2" / bare name>=1.2, as they appear inside a `pip install`.
-_SPEC = re.compile(
-    r"""(?P<quote>['"]?)(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)"""
-    r"""(?P<spec>(?:[<>=!~]=?[^,'"\s]+)(?:,[<>=!~]=?[^,'"\s]+)*)(?P=quote)"""
+# One `pip install` argument: name, optional [extras], optional specifier. The specifier
+# is optional on purpose -- a bare `pip install openai` resolves whatever major is current,
+# which is the exact thing this file exists to prevent, and a pattern that required a
+# specifier could not see it at all.
+_REQUIREMENT = re.compile(
+    r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$"""
 )
 
 _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[0-9][0-9.]*)")
+_EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
+_COMPATIBLE = re.compile(r"~=(?P<version>[0-9][0-9.]*)")
 
 
 def _install_commands_in(text: str) -> list[tuple[int, str]]:
@@ -102,12 +107,37 @@ def _install_lines() -> list[tuple[Path, int, str]]:
     return found
 
 
+def _requirements_in(command: str, package: str) -> list[str]:
+    """Every requirement for `package` in one pip command, as its raw specifier.
+
+    Returns "" for a bare `pip install openai`, which is a requirement with no
+    constraint at all, and is distinct from the package not appearing.
+
+    Tokenized rather than pattern-matched across the whole command so that a package
+    name inside a URL or a `-r` path cannot be mistaken for an install of it.
+    """
+    try:
+        tokens = shlex.split(command, posix = True)
+    except ValueError:
+        tokens = command.split()
+    found = []
+    for token in tokens:
+        if token.startswith("-") or "/" in token:
+            continue
+        match = _REQUIREMENT.match(token)
+        if not match:
+            continue
+        if match.group("name").lower().replace("_", "-") != package:
+            continue
+        found.append(match.group("spec"))
+    return found
+
+
 def _specs_for(package: str) -> list[tuple[Path, int, str]]:
     hits = []
-    for path, number, line in _install_lines():
-        for match in _SPEC.finditer(line):
-            if match.group("name").lower().replace("_", "-") == package:
-                hits.append((path, number, match.group("spec")))
+    for path, number, command in _install_lines():
+        for spec in _requirements_in(command, package):
+            hits.append((path, number, spec))
     return hits
 
 
@@ -116,12 +146,33 @@ def _version(raw: str) -> tuple[int, ...]:
 
 
 def _excludes(spec: str, major: tuple[int, ...]) -> bool:
-    """Does this specifier keep `major` out?
+    """Does this requirement keep `major` out?
 
-    `<2` and `<1.58` both exclude 2.x; `<=2` does not, since it admits 2.0 itself.
+    - no specifier at all resolves whatever is current, so it excludes nothing
+    - `<2` and `<1.58` both exclude 2.x; `<=2` does not, since it admits 2.0 itself
+    - `==3.0.0` cannot drift anywhere, so an exact pin below the major is safe
+    - `~=1.4` means `>=1.4,<2`, so it carries an upper bound of its own
+
     Compared as integer tuples rather than through `packaging`, which the
     workflow-trigger-lint job does not install.
     """
+    if not spec.strip():
+        return False
+    for match in _EXACT.finditer(spec):
+        pinned = _version(match.group("version"))
+        if pinned and pinned < major:
+            return True
+    for match in _COMPATIBLE.finditer(spec):
+        release = _version(match.group("version"))
+        # ~=X.Y means >=X.Y,<X+1; ~=X.Y.Z means >=X.Y.Z,<X.Y+1.
+        if len(release) == 2:
+            implied = (release[0] + 1,)
+        elif len(release) > 2:
+            implied = (release[0], release[1] + 1)
+        else:
+            continue
+        if implied <= major:
+            return True
     for match in _UPPER.finditer(spec):
         bound = _version(match.group("version"))
         if not bound:
@@ -164,6 +215,39 @@ def test_a_bound_above_the_next_major_is_not_accepted() -> None:
     # A narrower window than the boundary is stricter, and still fine.
     assert _excludes(">=1.55,<1.58", GUARDED["playwright"])
     assert _excludes(">=1.45,<2", GUARDED["playwright"])
+
+
+def test_a_pin_that_cannot_drift_is_accepted() -> None:
+    """An exact or compatible-release pin already excludes the major.
+
+    Rejecting these would be a false positive that pushes people to add a redundant
+    `<N` beside an `==`, so the rule is about what the requirement can RESOLVE to, not
+    about which operator was typed.
+    """
+    assert _excludes("==3.0.0", GUARDED["openai"])
+    assert _excludes("===3.0.0", GUARDED["openai"])
+    assert not _excludes("==4.1.0", GUARDED["openai"])
+    # ~=1.4 is >=1.4,<2, so it keeps 2.x out.
+    assert _excludes("~=1.4", GUARDED["playwright"])
+    # ~=1.4.5 is >=1.4.5,<1.5, narrower still.
+    assert _excludes("~=1.4.5", GUARDED["playwright"])
+
+
+def test_a_bare_or_extras_install_is_not_invisible() -> None:
+    """`pip install openai` resolves whatever major is current.
+
+    A pattern that required a version specifier matched nothing here, so the package
+    was neither bounded nor reported, while the anti-vacuity test stayed satisfied by
+    the other pins. Extras are the same shape.
+    """
+    assert _requirements_in("pip install openai", "openai") == [""]
+    assert _requirements_in("pip install 'openai[datalib]>=1.50'", "openai") == [">=1.50"]
+    assert not _excludes("", GUARDED["openai"]), "a bare install constrains nothing"
+    # A name inside a URL or a requirements path is not an install of that package.
+    assert _requirements_in("pip install -r reqs/openai.txt", "openai") == []
+    assert _requirements_in(
+        "pip install --index-url https://example.test/openai/simple pytest", "openai"
+    ) == []
 
 
 def test_a_pin_on_a_continuation_line_is_still_seen() -> None:
