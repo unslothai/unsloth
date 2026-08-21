@@ -161,16 +161,19 @@ const CAN_OBSERVE =
  * from it lands after. `flushSync` is what makes the upgrade part of the same task, so the
  * document the printer serialises is the upgraded one.
  *
- * Still one-way: `printed` never goes back to false, so a print permanently upgrades the thread
- * rather than putting it back afterwards. Reverting on `afterprint` would be exactly the
- * bidirectional edge this whole design exists to avoid.
+ * SCOPED TO WHAT IS MOUNTED. Each mounted fence latches itself; nothing is recorded at module
+ * scope. A module-global "we have printed" flag would be read by every fence mounted afterwards,
+ * so one Ctrl+P would silently switch deferral off for the rest of the session, including in
+ * conversations opened later. Upgrading a thread the reader printed is the intent; disabling the
+ * feature for the process is not.
+ *
+ * Still one-way: a latched fence stays latched. Nothing listens for `afterprint`, because putting
+ * a printed thread back to shells is exactly the bidirectional edge this design exists to avoid.
  */
-let printed = false;
 const printListeners = new Set<() => void>();
 
 const upgradeEverythingForPrint = (): void => {
-  if (printed) return;
-  printed = true;
+  if (printListeners.size === 0) return;
   flushSync(() => {
     for (const notify of printListeners) notify();
   });
@@ -186,16 +189,41 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   });
 }
 
+/** The thread's own scroll container, which is what a fence's visibility is relative to. */
+const scrollerOf = (node: HTMLElement): HTMLElement | null =>
+  node.closest<HTMLElement>("[data-slot='thread-viewport']")
+  ?? node.closest<HTMLElement>(".aui-thread-viewport");
+
+/**
+ * @param enabled  false on the shipped default, where this hook must cost nothing at all: no
+ *                 state is ever written, no observer is built and no layout is read.
+ * @param streaming  the fence is still being written. It is highlighted while it streams AND it
+ *                 latches, so that finishing cannot take the highlighting back.
+ */
 export function useFenceReached(
   host: RefObject<HTMLElement | null>,
-  immediate: boolean,
+  enabled: boolean,
+  streaming: boolean,
 ): boolean {
   const [latched, setLatched] = useState(false);
-  // DERIVED, not stored. `immediate` turns on when a streaming fence completes
-  // and its block re-renders as settled; deriving means that transition needs
-  // no effect and no extra render, and it can only ever go cheap -> expensive
-  // because `latched` never goes back to false.
-  const reached = immediate || !CAN_OBSERVE || latched || printed;
+  const reached = !enabled || !CAN_OBSERVE || streaming || latched;
+
+  /*
+   * A COMPLETING STREAM MUST NOT DOWNGRADE.
+   *
+   * `streaming` goes true -> FALSE when streamdown recognises the closing delimiter. Deriving
+   * `reached` from it alone therefore takes a fence that was highlighted all through its stream
+   * and hands it back the plain shell the moment it finishes: highlighted -> plain, on a block the
+   * reader is watching, which is precisely the reverse edge this design exists to remove. The
+   * fence was reached; that has to be recorded, not recomputed.
+   *
+   * In a layout effect so the downgrade is never painted even for one frame.
+   */
+  useLayoutEffect(() => {
+    if (!enabled || latched || !streaming) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLatched(true);
+  }, [enabled, latched, streaming]);
 
   useEffect(() => {
     if (reached) return;
@@ -226,9 +254,7 @@ export function useFenceReached(
     if (reached) return;
     const node = host.current;
     if (!node) return;
-    const scroller = node.closest<HTMLElement>("[data-slot='thread-viewport']")
-      ?? node.closest<HTMLElement>(".aui-thread-viewport");
-    const bounds = scroller?.getBoundingClientRect();
+    const bounds = scrollerOf(node)?.getBoundingClientRect();
     const top = bounds ? bounds.top : 0;
     const height = bounds ? bounds.height : window.innerHeight;
     // The same one-viewport slack the observer's rootMargin uses, so the two doors agree on what
@@ -251,6 +277,15 @@ export function useFenceReached(
     if (reached) return;
     const node = host.current;
     if (!node) return;
+    // ROOTED AT THE THREAD'S SCROLLER, not at the document.
+    //
+    // The chat scrolls inside a nested overflow container. With `root` unset the root is the
+    // document viewport, and `rootMargin` expands THAT rectangle -- while the intersection is
+    // still clipped by the scroller's own edges, which no margin can widen. The lookahead would
+    // then be worth nothing: a fence would report intersecting only once it was already inside
+    // the visible band, and the reader would get the plain shell for the frames it takes the
+    // observer to deliver and the upgrade to render. Rooting at the scroller is what makes the
+    // margin mean one viewport of warning.
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
@@ -258,7 +293,7 @@ export function useFenceReached(
           setLatched(true);
         }
       },
-      { rootMargin: REACH_MARGIN },
+      { root: scrollerOf(node), rootMargin: REACH_MARGIN },
     );
     observer.observe(node);
     return () => observer.disconnect();

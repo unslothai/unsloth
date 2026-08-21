@@ -43,17 +43,65 @@ test("the latch is only ever set to true", () => {
   }
 });
 
-test("nothing clears the print latch, and nothing listens for afterprint", () => {
-  assert.ok(SOURCE.includes("printed = true"), "the print latch must be settable");
+test("printing latches the mounted fences and records nothing at module scope", () => {
+  // A module-global "we have printed" flag is read by every fence mounted afterwards, so one
+  // Ctrl+P would switch deferral off for the rest of the session, including in conversations
+  // opened later. The upgrade has to be scoped to what was mounted at the time.
   assert.ok(
-    !/printed\s*=\s*false/.test(SOURCE.replace("let printed = false;", "")),
-    "the print latch must never be cleared after it is set",
+    !/^\s*let\s+printed\b/m.test(SOURCE),
+    "no module-scope print flag: printing must not disable deferral for later mounts",
+  );
+  assert.ok(
+    !/reached\s*=[^;]*\bprinted\b/.test(SOURCE),
+    "the derived value must not consult a process-wide print flag",
+  );
+  assert.ok(
+    SOURCE.includes("printListeners") && SOURCE.includes("flushSync"),
+    "print must latch the mounted fences synchronously, before the snapshot is taken",
   );
   // The word appears in the comment that explains why there is no listener, so the assertion is
   // on the registration rather than on the string.
   assert.ok(
     !/addEventListener\(\s*["']afterprint/.test(SOURCE),
     "reverting on afterprint would reintroduce the bidirectional edge",
+  );
+});
+
+test("a completing stream cannot downgrade a fence that was highlighted while it streamed", () => {
+  // `streaming` goes true -> FALSE at the closing delimiter. Deriving `reached` from it alone
+  // hands a finished fence back the plain shell, which is the reverse edge in miniature.
+  assert.ok(
+    /if\s*\(!enabled\s*\|\|\s*latched\s*\|\|\s*!streaming\)\s*return;/.test(SOURCE),
+    "a streaming fence must LATCH, not merely read as reached while the flag is live",
+  );
+  const derived = SOURCE.match(/const reached = [^;]+;/)?.[0] ?? "";
+  assert.ok(
+    derived.includes("latched"),
+    `the derived value must include the latch; found ${derived}`,
+  );
+});
+
+test("the observer is rooted at the thread scroller, not at the document", () => {
+  // With `root` unset the root is the document viewport and `rootMargin` expands THAT, while the
+  // intersection stays clipped by the nested scroller. The lookahead would be worth nothing.
+  assert.ok(
+    /root:\s*scrollerOf\(node\)/.test(SOURCE),
+    "the observer root must be the thread's own scroll container",
+  );
+  assert.ok(
+    SOURCE.includes("data-slot='thread-viewport'"),
+    "the scroller is found by the thread viewport slot",
+  );
+});
+
+test("with the flag off the hook writes no state, builds no observer and reads no layout", () => {
+  const hook = SOURCE.slice(SOURCE.indexOf("export function useFenceReached"));
+  for (const guard of ["if (!enabled || latched || !streaming) return;", "if (reached) return;"]) {
+    assert.ok(hook.includes(guard), `expected the early return ${guard}`);
+  }
+  assert.ok(
+    /const reached = !enabled \|\|/.test(hook),
+    "the disabled path must short-circuit to reached, so every effect below takes its early return",
   );
 });
 
@@ -79,7 +127,7 @@ test("the flag defaults off, and off means today's behaviour", () => {
     "any value that is not an understood mode must fall through to off",
   );
   assert.ok(
-    MARKDOWN_TEXT.includes('const immediate = mode === "off" || Boolean(isIncomplete)'),
+    MARKDOWN_TEXT.includes('useFenceReached(host, mode !== "off", Boolean(isIncomplete))'),
     "with the flag off every fence must render immediately, exactly as it does today",
   );
 });

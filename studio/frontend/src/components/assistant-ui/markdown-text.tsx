@@ -436,9 +436,9 @@ function FenceBlock({
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const mode = fenceMode();
-  // A streaming fence is the one the reader is watching, so it never defers.
-  const immediate = mode === "off" || Boolean(isIncomplete);
-  const reached = useFenceReached(host, immediate);
+  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
+  // it so that finishing the stream cannot hand it back the plain shell.
+  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
