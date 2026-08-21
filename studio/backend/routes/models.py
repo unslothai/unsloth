@@ -3628,6 +3628,21 @@ async def get_gguf_variants(
             or repo_id
         )
         local = is_local_path(context_model)
+        # A llama-csm GGUF is unrunnable on every page, so it must not ride along in the listing
+        # of the folder that outranked it (see the helper). Local only: an undownloaded remote
+        # repo has no header to read, and its files cannot be picked without downloading first.
+        listed = (
+            _without_mixed_folder_speech_variants(context_model, list(response.variants))
+            if local
+            else list(response.variants)
+        )
+        default_variant = response.default_variant
+        # A default naming a quant that just left the listing would preselect a row the picker
+        # no longer offers.
+        if default_variant is not None and all(
+            getattr(v, "quant", None) != default_variant for v in listed
+        ):
+            default_variant = None
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -3647,10 +3662,10 @@ async def get_gguf_variants(
                     partial = bool(getattr(v, "partial", False)),
                     cleanable = bool(getattr(v, "cleanable", False)),
                 )
-                for v in response.variants
+                for v in listed
             ],
             has_vision = response.has_vision,
-            default_variant = response.default_variant,
+            default_variant = default_variant,
             context_length = await _read_native_context_length_bounded(context_model, local),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
@@ -4347,6 +4362,44 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
     except Exception:
         return None
+
+
+def _without_mixed_folder_speech_variants(root: str, variants: list) -> list:
+    """The listed quants minus the speech GGUFs, when a runnable one is listed beside them.
+
+    ``_gguf_folder_task`` ranks speech BELOW a loadable image/video checkpoint so a folder holding
+    both still surfaces under the task it can actually serve. That keeps the ROW, and the row's
+    expander lists every GGUF in the folder with no per-variant task of its own, so the
+    undecodable ``llama-csm`` file stayed selectable there. The pick then resolves its family from
+    the FOLDER name (``detect_family_for_pick`` falls back to ``<path>/<filename>``), so a CSM file
+    beside a FLUX denoiser answers "flux.1" and reaches the image loader, which cannot decode it.
+
+    Only when something non-speech survives: a speech-only folder already tags ``_SPEECH_TASK`` and
+    is filtered at the row level, and emptying its listing would report "no variants" for a folder
+    that plainly has one. Bounded by the classify cap and fails open, like the walk that tags the
+    folder; the header reads are cached by path/mtime/size, so the tagging walk has usually paid
+    for them already."""
+    try:
+        base = Path(root)
+    except (TypeError, ValueError):
+        return variants
+    kept: list = []
+    dropped = 0
+    for index, variant in enumerate(variants):
+        if index >= _MAX_TASK_CLASSIFY_GGUFS:
+            return variants
+        filename = getattr(variant, "filename", None)
+        arch = None
+        if filename:
+            try:
+                arch = (_gguf_architecture(str(base / filename)) or "").strip().lower()
+            except Exception:
+                arch = None
+        if arch in _SPEECH_GGUF_ARCHS:
+            dropped += 1
+            continue
+        kept.append(variant)
+    return kept if dropped and kept else variants
 
 
 def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:

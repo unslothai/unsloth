@@ -5222,6 +5222,99 @@ def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
     )
 
 
+def _speech_mix_answer(repo_id, folder, *, default_variant):
+    """A two-quant listing for *folder*: the CSM file first, the FLUX denoiser beside it."""
+    return _answer(
+        repo_id,
+        [
+            SimpleNamespace(
+                filename = "csm-1b-Q4_0.gguf",
+                quant = "Q4_0",
+                size_bytes = 10,
+                download_size_bytes = 10,
+                downloaded = True,
+            ),
+            SimpleNamespace(
+                filename = "flux1-dev-Q4_K_M.gguf",
+                quant = "Q4_K_M",
+                size_bytes = 10,
+                download_size_bytes = 10,
+                downloaded = True,
+            ),
+        ],
+        default_variant = default_variant,
+        source = str(folder),
+    )
+
+
+def test_the_variant_listing_drops_a_speech_gguf_the_media_folder_outranked(monkeypatch, tmp_path):
+    """The ranking above keeps a mixed folder visible under the task it CAN serve, which keeps the
+    row -- and the row's expander lists every GGUF in the folder with no per-variant task of its
+    own, so the undecodable ``llama-csm`` file stayed clickable under Images. A pick resolves its
+    family from the folder name (``detect_family_for_pick`` falls back to ``<path>/<filename>``,
+    which answers "flux.1" here), so it reached the image loader and died there. The listing drops
+    it instead."""
+    folder = tmp_path / "flux1-dev-GGUF"
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+
+    async def scoped_variants(repo_id, **kwargs):
+        return _speech_mix_answer(repo_id, folder, default_variant = "Q4_0")
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(folder), hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+    # It was also the default: preselecting a quant the row no longer lists is a dead click.
+    assert result.default_variant is None
+
+
+def test_the_variant_listing_keeps_a_speech_only_folders_own_quant(monkeypatch, tmp_path):
+    """Control. With nothing runnable to outrank it the folder tags ``_SPEECH_TASK`` and is
+    filtered a row earlier, so emptying its listing as well would only report "no variants" for a
+    folder that plainly has one."""
+    folder = tmp_path / "csm-1b-GGUF"
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+
+    async def scoped_variants(repo_id, **kwargs):
+        return _answer(
+            repo_id,
+            [
+                SimpleNamespace(
+                    filename = "csm-1b-Q4_0.gguf",
+                    quant = "Q4_0",
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                    downloaded = True,
+                )
+            ],
+            default_variant = "Q4_0",
+            source = str(folder),
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(folder), hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert [v.quant for v in result.variants] == ["Q4_0"]
+    assert result.default_variant == "Q4_0"
+
+
 def test_a_buildable_denoiser_outranks_an_arch_the_backend_cannot_assemble(tmp_path):
     """``_UNSUPPORTED_DIFFUSION_TASK`` hides a row from the chat picker AND from the Images and
     Video ones, so a folder holding both a checkpoint this backend can build and one it cannot has
