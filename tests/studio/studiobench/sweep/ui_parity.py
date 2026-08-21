@@ -304,7 +304,11 @@ def visible_report(
         elif r["verdict"] == P.NOT_COMPARABLE:
             blind.append((action, shard, rep, r))
         elif r["verdict"] == P.DIFFER:
-            (unstable_bad if action in unstable else differing).append((action, shard, rep, r))
+            # A SEVERE difference is never routed into the noise floor. See compare_visible: an
+            # action can be in the derived unstable set for an unrelated attribute and still be
+            # the action on which one arm lost the whole thread.
+            noise = action in unstable and not r.get("severe")
+            (unstable_bad if noise else differing).append((action, shard, rep, r))
         else:
             matched += 1
 

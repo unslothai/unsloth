@@ -577,6 +577,37 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
             continue
         if b.get("digest") != t.get("digest"):
             moved.append(f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c")
+    # ONE VIEWPORT ENDED EMPTY AND THE OTHER DID NOT, which is as visible a difference as there is
+    # and used to be reported as NOT COMPARABLE -- a refusal, not a finding.
+    #
+    # This is not hypothetical and it is why the check exists. On the 100K virtualization arm,
+    # `model_change` took the thread from 12 mounted messages to 0 and it never came back: the
+    # census reads 0 messages and 2,107 elements for the rest of the film, and three later actions
+    # could not run at all. Both arms had shown the same ordinals EARLIER in the action, so the
+    # union matched and every per-ordinal digest was simply missing on one side. Comparing only the
+    # union cannot see that; comparing what each arm could still show at the end can.
+    b_left, t_left = len(bmsg), len(tmsg)
+    if (b_left == 0) != (t_left == 0):
+        empty, full = ("treatment", "base") if t_left == 0 else ("base", "treatment")
+        return {
+            "verdict": DIFFER,
+            "reason": (
+                f"the {empty} arm's viewport ended this action EMPTY while the {full} arm still "
+                f"showed {max(b_left, t_left)} of the {len(bev)} message(s) that had been visible "
+                "during it. Both arms displayed the same messages earlier in the action, so this "
+                "is not a windowing difference: one arm lost the thread"
+            ),
+            "moved": [f"ordinal {o}" for o in sorted(bev)[:8]],
+            "claim": CLAIM_VISIBLE,
+            # NOT SUPPRESSIBLE BY THE NOISE FLOOR. The floor exists for actions whose visible
+            # region differs between two runs of the same build, which is a volatile attribute on
+            # rows of identical length. Losing the entire thread is a different kind of statement,
+            # and an action can easily be BOTH: on the 100K run `model_change` is in the derived
+            # unstable set because the null control's copy of it differs on an attribute, and that
+            # would have silenced "the treatment arm's viewport ended empty" -- suppressing a lost
+            # conversation on the strength of unrelated jitter in the same action.
+            "severe": True,
+        }
     if moved:
         return {
             "verdict": DIFFER,

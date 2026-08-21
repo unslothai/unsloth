@@ -568,3 +568,57 @@ def test_an_unfloored_visible_run_says_so(tmp_path, capsys):
     arm = _visible_shard(tmp_path, "arm3", differ_actions = set())
     U.visible_report([arm], "no floor")
     assert "NO FLOOR WAS MEASURED" in capsys.readouterr().out
+
+
+def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, capsys):
+    """MEASURED. On the 100K run `model_change` is in the derived unstable set because the null
+    control's copy of it differs on a volatile attribute at identical character counts -- AND it is
+    the action on which the virtualization arm's thread went from 12 mounted messages to 0 and
+    never came back. Routing the second finding into the floor because of the first suppresses a
+    lost conversation on the strength of unrelated jitter."""
+    import json
+
+    from studiobench.sweep import ui_parity as U
+
+    def _shard(name, treat_empty):
+        rows = []
+        for side in ("base", "treatment"):
+            empty = treat_empty and side == "treatment"
+            rows.append(
+                {
+                    "row_type": "action",
+                    "action": "model_change",
+                    "ran": True,
+                    "cell_id": f"r100K.{side}.rep0",
+                    "parity": _capture(mounted = 18, total = 18),
+                    "visible": {
+                        "visible_attempted": True,
+                        "ever_visible": [14, 15],
+                        "ever_visible_count": 2,
+                        "mounted_ever_visible": 0 if empty else 2,
+                        "unmounted_at_capture": 2 if empty else 0,
+                        "messages": {}
+                        if empty
+                        else {
+                            str(o): {"role": "assistant", "digest": "same", "chars": 10}
+                            for o in (14, 15)
+                        },
+                    },
+                }
+            )
+        shard = tmp_path / name
+        shard.mkdir()
+        (shard / "payload.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in rows), encoding = "utf-8"
+        )
+        return shard / "payload.jsonl"
+
+    # The null differs on this action for its own reasons, so it lands in the unstable set...
+    null = _visible_shard(
+        tmp_path, "null_mc", differ_actions = {"model_change"}, actions = ("model_change",)
+    )
+    unstable = U.visible_unstable_set([null])
+    assert "model_change" in unstable
+    # ...and the arm that lost the thread on it is STILL a failure.
+    assert U.visible_report([_shard("arm_mc", True)], "severe", unstable) == 1
+    assert "one arm lost the thread" in capsys.readouterr().out

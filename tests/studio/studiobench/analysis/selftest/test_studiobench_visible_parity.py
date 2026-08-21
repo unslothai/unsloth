@@ -153,3 +153,26 @@ def test_every_verdict_names_the_claim_it_is_making():
     assert "off screen" in P.CLAIM_VISIBLE
     assert "whole-document" in P.CLAIM_STRUCTURAL
     assert "NOTHING about how anything looks" in P.CLAIM_BEHAVIOURAL
+
+
+def test_one_viewport_ending_empty_is_a_difference_not_a_refusal():
+    """MEASURED, and it is why this check exists. On the 100K virtualization arm `model_change`
+    took the thread from 12 mounted messages to 0 and it never came back: the census read 0
+    messages and 2,107 elements for the rest of the film and three later actions could not run.
+
+    Both arms had shown the same ordinals earlier in the action, so the union matched and every
+    per-ordinal digest was simply absent on one side -- which the union comparison reported as NOT
+    COMPARABLE. A refusal, for one arm losing the entire conversation.
+    """
+    base = _cap({14: "a", 15: "b"}, ever = [14, 15])
+    treat = _cap({}, ever = [14, 15])
+    got = P.compare_visible(base, treat)
+    assert got["verdict"] == P.DIFFER, got
+    assert "ended this action EMPTY" in got["reason"]
+    assert "one arm lost the thread" in got["reason"]
+
+
+def test_both_viewports_ending_empty_is_still_only_a_refusal():
+    """Symmetric loss is not evidence about the arm under test; it is an unusable pair."""
+    got = P.compare_visible(_cap({}, ever = [14, 15]), _cap({}, ever = [14, 15]))
+    assert got["verdict"] == P.NOT_COMPARABLE, got
