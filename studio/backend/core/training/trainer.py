@@ -2561,6 +2561,7 @@ class UnslothTrainer:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
@@ -2575,6 +2576,11 @@ class UnslothTrainer:
 
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
+
+        A provided hf_token is forwarded to every load_dataset and
+        get_dataset_split_names call, so a gated or private dataset is read
+        under the request identity rather than whatever HF_TOKEN the
+        environment carries.
         """
         from core.training.s3_dataset import S3DownloadCancelled
 
@@ -2707,6 +2713,8 @@ class UnslothTrainer:
                     load_kwargs["name"] = subset
                 if dataset_revision:
                     load_kwargs["revision"] = dataset_revision
+                if hf_token:
+                    load_kwargs["token"] = hf_token
 
                 if dataset_streaming:
                     self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
@@ -2853,6 +2861,8 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
                         if dataset_revision:
                             eval_load_kwargs["revision"] = dataset_revision
+                        if hf_token:
+                            eval_load_kwargs["token"] = hf_token
 
                         if dataset_streaming:
                             # Probe splits first: load_dataset(streaming=True) returns an IterableDataset without
@@ -2864,6 +2874,8 @@ class UnslothTrainer:
                                 probe_kwargs["config_name"] = subset
                             if dataset_revision:
                                 probe_kwargs["revision"] = dataset_revision
+                            if hf_token:
+                                probe_kwargs["token"] = hf_token
                             try:
                                 available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:
@@ -2964,6 +2976,7 @@ class UnslothTrainer:
                                 train_split or "train"
                             ),
                             revision = dataset_revision,
+                            token = hf_token,
                             strict_split_loading = (
                                 require_exact_resume_resources and dataset_loaded_from_cache
                             ),
@@ -3232,6 +3245,7 @@ class UnslothTrainer:
         split_loader: Optional[Callable[[str], Dataset]] = None,
         excluded_split: Any = None,
         revision: Optional[str] = None,
+        token: Optional[str] = None,
         strict_split_loading: bool = False,
     ) -> Optional[Dataset]:
         """Auto-detect an eval split from an HF dataset (named split only)."""
@@ -3244,6 +3258,8 @@ class UnslothTrainer:
                     load_kwargs["config_name"] = subset
                 if revision:
                     load_kwargs["revision"] = revision
+                if token:
+                    load_kwargs["token"] = token
                 available_splits = get_dataset_split_names(**load_kwargs)
             elif available_splits is None or split_loader is None:
                 raise ValueError("Cached split names and loader must be provided together")
@@ -3264,6 +3280,8 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
                         if revision:
                             eval_load_kwargs["revision"] = revision
+                        if token:
+                            eval_load_kwargs["token"] = token
                         candidate_ds = load_dataset(**eval_load_kwargs)
                     if len(candidate_ds) >= MIN_EVAL_ROWS:
                         logger.info(
