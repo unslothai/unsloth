@@ -198,7 +198,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: str) -> dict:
     if license_value is not None and not isinstance(license_value, str):
         raise SkillError("Skill license must be a string.")
 
-    return {
+    parsed = {
         "name": name,
         "description": description.strip(),
         **({"license": license_value} if license_value else {}),
@@ -206,6 +206,11 @@ def _parse_skill_markdown(raw: bytes, parent_name: str) -> dict:
         **({"metadata": metadata} if metadata is not None else {}),
         **({"allowed_tools": allowed_tools} if allowed_tools is not None else {}),
     }
+    try:
+        json.dumps(parsed, ensure_ascii = False).encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SkillError("Skill fields must contain valid Unicode.") from exc
+    return parsed
 
 
 def _validate_installed_skill(skill_dir: Path) -> dict:
@@ -322,7 +327,7 @@ def _archive_source(
             )
             raw_metadata = yaml.safe_load("\n".join(lines[1:closing]))
             root_name = raw_metadata.get("name") if isinstance(raw_metadata, dict) else ""
-        except (UnicodeDecodeError, StopIteration, yaml.YAMLError):
+        except (UnicodeDecodeError, StopIteration, yaml.YAMLError, RecursionError):
             root_name = ""
         metadata = _parse_skill_markdown(manifest_raw, root_name)
     if source_root.parts and any(path == source_root for _, path in files):
@@ -371,7 +376,7 @@ def _install_staged_skill(skill_dir: Path, *, replace: bool) -> dict:
     backup: Optional[Path] = None
     try:
         if target.exists():
-            backup = root / f".backup-{metadata['name']}-{os.getpid()}-{threading.get_ident()}"
+            backup = root / f".backup-{os.getpid()}-{threading.get_ident()}"
             os.replace(target, backup)
         os.replace(skill_dir, target)
         try:
@@ -560,7 +565,7 @@ def delete_skill(name: str) -> None:
         root = _skills_root()
         target = root / name
         _validate_installed_skill(target)
-        quarantine = Path(tempfile.mkdtemp(prefix = f".delete-{name}-", dir = root))
+        quarantine = Path(tempfile.mkdtemp(prefix = ".delete-", dir = root))
         backup = quarantine / name
         cleanup_quarantine = False
         try:

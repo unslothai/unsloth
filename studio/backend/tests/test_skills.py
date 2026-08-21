@@ -233,6 +233,26 @@ def test_create_skill_rejects_recursive_yaml_frontmatter():
         skills.create_skill("unsloth", manifest)
 
 
+def test_import_rejects_recursive_root_yaml_frontmatter(tmp_path: Path):
+    nested = "[" * 500 + "0" + "]" * 500
+    manifest = SKILL_MD.replace("metadata:\n", f"metadata:\n  nested: {nested}\n")
+    archive = _bundle(tmp_path / "recursive.zip", {"SKILL.md": manifest})
+
+    with pytest.raises(skills.SkillError, match = "invalid YAML frontmatter"):
+        skills.import_skill_archive(archive)
+
+
+def test_import_rejects_unpaired_surrogates(tmp_path: Path):
+    manifest = SKILL_MD.replace(
+        "description: Train and run models with Unsloth. Use for Unsloth workflows.",
+        'description: "\\uD800"',
+    )
+    archive = _bundle(tmp_path / "surrogate.zip", {"SKILL.md": manifest})
+
+    with pytest.raises(skills.SkillError, match = "valid Unicode"):
+        skills.import_skill_archive(archive)
+
+
 def test_create_skill_requires_explicit_replace_and_preserves_enabled_state(tmp_path: Path):
     from core.inference.tools import execute_tool
 
@@ -317,6 +337,39 @@ def test_rejects_skill_names_over_filesystem_component_limit(tmp_path: Path):
 
     with pytest.raises(skills.SkillError, match = "255 UTF-8 bytes"):
         skills.import_skill_archive(archive)
+
+
+def test_long_skill_names_keep_internal_temp_names_portable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    name = "\U00010428" * 63
+    manifest = SKILL_MD.replace("name: unsloth", f"name: {name}")
+    skills.create_skill(name, manifest)
+    real_mkdtemp = skills.tempfile.mkdtemp
+    real_replace = skills.os.replace
+
+    def component_limited_mkdtemp(*args, **kwargs):
+        prefix = kwargs.get("prefix", "")
+        if len(prefix.encode("utf-8")) + 8 > 255:
+            raise OSError(errno.ENAMETOOLONG, "file name too long")
+        return real_mkdtemp(*args, **kwargs)
+
+    def component_limited_replace(source, destination):
+        if len(Path(destination).name.encode("utf-8")) > 255:
+            raise OSError(errno.ENAMETOOLONG, "file name too long")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(skills.tempfile, "mkdtemp", component_limited_mkdtemp)
+    monkeypatch.setattr(skills.os, "replace", component_limited_replace)
+
+    skills.create_skill(
+        name,
+        manifest.replace("Train and run", "Fine-tune and run"),
+        replace = True,
+    )
+    skills.delete_skill(name)
+
+    assert skills.list_skills() == []
 
 
 def test_rejects_resource_paths_over_filesystem_component_limit(tmp_path: Path):
