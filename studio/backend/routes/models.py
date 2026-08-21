@@ -145,6 +145,7 @@ try:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
     )
@@ -177,6 +178,7 @@ except ImportError:
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
+        _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
     )
@@ -248,9 +250,9 @@ def _is_model_directory(d: Path) -> bool:
     """Return ``True`` when *d* looks like a model directory.
 
     Requires both a config (``config.json``/``adapter_config.json``) and
-    weight files. Excludes ``mmproj`` GGUFs (vision projectors) and
-    non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid false
-    positives.
+    weight files. Excludes ``mmproj`` GGUFs (vision projectors), calibration
+    imatrices and non-weight ``.bin`` files (``tokenizer.bin`` etc.) to avoid
+    false positives.
     """
 
     def _is_weight_file(f: Path) -> bool:
@@ -260,7 +262,7 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower()
+            return "mmproj" not in f.name.lower() and not _is_imatrix_path(f.name)
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -318,6 +320,20 @@ def _local_pipeline_index(d: Path) -> bool:
         return False
 
 
+def _servable_gguf_names(directory: Path) -> list[str]:
+    """The ``.gguf`` names in *directory* that count as a model being present there.
+
+    An imatrix is calibration data, not a model artifact, so it must not make an empty
+    folder look like one. mmproj and MTP drafters DO count: they are companions of a real
+    model, and presence is all they decide (format still asks _is_main_gguf_filename).
+    """
+    return [
+        p.name
+        for p in directory.glob("*.gguf")
+        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+    ]
+
+
 def _is_gguf_companion_only_dir(path: Path) -> bool:
     """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
     MTP drafter, or both -- with nothing servable beside them.
@@ -368,7 +384,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if not child.is_dir():
                 continue
 
-            gguf_names = [p.name for p in child.glob("*.gguf") if not is_appledouble_metadata(p)]
+            gguf_names = _servable_gguf_names(child)
             has_gguf = bool(gguf_names)
             # mmproj alone is a vision adapter, not servable weights: decides presence, never format.
             has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
@@ -619,7 +635,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 try:
                     if model_dir.is_dir():
                         has_model = (
-                            any(not is_appledouble_metadata(p) for p in model_dir.glob("*.gguf"))
+                            bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
                                 not is_appledouble_metadata(p)
@@ -1348,7 +1364,11 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     low = entry.name.lower()
                     if is_appledouble_metadata(entry):
                         continue
-                    if low.endswith((".gguf", ".safetensors")):
+                    # The scanners no longer surface an imatrix-only folder, so counting
+                    # one here would advertise a chip that opens an empty picker.
+                    if low.endswith(".gguf") and not _is_imatrix_path(entry.name):
+                        return True
+                    if low.endswith(".safetensors"):
                         return True
                     # PyTorch checkpoints; gate by name so tokenizer.bin and friends don't count as weights.
                     if _is_weight_bin(entry.name):
@@ -3760,9 +3780,15 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A primary GGUF weight, not an mmproj vision adapter or an MTP drafter. Same rule as
-    ``hub.services.models.common``; pass a snapshot-relative path to catch ``MTP/`` copies too."""
-    return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
+    """A primary GGUF weight, not an mmproj vision adapter, an MTP drafter or a calibration
+    imatrix. Same rule as ``hub.services.models.common``; pass a snapshot-relative path to
+    catch ``MTP/`` copies too."""
+    return (
+        _is_gguf_filename(name)
+        and not _is_mmproj_filename(name)
+        and not _is_mtp_drafter(name)
+        and not _is_imatrix_path(name)
+    )
 
 
 def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
