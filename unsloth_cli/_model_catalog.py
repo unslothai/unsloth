@@ -139,8 +139,7 @@ def cached_entries() -> List[ModelEntry]:
             continue
         if row.get("model_format") == "adapter":
             continue
-        # A cached embedding/CLIP checkpoint carries task None like every chat repo, so
-        # only the row's own classification keeps it out of a chat picker.
+        # A cached embedding/CLIP repo has task None like any chat repo; can_chat is the gate.
         if row.get("can_chat") is False:
             continue
         entries.append(
@@ -157,14 +156,11 @@ def local_folder_entries() -> List[ModelEntry]:
         if model.source not in LOCAL_SOURCES or model.partial:
             continue
         is_gguf = model.model_format == "gguf" or model.path.lower().endswith(".gguf")
-        # No format gate here: _dir_model_format only ever reports "gguf" or None, so an
-        # ordinary safetensors checkpoint arrives with model_format None. Comparing against
-        # a "safetensors" literal matched nothing and dropped every non-GGUF local model,
-        # which is the bulk of what ./models, LM Studio and custom scan folders hold.
+        # No format gate: _dir_model_format reports only "gguf" or None, so a safetensors
+        # checkpoint arrives as None and a "safetensors" literal dropped every non-GGUF model.
         if _local_model_task(model) in NON_CHAT_TASKS:
             continue
-        # Dropping the format gate above let every non-GGUF folder through, embedding and
-        # CLIP exports included; only this classification separates them from a chat model.
+        # No format gate, so embedding and CLIP exports get through; only this stops them.
         if _local_model_can_chat(model) is False:
             continue
         entries.append(
@@ -172,9 +168,8 @@ def local_folder_entries() -> List[ModelEntry]:
                 "Local folders",
                 model.display_name,
                 "gguf" if is_gguf else "",
-                # LocalModelInfo carries `id`, not `load_id`; the attribute access raised
-                # AttributeError, which _safe() swallowed, silently discarding the whole
-                # "Local folders" source instead of one row.
+                # LocalModelInfo carries `id`, not `load_id`; reading load_id raised
+                # AttributeError, which _safe() swallowed, dropping the whole source.
                 model.id,
             )
         )

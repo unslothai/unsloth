@@ -42,13 +42,11 @@ class CachedModelRepo(BaseModel):
     # response_model drops it and the flag never reaches the picker that has to filter on it.
     companion: Optional[bool] = None
     # Snapshot path for a copy its bare repo id cannot reach (legacy/default cache while
-    # another is active). Declared here or response_model drops it and the picker loads
-    # through the active cache instead. Mirrors the cached-GGUF row's own load_id.
+    # another is active); undeclared, response_model drops it and the picker uses the active cache.
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
-    # False for an encoder-only repo (embedding / CLIP / ViT) that cannot answer a chat
-    # turn. Declared here or response_model drops it and the chat pickers never see it.
+    # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
 
 
@@ -4424,10 +4422,9 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
 def _local_model_can_chat(model: "LocalModelInfo") -> Optional[bool]:
     """``False`` for a local encoder-only checkpoint (embedding, CLIP, ViT), else ``None``.
 
-    The scan-folder twin of ``_repo_model_can_chat``: the compatibility row carries no
-    capabilities and ``_local_model_task`` classifies only diffusion, so an embedding
-    export in ``./models`` or an LM Studio folder is otherwise indistinguishable from a
-    chat model. ``None`` for a GGUF or an unreadable config, which fails open.
+    Scan-folder twin of ``_repo_model_can_chat``: ``_local_model_task`` classifies only
+    diffusion, so an embedding export is otherwise indistinguishable from a chat model.
+    ``None`` for a GGUF or an unreadable config, which fails open.
     """
     from hub.services.models.common import _local_transformers_can_chat
     return _local_transformers_can_chat(Path(model.path))
@@ -4788,27 +4785,24 @@ async def list_cached_models(
         return {"cached": []}
 
 
-# What the ROW gate lists a repo on. Deliberately broader than the pin's test below: a
-# legacy diffusers pipeline ships ``diffusion_pytorch_model.bin``, which no weight-prefix
-# rule accepts, and the Images picker still has to see that repo.
+# Row gate only. Broader than the pin's test below on purpose: a legacy diffusers pipeline
+# ships diffusion_pytorch_model.bin, which no weight-prefix rule accepts, but Images lists it.
 _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
 
 def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
     """Whether this snapshot dir can be loaded on its own: metadata AND real weights.
 
-    ``_is_model_directory`` is already that question, answered once for the local
-    scanners: a config beside a weight file, with ``.bin`` held to the weight prefixes so
-    a ``training_args.bin`` left behind by Trainer is not read as a checkpoint. Reusing it
-    is what ``_WEIGHT_BIN_PREFIXES`` says it exists for, that every weight check agrees.
-    Its ``.gguf`` arm cannot fire here: ``cached_model_rows`` skips a repo carrying GGUF
-    files before any pin is computed.
+    ``_is_model_directory`` already answers exactly that for the local scanners (config
+    beside a weight file, ``.bin`` held to ``_WEIGHT_BIN_PREFIXES`` so a Trainer
+    ``training_args.bin`` is not read as a checkpoint), so reusing it keeps every weight
+    check in agreement. Its ``.gguf`` arm cannot fire here: ``cached_model_rows`` skips
+    repos carrying GGUF files before any pin is computed.
 
-    huggingface_hub keeps one snapshot per commit holding only the files resolved at that
-    commit, so a partial fetch leaves an unloadable dir with a newer mtime than the
-    complete snapshot beside it. Both halves happen: a metadata-only fetch (AutoConfig or
-    AutoTokenizer against a newer revision) and a weights-only one (Unsloth's own base
-    model pre-warm passes allow_patterns of the shards plus the index, no config.json).
+    huggingface_hub keeps one snapshot per commit, so a partial fetch leaves an unloadable
+    dir with a newer mtime than the complete one beside it. Both halves happen: metadata
+    only (AutoConfig/AutoTokenizer at a newer revision) and weights only (Unsloth's base
+    model pre-warm fetches the shards plus index, no config.json).
     """
     return _is_model_directory(snapshot)
 
@@ -4835,12 +4829,11 @@ def _repo_model_snapshots(repo_info) -> list:
 def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optional[Path]) -> bool:
     """Whether loading this repo by its bare id lands somewhere that can serve it.
 
-    Only the active cache makes the id a target at all. There, ``from_pretrained`` follows
-    ``refs/main``, so the id is safe only when that landing can serve a load:
-    ``repo_id_will_not_resolve`` catches a ref naming no directory, but a ref naming an
-    EXISTING half-fetched snapshot resolves fine and then fails. The GGUF side draws the
-    same distinction with ``default_ref_offers_no_whole_quant``. An unreadable ref, or a
-    repo with no better sibling to offer, keeps the id it had.
+    Only the active cache makes the id a target, and there ``from_pretrained`` follows
+    ``refs/main``: ``repo_id_will_not_resolve`` catches a ref naming no directory, but a
+    ref naming an EXISTING half-fetched snapshot resolves fine and then fails. This is the
+    non-GGUF twin of ``default_ref_offers_no_whole_quant``. An unreadable ref, or a repo
+    with no better sibling, keeps the id it had.
     """
     try:
         if repo_path.parent.resolve(strict = False) != active_root:
@@ -4856,13 +4849,11 @@ def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optio
 
 
 def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
-    """Snapshot dir to load a non-GGUF repo by, for a copy that does not resolve by id.
-    ``None`` when the id works, since the repo dir itself is not loadable.
+    """Snapshot dir to load a non-GGUF repo by, or ``None`` when the bare id already works.
 
-    The non-GGUF twin of ``_repo_gguf_load_id``. Without it a repo cached only in the
-    legacy or default cache reads as its bare id, which ``ModelConfig`` then resolves
-    through whichever cache is active: offline the pick cannot load, online it re-downloads
-    a copy that is already on disk. The compatibility inventory pins the same way.
+    The non-GGUF twin of ``_repo_gguf_load_id``: a repo cached only in the legacy or
+    default cache otherwise reads as its bare id, which ``ModelConfig`` resolves through
+    the active cache instead, so offline the pick cannot load and online it re-downloads.
     """
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:
@@ -4874,9 +4865,8 @@ def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]
                 usable.append(snapshot)
         except OSError:
             continue
-    # The newest snapshot a load can actually be served from. The row is listed because
-    # SOME revision carries weights, but the newest directory can be a partial fetch that
-    # carries only half of what a load reads. Training resolves its pin the same way.
+    # Newest snapshot a load can actually be served from: the row is listed because SOME
+    # revision carries weights, but the newest dir can be a half-fetched partial.
     loadable = next((s for s in usable if _snapshot_can_serve_a_load(s)), None)
     if _repo_is_reachable_by_id(Path(repo_path), active_root, loadable):
         return None
@@ -4888,9 +4878,8 @@ def _repo_model_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]
 def _repo_model_format(repo_info) -> Optional[str]:
     """``"adapter"`` for a cached LoRA/PEFT repo, else ``None``.
 
-    ``cached_model_rows`` carries no format of its own, so every consumer that wanted to
-    drop adapters compared against a key that was never set. An adapter ships
-    ``adapter_config.json`` beside its weights; a merged checkpoint does not.
+    ``cached_model_rows`` set no format, so every consumer filtering out adapters compared
+    against a key that never existed. An adapter ships ``adapter_config.json``; a merge does not.
     """
     for snapshot in _repo_model_snapshots(repo_info):
         try:
@@ -4904,11 +4893,9 @@ def _repo_model_format(repo_info) -> Optional[str]:
 def _repo_model_can_chat(repo_info) -> Optional[bool]:
     """``False`` for a cached encoder-only repo (embedding, CLIP, ViT), else ``None``.
 
-    The classification the hub inventory already applies to its own cache rows; the
-    compatibility row carried none, and its ``task`` is ``None`` for everything that is
-    not diffusion, so a cached BERT or CLIP checkpoint read as an ordinary chat model.
-    ``None`` where the snapshot says nothing conclusive, so an unfamiliar architecture is
-    never hidden.
+    The classification the hub inventory already applies to its own rows. ``task`` is
+    ``None`` for everything not diffusion, so a cached BERT or CLIP otherwise read as an
+    ordinary chat model. ``None`` when nothing is conclusive, so unknowns are never hidden.
     """
     from hub.services.models.common import _local_transformers_can_chat
 
@@ -4984,16 +4971,14 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": _cached_repo_task(repo_info),
                     }
-                    # Pin a copy that its bare id cannot reach, so the pick loads the
-                    # snapshot that was actually found instead of the active cache's.
+                    # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
                     model_load_id = _repo_model_load_id(repo_info, active_root)
                     if model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info)
                     if model_format:
                         row["model_format"] = model_format
-                    # Encoder-only weights load by format alone, so without this the picker
-                    # offers an embedding or CLIP repo as a chat model.
+                    # Without this the picker offers an embedding or CLIP repo as a chat model.
                     if _repo_model_can_chat(repo_info) is False:
                         row["can_chat"] = False
                     if is_partial:

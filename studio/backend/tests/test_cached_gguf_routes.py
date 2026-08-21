@@ -5658,8 +5658,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
     """A non-GGUF copy outside the active cache must carry its snapshot path.
 
     Without the pin the row falls back to the bare repo id, which ModelConfig resolves
-    through the ACTIVE cache: offline the pick cannot load, online it re-downloads a copy
-    already on disk. The cached-GGUF rows have always pinned this way.
+    through the ACTIVE cache: offline the pick cannot load, online it re-downloads.
     """
     active = tmp_path / "active"
     active.mkdir()
@@ -5748,9 +5747,8 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
 
 
 def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp_path):
-    """A cached embedding/CLIP repo has task None exactly like a chat repo, so the row
-    must carry the classification the hub inventory already applies or every chat picker
-    offers it as a model to talk to."""
+    """A cached embedding/CLIP repo has task None exactly like a chat repo, so without
+    the row's own classification every chat picker offers it as a model to talk to."""
     active = tmp_path / "active"
 
     def _cached(
@@ -5814,11 +5812,9 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
 def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch, tmp_path):
     """A metadata-only commit must not win the pin just for being newest.
 
-    huggingface_hub stores one snapshot per commit holding only the files resolved at
-    that commit, so reading a config or tokenizer at a newer revision leaves a weightless
-    dir beside the complete one. The row is listed because some revision carries weights,
-    so pinning the weightless dir advertises a Downloaded model whose load raises
-    "no file named model.safetensors" offline.
+    huggingface_hub stores one snapshot per commit, so reading a config or tokenizer at a
+    newer revision leaves a weightless dir beside the complete one. Pinning it advertises
+    a Downloaded model whose load raises "no file named model.safetensors" offline.
     """
     active = tmp_path / "active"
     active.mkdir()
@@ -5864,9 +5860,8 @@ def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch,
 
 
 def test_repo_model_can_chat_still_reads_a_metadata_only_snapshot(tmp_path):
-    """The classification must keep reading whichever snapshot holds the config, even
-    though the load id now skips it: the metadata-only commit is exactly where a config
-    lives, and losing it would let an encoder-only repo back into the chat picker."""
+    """The classification must read whichever snapshot holds the config even though the
+    load id skips it: the metadata-only commit is exactly where config.json lives."""
     repo_dir = tmp_path / "models--Org--Embedder"
 
     weights_only = repo_dir / "snapshots" / "weights"
@@ -5898,10 +5893,9 @@ def test_repo_model_can_chat_still_reads_a_metadata_only_snapshot(tmp_path):
 def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
     """Weights without metadata are as unloadable as metadata without weights.
 
-    Unsloth's own base-model pre-warm fetches the shards plus the index and no
-    config.json, so a weights-only commit lands beside the complete snapshot and sorts
-    first. Pinning it advertises a Downloaded model whose load raises "Unrecognized
-    model ... should have a model_type key".
+    Unsloth's base-model pre-warm fetches the shards plus index and no config.json, so a
+    weights-only commit lands beside the complete snapshot and sorts first. Pinning it
+    raises "Unrecognized model ... should have a model_type key".
     """
     active = tmp_path / "active"
     active.mkdir()
@@ -5948,9 +5942,8 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
 def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypatch, tmp_path):
     """An active-cache row is only safe as a bare id while refs/main can serve the load.
 
-    repo_id_will_not_resolve only catches a ref naming no directory at all. A ref naming
-    an EXISTING half-fetched snapshot resolves fine and then fails, so the id must give
-    way to the complete sibling -- the non-GGUF twin of default_ref_offers_no_whole_quant.
+    repo_id_will_not_resolve only catches a ref naming no directory; a ref naming an
+    EXISTING half-fetched snapshot resolves fine and then fails, so the id must give way.
     """
     active = tmp_path / "active"
     active.mkdir()
@@ -5996,9 +5989,8 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(monkeypa
 
 
 def test_active_cache_repo_with_a_serving_ref_keeps_its_bare_id(tmp_path):
-    """The pin is for refs that cannot serve. A healthy active-cache repo keeps its id,
-    and so does one with nothing better to offer, or the picker would freeze every row
-    to a revision."""
+    """The pin is for refs that cannot serve: a healthy active-cache repo keeps its id,
+    and so does one with nothing better to offer."""
     active = tmp_path / "active"
     active.mkdir()
 
@@ -6026,11 +6018,9 @@ def test_active_cache_repo_with_a_serving_ref_keeps_its_bare_id(tmp_path):
 def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch, tmp_path):
     """A ``.bin`` is only weights when its name says so.
 
-    Trainer writes ``training_args.bin`` beside every fine-tune, and it is small enough to
-    land first when a newer revision is fetched. Counting any ``.bin`` as a payload let
-    that decoy shadow the complete snapshot beside it and pinned a directory whose load
-    raises "no file named model.safetensors". ``_WEIGHT_BIN_PREFIXES`` exists so every
-    weight check in this file agrees; the pin has to use it too.
+    Trainer writes ``training_args.bin`` beside every fine-tune. Counting any ``.bin`` as
+    a payload let that decoy shadow the complete snapshot and pin a directory whose load
+    raises "no file named model.safetensors"; ``_WEIGHT_BIN_PREFIXES`` is the shared rule.
     """
     active = tmp_path / "active"
     active.mkdir()

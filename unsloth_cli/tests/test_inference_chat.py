@@ -418,8 +418,7 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         {"repo_id": "org/Half", "task": None, "partial": True},
         {"repo_id": "org/Image", "task": "text-to-image"},
         {"repo_id": "org/Pinned", "task": None, "load_id": "/snap/path"},
-        # An embedding/CLIP repo carries task None like any chat repo; can_chat is what
-        # separates them.
+        # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
         {"repo_id": "org/Embedder", "task": None, "can_chat": False},
     ]
     fake_cfg = types.ModuleType("utils.models.model_config")
@@ -439,9 +438,8 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
     from unsloth_cli import _model_catalog as cat
 
     class _LocalModelInfo:
-        """Mirrors models.models.LocalModelInfo: it exposes ``id`` and deliberately has
-        no ``load_id``. Reading a missing ``load_id`` raised AttributeError, and _safe()
-        turned that into an empty "Local folders" group rather than one skipped row."""
+        """Mirrors LocalModelInfo: exposes ``id``, deliberately no ``load_id``. Reading a
+        missing ``load_id`` raised AttributeError and _safe() emptied the whole group."""
 
         def __init__(
             self,
