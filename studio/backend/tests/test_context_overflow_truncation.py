@@ -996,9 +996,9 @@ def test_sticky_boundary_holds_still_while_short_turns_are_appended():
     for appended in range(1, 6):
         info = _fit_with_appended(base, appended, sticky = boundary)
         assert info is not None
-        assert info["dropped_messages"] == boundary, (
-            f"the boundary moved after {appended} appended turns"
-        )
+        assert (
+            info["dropped_messages"] == boundary
+        ), f"the boundary moved after {appended} appended turns"
 
 
 def test_sticky_boundary_moves_again_once_the_headroom_is_used_up():
