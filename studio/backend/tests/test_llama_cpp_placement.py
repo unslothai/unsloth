@@ -1730,15 +1730,11 @@ def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_p
     [{"tensor_split": [1.0, 0.0]}, {"extra_args": ["--tensor-split", "1,0"]}],
     ids = ["picker-share", "user-flag"],
 )
-def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(
-    tmp_path, monkeypatch, split
-):
+def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, monkeypatch, split):
     """A ratio is positional in llama.cpp's enumeration, so this cannot tell which
     device a share belongs to, and 1,0 puts nothing in the iGPU's heap at all.
     Crediting it anyway admitted a 30 GiB model that has to land on a 6 GiB card."""
-    backend, gguf = _backend(
-        tmp_path, vulkan = True, memory = [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)]
-    )
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
     backend._n_layers = 32
