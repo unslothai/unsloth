@@ -14,6 +14,7 @@ import tempfile
 import threading
 import unicodedata
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
@@ -306,7 +307,7 @@ def _archive_source(
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
         manifest_raw = archive.read(manifest_entry)
-    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+    except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
         raise SkillError("Could not read SKILL.md from the archive.") from exc
     provisional_name = source_root.name if source_root.parts else ""
     if provisional_name:
@@ -420,7 +421,7 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                             shutil.copyfileobj(source, output)
                         mode = entry.external_attr >> 16
                         destination.chmod(0o755 if mode & 0o111 else 0o644)
-            except zipfile.BadZipFile as exc:
+            except (zipfile.BadZipFile, zlib.error) as exc:
                 raise SkillError("Skill bundle must be a valid ZIP archive.") from exc
             except NotImplementedError as exc:
                 raise SkillError("Skill archive uses unsupported compression.") from exc

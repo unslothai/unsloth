@@ -7,6 +7,7 @@ import asyncio
 import errno
 import os
 import stat
+import struct
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,21 @@ def _bundle(
             info.create_system = 3
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
             archive.writestr(info, "SKILL.md")
+    return path
+
+
+def _corrupt_deflated_member(path: Path, entries: dict[str, str], member: str) -> Path:
+    with zipfile.ZipFile(path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    with zipfile.ZipFile(path) as archive:
+        entry = archive.getinfo(member)
+        with path.open("r+b") as handle:
+            handle.seek(entry.header_offset)
+            header = handle.read(30)
+            filename_length, extra_length = struct.unpack_from("<HH", header, 26)
+            handle.seek(entry.header_offset + 30 + filename_length + extra_length)
+            handle.write(b"\x07")
     return path
 
 
@@ -384,6 +400,25 @@ def test_rejects_an_oversized_archive_resource(tmp_path: Path):
     )
 
     with pytest.raises(skills.SkillError, match = "2048 KB"):
+        skills.import_skill_archive(archive)
+    assert not (tmp_path / "skills/unsloth").exists()
+
+
+@pytest.mark.parametrize(
+    "member",
+    ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
+)
+def test_translates_corrupt_deflate_streams(tmp_path: Path, member: str):
+    archive = _corrupt_deflated_member(
+        tmp_path / "corrupt.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "unsloth/references/config-reference.md": "Use bf16.\n",
+        },
+        member,
+    )
+
+    with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
         skills.import_skill_archive(archive)
     assert not (tmp_path / "skills/unsloth").exists()
 
