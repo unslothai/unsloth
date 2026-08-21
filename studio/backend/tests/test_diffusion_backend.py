@@ -21,6 +21,7 @@ import pytest
 
 from core.inference.diffusion import (
     DiffusionBackend,
+    DiffusionModelReplacedError,
     _LoadState,
     _base_file_downloaded,
     _clamp_max_side,
@@ -749,6 +750,37 @@ def fake_runtime(monkeypatch):
     _FakeInpaintPipeline.built_from = None
     _FakeInpaintPipe.last_kwargs = {}
     yield
+
+
+def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_runtime, tmp_path):
+    """A status() snapshot must not silently steer a different model (#9448).
+
+    generate(expected_repo_id=...) refuses, with a typed error, when the loaded
+    model changed between the caller's status() read and the generation lock.
+    """
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    repo_id = backend.status()["repo_id"]
+
+    # Snapshot names a different model: typed refusal, no denoise started.
+    with pytest.raises(DiffusionModelReplacedError) as replaced:
+        backend.generate(prompt = "stale request", expected_repo_id = "other/model")
+    assert replaced.value.expected == "other/model"
+    assert replaced.value.actual == repo_id
+
+    # A matching snapshot still generates normally.
+    gen = backend.generate(prompt = "fresh request", expected_repo_id = repo_id, steps = 4)
+    assert len(gen["images"]) == 1
+
+    # And callers that pass no snapshot keep the historical behaviour.
+    gen2 = backend.generate(prompt = "legacy caller", steps = 4)
+    assert len(gen2["images"]) == 1
 
 
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):

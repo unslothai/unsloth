@@ -757,6 +757,24 @@ def _assert_base_repo_accessible(
     return None
 
 
+class DiffusionModelReplacedError(RuntimeError):
+    """A generation ran after a model replacement invalidated its request-time snapshot.
+
+    Raised by :meth:`DiffusionBackend.generate` when ``expected_repo_id`` names a
+    model other than the one actually loaded once the generation lock was
+    acquired (#9448): the caller picked per-model steps/guidance and workflow
+    eligibility from a ``status()`` read that a replacement has since invalidated.
+    """
+
+    def __init__(self, expected: str, actual: str):
+        super().__init__(
+            f"The image model was replaced while this request waited "
+            f"(expected {expected!r}, loaded {actual!r}); retry with fresh parameters."
+        )
+        self.expected = expected
+        self.actual = actual
+
+
 @dataclass(frozen = True)
 class _LoadState:
     """Everything about the currently-loaded pipeline, swapped as one unit."""
@@ -5452,6 +5470,8 @@ class DiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # Refuse rather than run when the loaded model changed since the caller snapshotted it (#9448).
+        expected_repo_id: Optional[str] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -5466,6 +5486,11 @@ class DiffusionBackend:
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                # Why: a replacement can commit between the caller's status() read and this
+                # lock (the load's teardown fence is already down for most of its construction),
+                # silently running the NEW model with the OLD model's steps/guidance (#9448).
+                if expected_repo_id is not None and state.repo_id != expected_repo_id:
+                    raise DiffusionModelReplacedError(expected_repo_id, state.repo_id)
                 # Register under _lock so unload()/a load can signal THIS generation.
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
