@@ -495,6 +495,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             // token when there is no hub-upload token (both are the same HF token).
             hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
+            private: params.privateRepo,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
