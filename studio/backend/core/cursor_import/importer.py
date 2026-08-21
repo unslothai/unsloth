@@ -48,6 +48,9 @@ _IMPORTED_MODEL_ID = ""
 # also holds projects made here.
 _PROJECT_PREFIX = "Cursor"
 
+# The ledger's source key, keeping these sessions apart from Claude Code's.
+_SOURCE = "cursor"
+
 
 @dataclass
 class CursorImportSummary:
@@ -126,8 +129,8 @@ def _import_transcript(
     )
     if pending:
         studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
-    studio_db.record_cursor_import_mark(
-        session_id, transcript.updated_at_ms, len(transcript.messages)
+    studio_db.record_external_import_mark(
+        _SOURCE, session_id, transcript.updated_at_ms, len(transcript.messages)
     )
     if not existing:
         summary.new_chats += 1
@@ -180,7 +183,7 @@ def _messages_to_write(transcript: CursorTranscript, existing_thread: dict) -> l
     """
     if not existing_thread:
         return list(transcript.messages)
-    mark = studio_db.get_cursor_import_mark(transcript.session_id)
+    mark = studio_db.get_external_import_mark(_SOURCE, transcript.session_id)
     if mark is None:
         # Imported before this ledger existed. Its rows are the only record of
         # how far it got, and rewriting them would overwrite any edit made
