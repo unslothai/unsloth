@@ -363,6 +363,93 @@ def flux2_pick_mismatch(
     )
 
 
+# GGUF ``general.architecture`` values nothing in Studio can decode. Kept beside the FLUX.2
+# check because both answer the same question -- is this pick loadable -- from the same prefix.
+_SPEECH_GGUF_ARCHS = frozenset({"llama-csm"})
+_SPEECH_ARCH_CACHE: dict[tuple[str, str], Optional[str]] = {}
+_SPEECH_ARCH_CACHE_MAX = 256
+
+
+def _speech_probe_architecture(
+    repo_id: str, gguf_filename: str, hf_token: Optional[str]
+) -> Optional[str]:
+    """``general.architecture`` of a pick, from a cached copy or one range request."""
+    key = (repo_id, gguf_filename)
+    with _CACHE_LOCK:
+        if key in _SPEECH_ARCH_CACHE:
+            return _SPEECH_ARCH_CACHE[key]
+    arch: Optional[str] = None
+    try:
+        local = _local_gguf_path(repo_id, gguf_filename)
+        prefix = (
+            _read_local_header(local)
+            if local
+            else _read_gguf_header(repo_id, gguf_filename, hf_token)
+        )
+        # Magic, version and the two counts: anything shorter is not a GGUF at all.
+        if len(prefix) >= 24:
+            import tempfile
+
+            from utils.models.gguf_metadata import read_gguf_architecture
+            with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
+                # Named after the real file, as the chat-side probe is: a GGUF declaring no
+                # architecture is judged by its name, and a temp name would lose that.
+                probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
+                with open(probe_path, "wb") as handle:
+                    handle.write(prefix)
+                arch = (read_gguf_architecture(probe_path) or "").strip().lower() or None
+    except Exception:  # noqa: BLE001 -- a probe that failed is not a verdict
+        arch = None
+    with _CACHE_LOCK:
+        if len(_SPEECH_ARCH_CACHE) >= _SPEECH_ARCH_CACHE_MAX:
+            _SPEECH_ARCH_CACHE.clear()
+        _SPEECH_ARCH_CACHE[key] = arch
+    return arch
+
+
+def speech_pick_refusal(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
+
+    A mixed repo keeps its row under the media task it can serve, and the variant listing drops
+    the speech quants whose bytes are on disk. An UNDOWNLOADED one has no bytes to read there, so
+    it stays offered, and ``detect_family_for_pick`` resolves its family from the folder name --
+    a csm file beside a FLUX denoiser answers flux.1. Without this the pick pulls the checkpoint
+    and tears the resident pipeline down before the loader discovers it cannot decode it.
+
+    Metadata only, like the FLUX.2 pairing above: a cached copy answers with no request, and
+    otherwise one range request for the prefix. Fails open on everything -- no filename, an
+    unreadable or truncated header, an offline host, a server that ignores Range -- because a
+    false positive would refuse a pick that works, which is worse than the download this saves.
+    """
+    if not gguf_filename:
+        return None
+    arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token)
+    if arch is not None and arch in _SPEECH_GGUF_ARCHS:
+        return (
+            f"'{os.path.basename(gguf_filename)}' is a {arch} speech checkpoint, which no image "
+            "or video backend can decode. Pick one of this folder's media GGUFs instead."
+        )
+    return None
+
+
+def assert_pick_is_not_speech(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+) -> None:
+    """Refuse a speech GGUF pick before anything is downloaded or unloaded.
+
+    ``ValueError`` for the same reason as the FLUX.2 assert: /images/load maps it to 400 and
+    ``/images/download-plan`` catches it, whereas a RuntimeError escapes the plan as a bare 500."""
+    reason = speech_pick_refusal(repo_id, gguf_filename, hf_token)
+    if reason is not None:
+        raise ValueError(reason)
+
+
 def assert_flux2_pick_compatible(
     fam: Any,
     repo_id: str,
@@ -383,3 +470,4 @@ def _reset_inner_dim_cache() -> None:
     """Drop the memoised header probes. Tests only."""
     with _CACHE_LOCK:
         _INNER_DIM_CACHE.clear()
+        _SPEECH_ARCH_CACHE.clear()

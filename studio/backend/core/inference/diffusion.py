@@ -57,7 +57,11 @@ from .diffusion_families import (
     resolve_local_gguf_child,
     supported_family_names,
 )
-from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
+from .diffusion_compat import (
+    assert_flux2_pick_compatible,
+    assert_pick_is_not_speech,
+    flux2_pick_mismatch,
+)
 from .diffusion_device import (
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
@@ -1942,6 +1946,10 @@ class DiffusionBackend:
         # range request for the GGUF's tensor table), and fails open on anything it cannot read.
         # The UPSTREAM base, not the mirror: the size tables key on vendor ids.
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
+        # Same preflight budget, different question: a speech GGUF is not decodable by ANY media
+        # backend, and detect_family_for_pick answers from the folder name, so a csm file beside a
+        # denoiser reaches this loader looking like one of its own.
+        assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -2132,6 +2140,10 @@ class DiffusionBackend:
             # resident pipeline -- the two costs the loader's backstop cannot avoid.
             assert_flux2_pick_compatible(
                 fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
+            # And the speech verdict on the same path, so a direct begin_load is covered too.
+            assert_pick_is_not_speech(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("hf_token")
             )
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).

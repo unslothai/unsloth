@@ -1001,3 +1001,84 @@ def test_an_on_device_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
 
     assert reason is not None and "klein-9B" in reason
     assert requests == []
+
+
+# ── Speech picks ───────────────────────────────────────────────────────────────
+# A mixed repo keeps its row under the media task it can serve, and the variant listing drops the
+# speech quants whose bytes are on disk. An UNDOWNLOADED one has none to read there, so it stays
+# offered -- and detect_family_for_pick answers from the folder name, so a csm file beside a FLUX
+# denoiser resolves to flux.1 and reaches this loader looking like one of its own.
+
+CSM_REPO = "someone/mixed-media-GGUF"
+CSM_FILE = "csm-1b-Q4_0.gguf"
+DENOISER_FILE = "flux1-dev-Q4_K_M.gguf"
+
+
+def _arch_header(architecture: str) -> bytes:
+    """A minimal GGUF prefix carrying just ``general.architecture``."""
+    import struct
+
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    return (
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + string("general.architecture")
+        + struct.pack("<I", 8)
+        + string(architecture)
+    )
+
+
+def test_an_undownloaded_speech_pick_is_refused_before_any_download(monkeypatch):
+    """The whole point: the refusal lands off one range request, so the checkpoint is never
+    pulled and the resident pipeline is never torn down to make room for a file that cannot
+    decode. Without it the user pays both to be told the pick was never valid."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    with pytest.raises(ValueError) as excinfo:
+        diffusion_compat.assert_pick_is_not_speech(CSM_REPO, CSM_FILE)
+
+    detail = str(excinfo.value)
+    assert CSM_FILE in detail and "llama-csm" in detail
+    assert len(requests) == 1
+    url, byte_range = requests[0]
+    assert url.endswith(f"{CSM_REPO}/resolve/main/{CSM_FILE}")
+    # Bounded: the request must name an end offset, or a mis-set header streams the checkpoint.
+    assert byte_range == f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}"
+
+
+def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
+    """The sibling this refusal exists to protect. A verdict that caught it too would hide the
+    only checkpoint in the folder the media backends CAN run."""
+    _stub_range_reads(monkeypatch, {DENOISER_FILE: _arch_header("flux")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, DENOISER_FILE) is None
+    diffusion_compat.assert_pick_is_not_speech(CSM_REPO, DENOISER_FILE)
+
+
+def test_an_unreadable_header_fails_open(monkeypatch):
+    """Fail-open throughout, like the size pairing beside it: a false positive would refuse a
+    pick that works, which is strictly worse than the download this saves."""
+    _stub_range_reads(monkeypatch, {}, status = 200)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+    diffusion_compat.assert_pick_is_not_speech(CSM_REPO, CSM_FILE)
+
+
+def test_a_pick_with_no_gguf_filename_is_not_probed(monkeypatch):
+    """A pipeline or single_file pick names no GGUF, so there is no header to ask and no request
+    to spend."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, None) is None
+    assert requests == []
+
+
+def test_the_speech_verdict_is_memoised_per_pick(monkeypatch):
+    """Expanding and re-picking a row must not re-spend the range request."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(requests) == 1
