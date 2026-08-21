@@ -297,7 +297,7 @@ jobs:
         timeout-minutes: 10
         # Sampling parameters use extra_body below, so exercise Anthropic 1.x while
         # retaining a deliberate major boundary.
-        run: python -m pip install 'openai>=1.50,<4' 'anthropic>=0.40,<2'
+        run: python -m pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is

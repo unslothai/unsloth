@@ -649,7 +649,7 @@ jobs:
         timeout-minutes: 5
         # Sampling parameters use extra_body below, so exercise Anthropic 1.x while
         # retaining a deliberate major boundary.
-        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<2'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-chat
@@ -1279,7 +1279,7 @@ jobs:
         timeout-minutes: 5
         # Sampling parameters use extra_body below, so exercise Anthropic 1.x while
         # retaining a deliberate major boundary.
-        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<2'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-vision

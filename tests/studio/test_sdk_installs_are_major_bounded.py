@@ -286,8 +286,17 @@ def test_anthropic_sampling_parameters_use_extra_body() -> None:
     blocks = _anthropic_create_blocks()
     assert len(blocks) == 4, blocks
     for path, block in blocks:
-        assert not re.search(r"^\s*temperature\s*=", block, re.MULTILINE), path
+        assert not re.search(r"\btemperature\s*=", block), path
         assert re.search(r'extra_body\s*=\s*\{[^\n]*["\']temperature["\']', block), path
+
+
+def test_anthropic_smokes_install_v1() -> None:
+    not_v1 = [
+        (path, number, spec)
+        for path, number, spec in _specs_for("anthropic")
+        if not re.search(r"(?:^|,)>=1(?:\.\d+)*(?:,|$)", spec)
+    ]
+    assert not not_v1, not_v1
 
 
 def test_a_bound_above_the_next_major_is_not_accepted() -> None:
