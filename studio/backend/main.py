@@ -222,8 +222,14 @@ except (OSError, ValueError):
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
+    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # Classify by the canonical value so that inherited default remains editable.
+    from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+    mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -600,7 +606,11 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+        # Warning, not debug: this decides the MLX verdict on every healthy Apple Silicon
+        # boot, so a half-applied update (new mlx_repair.py over older hardware.py) arrives
+        # here and would silently leave Train/Export greyed out for the session.
+        _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
 
     if _post_warm_retired(generation):
         return
@@ -1574,6 +1584,23 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
+def _inference_active() -> bool:
+    """True while at least one generation is in flight.
+
+    Published so the desktop health watchdog can tell a backend that is busy serving from
+    one that has died: a saturated host can stall the event loop past a probe budget, and
+    killing there ends a response the user is still waiting on.
+
+    A len() under a threading.Lock held only for that read, so the route stays cheap.
+    Failures report "not busy", the same answer as before this field existed.
+    """
+    try:
+        from state import active_generations
+        return active_generations.count() > 0
+    except Exception:
+        return False
+
+
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
@@ -1599,6 +1626,12 @@ async def liveness_check():
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():
         alive["torch_warm_in_progress"] = True
+    # Startup is not the only window where a healthy backend can miss probes: an
+    # oversubscribed host generating on every slot stalls this loop the same way, long
+    # after the warm is over. The watchdog widens its failure budget on this marker
+    # rather than ending a stream that is still producing tokens.
+    if _inference_active():
+        alive["inference_active"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
         if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -1650,6 +1683,10 @@ async def health_check(request: Request):
     # to have liveness, so the warm marker has to reach it by the same path.
     if _torch_warm_in_progress():
         base["torch_warm_in_progress"] = True
+    # Lockstep with /api/liveness for the same reason: the fallback route has to carry the
+    # busy marker too, or an older backend loses the widened budget.
+    if _inference_active():
+        base["inference_active"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1683,6 +1720,12 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
+    # Alongside device_type, not folded into it: "mac" is every Darwin host, and an Intel
+    # Mac with a discrete GPU spills to system RAM like a PC while Apple Silicon has one
+    # pool and nowhere to spill. The UI words its memory warnings from this. Same gate the
+    # Metal context budget uses, and a pure platform check, so a health poll pays nothing.
+    from utils.hardware import is_apple_silicon
+
     authed = {
         **base,
         "version": UNSLOTH_VERSION,
@@ -1703,6 +1746,7 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        authed["apple_silicon"] = is_apple_silicon()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.

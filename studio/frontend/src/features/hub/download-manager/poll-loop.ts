@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { carriesOverSeed } from "./adopt-rules";
+import { carriesOverSeed, seededMeasuredTransfer } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -64,15 +64,6 @@ import type {
   ProgressLike,
   Terminal,
 } from "./download-manager-types";
-import {
-  XET_NOTICE_DESCRIPTION,
-  XET_NOTICE_DESCRIPTION_CLASS,
-  XET_NOTICE_DURATION_MS,
-  XET_NOTICE_TITLE,
-  reserveXetNotice,
-  shouldShowXetNotice,
-  xetNoticesShown,
-} from "./xet-progress-notice";
 import {
   getState,
   hasActiveRepoPeer,
@@ -153,6 +144,7 @@ export function applyProgressUpdate(
   patchJob(key, {
     expectedBytes: resolved.expected,
     downloadedBytes: resolved.downloadedBytes,
+    measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
     completeOnDisk: resolved.completeOnDisk,
     fraction: resolved.fraction,
@@ -337,14 +329,22 @@ function reconcileProgressAndSpeed(
   progressResp: ProgressLike,
   generationChanged: boolean,
 ): { madeProgress: boolean } {
-  const { expected, downloadedBytes, completedBytes, completeOnDisk, fraction, madeProgress } =
-    resolveProgressUpdate(current, progressResp, {
-      resetMonotonic: generationChanged,
-    });
+  const {
+    expected,
+    downloadedBytes,
+    measuredTransfer,
+    completedBytes,
+    completeOnDisk,
+    fraction,
+    madeProgress,
+  } = resolveProgressUpdate(current, progressResp, {
+    resetMonotonic: generationChanged,
+  });
   const bytesPerSec = applySpeedSample(rt, downloadedBytes, expected, Date.now());
   patchJob(key, {
     expectedBytes: expected,
     downloadedBytes,
+    measuredTransfer,
     completedBytes,
     completeOnDisk,
     fraction,
@@ -604,6 +604,13 @@ export async function startJob(
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
+  // Whatever the counters mean, they keep meaning it. Seeding the bytes without
+  // this said "measured" for a figure the poll only held, which is the
+  // "0 B left" the guard exists to stop.
+  const seedMeasuredTransfer = seededMeasuredTransfer(
+    carryOverSeed,
+    existing?.measuredTransfer,
+  );
   // An adopted job never called apiStart, so it learns the run's generation from
   // the probe (or persisted value) to scope a later cancel to this exact run.
   const seedGeneration = opts.adopt
@@ -645,6 +652,9 @@ export async function startJob(
     // fallback happens long after a start.
     ...(adopted.cancelTransport
       ? { cancelTransport: adopted.cancelTransport }
+      : {}),
+    ...(seedMeasuredTransfer !== undefined
+      ? { measuredTransfer: seedMeasuredTransfer }
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
@@ -689,29 +699,6 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-    // Explain the 0%-then-done shape of a Xet transfer, for the first few only.
-    if (
-      shouldShowXetNotice({
-        kind: req.kind,
-        transport: started,
-        attached: result.attached === true,
-        // A cancel can land while this start is in flight, and the reissue
-        // above is the giveaway. Do not promise a download that is stopping.
-        live: result.state === "running" && !rt.cancelRequested,
-        shown: xetNoticesShown(),
-      })
-    ) {
-      // Reserving is async (a cross-tab lock), and nothing below waits on a
-      // toast, so let the download get on with it.
-      void reserveXetNotice().then((reserved) => {
-        if (!reserved) return;
-        toast.info(XET_NOTICE_TITLE, {
-          description: XET_NOTICE_DESCRIPTION,
-          duration: XET_NOTICE_DURATION_MS,
-          classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
-        });
-      });
-    }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

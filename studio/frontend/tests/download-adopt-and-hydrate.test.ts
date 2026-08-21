@@ -4,6 +4,7 @@
 // Two decisions the download manager makes from a single reading, both of which used to be
 // wrong in the same way: treating a zero byte count as evidence of something it is not.
 
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -11,7 +12,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { carriesOverSeed, idleProbeVerdict } = await import(
+const { carriesOverSeed, idleProbeVerdict, seededMeasuredTransfer } = await import(
   "../src/features/hub/download-manager/adopt-rules.ts"
 );
 
@@ -95,4 +96,34 @@ test("a scan that never happened does not retire a job", () => {
   // A measured scan behaves exactly as before, and so does an older backend that omits it.
   assert.equal(idleProbeVerdict(0, null, null, true), "gone");
   assert.equal(idleProbeVerdict(0, null, null, undefined), "gone");
+});
+
+test("the held-transfer marker travels with the counters it describes", () => {
+  // Keeping the bytes while dropping it restores undefined, which reads as
+  // measured, and the row goes back to "0 B left".
+  assert.equal(seededMeasuredTransfer(true, false), false);
+  assert.equal(seededMeasuredTransfer(true, true), true);
+  // No seed means zeroed counters, so there is no held figure to distrust.
+  assert.equal(seededMeasuredTransfer(false, false), undefined);
+  // A job that never recorded one stays unknown rather than becoming held.
+  assert.equal(seededMeasuredTransfer(true, undefined), undefined);
+});
+
+test("the adoption path actually seeds the marker onto the job", () => {
+  // The helper above is pure, so it cannot catch the seed being computed and
+  // then left off the rebuilt job, which is how the marker was lost once.
+  const src = readFileSync(
+    new URL(
+      "../src/features/hub/download-manager/poll-loop.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /measuredTransfer:\s*seedMeasuredTransfer/,
+    "startJob computes the seeded held-transfer marker but no longer puts it on "
+      + "the job, so an adopted run restores it as undefined (measured) and "
+      + "prices the retry against the dead run's bytes",
+  );
 });
