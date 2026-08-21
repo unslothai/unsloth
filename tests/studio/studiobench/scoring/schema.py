@@ -61,6 +61,17 @@ ZERO_OK_KEYS = frozenset(
         #                            analysis reports as NOT COMPARABLE rather than as agreement
         #   ever_visible_count: 0    the scan observed nothing, which the positive control in
         #                            compare_visible refuses; it is not scored anywhere
+        # ── the SSE wire's integrity counters, whose zeros are the good outcome ──
+        #
+        # Again the scalars and not the `wire` subtree. "No frame failed to parse" and "no
+        # unterminated frame was left buffered" are the statements that make the character count
+        # trustworthy, and a run where they are zero is the run whose denominator can be scored.
+        # `wireChars` itself is NOT on this list: a zero there means nothing was ever counted and
+        # must stay loud.
+        "wire_parse_failures",
+        "wire_pending_chars",
+        "wire_parse_failures_in_window",
+        "wire_pending_chars_at_close",
         "ever_visible_count",
         "mounted_ever_visible",
         "unmounted_at_capture",
