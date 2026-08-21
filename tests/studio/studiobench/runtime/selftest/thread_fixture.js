@@ -33,9 +33,26 @@
     // Indistinguishable from `windowed` while you stand at the bottom of the thread, which is why
     // the completeness probe has to walk to the top.
     "windowed_lost_head",
+    // A store that kept the first page AND the last page and lost the middle. The head marker
+    // arrives when you scroll to the top, so the marker check alone calls it complete; the
+    // ordinals of one mounted window run 1,2,3 then 16,17,18, which is the loss.
+    "windowed_lost_middle",
     // The same correct window, but with the ordinals written directly on the [data-role] element
     // instead of on a row wrapper. Both placements must be accepted.
     "windowed_flat",
+    // THE THREE MALFORMED ORDINAL CONTRACTS. Each publishes aria-posinset on every mounted row --
+    // enough for a gate that only counts attributes -- and each publishes numbers that are not
+    // positions in the thread, so nothing outside the app can locate the mounted window.
+    //
+    // Every row says 0. The attribute is there and it is out of range: aria-posinset is 1-based.
+    "windowed_zero_ordinals",
+    // Every row says the same number, so six mounted rows claim one position between them.
+    "windowed_duplicate_ordinals",
+    // A window at the BOTTOM of an 18-message thread numbered 1..6: the index within the window
+    // published as though it were the position in the thread. The most likely of the three to be
+    // written by accident, and the one that makes a window at the end look like a window at the
+    // start.
+    "windowed_from_one",
   ];
 
   function marker(i) {
@@ -89,13 +106,34 @@
       }
       const declaredTotal = total;
       if (mode === "windowed_lost_head") store = store.slice(-windowSize);
+      // THE HEAD AND THE TAIL, AND NOTHING BETWEEN THEM. Half a window at each end, so the store
+      // is exactly one window long and every scroll position mounts all of it: the first message
+      // is always there for the marker check, and the hole is always there for the ordinals.
+      if (mode === "windowed_lost_middle") {
+        const keep = Math.max(1, Math.floor(windowSize / 2));
+        store = store.slice(0, keep).concat(store.slice(-keep));
+      }
 
       const state = { mode, store, declaredTotal, windowSize, ROW_PX, total };
+
+      // WHAT EACH ROW PUBLISHES AS ITS POSITION. Everything but the three malformed modes
+      // publishes the message's real position in the thread, which is what aria-posinset means.
+      // The malformed ones publish a number that is not one, each in a different way, so the gate
+      // can be shown refusing each of them separately rather than refusing "something about the
+      // ordinals".
+      function publishedPos(message, indexInWindow) {
+        if (mode === "windowed_zero_ordinals") return 0;
+        if (mode === "windowed_duplicate_ordinals") return state.declaredTotal;
+        if (mode === "windowed_from_one") return indexInWindow + 1;
+        return message.pos;
+      }
 
       function render(startIndex, count, publishTotals) {
         list.innerHTML = "";
         const slice = state.store.slice(startIndex, startIndex + count);
-        for (const m of slice) {
+        for (let i = 0; i < slice.length; i += 1) {
+          const m = slice[i];
+          const pos = publishedPos(m, i);
           const el = document.createElement("div");
           el.setAttribute("data-role", m.role);
           el.style.cssText = "height:" + ROW_PX + "px;overflow:hidden;";
@@ -108,14 +146,14 @@
           if (publishTotals && mode !== "windowed_flat") {
             const row = document.createElement("div");
             row.setAttribute("aria-setsize", String(state.declaredTotal));
-            row.setAttribute("aria-posinset", String(m.pos));
+            row.setAttribute("aria-posinset", String(pos));
             row.appendChild(el);
             list.appendChild(row);
             continue;
           }
           if (publishTotals) {
             el.setAttribute("aria-setsize", String(state.declaredTotal));
-            el.setAttribute("aria-posinset", String(m.pos));
+            el.setAttribute("aria-posinset", String(pos));
           }
           list.appendChild(el);
         }
@@ -137,6 +175,18 @@
       }
 
       state.renderWindowAround = (scrollTop) => {
+        // A store SHORTER than the thread it claims cannot be indexed by the thread's own
+        // indices: `windowed_lost_middle` holds one window's worth of messages for an
+        // eighteen-message thread, so every scroll position mounts the same rows and the ordinals
+        // on them are the only thing that says which messages they are.
+        if (mode === "windowed_lost_middle") {
+          const start = Math.max(
+            0,
+            Math.min(state.store.length - windowSize, Math.floor(scrollTop / ROW_PX)),
+          );
+          render(start, windowSize, true);
+          return;
+        }
         const first = Math.max(
           0,
           Math.min(state.declaredTotal - windowSize, Math.floor(scrollTop / ROW_PX)),
@@ -171,7 +221,9 @@
         render(state.store.length - windowSize, windowSize, false);
         pin();
       } else {
-        // windowed, windowed_flat and windowed_lost_head
+        // windowed, windowed_flat, windowed_lost_head, windowed_lost_middle and the three
+        // malformed-ordinal modes: all of them are a window at the END of the thread, and they
+        // differ only in what they publish about it.
         render(Math.max(0, state.store.length - windowSize), windowSize, true);
         pin();
         viewport.addEventListener("scroll", () => {
