@@ -22,6 +22,7 @@ import {
 import { db } from "../db";
 import type {
   OpenAIChatCompletionsRequest,
+  OpenAIChatMessage,
   OpenAIMessageContent,
 } from "../types/api";
 import {
@@ -287,6 +288,59 @@ function collectImageParts(
   }
   
   return parts;
+}
+
+type OutboundContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+function toContentParts(content: OpenAIMessageContent): OutboundContentPart[] {
+  if (typeof content === "string") {
+    return content ? [{ type: "text", text: content }] : [];
+  }
+  return content.map((part) => ({ ...part }));
+}
+
+/**
+ * Merge consecutive messages that share the same role into one message.
+ *
+ * Canceling a run keeps its user message without an assistant reply, so
+ * re-sending the same prompt produced [user, user] payloads that strict
+ * Jinja chat templates reject ("conversation roles must alternate").
+ * Combining same-role neighbors keeps every request template-safe
+ * regardless of cancel/retry history.
+ */
+function mergeConsecutiveSameRoleMessages(
+  messages: OpenAIChatMessage[],
+): OpenAIChatMessage[] {
+  const merged: OpenAIChatMessage[] = [];
+  for (const message of messages) {
+    const previous = merged[merged.length - 1];
+    if (!previous || previous.role !== message.role) {
+      merged.push({ ...message });
+      continue;
+    }
+    const collapsed: OutboundContentPart[] = [];
+    for (const part of [
+      ...toContentParts(previous.content),
+      ...toContentParts(message.content),
+    ]) {
+      const last = collapsed[collapsed.length - 1];
+      if (part.type === "text" && last?.type === "text") {
+        const separator = last.text.trim() && part.text.trim() ? "\n\n" : "";
+        last.text = `${last.text}${separator}${part.text}`;
+        continue;
+      }
+      collapsed.push({ ...part });
+    }
+    previous.content =
+      collapsed.length === 0
+        ? ""
+        : collapsed.length === 1 && collapsed[0].type === "text"
+          ? collapsed[0].text
+          : collapsed;
+  }
+  return merged;
 }
 
 function toOpenAIMessage(message: RunMessage): {
@@ -753,7 +807,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing external provider API key.");
       }
 
-      const outboundMessages = messages
+      const mappedMessages = messages
         .map(toOpenAIMessage)
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
@@ -761,12 +815,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
-        outboundMessages.unshift({
-          role: "system",
-          content: safeSystemPrompt.trim(),
-        });
-      }
+      // Merge after prepending the system prompt so a system message stored
+      // in the thread collapses with it instead of yielding [system, system].
+      const outboundMessages = mergeConsecutiveSameRoleMessages(
+        safeSystemPrompt.trim()
+          ? [
+              { role: "system" as const, content: safeSystemPrompt.trim() },
+              ...mappedMessages,
+            ]
+          : mappedMessages,
+      );
       const imageBase64 = findLatestUserImageBase64(messages);
       const audioBase64 = findLatestUserAudioBase64(messages);
       // Clear pending audio from store after extracting (consumed on send)
