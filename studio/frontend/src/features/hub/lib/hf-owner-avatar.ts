@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -89,8 +90,8 @@ async function fetchAvatarUrl(
   name: string,
 ): Promise<{ url: string | null; transient: boolean }> {
   const candidates = [
-    `https://huggingface.co/api/organizations/${encodeURIComponent(name)}/overview`,
-    `https://huggingface.co/api/users/${encodeURIComponent(name)}/overview`,
+    `${getHfEndpoint()}/api/organizations/${encodeURIComponent(name)}/overview`,
+    `${getHfEndpoint()}/api/users/${encodeURIComponent(name)}/overview`,
   ];
 
   let sawTransient = false;
@@ -108,7 +109,7 @@ async function fetchAvatarUrl(
         if (data.avatarUrl) {
           const resolved = data.avatarUrl.startsWith("http")
             ? data.avatarUrl
-            : `https://huggingface.co${data.avatarUrl}`;
+            : `${getHfEndpoint()}${data.avatarUrl}`;
           return { url: resolved, transient: false };
         }
         continue;

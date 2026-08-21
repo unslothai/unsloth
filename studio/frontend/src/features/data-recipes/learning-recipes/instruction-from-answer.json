@@ -24,8 +24,7 @@
     "seed_config": {
       "source": {
         "seed_type": "hf",
-        "path": "unsloth/alpaca-cleaned",
-        "endpoint": "https://huggingface.co"
+        "path": "unsloth/alpaca-cleaned"
       },
       "sampling_strategy": "ordered",
       "selection_strategy": {

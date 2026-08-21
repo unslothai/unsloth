@@ -4,6 +4,7 @@
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { defaultUrlTransform, type UrlTransform } from "streamdown";
 
 export type ReadmeKind = "model" | "dataset";
@@ -38,7 +39,7 @@ export function readmeBaseUrl(
   kind: ReadmeKind,
   branch: "main" | "master" = "main",
 ): string {
-  return `https://huggingface.co/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+  return `${getHfEndpoint()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
 }
 
 async function fetchReadmeOnce(
@@ -52,7 +53,7 @@ async function fetchReadmeOnce(
   let transient = false;
   for (const branch of ["main", "master"] as const) {
     try {
-      const url = `https://huggingface.co/${prefix}${repoId}/raw/${branch}/README.md`;
+      const url = `${getHfEndpoint()}/${prefix}${repoId}/raw/${branch}/README.md`;
       const res = await fetchWithTimeout(
         url,
         {

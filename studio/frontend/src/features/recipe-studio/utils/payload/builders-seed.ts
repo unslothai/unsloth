@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import type { NodeConfig, SeedConfig } from "../../types";
 
 const DEFAULT_CHUNK_SIZE = 1200;
@@ -34,7 +35,7 @@ export function buildSeedConfig(
   const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
 
-  const endpoint = config.hf_endpoint?.trim() || "https://huggingface.co";
+  const endpoint = config.hf_endpoint?.trim() || getHfEndpoint();
   const token = config.hf_token?.trim() || null;
 
   let selectionStrategy: Record<string, unknown> | null = null;

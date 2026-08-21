@@ -18,6 +18,7 @@ import {
   formatShortDate,
 } from "@/features/hub/lib/format";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn, formatCompact } from "@/lib/utils";
 import {
@@ -77,7 +78,7 @@ function ViewRepositoryButton({
   isDataset: boolean;
 }) {
   const online = useOnlineStatus();
-  const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
+  const url = `${getHfEndpoint()}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
