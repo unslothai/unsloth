@@ -111,6 +111,108 @@ def _neutralise(text: str) -> str:
     return _DELIMITERS.sub(lambda match: match.group(0).replace("<", "‹"), text)
 
 
+def _select_items(
+    evicted: list[dict],
+    *,
+    max_tokens: int,
+    max_items: int,
+    min_chars: int,
+    reserve_oldest: bool = False,
+) -> list[str]:
+    """The instruction turns out of `evicted`, oldest first, under both caps.
+
+    `reserve_oldest` takes the oldest qualifying turn before the newest-first walk. It is
+    for the thread of short prompts, where the FIRST turn is
+    the one that says what is being built: newest-first alone would spend all eight slots
+    on the increments nearest the end ("add music", "now the score", "fix the pipes") and
+    evict the statement of the task itself, which is the loss this pass exists to stop.
+    The walk still runs newest-first afterwards, so a later change of direction is kept
+    too, and rendering is oldest-first either way.
+    """
+    groups = list(group_turns(evicted))
+
+    def _item(index: int) -> Optional[tuple[str, int]]:
+        """`groups[index]` as (text, cost) if it is an instruction, else None."""
+        head = groups[index][0]
+        if not is_substantive(head, min_chars = min_chars):
+            return None
+        text = _text_of(head).strip()
+        if not text:
+            return None
+        return _neutralise(text), estimate_message_tokens(head)
+
+    order = list(reversed(range(len(groups))))
+    if reserve_oldest:
+        oldest = next((i for i in range(len(groups)) if _item(i)), None)
+        if oldest is not None:
+            # The opening task is reserved, but it must never DISPLACE the newest
+            # instruction. Placing it first exhausted a tight cap before the
+            # newest-first walk began: at MAX_ITEMS=1, "Build a Flappy Bird game"
+            # then "Actually build Tetris instead" carried only the abandoned
+            # request, so the block stated the opposite of the user's latest
+            # direction. Slotting it in behind the newest qualifying turn keeps
+            # both whenever there is room for two, and keeps the correction when
+            # there is room for only one.
+            #
+            # The slot goes behind the newest turn that CAN BE TAKEN, not merely the
+            # newest one that qualifies. A turn costing more than the whole cap is
+            # skipped by the walk below without spending anything, so reserving behind
+            # it puts the opening task ahead of every usable recent turn and restores
+            # the bug this slotting exists to fix: "Build Flappy Bird", "Actually build
+            # Tetris", then an oversized pasted request carried only Flappy Bird at a
+            # 153-token cap.
+            def _takeable(index: int) -> bool:
+                found = _item(index)
+                return found is not None and found[1] <= max_tokens
+
+            rest = [index for index in order if index != oldest]
+            newest = next((index for index in rest if _takeable(index)), None)
+            if newest is None:
+                order = [oldest] + rest
+            else:
+                at = rest.index(newest) + 1
+                order = rest[:at] + [oldest] + rest[at:]
+
+    # Kept as (position, text) so the render can sort by position: with a reserved item
+    # the selection order is no longer simply the reverse of the transcript order, and
+    # `reversed(chosen)` put the oldest turn LAST, inverting the supersession the header
+    # promises.
+    picked: list[tuple[int, str]] = []
+    seen: dict[str, int] = {}
+    spent = 0
+    for index in order:
+        if len(picked) >= max_items:
+            break
+        found = _item(index)
+        if found is None:
+            continue
+        item, cost = found
+        if item in seen:
+            # Users restate a standing rule, and each copy used to take a slot out of
+            # eight: one rule repeated eight times crowded out the user's other rule.
+            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
+            #
+            # The surviving copy keeps the NEWEST position. `reserve_oldest` walks the
+            # oldest qualifying turn first, so without this a restatement was dropped in
+            # favour of its own older copy: "metric", "imperial", "metric" rendered as
+            # metric then imperial, and the header's later-wins rule then told the model
+            # imperial was current when the user had just restored metric. In the plain
+            # newest-first walk the first sighting is already the newest, so nothing
+            # moves there.
+            slot = seen[item]
+            if index > picked[slot][0]:
+                picked[slot] = (index, item)
+            continue
+        if spent + cost > max_tokens:
+            # Skipped, not truncated, and the loop continues: an older instruction that
+            # still fits beats nothing.
+            continue
+        picked.append((index, item))
+        seen[item] = len(picked) - 1
+        spent += cost
+    return [item for _, item in sorted(picked)]
+
+
 def carried_forward_items(
     evicted: list[dict],
     *,
@@ -125,36 +227,35 @@ def carried_forward_items(
     silently dropped, which is why `max_items` is small and the header says "lossy".
 
     Repeats collapse to their newest copy, on the same key `_recap` uses.
+
+    ONE walk, with no length floor. The floor was 80 characters, and a real chat does not
+    clear it: measured on a live session, "Create a Flappy Bird game in HTML" (33), "Add
+    music to the game" (21) and "Continue work" (13) all failed it, so three resets each
+    carried an EMPTY block and the statement of what the user was building was evicted
+    with the rest. The budget was never the constraint there -- 473 tokens free and
+    nothing to spend it on.
+
+    It was first kept as a fallback, taken only when the floored pass found nothing. That
+    was worse than useless in the case that matters most: a long "Build a Flappy Bird
+    game ..." followed by a short "Actually make it Tetris" clears the floor on the first
+    turn alone, so the fallback never ran and the block carried only the abandoned
+    request. The user's latest direction was dropped precisely because an earlier turn
+    happened to be wordy.
+
+    `is_substantive` still applies `_CONTINUATIONS`, which is what actually keeps "ok" and
+    "continue" out of the system turn; the floor was only ever a second guess at the same
+    question, and an empty block is not the safer answer -- it is the one where the model
+    is told the conversation was compacted and given nothing of it.
     """
     if not evicted or max_tokens <= 0 or max_items <= 0:
         return []
-    chosen: list[str] = []
-    seen: set[str] = set()
-    spent = 0
-    for group in reversed(group_turns(evicted)):
-        if len(chosen) >= max_items:
-            break
-        head = group[0]
-        if not is_substantive(head):
-            continue
-        text = _text_of(head).strip()
-        if not text:
-            continue
-        item = _neutralise(text)
-        if item in seen:
-            # Users restate a standing rule, and each copy used to take a slot out of
-            # eight: one rule repeated eight times crowded out the user's other rule.
-            # Checked before the cost is charged, so a repeat cannot exhaust the budget.
-            continue
-        cost = estimate_message_tokens(head)
-        if spent + cost > max_tokens:
-            # Skipped, not truncated, and the loop continues: an older instruction that
-            # still fits beats nothing.
-            continue
-        chosen.append(item)
-        seen.add(item)
-        spent += cost
-    return list(reversed(chosen))
+    return _select_items(
+        evicted,
+        max_tokens = max_tokens,
+        max_items = max_items,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
 
 
 def _resolved(value):

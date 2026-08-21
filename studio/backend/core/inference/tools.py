@@ -29,6 +29,20 @@ import sys
 import tempfile
 import contextlib
 import threading
+from contextvars import ContextVar
+
+# The window of the model THIS request is served by, set by execute_tool for the call's
+# duration. Left unset, the budget falls back to the process-global probe, which is right
+# for the local loops and wrong for anything else: an external-provider request runs
+# Studio's tool loop without touching a resident GGUF, so inheriting that GGUF's window
+# let a small resident model truncate pages for a large cloud model, and a large resident
+# model hand the full 16,000 characters to a small OpenAI-compatible endpoint.
+_UNSET_CONTEXT_TOKENS = object()
+_REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
+    "unsloth_request_context_tokens",
+    default = _UNSET_CONTEXT_TOKENS,
+)
+
 import uuid
 import time
 import urllib.parse
@@ -10007,6 +10021,7 @@ def execute_tool(
     conversation_branch: list[dict] | None = None,
     conversation_budget_tokens: int | None = None,
     conversation_token_counter = None,
+    context_tokens = _UNSET_CONTEXT_TOKENS,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10026,6 +10041,9 @@ def execute_tool(
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    # Set unconditionally, so a value from an earlier call on this thread can never be
+    # read by a later one. That is what makes a try/finally reset unnecessary here.
+    _REQUEST_CONTEXT_TOKENS.set(context_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base_with_budget(
@@ -10831,6 +10849,15 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+
+# Share of the loaded window one fetched page may claim. The same window also has to hold
+# the system prompt, the carried-forward block, the user's turn, the call itself and room
+# to answer, so a third is already generous.
+_PAGE_CONTEXT_SHARE = 0.35
+# Below this a page is too clipped to answer from, so the fetch is not worth making small.
+_MIN_PAGE_CHARS = 2000
+# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+_HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
@@ -11615,9 +11642,160 @@ def _looks_like_html_document(body: str) -> bool:
     return bool(_HTML_DOCUMENT_RE.match(probe))
 
 
+def _loaded_context_tokens() -> int | None:
+    """The active model's context window, or None when it cannot be read.
+
+    Mirrors `research_runs._loaded_context_length` and `routes.inference.
+    _monitor_context_length`: llama.cpp first, then the orchestrator the API layer reads.
+    Both branches are needed. A native/Transformers chat leaves `is_loaded` false, and
+    stopping at that probe reported "unknown", which kept the full 16,000-character cap
+    and reproduced on small native models exactly the overflow this budget exists to
+    prevent.
+
+    The ML backends live in a worker subprocess, so the in-process singleton is
+    unpopulated here and importing it pulls in the ML stack; peek at the orchestrator
+    instead of constructing one. Every failure is "unknown" so a fetch is never blocked by
+    not knowing.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
+        llama = get_llama_cpp_backend()
+        if getattr(llama, "is_loaded", False):
+            ctx = getattr(llama, "context_length", None)
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+    except Exception:  # noqa: BLE001 -- an unreadable window is "unknown", never an error
+        pass
+    try:
+        from core.research_runs import _peek_inference_backend  # noqa: PLC0415
+
+        backend = _peek_inference_backend()
+        name = getattr(backend, "active_model_name", None)
+        models = getattr(backend, "models", {}) or {}
+        info = models.get(name) if (name and isinstance(models, dict)) else None
+        for candidate in (
+            (info or {}).get("context_length"),
+            getattr(backend, "context_length", None),
+            getattr(backend, "max_seq_length", None),
+        ):
+            if isinstance(candidate, int) and candidate > 0:
+                return candidate
+    except Exception:  # noqa: BLE001 -- same rule: unknown, never an error
+        return None
+    return None
+
+
+def _result_char_budget(cap: int) -> int:
+    """`cap`, lowered to what the serving window can actually hold.
+
+    Shared by fetched pages and by terminal/python results, because the failure is the
+    same: a fixed character cap has no relation to the loaded context, so on a small
+    window one result fills most of it. That result lands in the NEWEST turn, which the
+    fit protects, so compaction cannot drop the very thing that does not fit and the
+    request goes irreducible. Measured live on a 5120-token window: 7043 and 6684 token
+    requests refused, both on the code tools, whose 16,000-character cap is about 4,000
+    tokens on its own.
+    """
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    if not ctx:
+        return cap
+    return max(_MIN_PAGE_CHARS, min(cap, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+
+
+def _tool_result_char_budget() -> int:
+    """The terminal/python cap, sized to the window. See `_result_char_budget`."""
+    return _result_char_budget(_MAX_OUTPUT_CHARS)
+
+
+def _page_char_budget() -> int:
+    """`_MAX_PAGE_CHARS`, lowered to what the serving window can actually hold.
+
+    16,000 characters is roughly 4,000 tokens: fine on a 128k model, nonsensical on a
+    4,864-token one. Measured there, a single fetched page came back at 12,295 characters,
+    the request went irreducible at 8,995 tokens against a 3,648-token budget with
+    `latest_turn_role: "tool"`, and the user was advised to shorten a conversation
+    consisting of one 11-token question. Nothing downstream can recover from it either:
+    the fit protects the newest turn, so compaction may not drop the very result that does
+    not fit.
+
+    Above roughly an 11k window this returns the old constant unchanged, so only the models
+    that cannot afford a whole page are affected.
+    """
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    if not ctx:
+        return _MAX_PAGE_CHARS
+    return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
+
+
+def _window_context_tokens() -> int | None:
+    """The window this request is served by, or None when it cannot be read."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    # An explicit 0/None means "asked, and unknowable" (external provider), and must NOT
+    # fall through to the probe. Only an absent value keeps the process-global read.
+    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    return ctx if ctx else None
+
+
+def _dense_prefix_chars(text: str, token_budget: float) -> int:
+    """How many leading characters of `text` cost at most `token_budget` tokens.
+
+    Four characters per token is an English rate. Measured with Qwen3, Llama 3.2 and
+    tiktoken on real fetched pages, CJK prose runs 1.3-1.6 characters per token, and the
+    percent-escaped links a CJK page is full of (`%E7%9F%A5`) run 1.3-1.5: both are the
+    same non-ASCII bytes, one spelled in ASCII. Charging them a token each, the rule
+    `context_window.estimate_messages_tokens_dense` already uses, keeps the share the
+    caller asked to reserve a share instead of the whole budget.
+
+    One pass, so it costs nothing next to the fetch it sizes.
+    """
+    spent = 0.0
+    index = 0
+    length = len(text)
+    while index < length:
+        start = index
+        if text[index] == "%" and _HEX_PAIR_RE.match(text, index + 1):
+            spent += 3.0  # a non-ASCII byte spelled in ASCII; charge it like one
+            index += 3
+        else:
+            spent += 1.0 if ord(text[index]) > 127 else 0.25
+            index += 1
+        # Cut on whole characters (and whole escapes), so the tail is never half a
+        # percent-escape the model has to guess at.
+        if spent > token_budget:
+            return start
+    return length
+
+
+def _dense_char_limit(text: str, max_chars: int) -> int:
+    """`max_chars`, lowered when `text` tokenises denser than four characters per token.
+
+    Without this the window-derived caps above reserve their share only for English. On
+    the 4,864-token window this PR was measured against, the 6,809-character page budget
+    is 35% of the window in English and 3,800-4,500 real tokens of a Chinese or Japanese
+    page: 80-95% of the whole prompt budget, in the newest turn, which the fit protects.
+    That is the same irreducible refusal the budget exists to prevent.
+    """
+    ctx = _window_context_tokens()
+    if not ctx or len(text) <= _MIN_PAGE_CHARS:
+        return max_chars
+    # Kept a float, so English text lands on exactly the character budget rather than
+    # one character short of it.
+    fitted = _dense_prefix_chars(text, ctx * _PAGE_CONTEXT_SHARE)
+    # Never above what the caller allowed, and never below the floor that keeps a page
+    # worth reading. An explicit cap smaller than the floor still wins.
+    return min(max_chars, max(_MIN_PAGE_CHARS, fitted))
+
+
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
         return "(page returned no readable text)"
+    max_chars = _dense_char_limit(text, max_chars)
     if len(text) > max_chars:
         return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
     return text
@@ -11625,7 +11803,9 @@ def _truncate_page_text(text: str, max_chars: int) -> str:
 
 def _fetch_page_text(
     url: str,
-    max_chars: int = _MAX_PAGE_CHARS,
+    # Resolved per call rather than bound at import: the default would freeze the constant
+    # before any model is loaded, which is exactly when the window is still unknown.
+    max_chars: int | None = None,
     timeout: int = 30,
     cancel_event = None,
     website_policy: dict | None = None,
@@ -11639,6 +11819,8 @@ def _fetch_page_text(
     instead of the repo page's UI chrome. Blocks private/loopback/link-local
     targets (SSRF protection) and caps the download size.
     """
+    if max_chars is None:
+        max_chars = _page_char_budget()
     # One wall-clock budget for the whole fetch. The README API attempt and its
     # HTML fallback both draw from it, so a slow/failed API call cannot hand the
     # fallback a fresh full timeout and double the worst case.
@@ -13068,7 +13250,15 @@ def _cancel_watcher(
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
-def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+def _truncate(text: str, limit: int | None = None) -> str:
+    # Resolved per call, not bound at import: the default would freeze the constant
+    # before any model is loaded, which is exactly when the window is still unknown.
+    if limit is None:
+        limit = _tool_result_char_budget()
+    # Same correction as a fetched page: a character cap reserves its share of the window
+    # only for English, and a command that prints CJK or percent-escaped text costs two to
+    # three times what the cap assumed.
+    limit = _dense_char_limit(text, limit)
     # Mode-neutral notice: this result serves both the streaming UI and
     # non-streaming callers and must stay byte-identical with and without an
     # output_callback (a regression-tested invariant), so it can't claim the

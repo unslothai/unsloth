@@ -57,6 +57,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_have_media,
 )
+from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
@@ -64,7 +65,9 @@ from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
+    apply_load_mode_policy,
     apply_model_memory_policy,
+    resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
     fit_is_enabled_in,
     memory_state_satisfies_settings,
@@ -412,6 +415,12 @@ class GgufLoadIntent:
     # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
+    # llama-server tuning group; none follows the llama.cpp defaults
+    # (auto / f16 / 32 / 8192).
+    load_mode: Optional[str] = None
+    spec_draft_cache_type: Optional[str] = None
+    ctx_checkpoints: Optional[int] = None
+    cache_ram: Optional[int] = None
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -1962,9 +1971,12 @@ def _drafter_path_kind(path: str) -> Optional[str]:
     return None
 
 
+_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+
+
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj, or a separate drafter (repo-root
-    ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
+    """True for a non-main GGUF: vision mmproj, a calibration imatrix, or a separate
+    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
     drafters for DeepSeek V4 Flash). Mirrors hub.utils.gguf so variant resolution
     never picks a companion as the main model -- a Gemma ``Q8_0`` request must not
     resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight.
@@ -1975,6 +1987,10 @@ def _is_companion_gguf_path(path: str) -> bool:
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
+        return True
+    # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
+    # holding calibration statistics, so only the name rules it out.
+    if _IMATRIX_TOKEN_RE.search(Path(p).stem):
         return True
     return _drafter_path_kind(path) is not None
 
@@ -3887,6 +3903,27 @@ def _extra_args_mtp_draft_source(
     return None, False
 
 
+def _normalized_load_mode(value: Optional[str]) -> Optional[str]:
+    """Canonical --load-mode, with llama.cpp's own default reading as unset.
+
+    "auto" IS the default, so a load asking for it and a load asking for nothing
+    launch the same command; the dedupe has to see them as equal or picking Auto
+    would reload a server already running it.
+    """
+    if value is None:
+        return None
+    mode = str(value).strip().lower()
+    return None if mode in {"", "auto"} else mode
+
+
+# The KV cache dtypes llama.cpp can map, shared by the emission guard and the
+# budget. Module level because both the draft-cache block and the MTP reserve
+# need it, and the main cache path's copy is a local inside load_model.
+_VALID_KV_CACHE_TYPES: frozenset[str] = frozenset(
+    {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
+)
+
+
 def _extra_args_draft_cache_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> tuple[Optional[str], Optional[str]]:
@@ -4645,6 +4682,13 @@ class LlamaCppBackend:
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
+        # The tuning group the last load asked for; none = defaults, or left to
+        # extras / env. What was REQUESTED, not what ran: Model Memory can replace
+        # the load mode, and Windows full-offload tuning owns the two cache knobs.
+        self._requested_load_mode: Optional[str] = None
+        self._requested_spec_draft_cache_type: Optional[str] = None
+        self._requested_ctx_checkpoints: Optional[int] = None
+        self._requested_cache_ram: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -5025,6 +5069,29 @@ class LlamaCppBackend:
         return self._requested_n_ubatch
 
     @property
+    def requested_load_mode(self) -> Optional[str]:
+        """--load-mode the last load asked for; None means llama.cpp's own auto.
+        The Model Memory settings may have replaced it, which the settings route
+        reports; this stays the caller's intent so the dedupe compares like with
+        like."""
+        return self._requested_load_mode
+
+    @property
+    def requested_spec_draft_cache_type(self) -> Optional[str]:
+        """Draft KV cache dtype the last load asked for; None means f16."""
+        return self._requested_spec_draft_cache_type
+
+    @property
+    def requested_ctx_checkpoints(self) -> Optional[int]:
+        """--ctx-checkpoints the last load asked for; None means the default 32."""
+        return self._requested_ctx_checkpoints
+
+    @property
+    def requested_cache_ram(self) -> Optional[int]:
+        """--cache-ram (MiB) the last load asked for; None means the default 8192."""
+        return self._requested_cache_ram
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -5053,6 +5120,10 @@ class LlamaCppBackend:
         self._requested_n_parallel = 1
         self._requested_n_batch = None
         self._requested_n_ubatch = None
+        self._requested_load_mode = None
+        self._requested_spec_draft_cache_type = None
+        self._requested_ctx_checkpoints = None
+        self._requested_cache_ram = None
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -5421,6 +5492,19 @@ class LlamaCppBackend:
             return False
         if not self._is_diffusion and (
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
+        ):
+            return False
+        # Same rule for the tuning group: requested against requested, so a server
+        # launched with a different value is a reload. Compared even when the
+        # intent is blank, unlike spec_draft_n_max above: blank is the llama.cpp
+        # default and both sides hold what was requested, so two loads that asked
+        # for nothing still match, while clearing a knob relaunches.
+        if not self._is_diffusion and (
+            _normalized_load_mode(self._requested_load_mode)
+            != _normalized_load_mode(intent.load_mode)
+            or self._requested_spec_draft_cache_type != intent.spec_draft_cache_type
+            or self._requested_ctx_checkpoints != intent.ctx_checkpoints
+            or self._requested_cache_ram != intent.cache_ram
         ):
             return False
 
@@ -6008,12 +6092,15 @@ class LlamaCppBackend:
                 "supports_fit_target": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
+                "ctx_checkpoints_flag": None,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
+                "spec_draft_cache_k_flag": None,
+                "spec_draft_cache_v_flag": None,
                 "flags": {},
                 "help_probe_ok": False,
             }
@@ -6052,12 +6139,15 @@ class LlamaCppBackend:
         supports_fit_target = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
+        ctx_checkpoints_flag = None
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
         supports_load_mode = False
         spec_draft_ngl_flag = None
+        spec_draft_cache_k_flag = None
+        spec_draft_cache_v_flag = None
         saw_spec_type = False
         probe_ok = False
         help_text = ""
@@ -6252,7 +6342,15 @@ class LlamaCppBackend:
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
-            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            # --swa-checkpoints is the older spelling, kept as an alias on newer
+            # builds. Probing the modern name alone drops the Checkpoints control on
+            # a build carrying only the old one, so record WHICH name this build has,
+            # like the draft-cache pair below.
+            for _alias in ("--ctx-checkpoints", "--swa-checkpoints"):
+                if _is_real(_alias):
+                    ctx_checkpoints_flag = _alias
+                    break
+            supports_ctx_checkpoints = ctx_checkpoints_flag is not None
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
@@ -6267,6 +6365,18 @@ class LlamaCppBackend:
             for _alias in ("--spec-draft-ngl", "--gpu-layers-draft", "--n-gpu-layers-draft"):
                 if _is_real(_alias):
                     spec_draft_ngl_flag = _alias
+                    break
+            # Same alias dance for the draft KV cache pair: --spec-draft-type-* is
+            # the modern spelling, --cache-type-*-draft the older, and a build with
+            # only one exits on the other. K and V probed independently (upstream
+            # renamed them together; a fork need not have). Long forms only.
+            for _alias in ("--spec-draft-type-k", "--cache-type-k-draft"):
+                if _is_real(_alias):
+                    spec_draft_cache_k_flag = _alias
+                    break
+            for _alias in ("--spec-draft-type-v", "--cache-type-v-draft"):
+                if _is_real(_alias):
+                    spec_draft_cache_v_flag = _alias
                     break
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
@@ -6323,12 +6433,15 @@ class LlamaCppBackend:
             "supports_fit_target": supports_fit_target,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "ctx_checkpoints_flag": ctx_checkpoints_flag,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
+            "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
+            "spec_draft_cache_v_flag": spec_draft_cache_v_flag,
             # The whole parsed catalogue, not just the booleans above. The UI
             # validates pass-through args against THIS build rather than a list
             # bundled with Unsloth, since a custom or newer llama.cpp is exactly
@@ -10867,6 +10980,12 @@ class LlamaCppBackend:
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
         self._requested_n_ubatch = None
+        # The diffusion runner builds its own command and passes none of these,
+        # so a previous GGUF's values must not be reported against it.
+        self._requested_load_mode = None
+        self._requested_spec_draft_cache_type = None
+        self._requested_ctx_checkpoints = None
+        self._requested_cache_ram = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
@@ -14696,6 +14815,10 @@ class LlamaCppBackend:
         n_parallel = intent.n_parallel
         n_batch = intent.n_batch
         n_ubatch = intent.n_ubatch
+        load_mode = intent.load_mode
+        spec_draft_cache_type = intent.spec_draft_cache_type
+        ctx_checkpoints = intent.ctx_checkpoints
+        cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
@@ -15369,6 +15492,13 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # What the SWA checkpoint reserve is priced against. Extras beat the
+                # field, as at launch: the control emits its flag before them, so a
+                # typed --ctx-checkpoints is what the child allocates. Only an
+                # explicit request counts at all: the estimator has always charged 0,
+                # and adopting llama.cpp's default of 32 would move the fit for every
+                # model.
+                _effective_ctx_checkpoints = resolve_ctx_checkpoints(extra_args, ctx_checkpoints)
                 # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
                 if (
                     self.is_embedding_gguf
@@ -16085,6 +16215,14 @@ class LlamaCppBackend:
                             _mtp_draft_weights = 0
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
+                    # The control underneath them: emitted before the extras, so an
+                    # extra still last-wins and the reserve prices what will run.
+                    _budget_draft_cache = (
+                        spec_draft_cache_type.strip().lower() if spec_draft_cache_type else None
+                    )
+                    if _budget_draft_cache in _VALID_KV_CACHE_TYPES:
+                        _mtp_draft_ck = _mtp_draft_ck or _budget_draft_cache
+                        _mtp_draft_cv = _mtp_draft_cv or _budget_draft_cache
 
                     # Byte-accurate reserve when dims allow, else None -> flat fallback.
                     mtp_overhead_fn: Optional[Callable[[int], int]] = None
@@ -16393,6 +16531,36 @@ class LlamaCppBackend:
                     # discrete card with an APU enumerates both, and demanding every one
                     # be discrete refused the pin there, keeping a projector the discrete
                     # card could have been rid of.
+                    # Applied here, or after the pooled weight-budget check gives
+                    # tensor mode up. One body, so the two sites cannot drift.
+                    _mm_pin_deferred = False
+
+                    def _apply_mmproj_cpu_pin(floor_ctx: int) -> None:
+                        nonlocal _mmproj_cpu_pinned, _mmproj_pinned_bytes
+                        nonlocal mmproj_size, model_size
+                        _mmproj_cpu_pinned = True
+                        _mmproj_pinned_bytes = mmproj_size
+                        # Everything downstream prices the projector off these two,
+                        # including the drop probe below: it sees the lighter footprint
+                        # and gives the drafter up only if the pin was not enough.
+                        mmproj_size = 0
+                        model_size = gguf_size
+                        # What the startup-recovery pin reports, so a CPU-resident
+                        # projector is announced whether it was predicted or salvaged;
+                        # otherwise image encoding just gets mysteriously slower. After
+                        # the per-load reset, before the recovery paths, which override
+                        # it with their more specific reason.
+                        self._mmproj_fallback_reason = "cpu_offload"
+                        logger.info(
+                            "Auto: running the vision projector on the CPU "
+                            "(--no-mmproj-offload); it does not fit in VRAM "
+                            "alongside the model at %d context. Image encoding "
+                            "gets slower, text generation is unaffected. Pass "
+                            "--mmproj-offload in the advanced arguments to keep it "
+                            "on the GPU.",
+                            floor_ctx,
+                        )
+
                     _mm_budgeted_gpus = [
                         (_idx, _free) for _idx, _free in gpus if total_by_idx.get(_idx, 0) > 0
                     ]
@@ -16403,16 +16571,13 @@ class LlamaCppBackend:
                         and _discrete_vram
                         and not _mmproj_cpu_pinned
                         and gpu_memory_mode != "manual"
-                        # TP replicates a per-device buffer whose geometry the numbers
-                        # below do not model. Same exclusion and same escape as the
-                        # MTP-drop probe: the TP downgrades are hoisted above this gate,
-                        # but the pooled weight-budget check further down is not, and it
-                        # prices weights + projector, so it can downgrade a load this
-                        # probe would have rescued. Re-asking after that downgrade is the
-                        # non-circular fix and needs this whole probe as a second
-                        # application point, so the corner keeps main's behaviour: the
-                        # layer-split fit still has --fit on and pays in spilled layers.
-                        and not tensor_parallel
+                        # Not gated on tensor_parallel: these are layer-split numbers,
+                        # so the ANSWER is still never applied to a tensor load, but the
+                        # pooled weight-budget check below can end one, and it prices
+                        # weights + projector -- it downgrades exactly the loads moving
+                        # the encoder would have rescued. Asking here and applying after
+                        # that downgrade is the non-circular order; making the check
+                        # pin-aware would decide TP from a pin decided from TP.
                         and _paravirtual_mmproj_pinnable(server_caps)
                         # Last-wins on the placement pair, so whoever named either
                         # spelling owns it. The environment counts: arg.cpp applies
@@ -16517,29 +16682,13 @@ class LlamaCppBackend:
                             )
                         )
                         if _mm_needs_fit:
-                            _mmproj_cpu_pinned = True
-                            _mmproj_pinned_bytes = mmproj_size
-                            # Everything downstream prices the projector off these two,
-                            # including the drop probe below: it sees the lighter
-                            # footprint and gives the drafter up only if the pin was not
-                            # enough on its own.
-                            mmproj_size = 0
-                            model_size = gguf_size
-                            # What the startup-recovery pin reports, so a CPU-resident
-                            # projector is announced whether it was predicted or salvaged;
-                            # otherwise image encoding just gets mysteriously slower. After
-                            # the per-load reset, before the recovery paths, which override
-                            # it with their more specific reason.
-                            self._mmproj_fallback_reason = "cpu_offload"
-                            logger.info(
-                                "Auto: running the vision projector on the CPU "
-                                "(--no-mmproj-offload); it does not fit in VRAM "
-                                "alongside the model at %d context. Image encoding "
-                                "gets slower, text generation is unaffected. Pass "
-                                "--mmproj-offload in the advanced arguments to keep it "
-                                "on the GPU.",
-                                _mm_floor_ctx,
-                            )
+                            if tensor_parallel:
+                                # Held, not dropped. Applying it here would price a
+                                # tensor load off layer-split numbers; discarding it
+                                # would lose the verdict the downgrade below needs.
+                                _mm_pin_deferred = True
+                            else:
+                                _apply_mmproj_cpu_pin(_mm_floor_ctx)
 
                     # Target pins but the drafter's reserve tips it over: Auto drops the
                     # drafter rather than pay for speed with context (or a --fit offload,
@@ -16664,6 +16813,7 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
+                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = False,
                                         mtp_overhead_fn = None,
@@ -16744,6 +16894,7 @@ class LlamaCppBackend:
                                         n_parallel = n_parallel,
                                         kv_unified = planned_kv_unified,
                                         n_ubatch = _effective_ubatch,
+                                        ctx_checkpoints = _effective_ctx_checkpoints,
                                         flash_attn = planned_flash_attn,
                                         mtp_engaged = True,
                                         mtp_overhead_fn = mtp_overhead_fn,
@@ -16895,6 +17046,53 @@ class LlamaCppBackend:
                             # Restore the dropped quantized KV + cache extras (minus
                             # --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
+                            # Layer split now, so the withheld verdict applies -- but
+                            # only where it is still true. It was measured before two
+                            # things this arm changes underneath it.
+                            #
+                            # _restore_after_tensor_downgrade just above put back a
+                            # quantized KV cache that tensor mode had dropped, and the
+                            # probe priced its floor against the heavier f16 the tensor
+                            # attempt ran with. That verdict is pessimistic by exactly
+                            # the cache difference, and acting on it would pin a
+                            # projector that fits, buying an 8.8x image encode for
+                            # nothing -- the one outcome this whole probe exists to
+                            # avoid.
+                            #
+                            # And the drafter-drop probe carries the same tensor
+                            # exclusion this one did, so it has not run either. The
+                            # documented order is projector first and drafter second;
+                            # pinning here without being able to re-ask the second half
+                            # pays the encoder cost AND still reaches --fit on.
+                            #
+                            # Re-running both probes against the restored cache is the
+                            # complete fix and is a larger change than this one. Until
+                            # then these two cases keep main's behaviour rather than act
+                            # on a stale answer.
+                            if (
+                                _mm_pin_deferred
+                                and _tensor_dropped_cache_type_kv is None
+                                and not _mtp_reserves_gpu
+                            ):
+                                _apply_mmproj_cpu_pin(_mm_floor_ctx)
+                                _mm_pin_deferred = False
+                                # Rebuild what was derived from model_size before the
+                                # pin. _subset_model_size closes over model_size_fit by
+                                # name, so rebinding it carries to the fit below.
+                                _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
+                                if _mtp_reserves_gpu:
+                                    _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
+                                _shared_pool_mmproj = (
+                                    _mmproj_pinned_bytes
+                                    if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
+                                    else 0
+                                )
+                                model_size_fit = (
+                                    model_size
+                                    + _compute_buffer_pipeline
+                                    + _soft_overhead
+                                    + _shared_pool_mmproj
+                                )
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation; see _plan_tensor_parallel.
@@ -16971,6 +17169,7 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
+                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -17058,6 +17257,7 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
+                                    ctx_checkpoints = _effective_ctx_checkpoints,
                                     flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
@@ -17200,6 +17400,7 @@ class LlamaCppBackend:
                                 n_parallel = n_parallel,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
+                                ctx_checkpoints = _effective_ctx_checkpoints,
                                 flash_attn = planned_flash_attn,
                                 mtp_engaged = _mtp_reserves_gpu,
                                 mtp_overhead_fn = mtp_overhead_fn,
@@ -17675,6 +17876,27 @@ class LlamaCppBackend:
 
                 server_caps = _launch_caps(binary)
 
+                # Before the extras, like the batch pair: a hand-typed flag still
+                # last-wins over the control. Each is gated on the capability
+                # probe, because a build that predates the flag exits on it.
+                if ctx_checkpoints is not None:
+                    _ctxcp_flag = server_caps.get("ctx_checkpoints_flag")
+                    if _ctxcp_flag:
+                        cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])
+                    else:
+                        logger.info(
+                            "llama-server has no --ctx-checkpoints; skipping the requested %s.",
+                            ctx_checkpoints,
+                        )
+                if cache_ram is not None:
+                    if server_caps.get("supports_cache_ram"):
+                        cmd.extend(["--cache-ram", str(int(cache_ram))])
+                    else:
+                        logger.info(
+                            "llama-server has no --cache-ram; skipping the requested %s MiB.",
+                            cache_ram,
+                        )
+
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
                 # "model" field of its chat/completions responses.
@@ -18044,6 +18266,45 @@ class LlamaCppBackend:
                 # Restore the requested view, or the spec-mode compare never matches.
                 if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
                     self._requested_spec_mode = None
+                # The draft KV cache dtype sizes the DRAFT context, so it means
+                # nothing without --model-draft. Judged on the flags actually built,
+                # not the requested mode: a mode that fell back to no drafter emits
+                # nothing, and an MTP load that did attach one is covered.
+                # Normalized and allow-listed like the main cache dtype above, and
+                # for the same reason: llama-server exits during argument parsing on
+                # a value it cannot map, and by then the resident model is gone. An
+                # unknown value emits nothing instead, so the load still comes up.
+                _draft_cache_type = (
+                    spec_draft_cache_type.strip().lower() if spec_draft_cache_type else None
+                )
+                if _draft_cache_type and _draft_cache_type not in _VALID_KV_CACHE_TYPES:
+                    logger.warning(
+                        "Ignoring unsupported draft KV cache type %r", spec_draft_cache_type
+                    )
+                    _draft_cache_type = None
+                if _draft_cache_type and any(
+                    _flag_name(tok) in _LOCAL_DRAFT_FLAGS for tok in spec_flags
+                ):
+                    _draft_k_flag = server_caps.get("spec_draft_cache_k_flag")
+                    _draft_v_flag = server_caps.get("spec_draft_cache_v_flag")
+                    if _draft_k_flag and _draft_v_flag:
+                        # Both axes together: llama.cpp refuses K != V on an MLA
+                        # draft context, and the control is one dtype for the pair.
+                        spec_flags.extend(
+                            [
+                                str(_draft_k_flag),
+                                _draft_cache_type,
+                                str(_draft_v_flag),
+                                _draft_cache_type,
+                            ]
+                        )
+                        logger.info("Draft KV cache dtype: %s", _draft_cache_type)
+                    else:
+                        logger.info(
+                            "llama-server has no draft KV cache flags; skipping the "
+                            "requested %s.",
+                            _draft_cache_type,
+                        )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
@@ -18215,12 +18476,19 @@ class LlamaCppBackend:
                 # a repeated prompt is not re-prefilled on every request. #5692.
                 if sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
-                    if server_caps.get("supports_cache_ram"):
+                    # An explicit control wins over the platform tuning: llama.cpp
+                    # is last-wins, so a 0 emitted after it would overrule the panel
+                    # while the panel still showed the value that was typed.
+                    if cache_ram is not None:
+                        pass
+                    elif server_caps.get("supports_cache_ram"):
                         cmd.extend(["--cache-ram", "0"])
                     else:
                         unsupported_cache_flags.append("--cache-ram")
-                    if server_caps.get("supports_ctx_checkpoints"):
-                        cmd.extend(["--ctx-checkpoints", "0"])
+                    if ctx_checkpoints is not None:
+                        pass
+                    elif server_caps.get("ctx_checkpoints_flag"):
+                        cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
                     if unsupported_cache_flags:
@@ -18334,6 +18602,15 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                 )
+                # After Model Memory and on the extras it returned, because it
+                # defers to those settings: while either one owns host placement
+                # the per-model pick emits nothing at all.
+                _load_mode_managed, _mem_extras = apply_load_mode_policy(
+                    _mem_extras,
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    weights_in_host_memory = _mem_host_resident,
+                    requested_load_mode = load_mode,
+                )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
@@ -18349,6 +18626,9 @@ class LlamaCppBackend:
                         "Model Memory: keeping weights pinned in place (%s)",
                         " ".join(_mem_managed),
                     )
+                if _load_mode_managed:
+                    cmd.extend(_load_mode_managed)
+                    logger.info("Load mode: %s", " ".join(_load_mode_managed))
 
                 # User pass-through args go last. Placement flags are removed
                 # below when the Studio picker owns the GPU selection.
@@ -19462,6 +19742,10 @@ class LlamaCppBackend:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
                                 supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                # Not the requested load mode: the first launch
+                                # emitted it and this call only ADDS, so a second
+                                # copy would land after the extras and mark
+                                # _memory_policy_active for a launch it never touched.
                                 weights_in_host_memory = _retry_host_resident,
                             )
                             if _retry_managed:
@@ -20003,6 +20287,10 @@ class LlamaCppBackend:
                 self._vram_fraction_pending = None
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
+                self._requested_load_mode = intent.load_mode
+                self._requested_spec_draft_cache_type = intent.spec_draft_cache_type
+                self._requested_ctx_checkpoints = intent.ctx_checkpoints
+                self._requested_cache_ram = intent.cache_ram
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash. The verified-cache hint is
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
@@ -22969,6 +23257,13 @@ class LlamaCppBackend:
                             _chunk_usage = data.get("usage")
                             if _chunk_usage:
                                 _metadata_usage = _chunk_usage
+                            # An error chunk carries no choices, so without this the loop
+                            # ignored it and the reply ended with no finish_reason and no
+                            # incomplete stamp: to the user, a mid-sentence stop for no
+                            # stated reason. Raise so the failure is surfaced.
+                            _stream_error = stream_error_from_chunk(data)
+                            if _stream_error is not None:
+                                raise _stream_error
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
@@ -23800,6 +24095,11 @@ class LlamaCppBackend:
                                 if _cu:
                                     _iter_usage = _cu
 
+                                # See the note on the first stream loop: an error chunk has
+                                # no choices, so `continue` below would drop it silently.
+                                _stream_error = stream_error_from_chunk(chunk_data)
+                                if _stream_error is not None:
+                                    raise _stream_error
                                 choices = chunk_data.get("choices", [])
                                 if not choices:
                                     continue
@@ -25266,6 +25566,10 @@ class LlamaCppBackend:
                             _chunk_usage = chunk_data.get("usage")
                             if _chunk_usage:
                                 _metadata_usage = _chunk_usage
+                            # See the note on the first stream loop.
+                            _stream_error = stream_error_from_chunk(chunk_data)
+                            if _stream_error is not None:
+                                raise _stream_error
                             choices = chunk_data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})

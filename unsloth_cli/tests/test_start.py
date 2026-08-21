@@ -833,6 +833,32 @@ def test_merge_codex_config_fresh():
     assert provider["requires_openai_auth"] is False
 
 
+def test_merge_codex_config_raises_the_stream_idle_timeout():
+    """Codex's 300s default cancels the stream while llama-server is still reading.
+
+    llama-server emits nothing at all during prompt processing, so the whole wait counts
+    as idle. Measured on a 2-core CI host: 16.1 tok/s against Codex's several-thousand
+    token preamble is ~460s of silence before the first token exists, and the default
+    trips at 300s. The reconnect then lands on a different parallel slot whose KV cache
+    shares no prefix, so every retry restarts from zero and the turn never completes --
+    a job hung for its full 600s cap with `Reconnecting... 1/5` and one request logged at
+    exactly 300056ms.
+
+    Asserted as a floor rather than an equality: raising it further is fine, and the
+    number is not the contract. Losing it entirely is the regression.
+    """
+    provider = _parse_toml(start._merge_codex_config("", BASE))["model_providers"]["unsloth_api"]
+    assert "stream_idle_timeout_ms" in provider, (
+        "the Codex provider block no longer sets stream_idle_timeout_ms, so Codex falls "
+        "back to its 300s default and cancels any first turn whose prompt takes longer "
+        "than that to process -- which is an ordinary local CPU host, not a corner case"
+    )
+    assert provider["stream_idle_timeout_ms"] > 300_000, (
+        f"stream_idle_timeout_ms is {provider['stream_idle_timeout_ms']}, at or below "
+        f"Codex's own 300000 default, so setting it changes nothing"
+    )
+
+
 def test_merge_codex_config_replaces_stale_block():
     existing = (
         'model = "gpt-5"\n'

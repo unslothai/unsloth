@@ -92,6 +92,17 @@ export interface LoadModelRequest {
   n_batch?: number | null;
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
   n_ubatch?: number | null;
+  /** weight loading mode (--load-mode): auto/none/mmap/mlock/mmap+mlock/dio.
+   *  Omit/null = llama.cpp's own `auto`. Settings -> Model Memory overrides it. */
+  load_mode?: string | null;
+  /** KV cache dtype for the DRAFT model's context (--spec-draft-type-k/-v);
+   *  omit/null = llama.cpp default f16. Only reaches the command line when the
+   *  load attaches a separate draft model. */
+  spec_draft_cache_type?: string | null;
+  /** context checkpoints per slot (--ctx-checkpoints); omit/null = default 32, 0 disables */
+  ctx_checkpoints?: number | null;
+  /** host prompt cache size in MiB (--cache-ram); omit/null = default 8192, 0 disables, -1 unlimited */
+  cache_ram?: number | null;
   /**
    * Pass-through llama-server args, one argv token per entry, appended after
    * Unsloth's own flags so llama.cpp's last-wins parser takes these. Flags Unsloth
@@ -291,6 +302,14 @@ export interface LoadModelResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** load mode (--load-mode) the load was invoked with; null = default */
+  requested_load_mode?: string | null;
+  /** draft KV cache dtype the load was invoked with; null = default */
+  requested_spec_draft_cache_type?: string | null;
+  /** checkpoints (--ctx-checkpoints) the load was invoked with; null = default */
+  requested_ctx_checkpoints?: number | null;
+  /** host prompt cache (--cache-ram) the load was invoked with; null = default */
+  requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
 }
@@ -390,6 +409,14 @@ export interface InferenceStatusResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** load mode (--load-mode) the active load was invoked with; null = default */
+  requested_load_mode?: string | null;
+  /** draft KV cache dtype the active load was invoked with; null = default */
+  requested_spec_draft_cache_type?: string | null;
+  /** checkpoints (--ctx-checkpoints) the active load was invoked with; null = default */
+  requested_ctx_checkpoints?: number | null;
+  /** host prompt cache (--cache-ram) the active load was invoked with; null = default */
+  requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
   n_layers?: number | null;

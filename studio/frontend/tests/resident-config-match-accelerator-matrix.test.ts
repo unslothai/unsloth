@@ -186,6 +186,30 @@ const FIELDS: FieldCase[] = [
     different: 256,
   },
   {
+    key: "loadMode",
+    statusKey: "requested_load_mode",
+    same: "mmap+mlock",
+    different: "mmap",
+  },
+  {
+    key: "specDraftCacheDtype",
+    statusKey: "requested_spec_draft_cache_type",
+    same: "q8_0",
+    different: "f16",
+  },
+  {
+    key: "ctxCheckpoints",
+    statusKey: "requested_ctx_checkpoints",
+    same: 8,
+    different: 32,
+  },
+  {
+    key: "cacheRam",
+    statusKey: "requested_cache_ram",
+    same: 4096,
+    different: 8192,
+  },
+  {
     key: "chatTemplateOverride",
     statusKey: "chat_template_override",
     same: "{{ bos }}",

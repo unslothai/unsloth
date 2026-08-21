@@ -54,9 +54,13 @@ export function loadedConfigSignature(
     config.mlxKvBits ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
+    config.specDraftCacheDtype ?? "",
     config.nParallel ?? "",
     config.nBatch ?? "",
     config.nUbatch ?? "",
+    config.loadMode ?? "",
+    config.ctxCheckpoints ?? "",
+    config.cacheRam ?? "",
     config.tensorParallel ? "1" : "0",
     config.disableVision ? "1" : "0",
     config.chatTemplateOverride == null
