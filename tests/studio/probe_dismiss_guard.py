@@ -562,6 +562,15 @@ async def one_case(
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
         if case == "rightclick_then_click":
+            # Keep WebKit's native context-menu UI from consuming the next automated mouse input.
+            # The contextmenu event still fires, so this isolates the page-level guard behavior
+            # the case is meant to test instead of mistaking browser chrome for a swallowed click.
+            await page.evaluate(
+                """() => document.addEventListener(
+                    "contextmenu", (event) => event.preventDefault(),
+                    { capture: true, once: true }
+                )"""
+            )
             await page.mouse.click(spot["x"], spot["y"], button = "right")
         else:
             await page.mouse.move(spot["x"], spot["y"])
