@@ -115,7 +115,16 @@ def test_explicit_prune_deletes_terminal_generation_messages(chat_home):
     user = studio_db.get_chat_message("thread-1", "user-1")
 
     retained = studio_db.sync_chat_messages("thread-1", [user], prune_missing = True)
-    assert [message["id"] for message in retained] == ["user-1"]
+    assert {message["id"] for message in retained} == {"user-1", "assistant-1"}
+    assert runs_db.get_run("run-1", "alice") is not None
+
+    deleted = studio_db.sync_chat_messages(
+        "thread-1",
+        [user],
+        prune_missing = True,
+        deleted_message_ids = {"assistant-1"},
+    )
+    assert [message["id"] for message in deleted] == ["user-1"]
     assert studio_db.get_chat_message("thread-1", "assistant-1") is None
     assert runs_db.get_run("run-1", "alice") is None
 
@@ -245,6 +254,7 @@ def test_deleted_run_id_is_tombstoned_against_stale_tabs(chat_home):
     [
         ({"provider_id": "external"}, "only for local"),
         ({"tools": [{"type": "function"}]}, "legacy streaming"),
+        ({"enable_tools": True}, "legacy streaming"),
         ({"rag_scope": {"access_token": "secret"}}, "Credentials"),
         ({"rag_scope": {"signing_key": "secret"}}, "Credentials"),
         ({"rag_scope": {"ssh_key": "secret"}}, "Credentials"),

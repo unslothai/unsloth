@@ -128,7 +128,8 @@ export function recoveredGenerationFinalMetadata(options: {
   if (next.timing === undefined) {
     next.timing = {
       streamStartTime: startedAt,
-      firstTokenTime: firstChunkAt,
+      firstTokenTime:
+        firstChunkAt === undefined ? undefined : Math.max(0, firstChunkAt - startedAt),
       totalStreamTime: Math.max(0, finishedAt - startedAt),
       tokenCount: completionTokens,
       tokensPerSecond,
@@ -156,9 +157,9 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  firstChunkAt?: number;
 }): Record<string, unknown> {
-  const { current, runId, status, cursor, lastEventSeq, lengthLimited } =
-    options;
+  const { current, runId, status, cursor, lastEventSeq, lengthLimited, firstChunkAt } = options;
   const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
     ...current,
@@ -178,6 +179,9 @@ export function generationRecoveryMetadata(options: {
     next.incomplete = { reason: "interrupted" };
   } else {
     next.incomplete = { reason: "cancelled" };
+  }
+  if (firstChunkAt !== undefined) {
+    next.generationFirstChunkAt = firstChunkAt;
   }
   return next;
 }

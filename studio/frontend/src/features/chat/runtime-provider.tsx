@@ -783,7 +783,11 @@ function scheduleGenerationRecovery(
         }
       | undefined;
     let recoveryTimings: Record<string, unknown> | undefined;
-    let firstChunkAt: number | undefined;
+    let firstChunkAt =
+      typeof metadata.generationFirstChunkAt === "number" &&
+      Number.isFinite(metadata.generationFirstChunkAt)
+        ? metadata.generationFirstChunkAt
+        : undefined;
     let totalChunks = 0;
     let currentMetadata = { ...metadata };
     const serverCancel = () => {
@@ -815,6 +819,7 @@ function scheduleGenerationRecovery(
         cursor,
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
+        firstChunkAt,
       });
       if (nextMetadata.generationSettled === true) {
         nextMetadata = recoveredGenerationFinalMetadata({

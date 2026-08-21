@@ -2680,20 +2680,6 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
     }
 
 
-def _active_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
-    return {
-        str(message_id)
-        for row in conn.execute(
-            """SELECT user_message_id, assistant_message_id
-               FROM chat_generation_runs
-               WHERE thread_id = ? AND status IN ('queued', 'running', 'cancelling')""",
-            (thread_id,),
-        ).fetchall()
-        for message_id in row
-        if message_id is not None
-    }
-
-
 def _server_managed_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     return _research_message_ids(conn, thread_id) | _generation_message_ids(conn, thread_id)
 
@@ -3256,6 +3242,7 @@ def sync_chat_messages(
     prune_missing: bool = False,
     *,
     allow_research_update: bool = False,
+    deleted_message_ids: Iterable[str] = (),
 ) -> list[dict]:
     conn = get_connection()
     try:
@@ -3269,9 +3256,10 @@ def sync_chat_messages(
         generation_ids = _generation_message_ids(conn, thread_id)
         managed_ids = research_ids | generation_ids
         requested_ids = {str(m["id"]) for m in messages}
-        # All generation messages remain update-protected, but only active-run
-        # messages must survive an explicit prune while the server owns them.
-        prune_protected_ids = research_ids | _active_generation_message_ids(conn, thread_id)
+        # Snapshot pruning is not delete intent: terminal generation messages may be absent from
+        # a stale client snapshot and must survive unless the delete flow names them explicitly.
+        explicitly_deleted_ids = {str(message_id) for message_id in deleted_message_ids}
+        prune_protected_ids = research_ids | (generation_ids - explicitly_deleted_ids)
         # The rows this sync will delete, computed before the upsert so a relink forced by
         # that deletion can be told apart from an edit. Research ids are subtracted because
         # the delete below exempts them: counting one as pruned would walk the reseat past a

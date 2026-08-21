@@ -380,7 +380,7 @@ async def test_start_reserves_slot_and_lifecycle_before_worker_runs(durable_run,
     supervisor.start("run-1", thread_id = "thread-1", model = "local")
     assert (llama_keepwarm._pending, active_generations.count()) == (1, 1)
     assert active_generations.snapshot()[0]["thread_id"] == "thread-1"
-    assert active_generations.cancel_all() == 1
+    supervisor.cancel("run-1")
     await asyncio.wait_for(supervisor._tasks["run-1"], timeout = 2)
     assert runs_db.get_run("run-1", "alice")["status"] == "cancelled"
     assert (llama_keepwarm._pending, llama_keepwarm._inflight) == (0, 0)

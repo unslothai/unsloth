@@ -165,7 +165,7 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    if raw.get("tools"):
+    if raw.get("tools") or request.enable_tools is True or bool(request.mcp_enabled):
         raise HTTPException(
             status_code = 400,
             detail = "Client-executed tool chains use the legacy streaming path",
@@ -269,7 +269,7 @@ def cancel_chat_generation_run(
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
-    if supervisor is not None and run["status"] == "cancelling":
+    if supervisor is not None and run["status"] in {"cancelling", "cancelled"}:
         supervisor.cancel(run_id)
     return run
 

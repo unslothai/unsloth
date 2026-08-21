@@ -112,7 +112,7 @@ test("terminal recovery restores final local usage and timing metadata", () => {
   });
   assert.deepEqual(metadata.timing, {
     streamStartTime: 120,
-    firstTokenTime: 220,
+    firstTokenTime: 100,
     totalStreamTime: 1000,
     tokenCount: 12,
     tokensPerSecond: 12,

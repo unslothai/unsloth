@@ -255,7 +255,7 @@ class ChatGenerationSupervisor:
                     error = "Studio shut down during generation" if shutting_down else None,
                 )
                 return
-            await activity.start()
+            await activity.start(cancel_event)
             if cancel_event.is_set():
                 shutting_down = run_id in self._shutdown_runs
                 await asyncio.to_thread(

@@ -307,6 +307,7 @@ class ChatMessageListResponse(BaseModel):
 class ChatMessageSyncRequest(BaseModel):
     messages: list[ChatMessage]
     pruneMissing: bool = False
+    deletedMessageIds: list[str] = Field(default_factory = list)
 
 
 class ChatDeleteRequest(BaseModel):
@@ -1313,6 +1314,7 @@ def replace_thread_messages(
                     thread_id,
                     messages,
                     prune_missing = payload.pruneMissing,
+                    deleted_message_ids = payload.deletedMessageIds,
                 )
             ]
         )
