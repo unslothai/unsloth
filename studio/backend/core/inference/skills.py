@@ -357,9 +357,7 @@ def _archive_source(
         raise SkillError("Archive contains conflicting file paths.")
     selected_files = []
     for entry, path in files:
-        if source_root.parts and not _portable_archive_key(path).startswith(
-            f"{source_root_key}/"
-        ):
+        if source_root.parts and not _portable_archive_key(path).startswith(f"{source_root_key}/"):
             continue
         normalized_path = _normalize_archive_name(entry.filename)
         relative_path = (
