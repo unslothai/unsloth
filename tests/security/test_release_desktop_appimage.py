@@ -333,7 +333,6 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     fontconfig.parent.mkdir(parents = True)
     fontconfig.write_text("Unsloth Safe Emoji\n", encoding = "utf-8")
 
-
     return appdir
 
 
