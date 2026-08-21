@@ -262,3 +262,33 @@ test("a server physical GPU pin replaces a local Vulkan pin", () => {
   assert.deepEqual(config.selectedGpuIds, [0]);
   assert.equal(config.selectedGpuIndexKind, "physical");
 });
+
+test("a row that carries less than the local config does not erase the rest", () => {
+  // The mirror is best-effort: a PUT that never landed, a legacy config migrated
+  // into this browser, a field the backend normalizer refused. Hydration adopting
+  // the row wholesale wrote those gaps back over the local copy and persisted it,
+  // so a remembered context disappeared on the next panel open.
+  const local = fromApiOverride({
+    custom_context_length: 4096,
+    kv_cache_dtype: "q8_0",
+  });
+  const config = fromApiOverride({ tensor_parallel: true }, local);
+  assert.equal(config.customContextLength, 4096);
+  assert.equal(config.kvCacheDtype, "q8_0");
+  assert.equal(config.tensorParallel, true);
+});
+
+test("the row still wins for every field it does carry", () => {
+  const local = fromApiOverride({ custom_context_length: 4096 });
+  const config = fromApiOverride({ custom_context_length: 32768 }, local);
+  assert.equal(config.customContextLength, 32768);
+});
+
+test("a cleared extra-arguments box survives a row that carries no arguments", () => {
+  // [] is a decision (the box was emptied) and stops the fallback to a broader row,
+  // so it must not come back as "never read" because the row said nothing.
+  const local = fromApiOverride({ llama_extra_args: [] });
+  assert.deepEqual(local.llamaExtraArgs, []);
+  const config = fromApiOverride({ kv_cache_dtype: "q8_0" }, local);
+  assert.deepEqual(config.llamaExtraArgs, []);
+});

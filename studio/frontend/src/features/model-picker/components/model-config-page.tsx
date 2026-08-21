@@ -2146,6 +2146,10 @@ export function ModelConfigPage({
         // is the same treatment for the one already in hand, which nothing else
         // would catch while Advanced stays collapsed.
         const local = configRef.current.llamaExtraArgs;
+        // Kept for the merge below as well as for the box: a row that carries no
+        // arguments leaves the local list standing, and handing back the list this
+        // build refuses would re-enable Load for a request /load answers 400 on.
+        let sanitizedLocal = localAtStart;
         if (local != null && local.length > 0 && local === localAtStart) {
           const cleaned = sanitizeStoredExtraArgs(
             local,
@@ -2156,12 +2160,10 @@ export function ModelConfigPage({
             },
           );
           if (cleaned.length !== local.length) {
+            sanitizedLocal = cleaned.length > 0 ? cleaned : null;
             setConfig((current) =>
               current.llamaExtraArgs === local
-                ? {
-                    ...current,
-                    llamaExtraArgs: cleaned.length > 0 ? cleaned : null,
-                  }
+                ? { ...current, llamaExtraArgs: sanitizedLocal }
                 : current,
             );
           }
@@ -2172,7 +2174,7 @@ export function ModelConfigPage({
                 ...resolvedOverride,
                 ...(resolvedArgs.explicit ? { llama_extra_args: stored } : {}),
               },
-              configAtStart,
+              { ...configAtStart, llamaExtraArgs: sanitizedLocal },
             )
           : null;
         const hydratedIsLoadable =
@@ -2201,9 +2203,11 @@ export function ModelConfigPage({
                 ),
               );
 
-        // A server row is the shared authority. Do not replace an edit made while
-        // the request was in flight, but otherwise adopt it as one coherent config
-        // so LAN and Desktop cannot show different remembered values.
+        // The shared row outranks the local seed for every field it carries, so LAN
+        // and Desktop cannot show different remembered values; fromApiOverride keeps
+        // the rest of this browser's config rather than resetting it, since an
+        // absent field is as much a gap in the mirror as a chosen default. Never
+        // over an edit made while the request was in flight.
         if (
           serverConfig &&
           configRef.current === configAtStart &&

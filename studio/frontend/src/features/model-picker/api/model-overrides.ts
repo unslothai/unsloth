@@ -293,54 +293,68 @@ export async function fetchLoadExtraArgs(
   return resolvedFrom(resolved ?? {});
 }
 
-/** Translate one server-resolved override into the config shape the picker uses. */
+/**
+ * Translate one server-resolved override into the config shape the picker uses.
+ *
+ * The row is authoritative for the fields it CARRIES, and only for those. An absent
+ * field is not evidence the user chose the default: the mirror is best-effort and
+ * lossy, so a PUT that never landed, a value this build's normalizer refused, and a
+ * row written before a field reached the route all leave the same gap. `localConfig`
+ * fills it, or opening the panel would delete settings the user typed here -- a
+ * migrated legacy config, or one whose mirror failed, came back as bare defaults and
+ * was then persisted over the original. The cost is that clearing ONE field on another
+ * origin does not travel until this one saves again, which the schema cannot express
+ * anyway: an omitted field and an app default are written the same way.
+ */
 export function fromApiOverride(
   override: ApiModelOverride,
   localConfig?: PerModelConfig,
 ): PerModelConfig {
+  const local = localConfig ?? DEFAULT_PER_MODEL_CONFIG;
+  // Three states, so the winning source is chosen once and restored below: the row's
+  // list when it has one, else whatever this browser held.
+  const extraArgs = Array.isArray(override.llama_extra_args)
+    ? override.llama_extra_args
+    : local.llamaExtraArgs;
+  // Only a physical pin travels (toApiOverride drops the rest), so a row without ids
+  // says nothing about placement and a local Vulkan ordinal keeps its own namespace.
+  const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
   const normalized = normalizePerModelConfig({
     ...DEFAULT_PER_MODEL_CONFIG,
-    customContextLength: override.custom_context_length ?? null,
-    maxSeqLength: override.max_seq_length ?? null,
-    kvCacheDtype: override.kv_cache_dtype ?? null,
-    mlxKvBits: override.mlx_kv_bits ?? null,
-    speculativeType: override.speculative_type ?? null,
-    specDraftNMax: override.spec_draft_n_max ?? null,
-    specDraftCacheDtype: override.spec_draft_cache_type ?? null,
-    nParallel: override.n_parallel ?? null,
-    nBatch: override.n_batch ?? null,
-    nUbatch: override.n_ubatch ?? null,
-    loadMode: override.load_mode ?? null,
-    ctxCheckpoints: override.ctx_checkpoints ?? null,
-    cacheRam: override.cache_ram ?? null,
-    tensorParallel: override.tensor_parallel ?? false,
-    disableVision: override.disable_vision ?? false,
-    chatTemplateOverride: override.chat_template_override ?? null,
-    llamaExtraArgs: Array.isArray(override.llama_extra_args)
-      ? override.llama_extra_args
-      : undefined,
-    gpuMemoryMode: override.gpu_memory_mode ?? "auto",
-    gpuLayers: override.gpu_layers,
-    nCpuMoe: override.n_cpu_moe,
-    selectedGpuIds: override.gpu_ids ?? null,
-    selectedGpuIndexKind: override.gpu_ids ? "physical" : null,
+    customContextLength:
+      override.custom_context_length ?? local.customContextLength,
+    maxSeqLength: override.max_seq_length ?? local.maxSeqLength,
+    kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
+    mlxKvBits: override.mlx_kv_bits ?? local.mlxKvBits,
+    speculativeType: override.speculative_type ?? local.speculativeType,
+    specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
+    specDraftCacheDtype:
+      override.spec_draft_cache_type ?? local.specDraftCacheDtype,
+    nParallel: override.n_parallel ?? local.nParallel,
+    nBatch: override.n_batch ?? local.nBatch,
+    nUbatch: override.n_ubatch ?? local.nUbatch,
+    loadMode: override.load_mode ?? local.loadMode,
+    ctxCheckpoints: override.ctx_checkpoints ?? local.ctxCheckpoints,
+    cacheRam: override.cache_ram ?? local.cacheRam,
+    // Both are stored only when true, so an absent one is a gap like any other.
+    tensorParallel: override.tensor_parallel ?? local.tensorParallel,
+    disableVision: override.disable_vision ?? local.disableVision,
+    chatTemplateOverride:
+      override.chat_template_override ?? local.chatTemplateOverride,
+    llamaExtraArgs: extraArgs,
+    gpuMemoryMode: override.gpu_memory_mode ?? local.gpuMemoryMode,
+    gpuLayers: override.gpu_layers ?? local.gpuLayers,
+    nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
+    selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    selectedGpuIndexKind: serverGpuIds
+      ? "physical"
+      : (local.selectedGpuIndexKind ?? null),
   });
-  // normalizePerModelConfig intentionally collapses an empty local list to null.
-  // The server uses [] as a tombstone that stops fallback to a broader override,
-  // so hydration must retain that third state.
-  if (Array.isArray(override.llama_extra_args)) {
-    normalized.llamaExtraArgs = [...override.llama_extra_args];
-  }
-  // Vulkan ids are ordinals in a different namespace from CUDA and ROCm ids, so
-  // toApiOverride deliberately cannot mirror them. Keep that local-only pin when
-  // hydrating a server row that has no physical pin of its own.
-  if (
-    !override.gpu_ids?.length &&
-    localConfig?.selectedGpuIndexKind === "vulkan" &&
-    localConfig.selectedGpuIds?.length
-  ) {
-    normalized.selectedGpuIds = [...localConfig.selectedGpuIds];
-    normalized.selectedGpuIndexKind = "vulkan";
+  // normalizePerModelConfig intentionally collapses an empty list to null. The server
+  // uses [] as a tombstone that stops fallback to a broader override, so hydration
+  // must retain that third state.
+  if (Array.isArray(extraArgs)) {
+    normalized.llamaExtraArgs = [...extraArgs];
   }
   return normalized;
 }

@@ -163,7 +163,16 @@ test("the panel adopts a shared server config without overwriting a live edit", 
     PANEL,
     /const serverConfig = resolvedOverride\s*\n?\s*\? fromApiOverride\(/,
   );
-  assert.match(PANEL, /\},\s*\n?\s*configAtStart,\s*\n?\s*\)/);
+  // The local config is the merge base, so a field the row does not carry keeps the
+  // value this browser holds instead of coming back as an app default. It travels
+  // sanitized: a row that says nothing about arguments leaves the local list
+  // standing, and a flag this build refuses would re-enable Load for a 400.
+  assert.match(
+    PANEL,
+    /\{ \.\.\.configAtStart, llamaExtraArgs: sanitizedLocal \},/,
+  );
+  assert.match(PANEL, /let sanitizedLocal = localAtStart;/);
+  assert.match(PANEL, /sanitizedLocal = cleaned\.length > 0 \? cleaned : null;/);
   assert.match(PANEL, /configRef\.current === configAtStart/);
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
   assert.match(PANEL, /setConfig\(serverConfig\);/);
