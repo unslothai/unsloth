@@ -34,6 +34,10 @@ _UNINSTALL_SH = _REPO_ROOT / "scripts" / "uninstall.sh"
 
 _DROPIN_MARKER = "# >>> Unsloth ROCm AOTriton attention >>>"
 _OWNER_MARKER = "AotritonUserEnvOwned"
+_REQUIRES_POSIX_SHELL = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason = "needs a POSIX shell",
+)
 
 
 def test_opens_the_gate_when_unset():
@@ -124,11 +128,12 @@ def _run_persist_helper(
     env = None,
 ):
     """Run the helper with its profile directory redirected to tmp_path."""
+    tmp_path.mkdir(parents = True, exist_ok = True)
     body = _extract_sh_function(
         _INSTALL_SH.read_text(encoding = "utf-8"), "_persist_rocm_aotriton_env"
     )
     profile_d = tmp_path / "profile.d"
-    profile_d.mkdir()
+    profile_d.mkdir(exist_ok = True)
     body = body.replace("/etc/profile.d", str(profile_d))
     script = tmp_path / "harness.sh"
     script.write_text(
@@ -149,10 +154,7 @@ def _run_persist_helper(
     return proc.stdout, (profile_d / "unsloth-rocm-aotriton.sh").exists()
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the installer helper",
-)
+@_REQUIRES_POSIX_SHELL
 def test_install_sh_skips_persistence_under_no_torch(tmp_path):
     """Do not change the host when torch is not installed."""
     value, wrote = _run_persist_helper(tmp_path, "true")
@@ -160,20 +162,14 @@ def test_install_sh_skips_persistence_under_no_torch(tmp_path):
     assert not wrote, "--no-torch must not write the host-wide drop-in"
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the installer helper",
-)
+@_REQUIRES_POSIX_SHELL
 def test_install_sh_persists_when_torch_is_being_installed(tmp_path):
     value, wrote = _run_persist_helper(tmp_path, "false")
     assert value == "1"
     assert wrote
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the installer helper",
-)
+@_REQUIRES_POSIX_SHELL
 def test_install_sh_leaves_an_existing_opinion_alone(tmp_path):
     value, wrote = _run_persist_helper(
         tmp_path, "false", env = {"TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL": "0"}
@@ -190,13 +186,18 @@ def test_install_sh_persists_the_gate_off_the_resolved_index_leaf():
     assert call - classify < 400
 
 
-def _run_remove_helper(tmp_path, dropin_contents = None):
+def _run_remove_helper(
+    tmp_path,
+    dropin_contents = None,
+    profile_d = None,
+):
     """Run the uninstaller's removal helper against a redirected profile directory."""
+    tmp_path.mkdir(parents = True, exist_ok = True)
     body = _extract_sh_function(
         _UNINSTALL_SH.read_text(encoding = "utf-8"), "_remove_rocm_aotriton_dropin"
     )
-    profile_d = tmp_path / "profile.d"
-    profile_d.mkdir()
+    profile_d = profile_d or tmp_path / "profile.d"
+    profile_d.mkdir(exist_ok = True)
     dropin = profile_d / "unsloth-rocm-aotriton.sh"
     if dropin_contents is not None:
         dropin.write_text(dropin_contents, encoding = "utf-8")
@@ -226,95 +227,53 @@ def _installer_dropin_text():
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
+@_REQUIRES_POSIX_SHELL
+@pytest.mark.parametrize(
+    ("dropin_contents", "survives"),
+    (
+        (_installer_dropin_text(), False),
+        (f"export {AOTRITON_ENV}=1\n", True),
+        (None, False),
+        (
+            _installer_dropin_text().replace(f"{AOTRITON_ENV}=1", f"{AOTRITON_ENV}=0"),
+            True,
+        ),
+        (_installer_dropin_text() + f"export {AOTRITON_ENV}=0\n", True),
+        (
+            _installer_dropin_text() + 'export MY_OWN_THING="keep me"\n',
+            True,
+        ),
+        (f"export {AOTRITON_ENV}=0\n" + _installer_dropin_text(), True),
+    ),
+    ids = (
+        "installer-created",
+        "foreign",
+        "missing",
+        "replaced-value",
+        "appended-opt-out",
+        "appended-content",
+        "prepended-opt-out",
+    ),
 )
-def test_uninstall_sh_removes_the_installer_created_dropin(tmp_path):
-    """The host-wide gate must not outlive the install that wrote it."""
-    assert _run_remove_helper(tmp_path, _installer_dropin_text()) is False
+def test_uninstall_sh_dropin_ownership(tmp_path, dropin_contents, survives):
+    assert _run_remove_helper(tmp_path, dropin_contents) is survives
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
-)
-def test_uninstall_sh_leaves_a_file_it_did_not_write(tmp_path):
-    """Preserve a same-named file without the installer marker."""
-    foreign = f"export {AOTRITON_ENV}=1\n"
-    assert _run_remove_helper(tmp_path, foreign) is True
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
-)
-def test_uninstall_sh_is_a_noop_without_the_dropin(tmp_path):
-    """A CUDA or CPU host never had one; the uninstall must not care."""
-    assert _run_remove_helper(tmp_path, None) is False
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
-)
-def test_uninstall_sh_keeps_a_drop_in_edited_to_the_opt_out(tmp_path):
-    """Deleting a hand-set 0 would reopen the gate on the next `import unsloth`."""
-    edited = _installer_dropin_text().replace(f"{AOTRITON_ENV}=1", f"{AOTRITON_ENV}=0")
-    assert _run_remove_helper(tmp_path, edited) is True
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
-)
-def test_uninstall_sh_keeps_a_drop_in_with_an_appended_opt_out(tmp_path):
-    """The original line survives an append, but the last assignment is what sourcing sees."""
-    appended = _installer_dropin_text() + f"export {AOTRITON_ENV}=0\n"
-    assert _run_remove_helper(tmp_path, appended) is True
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
-)
-def test_uninstall_sh_keeps_a_drop_in_carrying_unrelated_user_content(tmp_path):
-    """Whatever else the user put in the file is not ours to throw out."""
-    with_extra = _installer_dropin_text() + 'export MY_OWN_THING="keep me"\n'
-    assert _run_remove_helper(tmp_path, with_extra) is True
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the uninstaller helper",
-)
-def test_uninstall_sh_keeps_a_drop_in_with_a_prepended_line(tmp_path):
-    """An override placed above ours still means the file is not what we wrote."""
-    prepended = f"export {AOTRITON_ENV}=0\n" + _installer_dropin_text()
-    assert _run_remove_helper(tmp_path, prepended) is True
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("sh") is None,
-    reason = "needs a POSIX shell to execute the installer and uninstaller helpers",
-)
+@_REQUIRES_POSIX_SHELL
 def test_the_drop_in_directory_is_redirectable_end_to_end(tmp_path):
     """Write and removal must agree on where the drop-in lives."""
     profile_d = tmp_path / "elsewhere"
     profile_d.mkdir()
     write_tmp = tmp_path / "write"
-    write_tmp.mkdir()
     remove_tmp = tmp_path / "remove"
-    remove_tmp.mkdir()
     written, _ = _run_persist_helper(write_tmp, "false", env = {"UNSLOTH_PROFILE_D": str(profile_d)})
     dropin = profile_d / "unsloth-rocm-aotriton.sh"
     assert written == "1"
     assert dropin.exists(), "install.sh must honour UNSLOTH_PROFILE_D"
     written_text = dropin.read_text(encoding = "utf-8")
-    assert _DROPIN_MARKER in written_text
     # Keep the fixture aligned with install.sh's output.
     assert written_text == _installer_dropin_text()
-    assert _run_remove_helper(remove_tmp, written_text) is False
+    assert _run_remove_helper(remove_tmp, profile_d = profile_d) is False
 
 
 def test_uninstall_sh_removes_the_dropin_outside_the_wsl_branch():
@@ -324,12 +283,6 @@ def test_uninstall_sh_removes_the_dropin_outside_the_wsl_branch():
     call = source.index("_remove_rocm_aotriton_dropin\n", linux_case)
     wsl_branch = source.index('if [ "$_is_wsl" = "1" ]; then', linux_case)
     assert call < wsl_branch, "the drop-in removal must not be gated on WSL"
-
-
-def test_installer_and_uninstaller_agree_on_the_dropin_marker():
-    """Installer and uninstaller must use the same marker."""
-    assert _DROPIN_MARKER in _INSTALL_SH.read_text(encoding = "utf-8")
-    assert _DROPIN_MARKER in _UNINSTALL_SH.read_text(encoding = "utf-8")
 
 
 def test_install_ps1_marks_the_user_value_as_installer_created():
