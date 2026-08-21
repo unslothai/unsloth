@@ -601,6 +601,9 @@ pub fn open_path_token(
 
 // Covers the generic client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
+// Text inlines whole into the prompt, so it gets a far smaller ceiling.
+const MAX_NATIVE_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 // OpenDocument archives use the composer's larger archive limit.
 const MAX_NATIVE_OPEN_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
@@ -639,6 +642,14 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "avi" => Some("video/x-msvideo"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
         "odt" => Some("application/vnd.oasis.opendocument.text"),
+        // Stamped like native_clipboard.rs, so a drop and a paste agree.
+        "json" | "jsonl" | "ndjson" => Some("application/json"),
+        "mdx" => Some("text/markdown"),
+        "csv" => Some("text/csv"),
+        "xml" => Some("application/xml"),
+        other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
+            Some("text/plain")
+        }
         _ => None,
     }
 }
@@ -687,9 +698,18 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image, audio and video attachments can be read inline.".to_string()
+        "Only chat attachments can be read inline.".to_string()
     })?;
-    let max_bytes = if mime_type.starts_with("image/") {
+    let is_text_attachment = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .is_some_and(|ext| {
+            crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str())
+        });
+    let max_bytes = if is_text_attachment {
+        MAX_NATIVE_TEXT_BYTES
+    } else if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
@@ -840,8 +860,40 @@ mod tests {
         let Err(err) = read_attachment_payload(&entry) else {
             panic!("expected the read to be refused");
         };
-        assert!(err.contains("Only chat image, audio and video attachments"));
+        assert!(err.contains("Only chat attachments can be read inline"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn text_attachments_read_inline_with_their_own_cap() {
+        for (ext, mime) in [
+            ("cs", "text/plain"),
+            ("php", "text/plain"),
+            ("js", "text/plain"),
+            ("json", "application/json"),
+            ("csv", "text/csv"),
+        ] {
+            let path = temp_path("source").with_extension(ext);
+            fs::write(&path, b"sample").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, mime, "{ext}");
+            let _ = fs::remove_file(path);
+        }
+
+        let path = temp_path("huge").with_extension("cs");
+        fs::write(&path, vec![b'x'; MAX_NATIVE_TEXT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn every_text_extension_the_drop_accepts_has_a_mime_type() {
+        for ext in crate::native_path_policy::TEXT_ATTACHMENT_EXTS {
+            let path = PathBuf::from(format!("sample.{ext}"));
+            assert!(attachment_mime_type(&path).is_some(), "{ext}");
+        }
     }
 
     #[test]

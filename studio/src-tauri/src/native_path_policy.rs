@@ -52,6 +52,18 @@ pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
+/// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
+/// dropped .txt/.md keeps being indexed.
+pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
+    "text", "log", "mdx", "rst", "csv", "tsv", "json", "jsonl", "ndjson", "xml", "yaml", "yml",
+    "toml", "ini", "cfg", "conf", "env", "properties", "css", "scss", "sass", "less", "svg", "js",
+    "jsx", "mjs", "cjs", "ts", "tsx", "py", "pyi", "ipynb", "rb", "php", "go", "rs", "java", "kt",
+    "kts", "scala", "swift", "c", "h", "cc", "cpp", "hpp", "cxx", "cs", "m", "mm", "sh", "bash",
+    "zsh", "fish", "ps1", "bat", "lua", "pl", "pm", "r", "jl", "dart", "vue", "svelte", "astro",
+    "sql", "graphql", "gql", "proto", "tf", "tfvars", "gradle", "dockerfile", "makefile", "cmake",
+    "diff", "patch",
+];
+
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 
@@ -67,6 +79,7 @@ fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
         .chain(OPEN_DOCUMENT_ATTACHMENT_EXTS.iter())
+        .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())
         .chain(VIDEO_ATTACHMENT_EXTS.iter())

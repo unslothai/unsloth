@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { TEXT_ATTACHMENT_ACCEPT } from "./text-attachment-accept";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
@@ -312,20 +313,7 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 }
 
 class TextAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for source files, so also match by extension
-  // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers svg, code,
-  // config and other plain-text formats; html keeps its own adapter below.
-  accept = [
-    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
-    "application/json,application/xml,image/svg+xml",
-    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
-    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
-    ".css,.scss,.sass,.less,.svg",
-    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
-    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
-    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
-    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
-  ].join(",");
+  accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {

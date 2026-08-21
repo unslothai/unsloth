@@ -5,9 +5,25 @@ import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
 } from "../chat/open-document-accept.ts";
+import { TEXT_ATTACHMENT_EXTENSIONS } from "../chat/text-attachment-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
+
+// RAG types are filtered out, so a dropped .txt/.md keeps being indexed.
+const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) => ext.toLowerCase()).filter(
+  (ext) => !DOC_EXTS.includes(ext),
+);
+
+/** Dropped paths with an inline adapter but no RAG parser. */
+export function isComposerAttachmentName(path: string): boolean {
+  return isOpenDocumentAttachmentName(path) || isTextDropName(path);
+}
+
+function isTextDropName(path: string): boolean {
+  const lower = path.toLowerCase();
+  return TEXT_EXTS.some((ext) => lower.endsWith(ext));
+}
 
 /** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */
 export const CHAT_IMAGE_DROP_ACCEPT = ".jpg,.jpeg,.png,.webp,.gif";
@@ -27,7 +43,7 @@ export const CHAT_VIDEO_DROP_ACCEPT = ".mp4,.mov,.webm,.mkv,.avi";
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, source and text files, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -68,7 +84,8 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   const docs = paths.filter(
     (path) =>
       DOC_EXTS.some((ext) => hasExt(path, ext)) ||
-      isOpenDocumentAttachmentName(path),
+      isOpenDocumentAttachmentName(path) ||
+      isTextDropName(path),
   );
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),

@@ -1,9 +1,12 @@
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { isOpenDocumentAttachmentName } from "../chat/open-document-accept";
 import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
-import { classifyDropPaths, SUPPORTED_DROP_HINT } from "./drop-paths";
+import {
+  classifyDropPaths,
+  isComposerAttachmentName,
+  SUPPORTED_DROP_HINT,
+} from "./drop-paths";
 import { nativeDropTargetAt } from "./native-drop-targets";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
@@ -51,7 +54,7 @@ function canAttachDocumentPaths(
   options: NativeModelDropOptions,
 ): boolean {
   return paths.every((path) =>
-    isOpenDocumentAttachmentName(path)
+    isComposerAttachmentName(path)
       ? canAttachImages(options)
       : canAttachDocs(options),
   );
@@ -152,7 +155,7 @@ function dropStateForPaths(
 
 interface RegisteredDrop {
   docs: NativeIntent[];
-  openDocuments: NativeIntent[];
+  composerDocuments: NativeIntent[];
   images: NativeIntent[];
   audio: NativeIntent[];
   video: NativeIntent[];
@@ -197,9 +200,9 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.docs
         : [];
-  const openDocumentPaths = docPaths.filter(isOpenDocumentAttachmentName);
+  const composerDocumentPaths = docPaths.filter(isComposerAttachmentName);
   const ragDocumentPaths = docPaths.filter(
-    (path) => !isOpenDocumentAttachmentName(path),
+    (path) => !isComposerAttachmentName(path),
   );
   const imagePaths =
     dropped.kind === "images"
@@ -219,26 +222,26 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.video
         : [];
-  const [docs, openDocuments, images, audio, video] = await Promise.all([
+  const [docs, composerDocuments, images, audio, video] = await Promise.all([
     registerEach(ragDocumentPaths),
-    registerEach(openDocumentPaths),
+    registerEach(composerDocumentPaths),
     registerEach(imagePaths),
     registerEach(audioPaths),
     registerEach(videoPaths),
   ]);
   return {
     docs: docs.intents,
-    openDocuments: openDocuments.intents,
+    composerDocuments: composerDocuments.intents,
     images: images.intents,
     audio: audio.intents,
     video: video.intents,
-    docsFailed: docs.failed + openDocuments.failed,
+    docsFailed: docs.failed + composerDocuments.failed,
     imagesFailed: images.failed,
     audioFailed: audio.failed,
     videoFailed: video.failed,
     error:
       docs.error ??
-      openDocuments.error ??
+      composerDocuments.error ??
       images.error ??
       audio.error ??
       video.error,
@@ -330,14 +333,14 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
               : dropped.kind === "attach"
                 ? dropped.docs
                 : [];
-          const openDocumentPaths = documentPaths.filter(
-            isOpenDocumentAttachmentName,
+          const composerDocumentPaths = documentPaths.filter(
+            isComposerAttachmentName,
           );
           const needsRagDocuments = documentPaths.some(
-            (path) => !isOpenDocumentAttachmentName(path),
+            (path) => !isComposerAttachmentName(path),
           );
-          const needsOpenDocuments = openDocumentPaths.length > 0;
-          const needsComposerAttachments = needsImages || needsOpenDocuments;
+          const needsComposerDocuments = composerDocumentPaths.length > 0;
+          const needsComposerAttachments = needsImages || needsComposerDocuments;
           const needsAudio =
             dropped.kind === "audio" ||
             (dropped.kind === "attach" && dropped.audio.length > 0);
@@ -390,7 +393,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             }
             const composerAttachments = [
               ...registered.images,
-              ...registered.openDocuments,
+              ...registered.composerDocuments,
             ];
             if (composerAttachments.length > 0) {
               await attachOptions.onAttachImages?.(composerAttachments);
