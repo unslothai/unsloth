@@ -63,6 +63,11 @@ def analyse_stream(frames: list[dict]) -> dict:
                         placeholder_frames += 1
                 continue
             start_frame, before = open_drop
+            # A collapse can deepen after the frame that opened it (1700 -> 700 -> 200), so the
+            # worst drop is tracked for as long as the drop is open rather than once on the way
+            # down. Measuring only the first step reports 1000px for a 1500px collapse, and
+            # disagrees with the heightAtFloor recorded for the same event.
+            worst_drop_px = max(worst_drop_px, before - height)
             if PLACEHOLDER_LO <= height <= PLACEHOLDER_HI:
                 placeholder_frames += 1
             if height >= before * 0.9:

@@ -78,6 +78,19 @@ def test_a_one_frame_collapse_to_the_placeholder_is_a_collapse() -> None:
     assert result["detail"][0]["frames"] == 1
 
 
+def test_a_collapse_that_deepens_reports_its_deepest_point() -> None:
+    """A drop that arrives over several frames is one collapse, measured at the floor.
+
+    The reported drop has to agree with the floor recorded for the same event, or a red run
+    understates what it caught: 1700 -> 700 -> 200 is a 1500px collapse, not a 1000px one.
+    """
+    frames = [frame([1700.0]), frame([700.0]), frame([200.0]), frame([1700.0])]
+    result = analyse_stream(frames)
+    assert result["collapses"] == 1
+    assert result["worstDropPx"] == pytest.approx(1500.0)
+    assert result["detail"][0]["heightAtFloor"] == 200.0
+
+
 def test_each_block_is_counted_separately() -> None:
     """Three fences in one reply collapse one after another, and that is three, not one."""
     tall = [1700.0, 1700.0, 1700.0]
