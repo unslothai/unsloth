@@ -3656,7 +3656,16 @@ async def get_gguf_variants(
         # row back under the filter, and every cached revision is offered because the listing and
         # the loader both span them. Absent bytes read as no architecture and are kept, so an
         # undownloaded quant is never dropped on a guess.
-        speech_roots = [context_model] if local else _cached_snapshot_roots(repo_id, local_path)
+        # Normalized the way the listing normalized it: get_gguf_variants_answer works off
+        # _loader_normalize_path(repo_id) but reports the ORIGINAL spelling as context_source, so
+        # under WSL a "C:\\models\\x" row answers from /mnt/c/models/x while this root would keep
+        # the raw spelling. Path() does not treat that as absolute off Windows, so every header
+        # read would miss and the CSM quant would survive in a directory that listed fine.
+        speech_roots = (
+            [_speech_normalize_root(context_model)]
+            if local
+            else _cached_snapshot_roots(repo_id, local_path)
+        )
         listed = await _without_mixed_folder_speech_variants_bounded(
             speech_roots, list(response.variants)
         )
@@ -4402,6 +4411,9 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
 
 
 _SPEECH_FILTER_HARD_TIMEOUT_SECONDS = 4.0
+# Reading budget inside the worker, under the hard timeout above. Spending it returns the drops
+# found so far rather than losing the whole pass, which the outer timeout would do.
+_SPEECH_FILTER_READ_SECONDS = 3.0
 # Concurrent speech-filter probes. One stranded on a hung mount holds its slot, so retries wait
 # rather than pile another daemon thread onto the same dead path.
 _SPEECH_FILTER_MAX_CONCURRENT_READS = 4
@@ -4479,6 +4491,15 @@ async def _without_mixed_folder_speech_variants_bounded(roots: list, variants: l
         return list(variants)
 
 
+def _speech_normalize_root(root: str) -> str:
+    """*root* as the loader spells it, so the filter reads the copy the listing answered from."""
+    try:
+        from utils.paths import normalize_path
+        return normalize_path(root)
+    except Exception:
+        return root
+
+
 def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]:
     """Every cached snapshot a Hub row's variants may live in, most-preferred first.
 
@@ -4549,12 +4570,13 @@ def _without_mixed_folder_speech_variants(roots: list, variants: list) -> list:
         return variants
     kept: list = []
     dropped = 0
+    read_deadline = time.monotonic() + _SPEECH_FILTER_READ_SECONDS
     for index, variant in enumerate(variants):
-        if index >= _MAX_TASK_CLASSIFY_GGUFS:
-            # The cap bounds the header READS, not the filtering. Returning the original list
-            # here would restore every speech quant the reads already identified, so a repo with
-            # enough variants silently switched the filter off. Keep the drops, pass the
-            # unexamined tail through.
+        # Bounded by TIME, not by position. A positional cap exempted whatever sorted past it
+        # from the architecture gate, so a CSM entry at 65 was copied through unread and stayed
+        # selectable -- the gate has to be reachable by every listed variant. The first read
+        # always happens, as in the folder walk, so a spent budget still classifies one file.
+        if index and time.monotonic() >= read_deadline:
             kept.extend(variants[index:])
             break
         filename = getattr(variant, "filename", None)

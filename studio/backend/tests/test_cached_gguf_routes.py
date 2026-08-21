@@ -5320,24 +5320,79 @@ def test_a_speech_quant_in_an_older_snapshot_is_dropped_too(monkeypatch, tmp_pat
     assert pinned == [str(newest)]
 
 
-def test_a_listing_over_the_read_cap_keeps_the_speech_quants_it_already_dropped(tmp_path):
-    """The cap bounds the header READS, not the filtering. Returning the untouched list once the
-    budget ran out restored every speech quant the reads had already identified, so a repo with
-    enough variants switched the filter off entirely."""
+def test_every_listed_variant_reaches_the_architecture_gate(tmp_path):
+    """The gate has to be reachable by every listed variant. A positional cap exempted whatever
+    sorted past it, so a CSM entry at 65 was copied through unread and stayed selectable; the
+    earlier fix preserved the drops already found but still left that tail exposed. The budget is
+    time now, so position alone never buys a variant a pass."""
     folder = tmp_path / "big-mixed-GGUF"
-    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
-    variants = [SimpleNamespace(filename = "csm-1b-Q4_0.gguf", quant = "Q4_0")]
-    over_cap = models_route._MAX_TASK_CLASSIFY_GGUFS + 6
-    for i in range(over_cap):
+    variants = []
+    # One CSM first, one well past where the old positional cap cut off.
+    _arch_gguf(folder / "csm-first-Q4_0.gguf", "llama-csm")
+    variants.append(SimpleNamespace(filename = "csm-first-Q4_0.gguf", quant = "Q4_0"))
+    for i in range(models_route._MAX_TASK_CLASSIFY_GGUFS + 6):
         _arch_gguf(folder / f"llama-{i:03d}.gguf", "llama")
         variants.append(SimpleNamespace(filename = f"llama-{i:03d}.gguf", quant = f"Q{i:03d}"))
+    _arch_gguf(folder / "csm-last-Q8_0.gguf", "llama-csm")
+    variants.append(SimpleNamespace(filename = "csm-last-Q8_0.gguf", quant = "Q8_0"))
 
-    kept = models_route._without_mixed_folder_speech_variants([str(folder)], variants)
+    kept = [
+        v.quant for v in models_route._without_mixed_folder_speech_variants([str(folder)], variants)
+    ]
 
-    assert "Q4_0" not in [v.quant for v in kept]
-    # The tail past the cap is passed through unexamined rather than dropped: the budget limits
-    # what is read, and an unread variant is never removed on a guess.
-    assert len(kept) == len(variants) - 1
+    assert "Q4_0" not in kept
+    # The one the positional cap used to wave through.
+    assert "Q8_0" not in kept
+    assert len(kept) == len(variants) - 2
+
+
+def test_a_windows_spelled_local_root_is_normalized_before_the_headers_are_read(monkeypatch):
+    """``get_gguf_variants_answer`` works off ``_loader_normalize_path(repo_id)`` but reports the
+    ORIGINAL spelling as ``context_source``. ``is_local_path`` calls "C:\\models\\x" local, and
+    ``Path`` does not treat it as absolute off Windows, so joining a filename onto it produced a
+    relative path, every header read missed, and the CSM quant survived a directory that listed
+    fine. The root is normalized the way the listing normalized it."""
+    from utils.paths import normalize_path
+
+    seen: list = []
+
+    def record(roots, variants):
+        seen.append(list(roots))
+        return list(variants)
+
+    monkeypatch.setattr(models_route, "_without_mixed_folder_speech_variants", record)
+
+    async def local_answer(repo_id, **kwargs):
+        # The listing answers from the normalized copy but names the raw spelling, as it does.
+        return _answer(
+            repo_id,
+            [
+                SimpleNamespace(
+                    filename = "csm-1b-Q4_0.gguf",
+                    quant = "Q4_0",
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                    downloaded = True,
+                )
+            ],
+            default_variant = "Q4_0",
+            source = "C:\\models\\mixed",
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", local_answer)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: 4096
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "C:\\models\\mixed", hf_token = None, current_subject = "test-user"
+        )
+    )
+
+    assert seen and seen[0] == [normalize_path("C:\\models\\mixed")]
+    # The raw spelling is exactly what could not be read off Windows.
+    assert seen[0] != ["C:\\models\\mixed"] or os.name == "nt"
 
 
 def test_the_snapshot_roots_break_mtime_ties_the_way_the_loader_does(tmp_path):
