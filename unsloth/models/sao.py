@@ -256,6 +256,14 @@ class SAOConfig(_SAOConfigBase):
     observation_mask_column: str = "observation_mask"
 
     def __post_init__(self):
+        # SAOTrainer.training_step reads dataset columns (prompt_column,
+        # observation_mask_column) directly - none of them match the model's
+        # forward signature, so the base Trainer's default column-pruning
+        # dataloader strips them before training_step ever runs, and
+        # `trainer.train()` fails immediately with "No columns in the dataset
+        # match the model's forward method signature". Force this off the way
+        # TRL's GRPOConfig does, regardless of what was passed in.
+        self.remove_unused_columns = False
         parent = getattr(super(), "__post_init__", None)
         if parent is not None:
             parent()
