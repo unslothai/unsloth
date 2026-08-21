@@ -225,6 +225,14 @@ def test_create_skill_rejects_invalid_names_and_paths(
         skills.create_skill(name, manifest, files)
 
 
+def test_create_skill_rejects_recursive_yaml_frontmatter():
+    nested = "[" * 500 + "0" + "]" * 500
+    manifest = SKILL_MD.replace("metadata:\n", f"metadata:\n  nested: {nested}\n")
+
+    with pytest.raises(skills.SkillError, match = "invalid YAML frontmatter"):
+        skills.create_skill("unsloth", manifest)
+
+
 def test_create_skill_requires_explicit_replace_and_preserves_enabled_state(tmp_path: Path):
     from core.inference.tools import execute_tool
 
