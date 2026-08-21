@@ -51,6 +51,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { useChatActive } from "./runtime-provider";
 export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
@@ -81,7 +82,6 @@ export {
   nextAttentionChatItem,
   openChatItemById,
   recentChatItemAtSlot,
-  recentlyViewedChatItem,
   useChatNavigationStore,
   visibleChatItems,
 } from "./stores/chat-navigation-store";

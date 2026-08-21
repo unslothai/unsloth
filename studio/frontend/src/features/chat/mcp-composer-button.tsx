@@ -31,6 +31,7 @@ import {
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useChatActive } from "./runtime-provider";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -113,8 +114,12 @@ export function McpComposerButton({
   // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
-  // The dialog is this button's, so the chord that opens it is too.
-  useShortcut("openMcpServers", () => setDialogOpen(true), { enabled: usable });
+  // The dialog is this button's, so the chord that opens it is too. Only while
+  // the chat tab is on screen: the dialog portals to the body.
+  const chatActive = useChatActive();
+  useShortcut("openMcpServers", () => setDialogOpen(true), {
+    enabled: chatActive && usable,
+  });
 
   const refresh = useCallback(async () => {
     try {

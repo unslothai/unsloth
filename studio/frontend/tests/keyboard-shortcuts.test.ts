@@ -599,6 +599,19 @@ test("every locale overlay carries the shortcut strings", async () => {
   }
 });
 
+test("a cleared alternate keeps its row, so it can be restored", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/tabs/keyboard-shortcuts-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  // Clearing a slot stores null, so a row that keys off the resolved value
+  // alone would hide the slot's own restore control along with the chord.
+  assert.match(
+    source,
+    /hasAlternate =\s*\n\s*defaultBindingFor\(def, "alternate", mac\) !== null/,
+  );
+});
+
 test("every settings tab survives a reload", () => {
   // The persisted-tab check reads this same list, so a tab added to the union
   // alone can no longer be rejected back to General.

@@ -25,6 +25,9 @@ export interface ChatNavigationState {
   unreadThreadIds: Set<string>;
   /** Row ids, most recently opened first. */
   recentlyViewedIds: string[];
+  /** A walk through the stack in progress: the order frozen at the first step,
+   *  and where in it the walk has got to. */
+  traversal: { order: string[]; index: number } | null;
   /** Registered by the sidebar, the only code that can route to a row. */
   openChatItem: ((item: SidebarItem) => void) | null;
 
@@ -39,6 +42,8 @@ export interface ChatNavigationState {
   clearThreadsUnread: (threadIds: string[]) => void;
   clearAllUnreads: () => void;
   noteViewed: (itemId: string) => void;
+  stepRecentlyViewed: (delta: number) => SidebarItem | null;
+  endTraversal: () => void;
 }
 
 function sameIds(a: SidebarItem[], b: SidebarItem[]): boolean {
@@ -65,6 +70,7 @@ export const useChatNavigationStore = create<ChatNavigationState>(
     activeItemId: null,
     unreadThreadIds: new Set(),
     recentlyViewedIds: [],
+    traversal: null,
     openChatItem: null,
 
     // Published from an effect on every render, so bail out when nothing moved.
@@ -109,12 +115,56 @@ export const useChatNavigationStore = create<ChatNavigationState>(
       ),
 
     noteViewed: (itemId) => {
-      const { recentlyViewedIds } = get();
-      if (recentlyViewedIds[0] === itemId) return;
+      const { recentlyViewedIds, traversal } = get();
+      // Mid-walk the stack has to hold still: promoting each chat the walk
+      // lands on would swap the top two entries and the next step would come
+      // straight back, leaving everything below them unreachable.
+      if (traversal && traversal.order[traversal.index] === itemId) return;
+      if (recentlyViewedIds[0] === itemId) {
+        if (traversal) set({ traversal: null });
+        return;
+      }
       set({
+        traversal: null,
         recentlyViewedIds: [
           itemId,
           ...recentlyViewedIds.filter((id) => id !== itemId),
+        ].slice(0, RECENTLY_VIEWED_LIMIT),
+      });
+    },
+
+    stepRecentlyViewed: (delta) => {
+      const state = get();
+      const byId = new Map(
+        visibleChatItems(state).map((item) => [item.id, item]),
+      );
+      // Rows deleted or archived since the walk began would be dead stops.
+      const order = (state.traversal?.order ?? state.recentlyViewedIds).filter(
+        (id) => byId.has(id),
+      );
+      if (order.length === 0) return null;
+      const from = state.traversal
+        ? order.indexOf(state.traversal.order[state.traversal.index])
+        : state.activeItemId
+          ? order.indexOf(state.activeItemId)
+          : -1;
+      const base = from === -1 ? 0 : from;
+      const index = (base + delta + order.length) % order.length;
+      set({ traversal: { order, index } });
+      return byId.get(order[index]) ?? null;
+    },
+
+    endTraversal: () => {
+      const { traversal, recentlyViewedIds } = get();
+      if (!traversal) return;
+      // The walk is over, so the chat it finished on takes the top, the way it
+      // would have if it had been opened by hand.
+      const landed = traversal.order[traversal.index];
+      set({
+        traversal: null,
+        recentlyViewedIds: [
+          landed,
+          ...recentlyViewedIds.filter((id) => id !== landed),
         ].slice(0, RECENTLY_VIEWED_LIMIT),
       });
     },
@@ -146,23 +196,6 @@ export function adjacentChatItem(
   if (current === -1) return delta > 0 ? items[0] : items[items.length - 1];
   const next = (current + delta + items.length) % items.length;
   return items[next];
-}
-
-/** Walk the most-recently-viewed stack. Position 0 is the open chat. */
-export function recentlyViewedChatItem(
-  state: ChatNavigationState,
-  delta: number,
-): SidebarItem | null {
-  const { recentlyViewedIds } = state;
-  if (recentlyViewedIds.length === 0) return null;
-  const byId = new Map(visibleChatItems(state).map((item) => [item.id, item]));
-  // Deleted or archived rows would be dead stops.
-  const live = recentlyViewedIds.filter((id) => byId.has(id));
-  if (live.length === 0) return null;
-  const current = state.activeItemId ? live.indexOf(state.activeItemId) : -1;
-  const base = current === -1 ? 0 : current;
-  const next = (base + delta + live.length) % live.length;
-  return byId.get(live[next]) ?? null;
 }
 
 /** The next row wanting attention after the open one, wrapping. The list

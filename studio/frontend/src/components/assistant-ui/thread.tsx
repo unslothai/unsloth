@@ -62,6 +62,7 @@ import {
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
+  useChatActive,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -5541,9 +5542,12 @@ const ComposerToolsMenu: FC<{
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
-  // Straight to the picker, skipping the "+" menu the item lives in.
+  // Straight to the picker, skipping the "+" menu the item lives in. Off-route
+  // the chat pane is hidden rather than unmounted, so the chords gate on it
+  // being the visible tab; a window listener does not care about `inert`.
+  const chatActive = useChatActive();
   useShortcut("attachFiles", () => pickAttachment(), {
-    enabled: composerCanAddAttachments,
+    enabled: chatActive && composerCanAddAttachments,
   });
   // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
@@ -6253,10 +6257,15 @@ const ComposerRightControls: FC<{
   };
   // One chord for both halves, like the mic button while recording.
   const composerIsDictating = useAuiState((s) => s.composer.dictation != null);
-  useShortcut("startDictation", () => {
-    if (composerIsDictating) aui.composer().stopDictation();
-    else startDictation();
-  });
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      if (composerIsDictating) aui.composer().stopDictation();
+      else startDictation();
+    },
+    { enabled: chatActive },
+  );
   // Through the form: the same send the button uses, with its checks.
   useShortcut(
     "sendMessage",
@@ -6264,7 +6273,7 @@ const ComposerRightControls: FC<{
       if (disabled || pendingSend) return;
       aui.composer().send();
     },
-    { enabled: !disabled },
+    { enabled: chatActive && !disabled },
   );
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
@@ -7244,8 +7253,9 @@ const ForkMessageButton: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   // Only the last message answers: any other would fork mid-thread.
   const isLast = useAuiState(({ message }) => message.isLast);
+  const chatActive = useChatActive();
   useShortcut("forkChat", () => void forkMessage(), {
-    enabled: isLast && !forkDisabled,
+    enabled: chatActive && isLast && !forkDisabled,
   });
 
   return (

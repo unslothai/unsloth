@@ -27,6 +27,7 @@ import {
   type ShortcutId,
   type ShortcutSlot,
   bindingFromEvent,
+  defaultBindingFor,
   formatBindingLabel,
   formatBindingValue,
   isAcceptableBinding,
@@ -268,7 +269,11 @@ export function KeyboardShortcutsTab() {
         const value = resolveBinding(overrides, def.id, slot);
         return !value || shortcutOwningBinding(overrides, value) !== def.id;
       });
+    // Anything this action ships an alternate for keeps its line, cleared or
+    // not: hiding a cleared slot would take its restore control with it, and
+    // Reset all is not a way back from one edit.
     const hasAlternate =
+      defaultBindingFor(def, "alternate", mac) !== null ||
       resolveBinding(overrides, def.id, "alternate") !== null ||
       (recording?.id === def.id && recording.slot === "alternate");
 
@@ -309,8 +314,7 @@ export function KeyboardShortcutsTab() {
         <div className="flex flex-1 basis-0 flex-col gap-1.5 pl-10">
           {renderSlot(def, "primary")}
           {/* Only the actions that ship an alternate have a second line: there
-              is no affordance for adding one, and a cleared alternate comes
-              back through the row's restore-default button. */}
+              is no affordance for adding one. */}
           {hasAlternate ? renderSlot(def, "alternate") : null}
         </div>
       </div>

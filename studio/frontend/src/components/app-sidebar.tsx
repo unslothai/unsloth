@@ -174,7 +174,6 @@ import {
   nextAttentionChatItem,
   openChatItemById,
   recentChatItemAtSlot,
-  recentlyViewedChatItem,
   useChatNavigationStore,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
@@ -1215,6 +1214,18 @@ export function AppSidebar() {
   useEffect(() => {
     if (activeThreadId) noteViewed(activeThreadId);
   }, [activeThreadId, noteViewed]);
+  // A walk through the stack ends when its modifiers come up, as an app
+  // switcher's does. A no-op when no walk is running.
+  useEffect(() => {
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      useChatNavigationStore.getState().endTraversal();
+    };
+    window.addEventListener("keyup", onKeyUp);
+    return () => window.removeEventListener("keyup", onKeyUp);
+  }, []);
 
   const sortedChatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
@@ -2387,12 +2398,13 @@ export function AppSidebar() {
 
   useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)));
   useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)));
-  useShortcut("nextRecentlyViewedChat", () =>
-    goToChat((s) => recentlyViewedChatItem(s, 1)),
-  );
-  useShortcut("previousRecentlyViewedChat", () =>
-    goToChat((s) => recentlyViewedChatItem(s, -1)),
-  );
+  // The walk holds the stack still while it runs, so a modifier held down
+  // reaches the third chat back and beyond; releasing it ends the walk and
+  // puts the chat it landed on at the top.
+  const walkRecentlyViewed = (delta: number) =>
+    openChatItemById(useChatNavigationStore.getState().stepRecentlyViewed(delta));
+  useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1));
+  useShortcut("previousRecentlyViewedChat", () => walkRecentlyViewed(-1));
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
