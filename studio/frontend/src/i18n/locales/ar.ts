@@ -193,6 +193,7 @@ export const ar = {
       chat: "المحادثة",
       connections: "الاتصالات",
       apiKeys: "API",
+      remoteLan: "الوصول عن بُعد والشبكة المحلية",
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
@@ -860,6 +861,24 @@ export const ar = {
         switchFailed: "تعذّر تغيير خلفية llama.cpp.",
         switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
         envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
+        customPath: {
+          label: "مجلد llama.cpp مخصّص",
+          description: "استخدم إصدار llama-server الخاص بك.",
+          hint: "اختر مجلد llama.cpp الذي يحتوي على llama-server، أو إصدارًا يوجد فيه ضمن build/bin. يُستخدم وقت التشغيل المخصّص لمحادثة GGUF والتضمينات ونماذج الصوت المدعومة. تبقى لمتغيرات البيئة الأولوية.",
+          automatic: "تلقائي (مضمّن)",
+          bundled: "يستخدم وقت تشغيل llama.cpp الذي ثبّته Unsloth.",
+          active: "سيُستخدم llama-server المخصّص عند تحميل النموذج التالي.",
+          environmentManaged: "تديره متغير البيئة {variable}.",
+          missingBinary: "لم يعد llama-server متاحًا في هذا المجلد. اختر مجلدًا آخر أو استخدم وقت التشغيل المضمّن.",
+          reloadRequired: "أعد تحميل النموذج لاستخدام llama-server المحدد.",
+          change: "تغيير",
+          saving: "جارٍ الحفظ...",
+          useBundled: "استخدام المضمّن",
+          chooseTitle: "اختر مجلد llama.cpp",
+          chooseAction: "استخدام هذا المجلد",
+          saved: "تم تحديث مجلد llama.cpp",
+          saveError: "تعذّر تحديث مجلد llama.cpp",
+        },
         backends: {
           auto: "تلقائي",
           cpu: "CPU",
@@ -872,6 +891,7 @@ export const ar = {
           notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
           localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
           sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
+          customPath: "تم تحديد مجلد llama.cpp مخصّص. يحدد هذا الإصدار خلفية الحوسبة.",
           unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
         },
         // لا يظهر: كلمات إضافية لبحث الإعدادات.
@@ -1207,6 +1227,11 @@ export const ar = {
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
+    },
+    remoteLan: {
+      title: "الوصول عن بُعد والشبكة المحلية",
+      description:
+        "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     apiKeys: {
       title: "API",
