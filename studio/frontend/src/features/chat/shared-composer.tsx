@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
@@ -92,6 +97,7 @@ import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
@@ -150,6 +156,7 @@ import {
 import {
   type CompositionEvent,
   type ClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type FC,
   type KeyboardEvent,
   type MutableRefObject,
@@ -506,6 +513,13 @@ function PillGlyph({ children }: { children: ReactNode }) {
   );
 }
 
+/** True when a drop reached this composer from a portaled child, such as a
+ * dialog and its overlay, which React routes through here but which owns it. */
+function isPortaledDrop(event: ReactDragEvent): boolean {
+  const target = event.target as Element | null;
+  return !target?.closest?.(".chat-composer-surface");
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
@@ -594,6 +608,9 @@ export function SharedComposer({
   );
   const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const loadedVisionDisabledByUser = useChatRuntimeStore(
+    (s) => s.loadedVisionDisabledByUser,
+  );
   const mmprojFallbackReason = useChatRuntimeStore(
     (s) => s.mmprojFallbackReason,
   );
@@ -676,6 +693,7 @@ export function SharedComposer({
     loadedIsMultimodal,
     modelLoaded,
     loadError: lastModelLoadError,
+    visionDisabledByUser: loadedVisionDisabledByUser,
     mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
@@ -1368,6 +1386,18 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.tensorParallel
             : fallbackTensorParallel;
+        // The diffusion runner has no projector to skip, so the toggle is inert
+        // there for the same reason tensorParallel is.
+        //
+        // A pane with no saved config gets the per-model DEFAULT, not the store's
+        // current value, which belongs to whichever model is loaded. Where this parts
+        // company with tensorParallel: that one deliberately stands across models,
+        // while an unconfigured model is a model with vision on.
+        const effectiveDisableVision = resolvedIsDiffusion
+          ? false
+          : ownRemembered
+            ? ownConfig.disableVision
+            : DEFAULT_PER_MODEL_CONFIG.disableVision;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
@@ -1435,6 +1465,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
@@ -1459,6 +1490,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1524,6 +1556,7 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1546,6 +1579,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1617,6 +1651,9 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...(targetIsGguf && !(resp.is_diffusion ?? false)
+            ? committedServerTuningState(ownConfig)
+            : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status
           // applier is held off for the whole load, so nothing else records it, and
           // a switch straight after would snapshot the other model's list.
@@ -1626,6 +1663,11 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedDisableVision: resp.disable_vision ?? false,
+          // Adopted from the echo like the knob above: this pane loaded its own
+          // model, so the editable value must follow it or Advanced Settings
+          // shows the other pane's Vision state.
+          disableVision: resp.disable_vision ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -1640,7 +1682,9 @@ export function SharedComposer({
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
-
+          // Set alongside loadedIsMultimodal so the composer can say WHY images
+          // are unavailable in compare mode too.
+          loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
@@ -2011,7 +2055,7 @@ export function SharedComposer({
     <div
       className="chat-composer-surface"
       onDragOver={(e) => {
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -2019,7 +2063,7 @@ export function SharedComposer({
       onDrop={(e) => {
         // Phase 1 native model drops own Tauri local-path drops. Restore
         // browser attachment drops in Tauri once Phase 1d adds token bridging.
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);
