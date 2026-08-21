@@ -272,6 +272,18 @@ export const zhCN = {
           label: "切换置顶",
           description: "置顶或取消置顶当前聊天",
         },
+        selectAllChats: {
+          label: "选择全部对话",
+          description: "选择侧边栏中的所有对话",
+        },
+        clearChatSelection: {
+          label: "清除选择",
+          description: "取消已选对话。按 Esc 同样可以清除",
+        },
+        deleteSelectedChats: {
+          label: "删除所选对话",
+          description: "删除所有已选对话",
+        },
         nextRecentlyViewedChat: {
           label: "下一个最近查看的聊天",
           description: "在最近查看的聊天中向前切换",

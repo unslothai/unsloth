@@ -274,6 +274,18 @@ export const ar = {
           label: "تبديل التثبيت",
           description: "تثبيت المحادثة الحالية أو إلغاء تثبيتها",
         },
+        selectAllChats: {
+          label: "تحديد كل المحادثات",
+          description: "تحديد كل محادثة في الشريط الجانبي",
+        },
+        clearChatSelection: {
+          label: "مسح التحديد",
+          description: "إلغاء تحديد المحادثات المحددة. زر Escape يمسحه أيضًا",
+        },
+        deleteSelectedChats: {
+          label: "حذف المحادثات المحددة",
+          description: "حذف كل محادثة محددة",
+        },
         nextRecentlyViewedChat: {
           label: "المحادثة التالية التي عُرضت مؤخرًا",
           description: "التقدم بين المحادثات المعروضة مؤخرًا",

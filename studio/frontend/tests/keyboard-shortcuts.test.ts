@@ -125,6 +125,16 @@ test("no Ctrl-only default survives onto Windows and Linux", () => {
   }
 });
 
+test("nothing that deletes chats ships on a chord", () => {
+  const del = SHORTCUT_DEFS.find((def) => def.id === "deleteSelectedChats");
+  assert.ok(del);
+  for (const slot of SHORTCUT_SLOTS) {
+    for (const mac of [true, false]) {
+      assert.equal(defaultBindingFor(del, slot, mac), null);
+    }
+  }
+});
+
 test("an unassigned action ships both slots empty", () => {
   const forkChat = SHORTCUT_DEFS.find((def) => def.id === "forkChat");
   assert.ok(forkChat);

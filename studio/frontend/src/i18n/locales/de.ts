@@ -278,6 +278,18 @@ export const de = {
           label: "Anheften umschalten",
           description: "Den aktuellen Chat anheften oder lösen",
         },
+        selectAllChats: {
+          label: "Alle Chats auswählen",
+          description: "Jeden Chat in der Seitenleiste auswählen",
+        },
+        clearChatSelection: {
+          label: "Auswahl aufheben",
+          description: "Die ausgewählten Chats abwählen. Escape hebt sie ebenfalls auf",
+        },
+        deleteSelectedChats: {
+          label: "Ausgewählte Chats löschen",
+          description: "Jeden ausgewählten Chat löschen",
+        },
         nextRecentlyViewedChat: {
           label: "Nächster zuletzt geöffneter Chat",
           description: "Vorwärts durch zuletzt geöffnete Chats blättern",

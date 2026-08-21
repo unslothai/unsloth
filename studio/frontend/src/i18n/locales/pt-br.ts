@@ -276,6 +276,18 @@ export const ptBR = {
           label: "Alternar fixação",
           description: "Fixar ou desafixar o chat atual",
         },
+        selectAllChats: {
+          label: "Selecionar todos os chats",
+          description: "Selecionar todos os chats da barra lateral",
+        },
+        clearChatSelection: {
+          label: "Limpar seleção",
+          description: "Descartar os chats selecionados. Esc também limpa",
+        },
+        deleteSelectedChats: {
+          label: "Excluir os chats selecionados",
+          description: "Excluir todos os chats selecionados",
+        },
         nextRecentlyViewedChat: {
           label: "Próximo chat visto",
           description: "Avançar pelos chats vistos recentemente",

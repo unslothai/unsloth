@@ -277,6 +277,18 @@ export const es = {
           label: "Alternar fijado",
           description: "Fijar o desfijar el chat actual",
         },
+        selectAllChats: {
+          label: "Seleccionar todos los chats",
+          description: "Seleccionar todos los chats de la barra lateral",
+        },
+        clearChatSelection: {
+          label: "Borrar selección",
+          description: "Descartar los chats seleccionados. Escape también los borra",
+        },
+        deleteSelectedChats: {
+          label: "Eliminar los chats seleccionados",
+          description: "Eliminar todos los chats seleccionados",
+        },
         nextRecentlyViewedChat: {
           label: "Siguiente chat visto",
           description: "Avanzar por los chats vistos recientemente",

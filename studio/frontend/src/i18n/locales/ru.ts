@@ -276,6 +276,18 @@ export const ru = {
           label: "Закрепить или открепить",
           description: "Закрепить или открепить текущий чат",
         },
+        selectAllChats: {
+          label: "Выбрать все чаты",
+          description: "Выбрать все чаты на боковой панели",
+        },
+        clearChatSelection: {
+          label: "Снять выделение",
+          description: "Сбросить выбранные чаты. Escape тоже снимает выделение",
+        },
+        deleteSelectedChats: {
+          label: "Удалить выбранные чаты",
+          description: "Удалить все выбранные чаты",
+        },
         nextRecentlyViewedChat: {
           label: "Следующий просмотренный чат",
           description: "Листать вперёд по недавно открытым чатам",

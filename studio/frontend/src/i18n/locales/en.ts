@@ -274,6 +274,18 @@ export const en = {
           label: "Toggle pin",
           description: "Pin or unpin the current chat",
         },
+        selectAllChats: {
+          label: "Select all chats",
+          description: "Select every chat in the sidebar",
+        },
+        clearChatSelection: {
+          label: "Clear selection",
+          description: "Drop the selected chats. Escape clears them too",
+        },
+        deleteSelectedChats: {
+          label: "Delete selected chats",
+          description: "Delete every selected chat",
+        },
         nextRecentlyViewedChat: {
           label: "Next recently viewed chat",
           description: "Cycle forward through recently viewed chats",

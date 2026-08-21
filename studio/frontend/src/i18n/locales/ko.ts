@@ -274,6 +274,18 @@ export const ko = {
           label: "고정 전환",
           description: "현재 채팅을 고정하거나 해제합니다",
         },
+        selectAllChats: {
+          label: "모든 채팅 선택",
+          description: "사이드바의 모든 채팅을 선택합니다",
+        },
+        clearChatSelection: {
+          label: "선택 해제",
+          description: "선택한 채팅을 해제합니다. Esc로도 해제됩니다",
+        },
+        deleteSelectedChats: {
+          label: "선택한 채팅 삭제",
+          description: "선택한 모든 채팅을 삭제합니다",
+        },
         nextRecentlyViewedChat: {
           label: "다음에 본 채팅",
           description: "최근 본 채팅을 앞으로 넘깁니다",

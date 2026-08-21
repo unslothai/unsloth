@@ -276,6 +276,18 @@ export const ja = {
           label: "ピン留めの切り替え",
           description: "現在のチャットをピン留め、または解除します",
         },
+        selectAllChats: {
+          label: "すべてのチャットを選択",
+          description: "サイドバーのすべてのチャットを選択します",
+        },
+        clearChatSelection: {
+          label: "選択を解除",
+          description: "選択中のチャットを解除します。Esc でも解除できます",
+        },
+        deleteSelectedChats: {
+          label: "選択したチャットを削除",
+          description: "選択したすべてのチャットを削除します",
+        },
         nextRecentlyViewedChat: {
           label: "次に見ていたチャット",
           description: "最近開いたチャットを前に送ります",

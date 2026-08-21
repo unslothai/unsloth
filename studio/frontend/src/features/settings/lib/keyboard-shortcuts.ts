@@ -20,6 +20,9 @@ export type ShortcutId =
   | "newStandaloneChat"
   | "markChatUnread"
   | "togglePinChat"
+  | "selectAllChats"
+  | "clearChatSelection"
+  | "deleteSelectedChats"
   | "nextRecentlyViewedChat"
   | "nextChat"
   | "nextChatNeedingAttention"
@@ -155,6 +158,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("newStandaloneChat", "Mod+Alt+KeyO"),
   def("markChatUnread", "Mod+Shift+KeyU"),
   def("togglePinChat", "Mod+Alt+KeyP"),
+  // Archive, pin and mark unread above already act on the selection when
+  // there is one, so these only cover what a selection alone needs.
+  def("selectAllChats", "Mod+Alt+KeyS"),
+  // Escape clears the selection too, from the sidebar's own listener: this
+  // registry cannot bind it, since declining a tool call owns bare Escape.
+  def("clearChatSelection", null),
+  // Unassigned on purpose: nothing that deletes chats should ship on a chord.
+  def("deleteSelectedChats", null),
   def("nextRecentlyViewedChat", "Ctrl+Tab", {
     nonMacDefaultBinding: "Mod+Tab",
   }),

@@ -1316,6 +1316,18 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
+  /** Select every chat row on screen, pinned block included. */
+  const selectAllChats = useCallback(() => {
+    const ids = [...sortedPinnedChatItems, ...sortedRecentChatItems].map(
+      (item) => item.id,
+    );
+    if (ids.length === 0) return;
+    dropProjectSelection();
+    // No anchor: a shift click after this one has no row to reach back to.
+    selectionAnchorRef.current = null;
+    setSelectedChatIds(new Set(ids));
+  }, [sortedPinnedChatItems, sortedRecentChatItems, dropProjectSelection]);
+
   // Escape is the way out of a selection, as it is for the menus.
   useEffect(() => {
     if (selectionCount === 0 && projectSelectionCount === 0) return;
@@ -2337,15 +2349,34 @@ export function AppSidebar() {
   const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
     openChatItemById(pick(useChatNavigationStore.getState()));
 
-  useShortcut("archiveChat", () =>
-    withActiveChat((item) => void handleArchiveThread(item)),
-  );
-  useShortcut("markChatUnread", () =>
-    withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item))),
-  );
-  useShortcut("togglePinChat", () =>
-    withActiveChat((item) => togglePinnedChat(item.id)),
-  );
+  // With rows selected these act on the selection, matching the context menu;
+  // otherwise on the open chat.
+  useShortcut("archiveChat", () => {
+    if (selectionCount > 0) {
+      void archiveSelected();
+      return;
+    }
+    withActiveChat((item) => void handleArchiveThread(item));
+  });
+  useShortcut("markChatUnread", () => {
+    if (selectionCount > 0) {
+      markSelectedUnread();
+      return;
+    }
+    withActiveChat((item) => markThreadsUnread(getSidebarItemThreadIds(item)));
+  });
+  useShortcut("togglePinChat", () => {
+    if (selectionCount > 0) {
+      pinSelected(!allSelectedPinned);
+      return;
+    }
+    withActiveChat((item) => togglePinnedChat(item.id));
+  });
+  useShortcut("selectAllChats", selectAllChats);
+  useShortcut("clearChatSelection", clearSelection);
+  useShortcut("deleteSelectedChats", () => {
+    if (selectionCount > 0) deleteSelected();
+  });
   useShortcut("renameChat", () => withActiveChat(openRenameChat));
   useShortcut("copyChatAsMarkdown", () =>
     withActiveChat((item) => void copyChatItemAsMarkdown(item)),

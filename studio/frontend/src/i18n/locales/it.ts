@@ -242,6 +242,18 @@ export const it = {
           label: "Fissa/sblocca",
           description: "Fissa o sblocca la chat corrente",
         },
+        selectAllChats: {
+          label: "Seleziona tutte le chat",
+          description: "Seleziona tutte le chat nella barra laterale",
+        },
+        clearChatSelection: {
+          label: "Annulla selezione",
+          description: "Deseleziona le chat scelte. Anche Esc le annulla",
+        },
+        deleteSelectedChats: {
+          label: "Elimina le chat selezionate",
+          description: "Elimina tutte le chat selezionate",
+        },
         nextRecentlyViewedChat: {
           label: "Chat vista successiva",
           description: "Avanza tra le chat viste di recente",

@@ -278,6 +278,18 @@ export const fr = {
           label: "Épingler/désépingler",
           description: "Épingler ou désépingler la discussion en cours",
         },
+        selectAllChats: {
+          label: "Tout sélectionner",
+          description: "Sélectionner tous les chats de la barre latérale",
+        },
+        clearChatSelection: {
+          label: "Effacer la sélection",
+          description: "Abandonner les chats sélectionnés. Échap les efface aussi",
+        },
+        deleteSelectedChats: {
+          label: "Supprimer les chats sélectionnés",
+          description: "Supprimer tous les chats sélectionnés",
+        },
         nextRecentlyViewedChat: {
           label: "Discussion consultée suivante",
           description: "Avancer dans les discussions récemment consultées",

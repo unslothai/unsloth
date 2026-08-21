@@ -277,6 +277,18 @@ export const hi = {
           label: "पिन टॉगल करें",
           description: "मौजूदा चैट पिन करें या हटाएँ",
         },
+        selectAllChats: {
+          label: "सभी चैट चुनें",
+          description: "साइडबार की हर चैट चुनें",
+        },
+        clearChatSelection: {
+          label: "चयन हटाएँ",
+          description: "चुनी गई चैट हटा दें। Escape से भी चयन हटता है",
+        },
+        deleteSelectedChats: {
+          label: "चुनी गई चैट हटाएँ",
+          description: "हर चुनी गई चैट को हटाएँ",
+        },
         nextRecentlyViewedChat: {
           label: "अगली हाल में देखी चैट",
           description: "हाल में देखी चैट में आगे बढ़ें",
