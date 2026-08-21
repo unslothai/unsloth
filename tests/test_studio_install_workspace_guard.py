@@ -12,18 +12,27 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 
-# Stubs for helpers the extracted guard block calls; mv-based replacement reproduces the venv-gone
-# effect without the full rollback machinery.
+# Stub the rollback helper with a move. The directory predicate is extracted
+# from install.sh because it controls whether the guard runs.
 _INSTALL_GUARD_STUBS = (
     'substep() { :; }\n_start_studio_venv_replacement() {\n    mv -- "$1" "$1.replaced"\n}\n'
 )
+
+
+def _extract_install_sh_function(name: str) -> str:
+    """Extract a top-level install.sh shell function, header line to closing brace."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    m = re.search(rf"^{re.escape(name)}\(\) \{{.*?\n\}}\n", src, re.DOTALL | re.MULTILINE)
+    assert m, f"install.sh function {name} not found"
+    return m.group(0)
 
 
 def _extract_install_sh_guard_block() -> str:
     """Extract install.sh's venv guard block (up to the first elif) as a self-contained snippet."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     m = re.search(
-        r'(if \[ -x "\$VENV_DIR/bin/python" \]; then\n.*?)elif \[ "\$_STUDIO_HOME_REDIRECT" != "env"',
+        r'(if \[ -x "\$VENV_DIR/bin/python" \] \|\| _dir_has_entries "\$VENV_DIR"; then\n.*?)'
+        r'elif \[ "\$_STUDIO_HOME_REDIRECT" != "env"',
         src,
         re.DOTALL,
     )
@@ -41,6 +50,7 @@ def _build_install_guard_script(
         block = _extract_install_sh_guard_block()
     return (
         _INSTALL_GUARD_STUBS
+        + _extract_install_sh_function("_dir_has_entries")
         + f'STUDIO_HOME="{studio_home}"\n'
         + f'VENV_DIR="$STUDIO_HOME/unsloth_studio"\n'
         + f'_STUDIO_HOME_REDIRECT="{redirect}"\n'
@@ -117,7 +127,7 @@ def test_default_mode_skips_sentinel_check(tmp_path):
 
 def test_install_ps1_has_matching_env_mode_guard():
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("# why: matching guard to the .venv branch below")
     block = src[block_start : block_start + 2000]
     assert (
         "$StudioRedirectMode -eq 'env'" in block
@@ -191,7 +201,7 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
 def test_install_ps1_sentinel_uses_pathtype_leaf():
     """Remove-Item $VenvDir gate must use -PathType Leaf so a sentinel-path directory cannot satisfy it."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("# why: matching guard to the .venv branch below")
     block = src[block_start : block_start + 2000]
     assert (
         'share\\studio.conf") -PathType Leaf' in block
@@ -347,7 +357,7 @@ def test_install_ps1_writes_venv_marker_after_uv_venv():
 def test_install_ps1_guard_accepts_venv_marker():
     """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("# why: matching guard to the .venv branch below")
     block = src[block_start : block_start + 2000]
     assert (
         '$VenvDir ".unsloth-studio-owned") -PathType Leaf' in block
@@ -1012,3 +1022,98 @@ def test_install_ps1_install_id_file_layout_matches_backend_read_path():
     assert (
         "[System.IO.File]::Move($_idTmp, $_studioIdFile)" in context
     ), "install.ps1 must atomic-rename the temp file into place to avoid half-written ids"
+
+
+def _make_interpreterless_venv(studio_home):
+    """A venv whose uv-managed CPython was deleted: pyvenv.cfg intact, bin/python dangling."""
+    venv = studio_home / "unsloth_studio"
+    (venv / "bin").mkdir(parents = True)
+    (venv / "pyvenv.cfg").write_text("home = /gone/bin\nversion_info = 3.13.14\n")
+    (venv / "bin" / "python").symlink_to("/gone/bin/python3.13")
+    return venv
+
+
+def _run_guard_block(studio_home, redirect):
+    return subprocess.run(
+        ["bash", "-c", _build_install_guard_script(studio_home, redirect)],
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
+    )
+
+
+def test_install_sh_replaces_venv_whose_interpreter_is_gone(tmp_path):
+    """A venv with no usable bin/python must still be moved aside: uv 0.10 will not overwrite it."""
+    studio_home = tmp_path / "ws"
+    venv = _make_interpreterless_venv(studio_home)
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "RESULT=ok" in res.stdout
+    assert not venv.exists(), "install.sh must clear $VENV_DIR before `uv venv` runs"
+
+
+def test_install_sh_replaces_venv_dir_holding_only_hidden_entries(tmp_path):
+    """uv refuses any non-empty target, so a leftover holding only dotfiles must be cleared too."""
+    studio_home = tmp_path / "ws"
+    venv = studio_home / "unsloth_studio"
+    venv.mkdir(parents = True)
+    (venv / ".unsloth-studio-owned").write_text("")
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert not venv.exists()
+
+
+def test_install_sh_leaves_absent_and_empty_venv_dir_to_uv(tmp_path):
+    """uv creates into a missing or empty directory, so neither may trigger a rollback move."""
+    studio_home = tmp_path / "ws"
+    studio_home.mkdir()
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert not (studio_home / "unsloth_studio.replaced").exists()
+
+    (studio_home / "unsloth_studio").mkdir()
+    res = _run_guard_block(studio_home, "default")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert (studio_home / "unsloth_studio").is_dir(), "an empty $VENV_DIR must be left in place"
+    assert not (studio_home / "unsloth_studio.replaced").exists()
+
+
+def test_env_mode_blocks_interpreterless_venv_without_sentinels(tmp_path):
+    """The env-mode ownership guard must cover the interpreter-less case, not just the healthy one."""
+    studio_home = tmp_path / "ws"
+    venv = _make_interpreterless_venv(studio_home)
+    (venv / "important.txt").write_text("keep me")
+    res = _run_guard_block(studio_home, "env")
+    assert res.returncode != 0, (
+        "env-mode without sentinels must refuse to replace $VENV_DIR; "
+        f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    )
+    assert "does not look like an Unsloth Studio install" in res.stderr
+    assert (venv / "important.txt").is_file(), "unrelated workspace data must survive"
+
+
+def test_env_mode_replaces_interpreterless_venv_when_marker_present(tmp_path):
+    """A partial install that left the marker must be replaceable on the next run."""
+    studio_home = tmp_path / "ws"
+    venv = _make_interpreterless_venv(studio_home)
+    (venv / ".unsloth-studio-owned").write_text("")
+    res = _run_guard_block(studio_home, "env")
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert not venv.exists()
+
+
+def test_install_ps1_replacement_branch_covers_an_occupied_venv_dir():
+    """install.ps1 must move a venv aside on directory content, not only on a present python.exe."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert (
+        "if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir))"
+        in src
+    ), "install.ps1 must treat an occupied $VenvDir as an environment to replace"
+    helper_start = src.index("function Test-DirectoryHasEntries")
+    helper = src[helper_start : src.index("function Get-VenvBaseHome", helper_start)]
+    assert (
+        "[System.IO.Directory]::EnumerateFileSystemEntries($Path)" in helper
+    ), "Test-DirectoryHasEntries must count hidden entries and not read the path as a wildcard"
+    assert (
+        "-PathType Container" in helper
+    ), "Test-DirectoryHasEntries must answer false for a missing directory"

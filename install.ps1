@@ -3946,6 +3946,22 @@ exit 0
         }
     }
 
+    # uv refuses to create a venv in an occupied directory. The .NET API counts
+    # hidden entries and treats wildcard characters in the path literally.
+    function Test-DirectoryHasEntries {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        try {
+            foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Path)) {
+                if ($entry) { return $true }
+            }
+        } catch {
+            # Present but unreadable: report it occupied rather than let uv fail on it.
+            return $true
+        }
+        return $false
+    }
+
     function Get-VenvBaseHome {
         param([Parameter(Mandatory = $true)][string]$VenvRoot)
         $configPath = Join-Path $VenvRoot "pyvenv.cfg"
@@ -4182,7 +4198,8 @@ exit 0
 
     $studioVenvReplacementCommitted = $false
     try {
-    if (Test-Path -LiteralPath $VenvPython) {
+    # Replace occupied venvs even when python.exe is missing, as in #9479.
+    if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
         # existing $StudioHome\unsloth_studio that lacks Unsloth sentinels.
@@ -4278,7 +4295,7 @@ exit 0
         Write-StudioLine "        Managed Python: $VenvPython" -ForegroundColor Yellow
         if (-not $recordedBaseHome) { $recordedBaseHome = "unavailable" }
         Write-StudioLine "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
-        # The ownership marker is written above, so a plain re-run replaces this venv.
+        # The occupied-directory branch makes this venv replaceable on a plain re-run.
         Write-StudioLine "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
