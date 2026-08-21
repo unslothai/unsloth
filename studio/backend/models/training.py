@@ -631,45 +631,6 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
-    @model_validator(mode = "after")
-    def _check_finetune_targets(self) -> "TrainingStartRequest":
-        # Two LoRA branches feed these four selectors to get_peft_model: the vision one
-        # (trainer.is_vlm) and the audio-VLM one (trainer.is_audio_vlm). Text runs and
-        # Continued Pretraining build adapters from target_modules alone (trainer.py's
-        # else branch, worker.py's is_cpt branch), so all-false is a valid request there
-        # and rejecting it broke working configs.
-        #
-        # Full Finetuning and CPT are exempt on training_type alone, NOT via the dataset
-        # gate below: worker.py takes its `if is_cpt` branch before the LoRA one and
-        # passes only target_modules, so a CPT run never reads these four however its
-        # dataset is tagged. Gating CPT on the image flag still rejected
-        # is_dataset_image=true + all-false, a config the worker runs fine.
-        if getattr(self, "training_type", None) in (
-            "Full Finetuning",
-            "Continued Pretraining",
-        ):
-            return self
-        # Image-tagged runs are gated here because is_dataset_image is a necessary condition
-        # for trainer.is_vlm, so the request alone settles it. Audio is NOT gated here: the
-        # audio-VLM branch does read these four, but the codec/ASR branches (csm, snac,
-        # whisper, bicodec, dac) ignore them, and only a config/tokenizer probe tells the two
-        # apart -- so an is_dataset_audio gate would reject valid codec runs. That case is
-        # checked in worker.py's _pre_detect_training_model, after detection and still before
-        # any weights load.
-        if not self.is_dataset_image:
-            return self
-        if not (
-            self.finetune_vision_layers
-            or self.finetune_language_layers
-            or self.finetune_attention_modules
-            or self.finetune_mlp_modules
-        ):
-            raise ValueError(
-                "Nothing to train: enable at least one of finetune_language_layers, "
-                "finetune_attention_modules, finetune_mlp_modules, or finetune_vision_layers."
-            )
-        return self
-
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""

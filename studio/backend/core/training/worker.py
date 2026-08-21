@@ -738,31 +738,52 @@ def _pre_detect_training_model(
     _check_finetune_targets_after_detect(trainer, config)
 
 
+_NOTHING_TO_TRAIN = (
+    "Nothing to train: select at least one layer family (finetune_language_layers or "
+    "finetune_vision_layers) and at least one module type (finetune_attention_modules or "
+    "finetune_mlp_modules)."
+)
+
+
+def _finetune_selectors(config: dict) -> tuple[bool, bool, bool, bool]:
+    """(vision, language, attention, mlp), with the request model's own defaults."""
+    return (
+        bool(config.get("finetune_vision_layers", False)),
+        bool(config.get("finetune_language_layers", True)),
+        bool(config.get("finetune_attention_modules", True)),
+        bool(config.get("finetune_mlp_modules", True)),
+    )
+
+
 def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
     """Reject a LoRA run that selects no adapter layers, once detection has settled which
-    branch it takes. models/training.py gates the image case from the request alone, but an
-    audio request is ambiguous there: is_audio_vlm reads all four selectors while the
-    codec/ASR branches (csm, snac, whisper, bicodec, dac) ignore them, and only the probe in
-    pre_detect tells them apart. Running here keeps the error early -- pre_detect is
+    branch it takes. The request model cannot decide this: is_audio_vlm reads all four
+    selectors while the codec/ASR branches (csm, snac, whisper, bicodec, dac) ignore them,
+    is_vlm needs a vision-capable model and not just an image-tagged dataset, and only the
+    probe in pre_detect separates those. Running here keeps the error early -- pre_detect is
     config/tokenizer only, so this still fires before any weights load, instead of surfacing
-    as get_peft_regex's "No layers to finetune" after the model is in memory."""
+    as get_peft_regex's "No layers to finetune" with the model already in memory."""
     if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA":
         return  # Full Finetuning / CPT build adapters from target_modules alone
     if not (getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False)):
-        return
-    if any(
-        config.get(key, True)
-        for key in (
-            "finetune_language_layers",
-            "finetune_attention_modules",
-            "finetune_mlp_modules",
-        )
-    ) or config.get("finetune_vision_layers", False):
-        return
-    raise ValueError(
-        "Nothing to train: enable at least one of finetune_language_layers, "
-        "finetune_attention_modules, finetune_mlp_modules, or finetune_vision_layers."
-    )
+        return  # the text branch ignores these four
+    vision, language, attention, mlp = _finetune_selectors(config)
+    # Mirror get_peft_regex's two guards: one layer family AND one module type.
+    if not (vision or language) or not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _check_mlx_finetune_targets(config: dict) -> None:
+    """MLX equivalent, called from the LoRA branch of the MLX worker.
+
+    Two things differ from the CUDA path. FastMLXModel.get_peft_model is handed these
+    selectors for text models too, not only VLMs, so there is no is_vlm gate here. And the
+    caller back-fills finetune_language_layers whenever a module type is on, so an empty
+    layer family cannot survive -- only an empty module selection can, which leaves
+    target_modules empty after filtering ("target_modules became empty after filtering")."""
+    _, _, attention, mlp = _finetune_selectors(config)
+    if not (attention or mlp):
+        raise ValueError(_NOTHING_TO_TRAIN)
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -2697,6 +2718,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Before the download/load below: this needs none of the model, unlike the CUDA path's
+    # equivalent, which has to wait for pre_detect to say which branch the run takes.
+    if use_lora:
+        _check_mlx_finetune_targets(config)
     # Normalize seed; explicit None must not reach the seed chain.
     _raw_seed = config.get("random_seed", 3407)
     random_seed = 3407 if _raw_seed is None else int(_raw_seed)

@@ -2,7 +2,6 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import pytest
-from pydantic import ValidationError
 
 from models import TrainingStartRequest
 
@@ -26,122 +25,28 @@ def test_lora_targets_default_on():
     assert request.finetune_vision_layers is False
 
 
-def test_vision_lora_with_no_targets_is_rejected():
-    with pytest.raises(ValidationError, match = "Nothing to train"):
-        _request(
-            is_dataset_image = True,
+def test_request_layer_does_not_guess_the_branch():
+    # Whether these four are read at all depends on the model, which the request cannot see:
+    # a vision-capable model makes it a VLM run, a plain text model does not, and an audio
+    # dataset may be an audio VLM or a codec. Every combination is accepted here and settled
+    # in the worker once detection has run (tests below).
+    for flags in (
+        {},
+        {"is_dataset_image": True},
+        {"is_dataset_audio": True},
+        {"is_dataset_image": True, "is_dataset_audio": True},
+        {"training_type": "Continued Pretraining", "is_dataset_image": True},
+        {"training_type": "Full Finetuning"},
+    ):
+        request = _request(
             finetune_vision_layers = False,
             finetune_language_layers = False,
             finetune_attention_modules = False,
             finetune_mlp_modules = False,
+            **flags,
         )
 
-
-def test_text_lora_with_no_targets_is_allowed():
-    # Only the VLM path reads these four selectors; a text LoRA run builds its
-    # adapters from target_modules, so an all-false request still trains.
-    request = _request(
-        finetune_vision_layers = False,
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.finetune_language_layers is False
-
-
-def test_continued_pretraining_with_no_targets_is_allowed():
-    request = _request(
-        training_type = "Continued Pretraining",
-        finetune_vision_layers = False,
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.training_type == "Continued Pretraining"
-
-
-def test_image_tagged_continued_pretraining_with_no_targets_is_allowed():
-    # worker.py takes its `if is_cpt` branch BEFORE the LoRA one and passes only
-    # target_modules, so a CPT run never reads these four however its dataset is
-    # tagged. Gating the exemption on is_dataset_image rejected this valid config;
-    # the case above leaves the flag at its default, so it never covered this.
-    request = _request(
-        training_type = "Continued Pretraining",
-        is_dataset_image = True,
-        finetune_vision_layers = False,
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.training_type == "Continued Pretraining"
-    assert request.is_dataset_image is True
-
-
-def test_audio_lora_with_no_targets_passes_request_validation():
-    # An audio request is ambiguous at this layer: the audio-VLM branch reads all four
-    # selectors, the codec/ASR branches ignore them, and only pre_detect's probe separates
-    # them. So the request is accepted here and settled in the worker (tests below).
-    request = _request(
-        is_dataset_audio = True,
-        finetune_vision_layers = False,
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.is_dataset_audio is True
-
-
-def test_audio_lora_with_one_target_is_allowed():
-    request = _request(
-        is_dataset_audio = True,
-        finetune_vision_layers = False,
-        finetune_language_layers = True,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = True,
-    )
-
-    assert request.is_dataset_audio is True
-
-
-def test_audio_tagged_continued_pretraining_with_no_targets_is_allowed():
-    # training_type exempts CPT before the dataset gate, for audio as for image.
-    request = _request(
-        training_type = "Continued Pretraining",
-        is_dataset_audio = True,
-        finetune_vision_layers = False,
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.is_dataset_audio is True
-
-
-def test_vision_only_target_is_enough():
-    request = _request(
-        is_dataset_image = True,
-        finetune_vision_layers = True,
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.finetune_vision_layers is True
-
-
-def test_full_finetuning_ignores_targets():
-    request = _request(
-        training_type = "Full Finetuning",
-        finetune_language_layers = False,
-        finetune_attention_modules = False,
-        finetune_mlp_modules = False,
-    )
-
-    assert request.training_type == "Full Finetuning"
+        assert request.finetune_language_layers is False
 
 
 # --- worker-level check, after detection has settled which branch the run takes ---
@@ -190,15 +95,40 @@ def test_worker_rejects_vision_vlm_with_no_targets():
         _check_finetune_targets_after_detect(_Trainer(is_vlm = True), _config(**_ALL_OFF))
 
 
-def test_worker_allows_audio_vlm_with_one_target():
+def test_worker_rejects_audio_vlm_with_a_module_type_but_no_layer_family():
+    # get_peft_regex's first guard: mlp alone is not enough, some family must be on.
     from core.training.worker import _check_finetune_targets_after_detect
     config = _config(**{**_ALL_OFF, "finetune_mlp_modules": True})
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), config)
+
+
+def test_worker_allows_audio_vlm_with_a_family_and_a_module_type():
+    from core.training.worker import _check_finetune_targets_after_detect
+
+    config = _config(
+        **{**_ALL_OFF, "finetune_language_layers": True, "finetune_mlp_modules": True}
+    )
     _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), config)
 
 
-def test_worker_allows_vision_only_target():
+def test_worker_rejects_vision_family_with_no_module_type():
+    # get_peft_regex's second guard: a family with neither attention nor mlp still raises,
+    # so "at least one of the four" would have been too loose a rule here.
     from core.training.worker import _check_finetune_targets_after_detect
     config = _config(**{**_ALL_OFF, "finetune_vision_layers": True})
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
+
+
+def test_worker_allows_vision_family_with_a_module_type():
+    from core.training.worker import _check_finetune_targets_after_detect
+
+    config = _config(
+        **{**_ALL_OFF, "finetune_vision_layers": True, "finetune_attention_modules": True}
+    )
     _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
 
 
@@ -227,8 +157,61 @@ def test_worker_rejection_is_not_mistaken_for_a_cache_problem():
     # error, or a nothing-to-train run would be retried as a corrupt-download instead.
     from core.training.worker import _is_model_cache_artifact_error
     error = ValueError(
-        "Nothing to train: enable at least one of finetune_language_layers, "
-        "finetune_attention_modules, finetune_mlp_modules, or finetune_vision_layers."
+        "Nothing to train: select at least one layer family (finetune_language_layers or "
+        "finetune_vision_layers) and at least one module type (finetune_attention_modules "
+        "or finetune_mlp_modules)."
     )
 
     assert _is_model_cache_artifact_error(error) is False
+
+
+# --- MLX path: selectors are read for text models too, and before any model load ---
+
+
+def test_mlx_rejects_no_module_types():
+    from core.training.worker import _check_mlx_finetune_targets
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_mlx_finetune_targets(_config(**_ALL_OFF))
+
+
+def test_mlx_rejects_text_run_with_no_module_types():
+    # No is_vlm gate on this path: FastMLXModel.get_peft_model is handed the selectors for
+    # text models too, so an all-false text run fails there where CUDA would ignore them.
+    from core.training.worker import _check_mlx_finetune_targets
+
+    config = _config(**{**_ALL_OFF, "finetune_language_layers": True})
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_mlx_finetune_targets(config)
+
+
+def test_mlx_allows_empty_layer_family_when_a_module_type_is_on():
+    # The caller back-fills finetune_language_layers when a module type is selected, so this
+    # trains fine and must not be rejected -- the CUDA guard would reject the same config.
+    from core.training.worker import _check_mlx_finetune_targets
+
+    config = _config(**{**_ALL_OFF, "finetune_attention_modules": True})
+    _check_mlx_finetune_targets(config)
+
+
+def test_mlx_allows_defaults():
+    from core.training.worker import _check_mlx_finetune_targets
+
+    _check_mlx_finetune_targets(_config())
+
+
+def test_cuda_rejects_empty_layer_family():
+    # get_peft_regex's first guard, which the MLX back-fill makes unreachable there.
+    from core.training.worker import _check_finetune_targets_after_detect
+
+    config = _config(**{**_ALL_OFF, "finetune_attention_modules": True})
+
+    with pytest.raises(ValueError, match = "Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
+
+
+def test_cuda_text_run_is_untouched_by_either_guard():
+    from core.training.worker import _check_finetune_targets_after_detect
+
+    _check_finetune_targets_after_detect(_Trainer(), _config(**_ALL_OFF))
