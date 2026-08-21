@@ -2,23 +2,29 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A copy inside the thread writes its own `text/plain` so the browser never builds the styled
-// clipboard flavour, which is where over 99% of a long thread's copy time goes.
+// clipboard flavour. Measured on smoke-heavy-thread.html at the 100K rung, a 40,626-character
+// selection costs 347.0ms to copy and 11.9ms to produce ourselves, so essentially all of it.
 //
-// What is tested here is the DECISION, not the timing. A unit test cannot time a clipboard, and
-// one that tried would be measuring the test runner. What it can do is pin every branch that
-// decides whether the substitution happens, and each of those branches is a distinct way of
-// handing a user the wrong text:
+// What is tested here is the DECISION and the SERIALISER, not the timing. A unit test cannot time
+// a clipboard, and one that tried would be measuring the test runner. What it can do is pin the
+// two things that decide whether a user gets the right bytes:
 //
-//   * taking a copy that started in a textarea, where `window.getSelection()` is not the
-//     selection being copied at all
-//   * taking a copy whose selection runs out of the thread, whose text has not been checked
-//   * taking a copy over content the clipboard serialises differently from `Selection.toString()`
-//     -- image alt text, form control values, CSS text transforms -- which would silently drop or
-//     alter runs of text
-//   * writing an empty string over a clipboard the browser would have left alone
+//   * the gate, whose every branch is a distinct way of handing somebody the wrong text -- a copy
+//     that started in a textarea, where `window.getSelection()` is not the selection being copied
+//     at all; a selection that runs out of the thread, whose text has not been checked; a form
+//     control, whose value the clipboard emits as its own block; an engine whose `toString()` has
+//     not been proven to agree with its clipboard
+//   * the serialiser, which reproduces the enumerated deltas by PATCHING THE LIVE DOM and taking
+//     the engine's own `toString()` back out. What has to be true of it is that the patch is
+//     complete and that the document and the user's selection are exactly as they were found.
 //
-// The types the module exports are structural on purpose, so all of this runs against plain
-// objects with no DOM.
+// There is no DOM library in this project -- no jsdom, no happy-dom, no vitest environment; the
+// runner is `node --test` and every sibling test that needs a document hand-rolls one (see
+// tests/overlay-scrollbar-gutter.test.ts). So the gate runs against plain objects, which is what
+// its structural types are for, and the serialiser runs against the small DOM below. That DOM is
+// honest about its limits: its `querySelectorAll` throws on any selector it does not really
+// implement, and its `toString()` is computed from the tree at the moment it is asked, so an alt
+// text only appears in the output if the module actually put a holder in the document.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,9 +35,13 @@ import {
   type ThreadViewportLike,
   attachThreadFastCopy,
   decideThreadCopy,
+  engineClipboardIsMapped,
+  faithfulSelectionText,
 } from "../src/components/assistant-ui/thread-fast-copy.ts";
 
-/** A viewport holding nothing the clipboard would serialise differently, containing everything. */
+// --- the gate ----------------------------------------------------------------------------------
+
+/** A viewport holding no form control, containing everything. */
 function plainViewport(
   options: {
     contains?: boolean;
@@ -66,22 +76,21 @@ function copyEvent(overrides: Partial<CopyEventLike> = {}): CopyEventLike {
   return {
     defaultPrevented: false,
     target: { closest: () => null },
-    clipboardData: { setData: () => {} },
+    clipboardData: { setData: () => undefined },
     ...overrides,
   };
 }
 
-test("an ordinary selection inside the thread is answered from Selection.toString()", () => {
+test("an ordinary selection inside the thread is answered by the fast path", () => {
+  // The decision no longer carries the text: the string is produced separately, from the live
+  // DOM, because reproducing the clipboard's deltas needs a document and the gate does not.
   const decision = decideThreadCopy(
     copyEvent(),
     selectionOf("first message\n\nsecond message"),
     plainViewport(),
   );
 
-  assert.deepEqual(decision, {
-    kind: "fast",
-    text: "first message\n\nsecond message",
-  });
+  assert.deepEqual(decision, { kind: "fast" });
 });
 
 test("a copy another handler already answered is left alone", () => {
@@ -164,16 +173,6 @@ test("a caret rather than a selection is left alone", () => {
   });
 });
 
-test("a selection that serialises to nothing does not clear the clipboard", () => {
-  const decision = decideThreadCopy(
-    copyEvent(),
-    selectionOf(""),
-    plainViewport(),
-  );
-
-  assert.deepEqual(decision, { kind: "native", reason: "empty-selection" });
-});
-
 test("a selection running out of the thread is left alone", () => {
   // Dragging from the last message down into the composer, or up into the sidebar, puts the
   // common ancestor above the viewport. The text past the boundary is not text this file has
@@ -212,54 +211,139 @@ test("every range of a multi-range selection has to be inside the thread", () =>
   });
 });
 
-test("content the clipboard serialises differently is left to the browser", () => {
-  // Each of these was measured against a real clipboard: `Selection.toString()` and the
-  // clipboard's own `text/plain` disagree, so substituting one for the other would change what
-  // the user copied.
-  const cases: ReadonlyArray<readonly [string, string]> = [
-    // Blink's EmitsImageAltText: the clipboard carries the alt text, toString() drops it.
-    ["image with alt text", 'img[alt]:not([alt=""])'],
-    // Blink's EntersTextControls: the clipboard carries the value, toString() drops it.
-    ["message being edited", "textarea"],
-    ["form input", "input"],
-    // Blink's IgnoresCssTextTransforms: the clipboard carries the source text, toString()
-    // carries the transformed text.
-    ["uppercased label", ".uppercase"],
-  ];
-
-  for (const [what, selector] of cases) {
+test("a form control in the selected subtree hands the copy back", () => {
+  // The one construct that is REFUSED rather than reproduced. Chromium's clipboard emits the
+  // control's value AND treats it as its own block, and the break depends on the control: a text
+  // input lands as "value\n", a select as "\nvalue\n". Guessing that wrong is the same
+  // block-boundary problem the whole file exists to avoid -- and a password field would copy as
+  // its mask, where guessing the glyph wrong puts a real password on the clipboard.
+  for (const control of ["input", "textarea", "select"]) {
     const decision = decideThreadCopy(
       copyEvent(),
-      selectionOf("some prose and then the awkward thing"),
-      plainViewport({ matches: [selector] }),
+      selectionOf("some prose and then the field"),
+      plainViewport({ matches: [control] }),
     );
 
     assert.deepEqual(
       decision,
-      { kind: "native", reason: "clipboard-only-content" },
-      what,
+      { kind: "native", reason: "form-control" },
+      `<${control}> inside the selection`,
     );
   }
 });
 
-test("a decorative image does not block the fast path", () => {
-  // alt="" emits nothing on either side, and it is what every decorative image in the thread
-  // already carries. Excluding it would turn the fast path off for most threads for no reason.
+test("an image with alt text no longer refuses the fast path", () => {
+  // It used to. The clipboard emits an image's alt text and `toString()` does not, but that delta
+  // is now REPRODUCED by faithfulSelectionText rather than being a reason to give up: the images
+  // in a thread are message attachments, and refusing on them turned the fast path off for
+  // exactly the messages most worth copying.
   const viewport = plainViewport();
   const decision = decideThreadCopy(
     copyEvent(),
-    selectionOf("prose next to a decorative image"),
+    selectionOf("prose next to an image of a cat"),
     viewport,
   );
 
-  assert.equal(decision.kind, "fast");
-  assert.equal(viewport.queried.length, 1);
-  assert.match(viewport.queried[0], /img\[alt\]:not\(\[alt=""\]\)/);
+  assert.deepEqual(decision, { kind: "fast" });
+  // And the gate no longer even asks about images.
+  assert.deepEqual(viewport.queried, ["input, textarea, select"]);
+});
+
+test("text under a css text-transform no longer refuses the fast path", () => {
+  // Also used to. Chromium's clipboard ignores text-transform and carries the source text while
+  // `toString()` carries the rendered text; faithfulSelectionText neutralises the transform for
+  // the length of the copy instead of handing the copy back.
+  const viewport = plainViewport({ matches: [".uppercase"] });
+
+  assert.deepEqual(
+    decideThreadCopy(copyEvent(), selectionOf("STDOUT"), viewport),
+    { kind: "fast" },
+  );
+});
+
+test("an engine whose clipboard mapping is unproven hands the copy back", () => {
+  // WebKit's `toString()` appends trailing block breaks its clipboard does not carry, and the
+  // count depends on what the selection ends with: +2 after a paragraph or heading, +1 after a
+  // div, list, <pre> or blockquote, +0 after a table or an inline. A clipboard that is silently
+  // wrong is worse than one that is slow.
+  const decision = decideThreadCopy(
+    copyEvent(),
+    selectionOf("a paragraph"),
+    plainViewport(),
+    false,
+  );
+
+  assert.deepEqual(decision, { kind: "native", reason: "unmapped-engine" });
+});
+
+test("the engine check runs after every cheaper refusal", () => {
+  // It is the branch the module documents as last, and the one whose answer costs a probe of the
+  // document. Anything that refuses for a cheaper reason has to say so instead.
+  const cheaper: ReadonlyArray<readonly [string, () => unknown]> = [
+    [
+      "already-handled",
+      () =>
+        decideThreadCopy(
+          copyEvent({ defaultPrevented: true }),
+          selectionOf("text"),
+          plainViewport(),
+          false,
+        ),
+    ],
+    [
+      "no-clipboard-data",
+      () =>
+        decideThreadCopy(
+          copyEvent({ clipboardData: null }),
+          selectionOf("text"),
+          plainViewport(),
+          false,
+        ),
+    ],
+    [
+      "editable-origin",
+      () =>
+        decideThreadCopy(
+          copyEvent({ target: { closest: () => ({}) } }),
+          selectionOf("text"),
+          plainViewport(),
+          false,
+        ),
+    ],
+    [
+      "empty-selection",
+      () => decideThreadCopy(copyEvent(), null, plainViewport(), false),
+    ],
+    [
+      "selection-leaves-thread",
+      () =>
+        decideThreadCopy(
+          copyEvent(),
+          selectionOf("text"),
+          plainViewport({ contains: false }),
+          false,
+        ),
+    ],
+    [
+      "form-control",
+      () =>
+        decideThreadCopy(
+          copyEvent(),
+          selectionOf("text"),
+          plainViewport({ matches: ["textarea"] }),
+          false,
+        ),
+    ],
+  ];
+
+  for (const [reason, run] of cheaper) {
+    assert.deepEqual(run(), { kind: "native", reason }, reason);
+  }
 });
 
 test("the checks run cheapest-first, so a rejected copy never walks the thread", () => {
-  // The content check is the only branch that touches the DOM at scale. Anything that rejects
-  // for another reason has to reject before paying for it.
+  // The form control check is the only branch of the gate that queries the DOM. Anything that
+  // rejects for another reason has to reject before paying for it.
   for (const event of [
     copyEvent({ defaultPrevented: true }),
     copyEvent({ clipboardData: null }),
@@ -273,25 +357,841 @@ test("the checks run cheapest-first, so a rejected copy never walks the thread",
   }
 });
 
-// --- the listener itself ----------------------------------------------------------------------
-// The decision above is only worth anything if it is wired to a real event and writes the flavour
-// it claims to. These use a hand-rolled element rather than a DOM library: what is being pinned
-// is the four calls the handler makes, and a DOM would only hide them.
+test("the button copy path is untouched", () => {
+  // lib/copy-to-clipboard.ts falls back to a hidden <textarea> appended to document.body. It is
+  // outside the viewport, so the listener never sees it; and if the tree ever moves, the
+  // editable-origin guard rejects it anyway. Both, because either one alone is a silent
+  // dependency on the other.
+  const decision = decideThreadCopy(
+    copyEvent({
+      target: {
+        closest: (selectors: string) =>
+          selectors.includes("textarea") ? { tag: "textarea" } : null,
+      },
+    }),
+    selectionOf("whatever the thread happens to have selected"),
+    plainViewport(),
+  );
+
+  assert.deepEqual(decision, { kind: "native", reason: "editable-origin" });
+});
+
+// --- how far the form control check looks ------------------------------------------------------
+// Scoping it to the whole viewport would be correct and nearly useless: one textarea anywhere in
+// the conversation would turn the fast path off for every later copy, however far from it the user
+// selected.
+
+/** A range whose common ancestor is an element that answers querySelector itself. */
+function selectionInside(
+  element: { querySelector(selectors: string): unknown },
+  text = "selected prose",
+): SelectionLike {
+  return {
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => ({ commonAncestorContainer: element }),
+    toString: () => text,
+  };
+}
+
+test("the form control check looks at the selection's ancestor, not at the whole thread", () => {
+  const message = {
+    // This message holds no form control.
+    querySelector: () => null,
+  };
+  // The viewport does, elsewhere in the conversation. It must not be consulted.
+  const viewport: ThreadViewportLike = {
+    contains: () => true,
+    querySelector: () => ({ tag: "textarea" }),
+  };
+
+  const decision = decideThreadCopy(
+    copyEvent(),
+    selectionInside(message),
+    viewport,
+  );
+
+  assert.deepEqual(decision, { kind: "fast" });
+});
+
+test("a form control inside the selected subtree still refuses the fast path", () => {
+  const message = { querySelector: () => ({ tag: "textarea" }) };
+  const viewport: ThreadViewportLike = {
+    contains: () => true,
+    querySelector: () => null,
+  };
+
+  assert.deepEqual(
+    decideThreadCopy(copyEvent(), selectionInside(message), viewport),
+    { kind: "native", reason: "form-control" },
+  );
+});
+
+test("a range ending in a text node is checked against that node's element", () => {
+  // Range.commonAncestorContainer is very often a text node, which has no querySelector.
+  const paragraph = { querySelector: () => ({ tag: "textarea" }) };
+  const textNode = { parentElement: paragraph };
+  const selection: SelectionLike = {
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => ({ commonAncestorContainer: textNode }),
+    toString: () => "half a sentence",
+  };
+  const viewport: ThreadViewportLike = {
+    contains: () => true,
+    querySelector: () => null,
+  };
+
+  assert.deepEqual(decideThreadCopy(copyEvent(), selection, viewport), {
+    kind: "native",
+    reason: "form-control",
+  });
+});
+
+test("a multi-range selection is checked against the whole viewport", () => {
+  // Disjoint ranges have no common ancestor short of the viewport, so the wide check is the only
+  // sound one.
+  const viewport: ThreadViewportLike = {
+    contains: () => true,
+    querySelector: () => ({ tag: "input" }),
+  };
+  const selection: SelectionLike = {
+    isCollapsed: false,
+    rangeCount: 2,
+    getRangeAt: () => ({
+      commonAncestorContainer: { querySelector: () => null },
+    }),
+    toString: () => "two disjoint runs",
+  };
+
+  assert.deepEqual(decideThreadCopy(copyEvent(), selection, viewport), {
+    kind: "native",
+    reason: "form-control",
+  });
+});
+
+// --- a document, hand-rolled ------------------------------------------------------------------
+// Enough of one for the serialiser and the probe, and no more. Three properties make it worth
+// trusting: `querySelectorAll` throws on any selector it does not really implement, so the module
+// cannot quietly ask for something the fake glosses over; `toString()` is computed from the tree
+// at the instant it is asked, so alt text reaches the output only if a holder was really inserted;
+// and inline style is a property map with priorities, so a restore that loses `!important` shows.
+//
+// What it does NOT prove is the thing only a browser can: that `toString()` under these patches
+// equals the clipboard's `text/plain`. That was measured, over 27 constructs, and is what the doc
+// comment records.
+
+type StyleEntry = { value: string; priority: string };
+
+type FakeText = {
+  readonly nodeType: 3;
+  readonly data: string;
+  parentNode: FakeElement | null;
+};
+
+type FakeNode = FakeText | FakeElement;
+
+type FakeElement = {
+  readonly nodeType: 1;
+  readonly tagName: string;
+  readonly attrs: Map<string, string>;
+  readonly childNodes: FakeNode[];
+  parentNode: FakeElement | null;
+  readonly parentElement: FakeElement | null;
+  /** What a class rule gives this element. Inherited by descendants, the way CSS does it. */
+  readonly ruleTextTransform: string | null;
+  readonly styleEntries: Map<string, StyleEntry>;
+  readonly style: {
+    getPropertyValue(name: string): string;
+    getPropertyPriority(name: string): string;
+    setProperty(name: string, value: string, priority?: string): void;
+    removeProperty(name: string): void;
+  };
+  readonly ownerDocument: { createElement(tag: string): FakeElement };
+  textContent: string;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  querySelector(selectors: string): FakeElement | null;
+  querySelectorAll(selectors: string): FakeElement[];
+  insertBefore(node: FakeNode, ref: FakeNode | null): FakeNode;
+  remove(): void;
+};
+
+/**
+ * `patchClipboardDeltas` narrows the root with `root instanceof HTMLElement`, so a fake element
+ * has to be one. The constructor is never called: elements are built as object literals and given
+ * this prototype, which is all `instanceof` looks at.
+ */
+class FakeHtmlElement {}
+
+Object.defineProperty(globalThis, "HTMLElement", {
+  configurable: true,
+  writable: true,
+  value: FakeHtmlElement,
+});
+
+function text(data: string): FakeText {
+  return { nodeType: 3, data, parentNode: null };
+}
+
+/** Only the selectors this module actually uses. Anything else is a hole in the fake, not a pass. */
+function matchesSelector(node: FakeElement, selectors: string): boolean {
+  return selectors.split(",").some((part) => {
+    const one = part.trim();
+    if (one === "*") return true;
+    if (one === "img[alt]") {
+      return node.tagName === "img" && node.attrs.has("alt");
+    }
+    if (one === "input" || one === "textarea" || one === "select") {
+      return node.tagName === one;
+    }
+    throw new Error(`the fake DOM does not implement the selector ${one}`);
+  });
+}
+
+/**
+ * Removing or inserting a node inside a live range COLLAPSES that range in Chromium, which is the
+ * whole reason faithfulSelectionText re-establishes the selection twice: once after patching and
+ * once after undoing. Without modelling it, the second restore looks like dead code.
+ *
+ * One listener per fake selection, and they outlive their test, which is why each of them checks
+ * that the mutation was inside its own root before reacting.
+ */
+const mutationListeners: Array<(parent: FakeElement) => void> = [];
+
+function notifyMutation(parent: FakeElement): void {
+  for (const listener of mutationListeners) listener(parent);
+}
+
+function isWithin(node: FakeElement | null, root: FakeElement): boolean {
+  for (let at = node; at !== null; at = at.parentNode) {
+    if (at === root) return true;
+  }
+  return false;
+}
+
+function descendants(node: FakeElement): FakeElement[] {
+  const found: FakeElement[] = [];
+  for (const child of node.childNodes) {
+    if (child.nodeType !== 1) continue;
+    found.push(child, ...descendants(child));
+  }
+  return found;
+}
+
+function el(
+  tagName: string,
+  options: {
+    alt?: string;
+    /** [property, value, priority] triples, as an inline style attribute. */
+    inline?: ReadonlyArray<readonly [string, string, string?]>;
+    /** A stylesheet rule on this element, e.g. Tailwind's `uppercase`. */
+    rule?: string;
+    children?: ReadonlyArray<FakeNode | string>;
+  } = {},
+): FakeElement {
+  const attrs = new Map<string, string>();
+  if (options.alt !== undefined) attrs.set("alt", options.alt);
+  const styleEntries = new Map<string, StyleEntry>();
+  for (const [name, value, priority] of options.inline ?? []) {
+    styleEntries.set(name, { value, priority: priority ?? "" });
+  }
+  const childNodes: FakeNode[] = [];
+  const node: FakeElement = {
+    nodeType: 1,
+    tagName,
+    attrs,
+    childNodes,
+    parentNode: null,
+    get parentElement() {
+      return node.parentNode;
+    },
+    ruleTextTransform: options.rule ?? null,
+    styleEntries,
+    style: {
+      getPropertyValue: (name) => styleEntries.get(name)?.value ?? "",
+      getPropertyPriority: (name) => styleEntries.get(name)?.priority ?? "",
+      setProperty: (name, value, priority = "") => {
+        styleEntries.set(name, { value, priority });
+      },
+      removeProperty: (name) => {
+        styleEntries.delete(name);
+      },
+    },
+    ownerDocument: { createElement: (tag: string) => el(tag) },
+    get textContent() {
+      return childNodes.map(renderSource).join("");
+    },
+    set textContent(value: string) {
+      childNodes.length = 0;
+      node.insertBefore(text(value), null);
+    },
+    getAttribute: (name) => attrs.get(name) ?? null,
+    setAttribute: (name, value) => {
+      attrs.set(name, value);
+    },
+    querySelector: (selectors) =>
+      descendants(node).find((child) => matchesSelector(child, selectors)) ??
+      null,
+    querySelectorAll: (selectors) =>
+      descendants(node).filter((child) => matchesSelector(child, selectors)),
+    insertBefore(child, ref) {
+      const at = ref === null ? -1 : childNodes.indexOf(ref);
+      childNodes.splice(at < 0 ? childNodes.length : at, 0, child);
+      child.parentNode = node;
+      notifyMutation(node);
+      return child;
+    },
+    remove() {
+      const parent = node.parentNode;
+      if (!parent) return;
+      parent.childNodes.splice(parent.childNodes.indexOf(node), 1);
+      node.parentNode = null;
+      notifyMutation(parent);
+    },
+  };
+  Object.setPrototypeOf(node, FakeHtmlElement.prototype);
+  for (const child of options.children ?? []) {
+    node.insertBefore(typeof child === "string" ? text(child) : child, null);
+  }
+  return node;
+}
+
+/** Untransformed text, which is what `textContent` reports and what the clipboard carries. */
+function renderSource(node: FakeNode): string {
+  return node.nodeType === 3
+    ? node.data
+    : node.childNodes.map(renderSource).join("");
+}
+
+/** The cascade, as far as this module can see it: own inline, own rule, then inherited. */
+function computedTextTransform(node: FakeElement | null): string {
+  for (let at = node; at !== null; at = at.parentNode) {
+    const inline = at.styleEntries.get("text-transform");
+    if (inline) return inline.value;
+    if (at.ruleTextTransform) return at.ruleTextTransform;
+  }
+  return "none";
+}
+
+function isDisplayNone(node: FakeElement | null): boolean {
+  for (let at = node; at !== null; at = at.parentNode) {
+    if (at.styleEntries.get("display")?.value === "none") return true;
+  }
+  return false;
+}
+
+function applyTransform(value: string, transform: string): string {
+  if (transform === "uppercase") return value.toUpperCase();
+  if (transform === "lowercase") return value.toLowerCase();
+  if (transform === "capitalize") {
+    return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+  return value;
+}
+
+/**
+ * What `Selection.toString()` would give for everything under `node`.
+ *
+ * The two behaviours that matter are the ones the module patches around: text is emitted as it is
+ * RENDERED, so a text-transform shows up; and an image emits nothing of its own, which is why the
+ * alt text has to arrive as a real inserted node or not at all.
+ */
+function renderSelected(node: FakeNode): string {
+  if (node.nodeType === 3) {
+    if (isDisplayNone(node.parentNode)) return "";
+    return applyTransform(node.data, computedTextTransform(node.parentNode));
+  }
+  if (isDisplayNone(node)) return "";
+  if (node.tagName === "img") return "";
+  return node.childNodes.map(renderSelected).join("");
+}
+
+/**
+ * A structural snapshot, for asserting the document was put back.
+ *
+ * Inline style is compared as a SET of (property, value, priority): declaration order inside a
+ * style attribute is not observable to anything the app reads, and a real CSSStyleDeclaration
+ * reorders on removeProperty/setProperty anyway, so ordering here would fail a correct restore.
+ */
+function snapshot(node: FakeNode): unknown {
+  if (node.nodeType === 3) return { text: node.data };
+  return {
+    tag: node.tagName,
+    attrs: [...node.attrs].sort(),
+    style: [...node.styleEntries]
+      .map(
+        ([name, entry]) =>
+          `${name}: ${entry.value}${entry.priority ? ` !${entry.priority}` : ""}`,
+      )
+      .sort(),
+    children: node.childNodes.map(snapshot),
+  };
+}
+
+type FakeRange = {
+  readonly id: number;
+  readonly commonAncestorContainer: FakeElement | null;
+  cloneRange(): FakeRange;
+};
+
+function fakeRange(
+  id: number,
+  container: FakeElement | null = null,
+): FakeRange {
+  return {
+    id,
+    commonAncestorContainer: container,
+    cloneRange: () => fakeRange(id, container),
+  };
+}
+
+/**
+ * A selection over `root`, plus the probe behaviour engineClipboardIsMapped needs.
+ *
+ * `selectAllChildren` switches what `toString()` answers, and `removeAllRanges` switches it back,
+ * which is exactly the sequence the probe performs.
+ */
+function fakeSelection(
+  root: FakeElement,
+  options: { ids?: number[]; probeText?: string } = {},
+) {
+  const { ids = [1], probeText = "a" } = options;
+  let ranges = ids.map((id) => fakeRange(id, root));
+  let probing = false;
+  let collapsedByMutation = false;
+  mutationListeners.push((parent) => {
+    if (isWithin(parent, root)) collapsedByMutation = true;
+  });
+  /** Take the collapse the last mutation inside the selection would really have caused. */
+  const sync = () => {
+    if (!collapsedByMutation) return;
+    collapsedByMutation = false;
+    ranges = [];
+  };
+  const selection = {
+    get rangeCount() {
+      sync();
+      return ranges.length;
+    },
+    getRangeAt: (index: number) => {
+      sync();
+      return ranges[index];
+    },
+    removeAllRanges() {
+      sync();
+      ranges = [];
+      probing = false;
+    },
+    addRange(range: FakeRange) {
+      sync();
+      ranges.push(range);
+    },
+    selectAllChildren() {
+      sync();
+      ranges = [];
+      probing = true;
+    },
+    toString: () => {
+      sync();
+      if (probing) return probeText;
+      return ranges.length === 0 ? "" : renderSelected(root);
+    },
+  };
+  return {
+    selection,
+    currentIds: () => {
+      sync();
+      return ranges.map((range) => range.id);
+    },
+  };
+}
+
+/** The module reads the bare global, not `view.getComputedStyle`. */
+Object.defineProperty(globalThis, "getComputedStyle", {
+  configurable: true,
+  writable: true,
+  value: (node: FakeElement) => ({
+    textTransform: computedTextTransform(node),
+  }),
+});
+
+// --- the behavioural probe ---------------------------------------------------------------------
+
+const CHROMIUM_UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const WEBKIT_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+
+function fakeView(options: {
+  userAgent: string;
+  probeText?: string;
+  root?: FakeElement;
+  selectionIds?: number[];
+}) {
+  const root = options.root ?? el("div", { children: ["thread text"] });
+  const { selection, currentIds } = fakeSelection(root, {
+    ids: options.selectionIds ?? [1],
+    probeText: options.probeText ?? "a",
+  });
+  const body = el("body");
+  // A counter rather than a throwing getter: engineClipboardIsMapped swallows everything it
+  // catches, so a throw would be indistinguishable from an honest `false`.
+  let documentReads = 0;
+  const document = {
+    createElement: (tag: string) => el(tag),
+    body: {
+      appendChild: (child: FakeElement) => body.insertBefore(child, null),
+    },
+  };
+  const view = {
+    navigator: { userAgent: options.userAgent },
+    get document() {
+      documentReads += 1;
+      return document;
+    },
+    getSelection: () => selection,
+  };
+  return {
+    view,
+    root,
+    selection,
+    currentIds,
+    body,
+    documentReads: () => documentReads,
+  };
+}
+
+/** The probe assigns `style.cssText` and `innerHTML`, which the fake element does not model. */
+function asWindow(view: unknown): Window & typeof globalThis {
+  return view as Window & typeof globalThis;
+}
+
+test("a non-chromium user agent is unmapped without the document being touched", () => {
+  // WebKit's `toString()` appends block breaks its clipboard does not carry, so the answer is
+  // known before any probe runs, and running one would cost a style recalc for nothing.
+  const world = fakeView({ userAgent: WEBKIT_UA, probeText: "a" });
+
+  assert.equal(engineClipboardIsMapped(asWindow(world.view)), false);
+  assert.equal(world.documentReads(), 0);
+  assert.equal(world.body.childNodes.length, 0);
+});
+
+test("a chromium engine whose toString appends a block break is unmapped", () => {
+  // The probe is a hidden <p>a</p>. An engine that answers "a\n\n" to that is the WebKit
+  // behaviour under a Chromium-looking user agent, and the user agent is never allowed to decide
+  // what bytes are produced.
+  const world = fakeView({ userAgent: CHROMIUM_UA, probeText: "a\n\n" });
+
+  assert.equal(engineClipboardIsMapped(asWindow(world.view)), false);
+  assert.equal(world.documentReads(), 1);
+});
+
+test("a chromium engine whose toString matches its clipboard is mapped", () => {
+  const world = fakeView({ userAgent: CHROMIUM_UA, probeText: "a" });
+
+  assert.equal(engineClipboardIsMapped(asWindow(world.view)), true);
+  // And the probe took its own node back out of the body.
+  assert.equal(world.body.childNodes.length, 0);
+});
+
+test("the probe's answer is cached on the view", () => {
+  // It cannot change within a document, and it costs a node insertion, a style recalc and a round
+  // trip through the user's selection.
+  const world = fakeView({ userAgent: CHROMIUM_UA, probeText: "a" });
+
+  assert.equal(engineClipboardIsMapped(asWindow(world.view)), true);
+  assert.equal(world.documentReads(), 1);
+  assert.equal(engineClipboardIsMapped(asWindow(world.view)), true);
+  assert.equal(world.documentReads(), 1);
+  assert.equal(
+    (world.view as { __sbFastCopyMapped?: boolean }).__sbFastCopyMapped,
+    true,
+  );
+});
+
+test("the probe puts the user's selection back", () => {
+  const world = fakeView({
+    userAgent: CHROMIUM_UA,
+    probeText: "a",
+    selectionIds: [7, 8],
+  });
+
+  engineClipboardIsMapped(asWindow(world.view));
+
+  assert.deepEqual(world.currentIds(), [7, 8]);
+});
+
+// --- the serialiser ----------------------------------------------------------------------------
+
+function serialise(root: FakeElement, ids: number[] = [1]) {
+  const { selection, currentIds } = fakeSelection(root, { ids });
+  const before = snapshot(root);
+  const output = faithfulSelectionText(
+    selection as unknown as Selection,
+    root as unknown as Element,
+  );
+  return { output, before, after: snapshot(root), currentIds };
+}
+
+test("the alt text of an image reaches the output", () => {
+  // Blink's EmitsImageAltText, which ApplyWebPreferences turns on for every web view, so this is
+  // not conditional in practice. `toString()` drops it, so it has to arrive as a real node.
+  const root = el("p", {
+    children: ["before ", el("img", { alt: "a cat" }), " after"],
+  });
+
+  assert.equal(serialise(root).output, "before a cat after");
+});
+
+test("an image with an empty alt contributes nothing", () => {
+  // alt="" is what every decorative image in the thread carries, and it emits nothing on either
+  // side. An empty holder would serialise to nothing too, so the output alone does not show the
+  // difference: what is checked is that no node is inserted at all. Inserting one costs a
+  // document mutation inside the user's live selection, which collapses it, per image, per copy.
+  const root = el("p", {
+    children: ["before ", el("img", { alt: "" }), "after"],
+  });
+  const { selection } = fakeSelection(root);
+  let childrenWhileReading = 0;
+  const watched = {
+    ...selection,
+    toString: () => {
+      childrenWhileReading = root.childNodes.length;
+      return renderSelected(root);
+    },
+  };
+
+  const output = faithfulSelectionText(
+    watched as unknown as Selection,
+    root as unknown as Element,
+  );
+
+  assert.equal(output, "before after");
+  assert.equal(childrenWhileReading, 3);
+});
+
+test("the alt text holder has no box of its own", () => {
+  // Studio's message images are display:block, so an inline holder placed beside one sits between
+  // two blocks, the engine wraps it in an anonymous block, and the alt text arrives with a leading
+  // newline the clipboard does not have. Measured on the real thread as 40,650 characters against
+  // the clipboard's 40,648, two images each contributing one extra break. Taking the image out of
+  // the flow removes the box the break came from; an image contributes no text of its own, so
+  // hiding it changes nothing else.
+  const image = el("img", { alt: "a cat", inline: [["display", "block"]] });
+  const root = el("p", { children: ["before ", image, " after"] });
+  let displayWhileReading = "";
+  const { selection } = fakeSelection(root);
+  const watched = {
+    ...selection,
+    toString: () => {
+      displayWhileReading = image.style.getPropertyValue("display");
+      return renderSelected(root);
+    },
+  };
+
+  const output = faithfulSelectionText(
+    watched as unknown as Selection,
+    root as unknown as Element,
+  );
+
+  assert.equal(output, "before a cat after");
+  assert.equal(displayWhileReading, "none");
+});
+
+test("a no-break space is folded to a plain space", () => {
+  // Both engines' clipboards fold U+00A0 to a plain space; neither `toString()` does.
+  const root = el("p", { children: ["one\u00a0two\u00a0three"] });
+
+  const { output } = serialise(root);
+
+  assert.equal(output, "one two three");
+  assert.equal(output.includes("\u00a0"), false);
+});
+
+test("the source text under a text-transform is what is serialised", () => {
+  // Blink's IgnoresCssTextTransforms: the clipboard carries the source text, `toString()` carries
+  // the rendered text. Chromium is the engine this runs on, so the source text is the target.
+  const root = el("div", {
+    children: [el("span", { rule: "uppercase", children: ["stdout"] })],
+  });
+
+  assert.equal(serialise(root).output, "stdout");
+});
+
+test("a transform inherited from an ancestor is neutralised too", () => {
+  // text-transform inherits, so a child with no rule of its own still renders transformed, and
+  // the patch has to reach it rather than only the element carrying the class.
+  const root = el("div", {
+    rule: "uppercase",
+    children: [el("span", { children: ["stdout"] })],
+  });
+
+  assert.equal(serialise(root).output, "stdout");
+});
+
+test("the dom is left exactly as it was found", () => {
+  // A copy that left a stray <span> in the message, or an inline `display: none` on an image,
+  // would be a far worse bug than the one being fixed -- and it would persist, because nothing
+  // ever re-renders that subtree on its own.
+  const root = el("div", {
+    children: [
+      el("span", { rule: "uppercase", children: ["stdout"] }),
+      " ",
+      el("img", { alt: "a cat" }),
+      el("p", { children: ["tail"] }),
+    ],
+  });
+
+  const { before, after } = serialise(root);
+
+  assert.deepEqual(after, before);
+  assert.deepEqual(
+    root.querySelectorAll("*").map((node) => node.tagName),
+    ["span", "img", "p"],
+  );
+});
+
+test("an element's own inline text-transform keeps its value and priority", () => {
+  // The patch writes `text-transform: none !important` over whatever was there. Restoring the
+  // value but dropping `!important` would silently change how the message renders from then on.
+  const span = el("span", {
+    inline: [
+      ["color", "red"],
+      ["text-transform", "capitalize", "important"],
+    ],
+    children: ["stdout"],
+  });
+  const root = el("div", { children: [span] });
+
+  const { before, after, output } = serialise(root);
+
+  assert.equal(output, "stdout");
+  assert.equal(span.style.getPropertyValue("text-transform"), "capitalize");
+  assert.equal(span.style.getPropertyPriority("text-transform"), "important");
+  assert.deepEqual(after, before);
+});
+
+test("an image's own inline display keeps its value and priority", () => {
+  const image = el("img", {
+    alt: "a cat",
+    inline: [["display", "inline-block", "important"]],
+  });
+  const root = el("p", { children: [image] });
+
+  const { before, after, output } = serialise(root);
+
+  assert.equal(output, "a cat");
+  assert.equal(image.style.getPropertyValue("display"), "inline-block");
+  assert.equal(image.style.getPropertyPriority("display"), "important");
+  assert.deepEqual(after, before);
+});
+
+test("an element with no inline style of its own keeps none", () => {
+  // removeProperty on a property that was never there must not leave an empty declaration behind.
+  const span = el("span", { rule: "uppercase", children: ["stdout"] });
+  const image = el("img", { alt: "a cat" });
+  const root = el("div", { children: [span, image] });
+
+  serialise(root);
+
+  assert.deepEqual([...span.styleEntries.keys()], []);
+  assert.deepEqual([...image.styleEntries.keys()], []);
+});
+
+test("the user's selection ranges are put back", () => {
+  // An alt text holder is INSERTED before the read and REMOVED after it, and each of those is a
+  // node mutation inside the user's live range, which collapses it. So the ranges have to be
+  // re-established twice, and the second time is after the undo. A copy that quietly dropped the
+  // user's highlight would be its own bug, and a visible one.
+  const root = el("div", {
+    children: [
+      el("span", { rule: "uppercase", children: ["stdout"] }),
+      el("img", { alt: "a cat" }),
+    ],
+  });
+
+  const { currentIds, output } = serialise(root, [4, 5]);
+
+  assert.equal(output, "stdouta cat");
+  assert.deepEqual(currentIds(), [4, 5]);
+});
+
+test("nothing untouched is patched, so an unremarkable selection restores trivially", () => {
+  // With no transform and no alt text there is nothing to undo, and the selection is never
+  // disturbed at all.
+  const root = el("div", { children: ["plain prose"] });
+  const { selection, currentIds } = fakeSelection(root, { ids: [9] });
+  const seen: number[] = [];
+  const watched = {
+    ...selection,
+    removeAllRanges() {
+      seen.push(-1);
+      selection.removeAllRanges();
+    },
+  };
+
+  const output = faithfulSelectionText(
+    watched as unknown as Selection,
+    root as unknown as Element,
+  );
+
+  assert.equal(output, "plain prose");
+  assert.deepEqual(seen, []);
+  assert.deepEqual(currentIds(), [9]);
+});
+
+test("a selection wholly inside a text-transformed element serialises the source text", () => {
+  // The root, not only its descendants. `scopeElement` hands the serialiser the range's common
+  // ancestor, and for a selection inside one leaf -- `<span class="uppercase">stdout</span>`,
+  // which the code execution card renders five times over -- that ancestor IS the transformed
+  // span. `querySelectorAll("*")` does not include the element it is called on, so this wrote
+  // "STDOUT" where the clipboard carries "stdout" until the root was added to the scan.
+  const root = el("span", { rule: "uppercase", children: ["stdout"] });
+
+  const { output, before, after } = serialise(root);
+
+  assert.equal(output, "stdout");
+  assert.deepEqual(after, before);
+});
+
+test("a transform patched onto the root itself is undone with the rest", () => {
+  // The root is patched by a different line from its descendants, so its undo is worth its own
+  // check: a leftover `text-transform: none !important` would flatten the message's own styling
+  // from the first copy onwards.
+  const root = el("span", {
+    inline: [["text-transform", "uppercase", "important"]],
+    children: ["stdout"],
+  });
+
+  const { output } = serialise(root);
+
+  assert.equal(output, "stdout");
+  assert.equal(root.style.getPropertyValue("text-transform"), "uppercase");
+  assert.equal(root.style.getPropertyPriority("text-transform"), "important");
+});
+
+// --- the listener ------------------------------------------------------------------------------
+// The decision and the serialiser are only worth anything wired to a real event, writing the
+// flavour they claim to.
 
 type FakeListener = (event: unknown) => void;
 
-function fakeViewport(selectionText: string) {
+function fakeViewport(
+  options: { root?: FakeElement; userAgent?: string; probeText?: string } = {},
+) {
+  const world = fakeView({
+    userAgent: options.userAgent ?? CHROMIUM_UA,
+    probeText: options.probeText ?? "a",
+    root: options.root,
+  });
   const listeners = new Map<string, Set<FakeListener>>();
   const viewport = {
     contains: () => true,
     querySelector: () => null,
-    ownerDocument: {
-      defaultView: {
-        getSelection: (): SelectionLike => selectionOf(selectionText),
-      },
-    },
+    ownerDocument: { defaultView: world.view },
     addEventListener(type: string, listener: FakeListener) {
-      const set = listeners.get(type) ?? new Set();
+      const set = listeners.get(type) ?? new Set<FakeListener>();
       set.add(listener);
       listeners.set(type, set);
     },
@@ -302,7 +1202,7 @@ function fakeViewport(selectionText: string) {
   const dispatch = (type: string, event: unknown) => {
     for (const listener of listeners.get(type) ?? []) listener(event);
   };
-  return { viewport, listeners, dispatch };
+  return { viewport, listeners, dispatch, world };
 }
 
 function fakeCopyEvent(overrides: Partial<CopyEventLike> = {}) {
@@ -329,9 +1229,11 @@ function fakeCopyEvent(overrides: Partial<CopyEventLike> = {}) {
 }
 
 test("the listener writes text/plain and takes the event away from the browser", () => {
-  const { viewport, dispatch } = fakeViewport(
-    "first message\n\nsecond message",
-  );
+  // One text node, not two paragraphs: the fake DOM deliberately does not model block boundary
+  // emission, because the module does not either -- delegating to the engine's own iterator
+  // instead of writing a walker is the whole point of the file.
+  const root = el("div", { children: ["first message\n\nsecond message"] });
+  const { viewport, dispatch } = fakeViewport({ root });
   attachThreadFastCopy(viewport as unknown as HTMLElement);
   const copy = fakeCopyEvent();
 
@@ -343,8 +1245,58 @@ test("the listener writes text/plain and takes the event away from the browser",
   ]);
 });
 
-test("a rejected copy is neither prevented nor written to", () => {
-  const { viewport, dispatch } = fakeViewport("");
+test("a copy that serialises to nothing is neither prevented nor written to", () => {
+  // A selection can be non-collapsed and still serialise to nothing -- an image with an empty alt
+  // on its own. Writing "" would clear a clipboard the browser would have left alone.
+  const root = el("div", { children: [el("img", { alt: "" })] });
+  const { viewport, dispatch } = fakeViewport({ root });
+  attachThreadFastCopy(viewport as unknown as HTMLElement);
+  const copy = fakeCopyEvent();
+
+  dispatch("copy", copy.event);
+
+  assert.equal(copy.prevented(), 0);
+  assert.deepEqual(copy.written, []);
+});
+
+test("a serialiser that throws leaves the copy to the browser", () => {
+  // The patch could not be applied or undone cleanly. Slow and right beats fast and silently
+  // different, and preventDefault has not been called yet when it happens.
+  const root = el("div", { children: ["text"] });
+  const exploding = {
+    ...root,
+    querySelectorAll: () => {
+      throw new Error("style recalc failed");
+    },
+  };
+  const { viewport, dispatch, world } = fakeViewport({
+    root: exploding as unknown as FakeElement,
+  });
+  // The range has to point at the exploding element for the serialiser to reach it.
+  world.selection.getRangeAt = () =>
+    fakeRange(1, exploding as unknown as FakeElement);
+  attachThreadFastCopy(viewport as unknown as HTMLElement);
+  const copy = fakeCopyEvent();
+
+  dispatch("copy", copy.event);
+
+  assert.equal(copy.prevented(), 0);
+  assert.deepEqual(copy.written, []);
+});
+
+test("a refused copy is neither prevented nor written to", () => {
+  const { viewport, dispatch } = fakeViewport();
+  attachThreadFastCopy(viewport as unknown as HTMLElement);
+  const copy = fakeCopyEvent({ defaultPrevented: true });
+
+  dispatch("copy", copy.event);
+
+  assert.equal(copy.prevented(), 0);
+  assert.deepEqual(copy.written, []);
+});
+
+test("an unmapped engine leaves the listener's copy to the browser", () => {
+  const { viewport, dispatch } = fakeViewport({ userAgent: WEBKIT_UA });
   attachThreadFastCopy(viewport as unknown as HTMLElement);
   const copy = fakeCopyEvent();
 
@@ -357,7 +1309,7 @@ test("a rejected copy is neither prevented nor written to", () => {
 test("only copy is listened for, so a cut still cuts", () => {
   // A cut has to mutate the document it cut from. The thread is not editable, so a cut inside it
   // is already a no-op, and one inside a message being edited belongs to that textarea.
-  const { viewport, listeners } = fakeViewport("text");
+  const { viewport, listeners } = fakeViewport();
   attachThreadFastCopy(viewport as unknown as HTMLElement);
 
   assert.deepEqual([...listeners.keys()], ["copy"]);
@@ -366,7 +1318,7 @@ test("only copy is listened for, so a cut still cuts", () => {
 test("detaching removes the listener", () => {
   // The viewport is remounted on every thread switch, so a handler that outlived its element
   // would accumulate one per thread the user opened.
-  const { viewport, dispatch, listeners } = fakeViewport("text");
+  const { viewport, dispatch, listeners } = fakeViewport();
   const detach = attachThreadFastCopy(viewport as unknown as HTMLElement);
 
   detach();
@@ -375,120 +1327,4 @@ test("detaching removes the listener", () => {
   const copy = fakeCopyEvent();
   dispatch("copy", copy.event);
   assert.equal(copy.prevented(), 0);
-});
-
-test("the button copy path is untouched", () => {
-  // lib/copy-to-clipboard.ts falls back to a hidden <textarea> appended to document.body. It is
-  // outside the viewport, so the listener never sees it; and if the tree ever moves, the
-  // editable-origin guard rejects it anyway. Both, because either one alone is a silent
-  // dependency on the other.
-  const decision = decideThreadCopy(
-    copyEvent({
-      target: {
-        closest: (selectors: string) =>
-          selectors.includes("textarea") ? { tag: "textarea" } : null,
-      },
-    }),
-    selectionOf("whatever the thread happens to have selected"),
-    plainViewport(),
-  );
-
-  assert.deepEqual(decision, { kind: "native", reason: "editable-origin" });
-});
-
-// --- how far the content check looks ----------------------------------------------------------
-// Scoping it to the whole viewport would be correct and nearly useless: one image anywhere in the
-// conversation would turn the fast path off for every later copy, however far from the image the
-// user selected.
-
-/** A range whose common ancestor is an element that answers querySelector itself. */
-function selectionInside(
-  element: { querySelector(selectors: string): unknown },
-  text = "selected prose",
-): SelectionLike {
-  return {
-    isCollapsed: false,
-    rangeCount: 1,
-    getRangeAt: () => ({ commonAncestorContainer: element }),
-    toString: () => text,
-  };
-}
-
-test("the content check looks at the selection's ancestor, not at the whole thread", () => {
-  const message = {
-    // This message holds nothing awkward.
-    querySelector: () => null,
-  };
-  // The viewport does, elsewhere in the conversation. It must not be consulted.
-  const viewport: ThreadViewportLike = {
-    contains: () => true,
-    querySelector: () => ({ tag: "img" }),
-  };
-
-  const decision = decideThreadCopy(
-    copyEvent(),
-    selectionInside(message),
-    viewport,
-  );
-
-  assert.deepEqual(decision, { kind: "fast", text: "selected prose" });
-});
-
-test("an awkward element inside the selected subtree still refuses the fast path", () => {
-  const message = { querySelector: () => ({ tag: "img" }) };
-  const viewport: ThreadViewportLike = {
-    contains: () => true,
-    querySelector: () => null,
-  };
-
-  assert.deepEqual(
-    decideThreadCopy(copyEvent(), selectionInside(message), viewport),
-    {
-      kind: "native",
-      reason: "clipboard-only-content",
-    },
-  );
-});
-
-test("a range ending in a text node is checked against that node's element", () => {
-  // Range.commonAncestorContainer is very often a text node, which has no querySelector.
-  const paragraph = { querySelector: () => ({ tag: "textarea" }) };
-  const textNode = { parentElement: paragraph };
-  const selection: SelectionLike = {
-    isCollapsed: false,
-    rangeCount: 1,
-    getRangeAt: () => ({ commonAncestorContainer: textNode }),
-    toString: () => "half a sentence",
-  };
-  const viewport: ThreadViewportLike = {
-    contains: () => true,
-    querySelector: () => null,
-  };
-
-  assert.deepEqual(decideThreadCopy(copyEvent(), selection, viewport), {
-    kind: "native",
-    reason: "clipboard-only-content",
-  });
-});
-
-test("a multi-range selection is checked against the whole viewport", () => {
-  // Disjoint ranges have no common ancestor short of the viewport, so the wide check is the only
-  // sound one.
-  const viewport: ThreadViewportLike = {
-    contains: () => true,
-    querySelector: () => ({ tag: "img" }),
-  };
-  const selection: SelectionLike = {
-    isCollapsed: false,
-    rangeCount: 2,
-    getRangeAt: () => ({
-      commonAncestorContainer: { querySelector: () => null },
-    }),
-    toString: () => "two disjoint runs",
-  };
-
-  assert.deepEqual(decideThreadCopy(copyEvent(), selection, viewport), {
-    kind: "native",
-    reason: "clipboard-only-content",
-  });
 });
