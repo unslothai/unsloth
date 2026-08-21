@@ -1726,6 +1726,7 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <ChatLiveRegion />
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
             ref={composedViewportRef}
@@ -1754,7 +1755,6 @@ export const Thread: FC<{
             <ThreadPrimitive.Messages>
               {renderThreadMessage}
             </ThreadPrimitive.Messages>
-            <ChatLiveRegion />
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -6443,28 +6443,14 @@ const CancelledIndicator: FC = () => {
 
 const ChatLiveRegion: FC = () => {
   const [announcement, setAnnouncement] = useState("");
-  const timeoutRef = useRef<number | null>(null);
-  const announce = (message: string) => {
-    if (timeoutRef.current != null) window.clearTimeout(timeoutRef.current);
-    setAnnouncement("");
-    timeoutRef.current = window.setTimeout(() => {
-      setAnnouncement(message);
-      timeoutRef.current = null;
-    }, 0);
-  };
-  useEffect(
-    () => () => {
-      if (timeoutRef.current != null) window.clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
-  useAuiEvent("thread.runStart", () => announce("Generating response..."));
-  useAuiEvent("thread.runEnd", () => announce("Response complete."));
+  useAuiEvent("thread.runStart", () => setAnnouncement("Generating response..."));
+  useAuiEvent("thread.runEnd", () => setAnnouncement("Response complete."));
   return (
     <div
       role="status"
       aria-live="polite"
       aria-atomic="true"
+      aria-relevant="additions text"
       className="sr-only"
     >
       {announcement}
