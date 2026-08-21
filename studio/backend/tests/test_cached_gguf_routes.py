@@ -5320,6 +5320,47 @@ def test_a_speech_quant_in_an_older_snapshot_is_dropped_too(monkeypatch, tmp_pat
     assert pinned == [str(newest)]
 
 
+def test_a_listing_over_the_read_cap_keeps_the_speech_quants_it_already_dropped(tmp_path):
+    """The cap bounds the header READS, not the filtering. Returning the untouched list once the
+    budget ran out restored every speech quant the reads had already identified, so a repo with
+    enough variants switched the filter off entirely."""
+    folder = tmp_path / "big-mixed-GGUF"
+    _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
+    variants = [SimpleNamespace(filename = "csm-1b-Q4_0.gguf", quant = "Q4_0")]
+    over_cap = models_route._MAX_TASK_CLASSIFY_GGUFS + 6
+    for i in range(over_cap):
+        _arch_gguf(folder / f"llama-{i:03d}.gguf", "llama")
+        variants.append(SimpleNamespace(filename = f"llama-{i:03d}.gguf", quant = f"Q{i:03d}"))
+
+    kept = models_route._without_mixed_folder_speech_variants([str(folder)], variants)
+
+    assert "Q4_0" not in [v.quant for v in kept]
+    # The tail past the cap is passed through unexamined rather than dropped: the budget limits
+    # what is read, and an unread variant is never removed on a guess.
+    assert len(kept) == len(variants) - 1
+
+
+def test_the_snapshot_roots_break_mtime_ties_the_way_the_loader_does(tmp_path):
+    """mtime alone is not a total order. A filter that broke ties by ``iterdir`` order could read
+    a different copy than the loader picks, which for one filename replaced between revisions
+    means retaining the unrunnable quant or hiding the runnable one."""
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    repo_dir = tmp_path / "models--someone--mixed-GGUF"
+    first = repo_dir / "snapshots" / "aaa111"
+    second = repo_dir / "snapshots" / "bbb222"
+    first.mkdir(parents = True)
+    second.mkdir(parents = True)
+    os.utime(first, (5, 5))
+    os.utime(second, (5, 5))
+
+    roots = models_route._cached_snapshot_roots("someone/mixed-GGUF", str(repo_dir))
+
+    assert roots == [
+        str(entry) for entry in sorted([first, second], key = snapshot_selection_key, reverse = True)
+    ]
+
+
 def _speech_mix_answer(
     repo_id,
     folder,

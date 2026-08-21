@@ -4404,7 +4404,7 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
 
 
 def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]:
-    """Every cached snapshot a Hub row's variants may live in, newest first.
+    """Every cached snapshot a Hub row's variants may live in, most-preferred first.
 
     A cached row hands the route its REPO directory (``models--org--name``, routes report
     ``repo_info.repo_path``), not a snapshot, so the pin resolves to nothing and the speech filter
@@ -4414,17 +4414,12 @@ def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]
     online listing counts a quant as downloaded across every snapshot (``iter_hf_cache_snapshots``
     when nothing is pinned) and ``cached_gguf_for_load`` resolves a load the same way. Reading one
     revision would leave a CSM quant that lives only in an older sibling both listed and loadable.
-    A pinned snapshot path stays alone, since that row resolves inside it and nothing else."""
+    A pinned snapshot path stays alone, since that row resolves inside it and nothing else.
 
-    def _newest_first(paths: list[str]) -> list[str]:
-        def _mtime(s: str) -> float:
-            try:
-                return os.path.getmtime(s)
-            except OSError:
-                return 0.0
-
-        return sorted(paths, key = _mtime, reverse = True)
-
+    Ordered by ``snapshot_selection_key``, the one key every snapshot selector here shares. mtime
+    alone is not a total order, and a filter that broke ties its own way could read a different
+    copy than the loader picks -- which for one filename replaced between revisions means either
+    retaining the unrunnable quant or hiding the runnable one."""
     try:
         if local_path:
             base = Path(local_path).expanduser()
@@ -4434,12 +4429,21 @@ def _cached_snapshot_roots(repo_id: str, local_path: Optional[str]) -> list[str]
             # row pointing at another cache root is still answered from the copy it named.
             snapshots = base / "snapshots"
             if snapshots.is_dir():
-                return _newest_first([str(d) for d in snapshots.iterdir() if d.is_dir()])
+                from hub.utils.hf_cache_state import snapshot_selection_key
+                return [
+                    str(entry)
+                    for entry in sorted(
+                        (e for e in snapshots.iterdir() if e.is_dir()),
+                        key = snapshot_selection_key,
+                        reverse = True,
+                    )
+                ]
         if not _is_valid_repo_id(repo_id):
             return []
         from hub.utils.gguf import iter_hf_cache_snapshots
 
-        return _newest_first([str(snap) for snap in iter_hf_cache_snapshots(repo_id)])
+        # Already yielded in snapshot_selection_key order; re-sorting would drop its tie-break.
+        return [str(snap) for snap in iter_hf_cache_snapshots(repo_id)]
     except Exception:
         return []
 
@@ -4471,7 +4475,12 @@ def _without_mixed_folder_speech_variants(roots: list, variants: list) -> list:
     dropped = 0
     for index, variant in enumerate(variants):
         if index >= _MAX_TASK_CLASSIFY_GGUFS:
-            return variants
+            # The cap bounds the header READS, not the filtering. Returning the original list
+            # here would restore every speech quant the reads already identified, so a repo with
+            # enough variants silently switched the filter off. Keep the drops, pass the
+            # unexamined tail through.
+            kept.extend(variants[index:])
+            break
         filename = getattr(variant, "filename", None)
         arch = None
         if filename:
