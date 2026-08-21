@@ -1507,7 +1507,7 @@ def test_high_risk_dispatcher_non_terminal():
     # Always-safe tools never prompt; unknown tools fail closed (prompt).
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False
-    assert is_high_risk_tool_call("create_skill", {}) is False
+    assert is_high_risk_tool_call("create_skill", {}) is True
     assert is_high_risk_tool_call("mystery_tool", {}) is True
     # render_html only prompts when its canvas reaches the network.
     assert is_high_risk_tool_call("render_html", {"code": "<h1>hi</h1>"}) is False
@@ -2789,7 +2789,7 @@ def test_full_mode_never_gates_and_drops_sandbox():
     ("permission_mode", "awaiting_confirmation", "disable_sandbox"),
     [
         ("ask", True, False),
-        ("auto", False, False),
+        ("auto", True, False),
         ("off", False, False),
         ("full", False, True),
     ],
@@ -3014,7 +3014,7 @@ def test_confirm_gate_needs_stream():
     )
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["create_skill"]))
-        is False
+        is True
     )
     # web_search prompts once the model supplies a ``url``, so it needs a stream to deliver
     # that prompt, else the request is admitted then blocks out the decision timeout.

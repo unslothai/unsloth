@@ -374,6 +374,20 @@ def test_rejects_oversized_manifest_before_inflating_it(
             skills._archive_source(archive)
 
 
+def test_rejects_an_oversized_archive_resource(tmp_path: Path):
+    archive = _bundle(
+        tmp_path / "oversized-resource.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "unsloth/references/oversized.txt": "x" * (skills.MAX_SKILL_FILE_BYTES + 1),
+        },
+    )
+
+    with pytest.raises(skills.SkillError, match = "2048 KB"):
+        skills.import_skill_archive(archive)
+    assert not (tmp_path / "skills/unsloth").exists()
+
+
 def test_rejects_case_insensitive_archive_collisions(tmp_path: Path):
     archive = _bundle(
         tmp_path / "collision.zip",

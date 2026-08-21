@@ -2766,16 +2766,17 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
-        backend = _mock_backend(monkeypatch)
-        payload = _basic_payload(
-            enable_tools = True,
-            enabled_tools = ["create_skill"],
-            permission_mode = "auto",
-        )
-        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        path, kwargs = backend.calls[0]
-        assert path == "tools"
-        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["create_skill"]
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(
+                enable_tools = True,
+                enabled_tools = ["create_skill"],
+                **extra,
+            )
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert backend.calls == []
 
         # Reading this conversation's own archive is as read-only as the other two, and
         # is_potentially_unsafe_tool_call says so, so selecting it must not trip the gate.

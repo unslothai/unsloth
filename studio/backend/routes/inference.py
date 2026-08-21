@@ -3222,9 +3222,7 @@ def _confirm_gate_needs_stream(payload) -> bool:
     # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
-    return not all(
-        (is_always_safe_tool(t) and t != "web_search") or t == "create_skill" for t in enabled
-    )
+    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
 
 
 def _anthropic_reasoning_args(payload) -> dict:
@@ -20899,7 +20897,6 @@ _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
         "web_search",
         "search_knowledge_base",
         "search_conversation",
-        "create_skill",
         "read_skill",
     }
 )

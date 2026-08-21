@@ -332,6 +332,18 @@ def _archive_source(
     ]
     if len(selected_files) > MAX_ARCHIVE_FILES:
         raise SkillError(f"Skill bundle exceeds the {MAX_ARCHIVE_FILES}-file limit.")
+    oversized_resource = next(
+        (
+            path
+            for entry, path in selected_files
+            if entry is not manifest_entry and entry.file_size > MAX_SKILL_FILE_BYTES
+        ),
+        None,
+    )
+    if oversized_resource is not None:
+        raise SkillError(
+            f"{oversized_resource.name} exceeds the {MAX_SKILL_FILE_BYTES // 1024} KB limit."
+        )
     selected_keys = {_portable_archive_key(path) for _, path in selected_files}
     for key in selected_keys:
         parts = key.split("/")

@@ -6586,8 +6586,6 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
-    if name == "create_skill":
-        return False
     if name == "render_html":
         # A static canvas is fine; only a networked canvas can egress.
         return _render_html_reaches_network(arguments)
