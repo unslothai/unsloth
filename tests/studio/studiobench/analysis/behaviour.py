@@ -69,6 +69,30 @@ EXACT_TOLERANCE = 0.02
 #: 6% out.
 EXTENT_TOLERANCE = 0.10
 
+#: How much of the thread the clipboard must carry, and how much more than the thread it may carry.
+#:
+#: TWO-SIDED, AND MEASURED AGAINST THE THREAD, because there are two ways to get a copy wrong and
+#: the check used to see only one of them.
+#:
+#: The lower bound catches TRUNCATION, which is the defect this invariant was written for: a
+#: windowed mount cannot select what it has not mounted, so a naive copy carries only the visible
+#: fraction. Measured at 0.61 of the thread on a real 100K arm.
+#:
+#: The upper bound catches SUBSTITUTION, which is what a fix for the first defect turns into if
+#: nobody is watching. Serialising from the message store is the right repair, but the obvious
+#: serialiser is the "save this reply" one, which emits reasoning, tool-call arguments and tool
+#: results -- none of which a user can select, because the panes holding them are collapsed and a
+#: collapsed Radix Collapsible is not in the DOM at all. Measured at 2.16 of the thread on the same
+#: arm: the truncation was fixed and the content was then wrong in the other direction.
+#:
+#: The gap between them is the honest allowance for two different serialisations of the same
+#: content. The base arm's clipboard is the DOM's RENDERED TEXT; a store-based copy is markdown
+#: SOURCE, so fences, emphasis and LaTeX delimiters exist in one and not the other. Measured at
+#: ~0.9% on a scale fixture. Ten percent is generous against that and still refuses 2.16 by a
+#: factor of twenty.
+MIN_CLIPBOARD_COVERAGE = 0.95
+MAX_CLIPBOARD_COVERAGE = 1.10
+
 #: How much of the thread the clipboard must cover. 1.0: anything less is conversation the user
 #: asked for and did not get.
 CLIPBOARD_COVERAGE_REQUIRED = 1.0
@@ -172,19 +196,52 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                 required = True,
             )
         )
-    # THE COMPARISON THAT DETECTS THE DATA LOSS. Both arms copy a byte-identical seeded thread, so
-    # a treatment whose clipboard is materially shorter than the base's has lost conversation --
-    # whatever it did or did not mount.
-    drift = _drift(base_clip, treat_clip)
-    out.append(
-        _check(
-            "clipboard_carries_the_whole_thread",
-            None if drift is None else drift <= EXACT_TOLERANCE,
-            f"the clipboard carried {base_clip} characters on the base arm and {treat_clip} on "
-            f"the treatment" + ("" if drift is None else f" ({drift:.1%} drift)"),
-            required = True,
+    # THE CHECK THAT DETECTS THE DATA LOSS, scored against THE THREAD rather than against the
+    # other arm -- which is what the docstring above has always said and what the code did not do.
+    #
+    # Comparing the two clipboards directly, at a 2% tolerance, asks whether two different
+    # serialisations of the same conversation are the same LENGTH. They are not and cannot be: the
+    # base arm's clipboard is the DOM's rendered text and a store-based copy is markdown source.
+    # A correct fix therefore fails that comparison, and the only way to make it pass is to widen
+    # the tolerance until it stops testing anything.
+    #
+    # The reference is the thread's own visible text, measured by the arm that has all of it in
+    # the DOM: on a fully mounted arm `Selection.toString()` over the whole thread IS the thread.
+    # If neither arm mounts everything there is no reference and the pair is not comparable, which
+    # is reported rather than assumed either way.
+    reference = _expect(base_row, "selected_chars")
+    base_full = _expect(base_row, "mounted_fraction")
+    if not isinstance(reference, (int, float)) or reference <= 0 or base_full != 1:
+        out.append(
+            _check(
+                "clipboard_carries_the_whole_thread",
+                None,
+                "the base arm did not mount the whole thread, so there is no measurement of how "
+                "long the conversation's visible text actually is to score either clipboard "
+                f"against (base selection {reference}, mounted fraction {base_full})",
+                required = True,
+            )
         )
-    )
+        return out
+    for label, clip in (("base", base_clip), ("treatment", treat_clip)):
+        coverage = None if not isinstance(clip, (int, float)) else clip / reference
+        out.append(
+            _check(
+                f"clipboard_carries_the_whole_thread:{label}",
+                None
+                if coverage is None
+                else (MIN_CLIPBOARD_COVERAGE <= coverage <= MAX_CLIPBOARD_COVERAGE),
+                f"the clipboard carried {clip} characters against a thread whose visible text is "
+                f"{reference} characters"
+                + (
+                    ""
+                    if coverage is None
+                    else f" ({coverage:.3f} of it, allowed "
+                    f"{MIN_CLIPBOARD_COVERAGE}-{MAX_CLIPBOARD_COVERAGE})"
+                ),
+                required = True,
+            )
+        )
     # Reported, never gated: on a windowed arm the selection is SUPPOSED to be short, and gating
     # on it would fail the fix.
     out.append(

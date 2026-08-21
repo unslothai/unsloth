@@ -187,7 +187,8 @@ def test_the_alarm_goes_quiet_when_the_copy_reads_the_store_and_not_before():
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == P.MATCH, got["reason"]
     checks = {c["invariant"]: c for c in got["checks"]}
-    assert checks["clipboard_carries_the_whole_thread"]["ok"] is True
+    assert checks["clipboard_carries_the_whole_thread:base"]["ok"] is True
+    assert checks["clipboard_carries_the_whole_thread:treatment"]["ok"] is True
     # And the shrunken selection is still on the record, as evidence rather than as a verdict.
     assert checks["selection_shrank_as_expected"]["ok"] is None
     assert "66000" in checks["selection_shrank_as_expected"]["detail"]
@@ -424,3 +425,61 @@ def test_the_passing_digest_verdict_states_what_it_did_not_look_at():
     src = inspect.getsource(U.report)
     assert "THREAD STRUCTURE" in src
     assert "sidebar-blind" in src and "layout-blind" in src
+
+
+# ── the clipboard is scored against the thread, in both directions ──
+
+
+def test_a_truncated_clipboard_still_fails():
+    """The defect the invariant was written for. The windowed arm copies only what it mounted, so
+    the clipboard is the visible fraction of the conversation and the rest is gone."""
+    base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
+    treat = _copy_row(_capture(6, 18), clipboard = 122_000, selected = 66_000, mounted = 6)
+    got = B.compare_behaviour(base, treat)
+    assert got["verdict"] == B.BROKEN, got
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["clipboard_carries_the_whole_thread:treatment"]["ok"] is False
+
+
+def test_a_clipboard_that_carries_far_MORE_than_the_thread_also_fails():
+    """THE DEFECT A FIX FOR THE FIRST ONE TURNS INTO. Serialising from the message store is the
+    right repair, and the obvious serialiser is the "save this reply" one, which emits reasoning,
+    tool-call arguments and tool results -- none of which a user can select, because the panes
+    holding them are collapsed and a collapsed Radix Collapsible is not in the DOM at all.
+
+    Measured on a real 100K arm: 420,911 characters against a 194,992-character thread, 2.16x.
+    The truncation was fixed and the content was then wrong in the other direction. A check that
+    only had a lower bound called that a pass.
+    """
+    base = _copy_row(_capture(18, 18), clipboard = 193_937, selected = 194_992, mounted = 18)
+    treat = _copy_row(_capture(9, 18), clipboard = 420_911, selected = 118_089, mounted = 9)
+    got = B.compare_behaviour(base, treat)
+    assert got["verdict"] == B.BROKEN, got
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["clipboard_carries_the_whole_thread:treatment"]["ok"] is False
+    assert "2.159" in checks["clipboard_carries_the_whole_thread:treatment"]["detail"]
+
+
+def test_markdown_source_against_rendered_text_is_not_treated_as_a_difference():
+    """The reason the two arms are NOT compared against each other. The base arm's clipboard is the
+    DOM's rendered text and a store-based copy is markdown source, so fences, emphasis and LaTeX
+    delimiters exist in one and not the other. A narrowed store serialiser measured about 1% over
+    on a scale fixture. Comparing the two clipboards at a 2% tolerance fails a correct fix, and the
+    only way to make it pass is to widen the tolerance until it tests nothing."""
+    base = _copy_row(_capture(18, 18), clipboard = 193_937, selected = 194_992, mounted = 18)
+    treat = _copy_row(_capture(9, 18), clipboard = 197_800, selected = 118_089, mounted = 9)
+    got = B.compare_behaviour(base, treat)
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["clipboard_carries_the_whole_thread:treatment"]["ok"] is True, checks
+
+
+def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
+    """The reference is the thread's visible text as measured by an arm that has all of it. If
+    neither arm mounts everything, nobody in this payload knows how long the conversation is, and
+    that is reported rather than guessed."""
+    base = _copy_row(_capture(9, 18), clipboard = 190_000, selected = 118_000, mounted = 9)
+    treat = _copy_row(_capture(9, 18), clipboard = 190_000, selected = 118_000, mounted = 9)
+    got = B.compare_behaviour(base, treat)
+    checks = {c["invariant"]: c for c in got["checks"]}
+    assert checks["clipboard_carries_the_whole_thread"]["ok"] is None
+    assert got["verdict"] == P.NOT_COMPARABLE, got
