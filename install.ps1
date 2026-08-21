@@ -4838,9 +4838,12 @@ exit 0
         if ($aotritonSet) {
             substep "$aotritonVar already set -- leaving it alone" "DarkGray"
         } else {
+            # Process copy FIRST. SetEnvironmentVariable(..., "User") throws when policy or a
+            # locked-down HKCU\Environment blocks the write, and the catch below promises this
+            # run still has the gate -- which is only true if it was already set by then.
+            Set-Item -Path "Env:$aotritonVar" -Value "1"
             try {
                 [Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")
-                Set-Item -Path "Env:$aotritonVar" -Value "1"
                 substep "$aotritonVar=1 (AOTriton attention; unset it to fall back to MATH)" "Cyan"
             } catch {
                 # Advisory: a blocked User-scope write must not fail the install. The process

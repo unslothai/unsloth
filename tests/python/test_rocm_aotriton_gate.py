@@ -61,8 +61,10 @@ def test_defaults_to_the_real_environment(monkeypatch):
 
 
 def test_init_opens_the_gate_before_importing_torch():
-    """The whole fix is ordering: torch latches the variable while loading its C++
-    extension, so a set that lands after any torch import is dead code."""
+    """Torch reads the variable when it picks an SDPA backend, not at extension load, so a
+    later set would still work today. Pin the order anyway: the read point is a torch
+    implementation detail, and a build that moved it earlier would silently cost a user
+    their context length. See unsloth/_rocm_attention.py."""
     source = _INIT.read_text(encoding = "utf-8")
     gate = source.index("_enable_rocm_aotriton_attention()")
     before = source[:gate]
@@ -94,6 +96,20 @@ def test_install_ps1_persists_the_gate_for_pinned_rocm_indexes_too():
     # And it only fires once a ROCm index actually won, not on every install.
     guard = source.rindex("if ($ROCmIndexUrl) {", 0, persist)
     assert guard > pinned_route
+
+
+def test_install_ps1_sets_the_process_copy_before_the_user_scope_write():
+    """SetEnvironmentVariable(..., "User") throws on a policy-blocked or ACL-locked
+    HKCU\\Environment, and the catch tells the user the process copy carried this run. Order
+    it the other way and that is a lie: the installer and every child it spawns lose the gate
+    on exactly the machines where the write fails."""
+    source = _INSTALL_PS1.read_text(encoding = "utf-8")
+    process_copy = source.index('Set-Item -Path "Env:$aotritonVar" -Value "1"')
+    user_write = source.index('[Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")')
+    assert process_copy < user_write, "the process copy must precede the User-scope write"
+    # And the try must open between the two, so the process copy is outside it: inside, a
+    # throw from an earlier statement could still skip it.
+    assert "try {" in source[process_copy:user_write]
 
 
 def test_install_sh_persists_the_gate_off_the_resolved_index_leaf():
