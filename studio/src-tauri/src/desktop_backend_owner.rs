@@ -328,8 +328,51 @@ fn is_blank_studio_root_id(raw: &str) -> bool {
     raw.trim().is_empty()
 }
 
+// Windows hands back ERROR_ACCESS_DENIED, not a sharing violation, while a delete
+// is pending on any name for a file. create_studio_root_id_file publishes by
+// hard-linking the temp file onto the real path and then removing the temp name, so
+// for the width of that remove there are two names for one file and a concurrent
+// reader of the real path can be denied. The file is fine either side of it.
+//
+// Retrying is the whole fix: the window is one unlink, and a caller that gives up
+// inside it reports a corrupt install for a file that is intact. NotFound still
+// means absent and still returns immediately -- a missing id is a normal first
+// start, not something to wait on.
+const STUDIO_ROOT_ID_READ_ATTEMPTS: usize = 5;
+const STUDIO_ROOT_ID_READ_BACKOFF: Duration = Duration::from_millis(20);
+
+fn read_studio_root_id_to_string(path: &Path) -> std::io::Result<String> {
+    read_studio_root_id_to_string_with(path, |path| std::fs::read_to_string(path))
+}
+
+fn read_studio_root_id_to_string_with(
+    path: &Path,
+    mut read: impl FnMut(&Path) -> std::io::Result<String>,
+) -> std::io::Result<String> {
+    let mut attempt = 0;
+    loop {
+        match read(path) {
+            Ok(raw) => return Ok(raw),
+            // Absent is an answer, not a transient state.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error),
+            Err(error) if is_transient_read_denial(&error) => {
+                attempt += 1;
+                if attempt >= STUDIO_ROOT_ID_READ_ATTEMPTS {
+                    return Err(error);
+                }
+                std::thread::sleep(STUDIO_ROOT_ID_READ_BACKOFF);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_transient_read_denial(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
+}
+
 fn read_studio_root_id_file(path: &Path) -> Result<Option<String>, String> {
-    let raw = match std::fs::read_to_string(path) {
+    let raw = match read_studio_root_id_to_string(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -1815,6 +1858,69 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-a-root-id");
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    // The retry is driven through an injected reader rather than a real race: the
+    // real one is a single unlink wide and cannot be scheduled reliably, so a test
+    // that raced for it would pass on a machine that never entered the window.
+    fn denial() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access is denied.")
+    }
+
+    #[test]
+    fn a_reader_denied_while_the_temp_name_is_unlinked_still_gets_the_id() {
+        let mut seen = 0;
+        let raw = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            if seen < 3 {
+                Err(denial())
+            } else {
+                Ok("an-id".to_string())
+            }
+        })
+        .unwrap();
+        assert_eq!(raw, "an-id");
+        assert_eq!(seen, 3, "the read should have been retried until it succeeded");
+    }
+
+    #[test]
+    fn a_denial_that_never_clears_is_still_reported() {
+        // Retrying must not turn a genuinely unreadable file into a hang or a
+        // silent success; it is bounded and the last error is what the caller sees.
+        let mut seen = 0;
+        let error = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            Err(denial())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(seen, STUDIO_ROOT_ID_READ_ATTEMPTS);
+    }
+
+    #[test]
+    fn a_missing_id_is_answered_without_waiting() {
+        // A first start has no id file. Retrying that would add backoff to every
+        // cold launch and still return the same answer.
+        let mut seen = 0;
+        let error = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(seen, 1, "a missing id must not be retried");
+    }
+
+    #[test]
+    fn an_unrelated_read_error_is_not_retried() {
+        let mut seen = 0;
+        let error = read_studio_root_id_to_string_with(Path::new("id"), |_| {
+            seen += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::InvalidData))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(seen, 1, "only a denial is treated as transient");
     }
 
     #[test]
