@@ -434,7 +434,12 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                             raise
                         mode = entry.external_attr >> 16
                         destination.chmod(0o755 if mode & 0o111 else 0o644)
-            except (zipfile.BadZipFile, lzma.LZMAError, zlib.error) as exc:
+            except (
+                UnicodeDecodeError,
+                zipfile.BadZipFile,
+                lzma.LZMAError,
+                zlib.error,
+            ) as exc:
                 raise SkillError("Skill bundle must be a valid ZIP archive.") from exc
             except NotImplementedError as exc:
                 raise SkillError("Skill archive uses unsupported compression.") from exc

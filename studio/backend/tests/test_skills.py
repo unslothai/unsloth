@@ -481,6 +481,19 @@ def test_rejects_an_oversized_archive_resource(tmp_path: Path):
     assert not (tmp_path / "skills/unsloth").exists()
 
 
+def test_rejects_invalid_utf8_archive_filenames(tmp_path: Path):
+    archive = _bundle(tmp_path / "invalid-name.zip", {"SKILL.md": SKILL_MD})
+    payload = bytearray(archive.read_bytes())
+    central_directory = payload.index(b"PK\x01\x02")
+    flags = struct.unpack_from("<H", payload, central_directory + 8)[0]
+    struct.pack_into("<H", payload, central_directory + 8, flags | 0x800)
+    payload[central_directory + 46] = 0xFF
+    archive.write_bytes(payload)
+
+    with pytest.raises(skills.SkillError, match = "valid ZIP"):
+        skills.import_skill_archive(archive)
+
+
 @pytest.mark.parametrize(
     "member",
     ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
