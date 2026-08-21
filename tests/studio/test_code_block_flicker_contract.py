@@ -146,6 +146,21 @@ def test_a_block_that_goes_short_and_stays_short_is_not_a_flicker() -> None:
     assert result["detail"][0]["toFrame"] is None
 
 
+def test_a_drop_still_open_when_the_log_ends_is_recorded() -> None:
+    """The tail is shorter than RECOVERY_FRAMES, so the realistic case ends mid-drop.
+
+    2500ms of tail is about 150 frames at 60Hz against RECOVERY_FRAMES of 240, so a block that
+    collapses at finalization and stays short never reaches the threshold. It still must not
+    vanish from `detail`, which is the one place a non-recovering drop is promised to appear.
+    """
+    frames = [frame([1700.0])] * 3 + [frame([226.0])] * 150
+    result = analyse_stream(frames)
+    assert result["collapses"] == 0, "it never came back, so it is not a flicker"
+    assert result["detail"], "a drop open at the end of the log must still be recorded"
+    assert result["detail"][0]["toFrame"] is None
+    assert result["detail"][0]["heightAtFloor"] == 226.0
+
+
 def test_a_block_growing_as_its_content_arrives_is_not_a_collapse() -> None:
     """A fence gets taller line by line while it streams. Nothing here is a drop."""
     frames = [frame([200.0 * (i + 1)]) for i in range(12)]
@@ -261,6 +276,20 @@ def test_the_run_drives_a_variant_that_is_required_to_flicker() -> None:
     # The exit code has to rest on both halves, not just on the tree behaving.
     verdict = source[source.index("if variant in MUST_FLICKER") :]
     assert "failures.append" in verdict
+
+
+def test_a_filtered_variant_set_cannot_drop_every_positive_control() -> None:
+    """`SMOKE_FLICKER_VARIANTS=tree` would otherwise pass while proving nothing.
+
+    The verdict loop can only judge variants it actually ran, so a filtered set that keeps no
+    MUST_FLICKER member has to be refused up front rather than exiting clean.
+    """
+    source = harness_source()
+    assert "MUST_FLICKER & set(VARIANTS)" in source, (
+        "the harness does not check that the selected variants keep a positive control"
+    )
+    guard = source[source.index("if not MUST_FLICKER & set(VARIANTS)") :]
+    assert "raise SystemExit" in guard[:400], "the missing-control check does not stop the run"
 
 
 def test_the_fixture_offers_the_state_the_override_was_added_for() -> None:

@@ -129,6 +129,19 @@ TAIL_MS = int(os.environ.get("SMOKE_FLICKER_TAIL_MS", "2500"))
 MUST_FLICKER = {"streamdown", "released"}
 MUST_NOT_FLICKER = {"tree", "legacy"}
 
+# The positive control is what makes a clean run mean anything: without a variant that is
+# REQUIRED to flicker, "no collapses anywhere" is equally consistent with a detector that
+# measured nothing at all. The verdict loop can only check that per variant it actually ran, so
+# a filtered set that drops every control has to be refused here instead.
+if not MUST_FLICKER & set(VARIANTS):
+    raise SystemExit(
+        "SMOKE_FLICKER_VARIANTS="
+        + ",".join(VARIANTS)
+        + " has no positive control. Include at least one of "
+        + ", ".join(sorted(MUST_FLICKER))
+        + ", or a run that reports no collapses proves only that nothing was measured."
+    )
+
 # What each variant's stylesheet must have actually computed to on a settled block, checked
 # before anything is measured.
 #

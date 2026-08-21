@@ -98,6 +98,24 @@ def analyse_stream(frames: list[dict]) -> dict:
                 )
                 open_drop = None
 
+        # A drop still open when the log ends is recorded here rather than discarded. The tail is
+        # about 150 frames and RECOVERY_FRAMES is 240, so a block that collapses at finalization
+        # and stays short never reaches the threshold above, and without this it appears in
+        # neither `collapses` nor `detail` -- the one place the contract promises it cannot be
+        # silently dropped. It is still not counted as a collapse: it never came back.
+        if open_drop is not None:
+            start_frame, before = open_drop
+            detail.append(
+                {
+                    "block": index,
+                    "fromFrame": start_frame,
+                    "toFrame": None,
+                    "heightBefore": before,
+                    "heightAtFloor": min(h for j, h in series if j >= start_frame),
+                    "frames": None,
+                }
+            )
+
     dips = 0
     for i in range(1, len(frames)):
         drop = frames[i - 1]["scrollHeight"] - frames[i]["scrollHeight"]
