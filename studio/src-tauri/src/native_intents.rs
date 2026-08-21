@@ -635,6 +635,8 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "webm" => Some("video/webm"),
         "mkv" => Some("video/x-matroska"),
         "avi" => Some("video/x-msvideo"),
+        "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
+        "odt" => Some("application/vnd.oasis.opendocument.text"),
         _ => None,
     }
 }
@@ -807,6 +809,23 @@ mod tests {
         assert_eq!(BASE64.decode(payload.base64).unwrap(), b"\x89PNG\r\n\x1a\n");
         assert!(payload.name.ends_with(".png"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_document_read_round_trips_with_its_mime_type() {
+        for (ext, mime) in [
+            ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
+            ("odt", "application/vnd.oasis.opendocument.text"),
+        ] {
+            let path = temp_path("open-document").with_extension(ext);
+            fs::write(&path, b"open-document").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry)
+                .unwrap_or_else(|error| panic!(".{ext} was unreadable: {error}"));
+            assert_eq!(payload.mime_type, mime);
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"open-document");
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

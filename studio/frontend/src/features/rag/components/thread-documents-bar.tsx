@@ -25,9 +25,12 @@ import {
   isThreadIncognito,
 } from "@/features/chat";
 import {
+  nativeAttachmentIntentToFile,
+  type NativeIntent,
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
+import { isOpenDocumentAttachmentName } from "@/features/chat/open-document-accept";
 import { toast } from "@/lib/toast";
 import {
   DropdownMenu,
@@ -545,35 +548,64 @@ export function ThreadDocumentsBar({
         (s.pendingAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
     ),
   );
+  const attachOpenDocuments = useCallback(
+    async (intents: NativeIntent[]) => {
+      for (const intent of intents) {
+        try {
+          const file = await nativeAttachmentIntentToFile(intent);
+          await aui.composer().addAttachment(file);
+        } catch (error) {
+          toast.error(`Couldn't attach ${intent.displayLabel}`, {
+            description:
+              error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    },
+    [aui],
+  );
   useEffect(() => {
     if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
       return;
     }
-    // Hold the batch rather than draining it into the wrong scope. The intents
-    // stay in the store, so this runs again once the row has been read.
+    const store = useNativeIntentStore.getState();
+    const intents = store.takeAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) {
+      return;
+    }
+    const openDocuments = intents.filter((intent) =>
+      isOpenDocumentAttachmentName(intent.displayLabel),
+    );
+    const ragDocuments = intents.filter(
+      (intent) => !isOpenDocumentAttachmentName(intent.displayLabel),
+    );
+    if (openDocuments.length > 0) {
+      void attachOpenDocuments(openDocuments);
+    }
+    if (ragDocuments.length === 0) {
+      return;
+    }
+    // Hold RAG files rather than uploading them into an unresolved project
+    // scope. OpenDocument files above go through the composer, like the picker.
     if (projectUnresolved) {
+      store.addAttachments(nativeAttachmentTargetKey, ragDocuments);
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
-      useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
       toast.error("This chat retrieves from a knowledge base", {
         description: "Add these files to the knowledge base instead.",
       });
       return;
     }
-    const intents = useNativeIntentStore
-      .getState()
-      .takeAttachments(nativeAttachmentTargetKey);
-    if (intents.length === 0) return;
     // A stale KB preference is inactive while RAG is off; use thread retrieval.
     if (!ragEnabled) {
       setRagSource({ type: "thread" });
       setRagEnabled(true);
     }
     attach(
-      intents.map((intent) => ({
+      ragDocuments.map((intent) => ({
         kind: "native" as const,
         token: intent.path.token,
         name: intent.displayLabel,
@@ -586,6 +618,7 @@ export function ThreadDocumentsBar({
     projectUnresolved,
     nativeAttachmentTargetKey,
     attach,
+    attachOpenDocuments,
     ragEnabled,
     ragSource,
     setRagSource,

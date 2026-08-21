@@ -55,8 +55,11 @@ import {
   providerModelSupportsVision,
 } from "./external-providers";
 import {
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
+} from "./open-document-accept";
+import {
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
@@ -442,12 +445,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     Promise<OpenDocumentAttachmentContent | null>
   >();
 
-  accept = [
-    ".ods",
-    ".odt",
-    OPEN_DOCUMENT_SPREADSHEET_MIME,
-    OPEN_DOCUMENT_TEXT_MIME,
-  ].join(",");
+  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
 
   async *add({
     file,
