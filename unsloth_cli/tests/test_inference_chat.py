@@ -411,6 +411,12 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
     fake_routes._all_hf_cache_scans = lambda: []
     fake_routes.cached_gguf_rows = lambda scans: [
         {"repo_id": "org/Tiny-GGUF", "cache_path": str(repo), "task": "text-generation"},
+        {
+            "repo_id": "org/Half-GGUF",
+            "cache_path": str(repo),
+            "task": "text-generation",
+            "partial": True,
+        },
         {"repo_id": "org/Flux-GGUF", "cache_path": str(repo), "task": "text-to-image"},
     ]
     fake_routes.cached_model_rows = lambda scans: [

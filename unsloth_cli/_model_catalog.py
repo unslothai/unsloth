@@ -142,7 +142,7 @@ def cached_entries() -> List[ModelEntry]:
     scans = _all_hf_cache_scans()
     entries = []
     for row in cached_gguf_rows(scans):
-        if row.get("task") in NON_CHAT_TASKS:
+        if row.get("partial") or row.get("task") in NON_CHAT_TASKS:
             continue
         entries.append(
             ModelEntry(

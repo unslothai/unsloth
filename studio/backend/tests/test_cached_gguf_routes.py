@@ -597,8 +597,8 @@ def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_
     assert rows[0]["load_id"] == str(older)
 
 
-def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch, tmp_path):
-    """With only a half-downloaded split quant, fall back to the repo id, not a path."""
+def test_list_cached_gguf_marks_partial_when_no_snapshot_is_complete(monkeypatch, tmp_path):
+    """With only a half-downloaded split quant, expose no loadable picker target."""
     active = tmp_path / "active"
     repo_dir = tmp_path / "legacy" / "models--Org--Torn"
     snapshot = repo_dir / "snapshots" / "rev"
@@ -624,6 +624,13 @@ def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
     assert "load_id" not in rows[0]
+    assert rows[0]["partial"] is True
+
+    # a commit-pinned active-cache attempt has no refs/main, so the bare id is unusable there too.
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: repo_dir.parent)
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    assert "load_id" not in rows[0]
+    assert rows[0]["partial"] is True
 
 
 def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monkeypatch, tmp_path):
@@ -1021,8 +1028,8 @@ def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_pat
 
 def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(monkeypatch, tmp_path):
     """The repo id resolving is not enough: refs/main can land on a revision holding half a split
-    while an older one is whole. The compat schema carries no partial flag, so a client loading the
-    id follows the torn ref and fails with a complete copy one directory away."""
+    while an older one is whole. A client loading the id follows the torn ref and fails with a
+    complete copy one directory away."""
     import os
 
     active = tmp_path / "active"
@@ -1436,6 +1443,7 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monk
             "cache_path": str(repo.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -1459,6 +1467,7 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
             "cache_path": str(repo.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -1757,6 +1766,7 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch,
             "cache_path": str(larger.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -1788,6 +1798,7 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
             "cache_path": str(repo.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -1830,7 +1841,7 @@ def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tm
     monkeypatch.setattr(
         models_route,
         "_cached_repo_partial",
-        lambda repo_id, repo_cache_dir = None: "root_b" in str(repo_cache_dir),
+        lambda repo_id, repo_cache_dir = None, snapshot_dir = None: "root_b" in str(repo_cache_dir),
     )
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
     # List the partial (larger) FIRST, so the old size-only rule would have picked it.
@@ -1876,6 +1887,7 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
             "cache_path": str(mixed.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -1904,6 +1916,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
             "cache_path": str(partial.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -1941,6 +1954,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
             "cache_path": str(healthy.repo_path),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -2085,6 +2099,7 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
             "cache_path": str(vision_repo.repo_path),
             "has_vision": True,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -2121,6 +2136,7 @@ def test_all_hf_cache_scans_uses_shared_inventory(monkeypatch, tmp_path):
             "cache_path": str(tmp_path / "active"),
             "has_vision": False,
             "task": None,
+            "partial": True,
         }
     ]
 
@@ -3100,24 +3116,26 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
         repo_type,
         repo_id,
         repo_cache_dir = None,
+        snapshot_dir = None,
     ):
-        calls.append((repo_type, repo_id, repo_cache_dir))
+        calls.append((repo_type, repo_id, repo_cache_dir, snapshot_dir))
         return False
 
     monkeypatch.setattr(scan, "is_snapshot_partial", _fake)
+    repo_dir = Path("/root_a/models--Org--Repo")
     snapshot_dir = Path("/root_a/models--Org--Repo/snapshots/abc")
-    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
-    assert calls == [("model", "Org/Repo", snapshot_dir)]
+    assert models_route._cached_repo_partial("Org/Repo", repo_dir, snapshot_dir) is False
+    assert calls == [("model", "Org/Repo", repo_dir, snapshot_dir)]
 
     monkeypatch.setattr(scan, "is_snapshot_partial", lambda *a, **k: True)
-    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is True
+    assert models_route._cached_repo_partial("Org/Repo", repo_dir, snapshot_dir) is True
 
     # A probe error is swallowed (never hides a usable repo over a scan glitch).
     def _boom(*a, **k):
         raise RuntimeError("scan glitch")
 
     monkeypatch.setattr(scan, "is_snapshot_partial", _boom)
-    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
+    assert models_route._cached_repo_partial("Org/Repo", repo_dir, snapshot_dir) is False
 
 
 def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
@@ -5684,9 +5702,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])]
     )
@@ -5730,9 +5746,7 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
@@ -5791,9 +5805,7 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route,
         "_all_hf_cache_scans",
@@ -5845,9 +5857,7 @@ def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch,
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -5926,9 +5936,7 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -5974,6 +5982,8 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
 
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text("broken")
+    (repo_dir / "blobs").mkdir(parents = True)
+    (repo_dir / "blobs" / "unfinished.incomplete").write_bytes(b"")
 
     os.utime(complete, (1_000_000, 1_000_000))
     os.utime(broken_ref, (2_000_000, 2_000_000))
@@ -5993,9 +6003,6 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
     monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
-    monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active.resolve())
@@ -6003,6 +6010,71 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
     rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
 
     assert rows["Org/Chatty"]["load_id"] == str(complete)
+    assert "partial" not in rows["Org/Chatty"]
+
+
+def test_cached_model_rows_scope_pipeline_partialness_to_the_pinned_snapshot(monkeypatch, tmp_path):
+    """A newer companion-only pipeline must not mark an older complete pinned copy partial."""
+    active = tmp_path / "active"
+    active.mkdir()
+    repo_dir = active / "models--Org--Pipeline"
+    complete = repo_dir / "snapshots" / "complete"
+    broken = repo_dir / "snapshots" / "broken"
+    (complete / "transformer").mkdir(parents = True)
+    (broken / "vae").mkdir(parents = True)
+
+    manifest = json.dumps(
+        {
+            "_class_name": "FluxPipeline",
+            "transformer": ["diffusers", "FluxTransformer2DModel"],
+        }
+    )
+    (complete / "config.json").write_text("{}")
+    (complete / "model.safetensors").write_bytes(b"\0" * 64)
+    (complete / "model_index.json").write_text(manifest)
+    (complete / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
+    (broken / "model_index.json").write_text(manifest)
+    (broken / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
+    os.utime(complete, (1_000_000, 1_000_000))
+    os.utime(broken, (2_000_000, 2_000_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("broken")
+
+    repo = _repo(
+        "Org/Pipeline",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    _file("config.json", 2),
+                    _file("model.safetensors", 64),
+                    _file("model_index.json", len(manifest)),
+                    _file("transformer/diffusion_pytorch_model.safetensors", 64),
+                ],
+                snapshot_path = complete,
+            ),
+            SimpleNamespace(
+                files = [
+                    _file("model_index.json", len(manifest)),
+                    _file("vae/diffusion_pytorch_model.safetensors", 64),
+                ],
+                snapshot_path = broken,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active.resolve())
+
+    rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
+
+    assert rows["Org/Pipeline"]["load_id"] == str(complete)
+    assert "partial" not in rows["Org/Pipeline"]
 
 
 def test_active_cache_repo_with_a_serving_ref_keeps_its_bare_id(tmp_path):
@@ -6068,9 +6140,7 @@ def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch,
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -6118,9 +6188,7 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monk
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -6159,9 +6227,7 @@ def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkey
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -6196,9 +6262,7 @@ def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkey
         ],
     )
 
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -6242,9 +6306,7 @@ def test_cached_model_rows_pins_a_commit_pinned_repo_with_no_default_ref(monkeyp
     )
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
@@ -6290,9 +6352,7 @@ def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypa
     _, metadata_only = _recovered("Half", {"config.json": b"{}"})
 
     monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
-    monkeypatch.setattr(
-        models_route, "_cached_repo_partial", lambda repo_id, repo_cache_dir = None: False
-    )
+    monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_recovered_repo_is_unusable_by_repo_id", lambda repo_info: True
     )

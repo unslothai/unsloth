@@ -3813,25 +3813,22 @@ def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
     return impl(repo_cache_dir)
 
 
-def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
-    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant."""
-    from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
-    return impl(repo_cache_dir)
-
-
-def _gguf_copy_is_usable(repo_info, load_id: Optional[str]) -> bool:
+def _gguf_copy_is_usable(repo_info, load_id: Optional[str], active_root: Optional[Path]) -> bool:
     """Whether this copy of the repo holds a quant a load can reach.
 
-    A pinned copy names a complete snapshot. An unpinned one is usable when its id resolves onto a
-    whole quant, which is exactly what withheld the pin.
+    A pinned copy names a complete snapshot. An unpinned copy must be in the active cache and have
+    an id that resolves onto a whole quant, which is exactly what withheld the pin.
     """
     if load_id:
         return True
+    if active_root is None:
+        return False
     try:
         repo_path = Path(repo_info.repo_path)
-        return not _repo_id_will_not_resolve(repo_path) and not _default_ref_offers_no_whole_quant(
-            repo_path
-        )
+        if repo_path.parent.resolve(strict = False) != active_root:
+            return False
+        ref_snapshot = _default_ref_snapshot(repo_path)
+        return ref_snapshot is not None and snapshot_has_complete_variants(str(ref_snapshot))
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -4548,13 +4545,10 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     if repo_path is None or active_root is None:
         return None
     try:
-        # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
-        if (
-            repo_path.parent.resolve(strict = False) == active_root
-            and not _repo_id_will_not_resolve(repo_path)
-            and not _default_ref_offers_no_whole_quant(repo_path)
-        ):
-            return None
+        if repo_path.parent.resolve(strict = False) == active_root:
+            ref_snapshot = _default_ref_snapshot(repo_path)
+            if ref_snapshot is not None and snapshot_has_complete_variants(str(ref_snapshot)):
+                return None
     except (OSError, RuntimeError, ValueError):
         pass
     # Shared selection key, so this route and the /gguf-variants lister name one snapshot.
@@ -4614,7 +4608,7 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
         active_root = None
 
     seen_lower: dict[str, dict] = {}
-    # How each kept row's copy ranks, since the compatibility schema carries neither field.
+    # keep active-cache rank beside rows; the compatibility schema only exposes partialness.
     seen_rank: dict[str, tuple[bool, bool]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
@@ -4633,7 +4627,7 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                 last_modified = _repo_gguf_last_modified(repo_info)
                 load_id = _repo_gguf_load_id(repo_info, active_root)
                 rank = (
-                    _gguf_copy_is_usable(repo_info, load_id),
+                    _gguf_copy_is_usable(repo_info, load_id, active_root),
                     active_root is not None
                     and Path(repo_info.repo_path).parent.resolve(strict = False) == active_root,
                 )
@@ -4647,6 +4641,8 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                     }
                     if load_id:
                         row["load_id"] = load_id
+                    if not rank[0]:
+                        row["partial"] = True
                     # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.
                     lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
                     if lm > 0:
@@ -4694,26 +4690,31 @@ def _repo_is_diffusers(repo_info) -> bool:
     return False
 
 
-def _repo_pipeline_missing_denoiser(repo_info) -> bool:
-    """Companion-only-prefetch check (pipeline manifest present, denoiser weights absent). Shared
-    with the hub inventory scan so both listings agree on which rows are really on-device; see
-    :func:`hub.utils.inventory_scan.repo_pipeline_missing_denoiser`."""
+def _repo_pipeline_missing_denoiser(repo_info, selected: Optional[Path] = None) -> bool:
+    """Companion-only-prefetch check for the snapshot this row loads."""
     from hub.utils import inventory_scan as hf_cache_scan
+
+    if selected is not None:
+        return hf_cache_scan.snapshot_pipeline_missing_denoiser(selected)
     return hf_cache_scan.repo_pipeline_missing_denoiser(repo_info)
 
 
-def _cached_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:
+def _cached_repo_partial(
+    repo_id: str,
+    repo_cache_dir: Optional[Path] = None,
+    snapshot_dir: Optional[Path] = None,
+) -> bool:
     """Whether the cached model snapshot is incomplete (cancelled/partial download).
     Reuses the hub inventory scan's snapshot-partial detector (cancel marker, legacy
-    .incomplete blob, manifest walk -- cheapest first). ``repo_cache_dir`` scopes all three
-    signals to the specific snapshot being listed: without it the scan spans every HF cache
-    root, so a stale .incomplete copy in one root would flag a complete copy in another as
-    partial and hide it from the picker (the sibling inventory paths all scope the same way).
+    .incomplete blob, manifest walk -- cheapest first). ``repo_cache_dir`` scopes the cache copy;
+    ``snapshot_dir`` attributes repo-wide signals to the selected revision. Without both, an
+    interrupted newer revision can flag a complete pinned revision as partial and hide it from the
+    picker.
     Best-effort: a detection error reports not-partial so a scan glitch never hides a
     genuinely usable repo."""
     try:
         from hub.utils.inventory_scan import is_snapshot_partial
-        return bool(is_snapshot_partial("model", repo_id, repo_cache_dir))
+        return bool(is_snapshot_partial("model", repo_id, repo_cache_dir, snapshot_dir))
     except Exception:  # noqa: BLE001 -- never fail the listing over a partial probe
         return False
 
@@ -4816,7 +4817,7 @@ def _snapshot_payload_is_torn(snapshot: Optional[Path]) -> bool:
     return _snapshot_cannot_serve_its_payload(snapshot)
 
 
-def _default_ref_model_snapshot(repo_cache_dir: Path) -> Optional[Path]:
+def _default_ref_snapshot(repo_cache_dir: Path) -> Optional[Path]:
     """See hub.utils.inventory_scan; the snapshot dir ``refs/main`` names, or ``None``."""
     from hub.utils.inventory_scan import default_ref_snapshot
     return default_ref_snapshot(repo_cache_dir)
@@ -4856,7 +4857,7 @@ def _repo_is_reachable_by_id(repo_path: Path, active_root: Path, loadable: Optio
     # No refs/main at all is not "fine", it is unresolvable: huggingface_hub writes
     # refs/<revision> only when revision != commit_hash, so a commit-pinned fetch writes
     # none and a tag-pinned one writes refs/<tag>. Offline the bare id then finds nothing.
-    ref_snapshot = _default_ref_model_snapshot(repo_path)
+    ref_snapshot = _default_ref_snapshot(repo_path)
     return ref_snapshot is not None and _snapshot_can_serve_a_load(ref_snapshot)
 
 
@@ -4886,7 +4887,7 @@ def _repo_model_selection(
     loadable = next((s for s in usable if _snapshot_can_serve_a_load(s)), None)
     if _repo_is_reachable_by_id(Path(repo_path), active_root, loadable):
         # The bare id follows refs/main, so that ref names the revision a load reads.
-        return _default_ref_model_snapshot(Path(repo_path)) or loadable, None
+        return _default_ref_snapshot(Path(repo_path)) or loadable, None
     # No snapshot can serve a load on its own (a diffusers pipeline keeps its config and
     # weights in subdirectories), so keep the previous newest-dir pin rather than drop it.
     selected = loadable or (usable[0] if usable else None)
@@ -4964,19 +4965,19 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 # Pass the snapshot path too so the config check also hides custom Whisper checkpoints.
                 if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                     continue
+                if _repo_has_gguf_files(repo_info):
+                    continue
+                selected, model_load_id = _repo_model_selection(repo_info, active_root)
                 if _recovered_repo_is_unusable_by_repo_id(repo_info):
                     # That guard withheld these because this schema could describe neither a
                     # partial nor a path; it now carries load_id, so a recovery holding a
                     # snapshot that serves a load is listed pinned to it instead of dropped.
-                    recovered, recovered_pin = _repo_model_selection(repo_info, active_root)
                     if not (
-                        recovered_pin is not None
-                        and recovered is not None
-                        and _snapshot_can_serve_a_load(recovered)
+                        model_load_id is not None
+                        and selected is not None
+                        and _snapshot_can_serve_a_load(selected)
                     ):
                         continue
-                if _repo_has_gguf_files(repo_info):
-                    continue
                 total_size = sum(
                     (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
                 )
@@ -4995,8 +4996,8 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 existing = seen_lower.get(key)
                 # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
                 is_partial = _cached_repo_partial(
-                    repo_id, Path(repo_info.repo_path)
-                ) or _repo_pipeline_missing_denoiser(repo_info)
+                    repo_id, Path(repo_info.repo_path), selected
+                ) or _repo_pipeline_missing_denoiser(repo_info, selected)
                 # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
                 if existing is None or (not is_partial, total_size) > (
                     not bool(existing.get("partial")),
@@ -5008,7 +5009,6 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "task": _cached_repo_task(repo_info),
                     }
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    selected, model_load_id = _repo_model_selection(repo_info, active_root)
                     if model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info, selected)
