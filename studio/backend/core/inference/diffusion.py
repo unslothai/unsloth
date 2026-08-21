@@ -4545,10 +4545,11 @@ class DiffusionBackend:
             effective_tiling,
             "; ".join(plan.reasons),
         )
+        del pipe
         if "transformer" in locals():
-            del pipe, transformer, pipe_kwargs
-        else:
-            del pipe
+            del transformer
+        if "pipe_kwargs" in locals():
+            del pipe_kwargs
         return self.status()
 
     def _load_dense_quant_pipeline(

@@ -2567,6 +2567,25 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
     assert ideogram["repo_id"] == "ideogram-ai/ideogram-4-fp8"
 
 
+def test_krea_single_file_load_reaches_cleanup_without_pipe_kwargs(fake_runtime, monkeypatch, tmp_path):
+    from core.inference import diffusion as dmod
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.Krea2Pipeline = _FakePipeline
+    diffusers.Krea2Transformer2DModel = _FakeTransformer
+    monkeypatch.setattr(dmod, "load_krea2_pipeline", lambda base, dtype, **kw: _FakePipe())
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+
+    status = DiffusionBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "krea-2",
+        hf_token = "hf_secret",
+    )
+    assert status["loaded"] is True
+
+
 def test_dense_quant_pulls_the_transformer_from_the_mirror(monkeypatch):
     """The dense fallback downloads the base repo's transformer/ shards. With a nonzero baked LoRA
     the GGUF fallback is refused, so a 401 here fails the load outright."""
