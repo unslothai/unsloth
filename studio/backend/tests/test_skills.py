@@ -529,6 +529,27 @@ def test_translates_a_corrupt_bzip2_resource(tmp_path: Path):
     assert not (tmp_path / "skills/unsloth").exists()
 
 
+@pytest.mark.skipif(not hasattr(zipfile, "ZIP_ZSTANDARD"), reason = "Zstandard requires Python 3.14")
+@pytest.mark.parametrize(
+    "member",
+    ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],
+)
+def test_translates_corrupt_zstandard_streams(tmp_path: Path, member: str):
+    archive = _corrupt_compressed_member(
+        tmp_path / "corrupt-zstandard.zip",
+        {
+            "unsloth/SKILL.md": SKILL_MD,
+            "unsloth/references/config-reference.md": "Use bf16.\n",
+        },
+        member,
+        compression = zipfile.ZIP_ZSTANDARD,
+    )
+
+    with pytest.raises(skills.SkillError, match = "SKILL.md|valid ZIP"):
+        skills.import_skill_archive(archive)
+    assert not (tmp_path / "skills/unsloth").exists()
+
+
 @pytest.mark.parametrize(
     "member",
     ["unsloth/SKILL.md", "unsloth/references/config-reference.md"],

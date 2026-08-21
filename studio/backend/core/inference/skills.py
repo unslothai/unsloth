@@ -19,6 +19,13 @@ import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
+try:
+    from compression.zstd import ZstdError as _ZstdError
+except ImportError:
+    _ZSTD_ERRORS = ()
+else:
+    _ZSTD_ERRORS = (_ZstdError,)
+
 import yaml
 
 from utils.paths import ensure_dir, studio_root
@@ -313,7 +320,14 @@ def _archive_source(
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
         manifest_raw = archive.read(manifest_entry)
-    except (OSError, RuntimeError, zipfile.BadZipFile, lzma.LZMAError, zlib.error) as exc:
+    except (
+        OSError,
+        RuntimeError,
+        zipfile.BadZipFile,
+        lzma.LZMAError,
+        zlib.error,
+        *_ZSTD_ERRORS,
+    ) as exc:
         raise SkillError("Could not read SKILL.md from the archive.") from exc
     provisional_name = source_root.name if source_root.parts else ""
     if provisional_name:
@@ -439,6 +453,7 @@ def import_skill_archive(archive_path: Path, *, replace: bool = False) -> dict:
                 zipfile.BadZipFile,
                 lzma.LZMAError,
                 zlib.error,
+                *_ZSTD_ERRORS,
             ) as exc:
                 raise SkillError("Skill bundle must be a valid ZIP archive.") from exc
             except NotImplementedError as exc:
