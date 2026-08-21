@@ -107,9 +107,10 @@ def register_images(
     from .web_access_policy import check_url_access
 
     public: list[dict[str, str]] = []
-    persist: list[tuple[str, dict[str, Any]]] = []
+    persist: list[tuple[str, dict[str, Any], int]] = []
     now = time.monotonic()
     with _registry_lock:
+        generation = _cache_generation
         _prune_registry_locked(now)
         for item in raw_results:
             if len(public) >= max_images:
@@ -144,10 +145,9 @@ def register_images(
             if subject:
                 entry["subject"] = _clean_text(subject, 80)
             public.append(entry)
-            persist.append((image_id, _registry[image_id]))
-    # Outside the lock: one small write per image, and nothing here needs the registry.
-    for image_id, stored in persist:
-        _persist_entry(image_id, stored)
+            persist.append((image_id, _registry[image_id], generation))
+    for image_id, stored, registered_generation in persist:
+        _persist_entry(image_id, stored, registered_generation)
     if persist:
         # Here too, not only after a thumbnail write: a user who never opens a picture
         # would otherwise accumulate sidecars with nothing ever bounding them.
@@ -243,7 +243,7 @@ def _meta_path(image_id: str) -> Path:
     return _cache_dir() / f"{image_id}.json"
 
 
-def _persist_entry(image_id: str, entry: dict[str, Any]) -> None:
+def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> None:
     """Keep an id resolvable across a restart.
 
     The envelope in saved chat history carries ids, not URLs, and the browser only
@@ -261,10 +261,13 @@ def _persist_entry(image_id: str, entry: dict[str, Any]) -> None:
             },
             ensure_ascii = True,
         )
-        # Writer-unique, like the JPEG: a torn read must not be possible.
-        tmp = _meta_path(image_id).with_suffix(f".{secrets.token_hex(4)}.tmp")
-        tmp.write_text(payload, encoding = "utf-8")
-        tmp.replace(_meta_path(image_id))
+        with _registry_lock:
+            if generation != _cache_generation:
+                return
+            # writer-unique, like the JPEG: a torn read must not be possible.
+            tmp = _meta_path(image_id).with_suffix(f".{secrets.token_hex(4)}.tmp")
+            tmp.write_text(payload, encoding = "utf-8")
+            tmp.replace(_meta_path(image_id))
     except (OSError, TypeError, ValueError) as exc:
         # Best effort: losing this costs a 404 on an unseen picture, never the search.
         logger.debug("search image metadata write failed: %s", exc)

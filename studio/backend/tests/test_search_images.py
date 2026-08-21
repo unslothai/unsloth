@@ -438,6 +438,20 @@ def test_clear_all_chats_beats_a_thumbnail_write_already_in_flight(monkeypatch, 
     assert (tmp_path / f"{fresh['id']}.jpg").is_file()
 
 
+def test_clear_all_chats_beats_metadata_waiting_to_publish(monkeypatch, tmp_path):
+    real_persist = search_images._persist_entry
+
+    def clear_then_persist(*args):
+        search_images.clear_cache()
+        real_persist(*args)
+
+    monkeypatch.setattr(search_images, "_persist_entry", clear_then_persist)
+    entry = search_images.register_images(RAW_IMAGES)[0]
+
+    assert search_images.lookup_image(entry["id"]) is None
+    assert list(tmp_path.glob("*.json")) == []
+
+
 def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path):
     # The exact interleaving the first fix missed: the entry and the cache generation
     # were read under SEPARATE acquisitions, so a clear landing in the gap handed this
