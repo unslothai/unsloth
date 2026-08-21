@@ -384,12 +384,18 @@ class SAOTrainer(_SAOTrainerBase):
                     "discoverable by name."
                 )
         value_parameters = [p for p in self.value_model.parameters() if p.requires_grad]
-        self.value_optimizer = torch.optim.AdamW(
+        value_optimizer = torch.optim.AdamW(
             value_parameters,
             lr = args.value_learning_rate
             if args.value_learning_rate is not None
             else args.learning_rate,
         )
+        # Must go through accelerator.prepare like the main optimizer: under fp16
+        # mixed precision this is what makes `optimizer.step()` unscale gradients
+        # (and skip the step on an inf/NaN) after `accelerator.backward()` scaled
+        # the loss. An unprepared optimizer would apply the still-scaled
+        # gradients directly.
+        self.value_optimizer = self.accelerator.prepare(value_optimizer)
 
     def _generate(self, prompt_texts: List[str]):
         """One rollout per prompt, keeping the sampler's own token logprobs."""
@@ -545,7 +551,12 @@ class SAOTrainer(_SAOTrainerBase):
             ].float()
             value_loss = sao_value_loss(predicted, returns, action_mask)
             self.value_optimizer.zero_grad(set_to_none = True)
-            value_loss.backward()
+            # Route through the accelerator like the policy backward above, not a
+            # raw `.backward()` / `.step()`: under fp16 mixed precision the
+            # accelerator's GradScaler must scale this loss and unscale the
+            # gradients before the optimizer step, or gradients silently
+            # underflow/overflow and the critic diverges within a few steps.
+            self.accelerator.backward(value_loss)
             self.value_optimizer.step()
             value_losses.append(value_loss.detach())
 
