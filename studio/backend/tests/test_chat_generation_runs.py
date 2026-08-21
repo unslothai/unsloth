@@ -217,9 +217,7 @@ def test_settled_generation_response_can_be_explicitly_edited(chat_home):
     _create()
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)
-    assert runs_db.finish_run(
-        "run-1", worker_token = token, status = "completed", finish_reason = "stop"
-    )
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
     run = runs_db.get_run("run-1", "alice")
     stored = studio_db.get_chat_message("thread-1", "assistant-1")
     stored["metadata"].update(

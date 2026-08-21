@@ -1267,9 +1267,7 @@ def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
-    allow_generation_edit: Annotated[
-        bool, Query(alias = "allowGenerationEdit")
-    ] = False,
+    allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
 ):
     if thread_id != payload.threadId or message_id != payload.id:
@@ -1278,9 +1276,7 @@ def save_thread_message(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
         return ChatMessage(
-            **upsert_chat_message(
-                payload.model_dump(), allow_generation_edit = allow_generation_edit
-            )
+            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
