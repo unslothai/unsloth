@@ -3978,6 +3978,12 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    if (
+        not getattr(payload, "stream", False)
+        and getattr(payload, "permission_mode", None) is None
+        and getattr(payload, "confirm_tool_calls", None) is None
+    ):
+        tools = [t for t in tools if t["function"]["name"] != "create_skill"]
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]

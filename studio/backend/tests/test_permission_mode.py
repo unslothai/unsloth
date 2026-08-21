@@ -11,6 +11,7 @@ dropped, and an unset mode normalizes to the "auto" default for the loop gate
 (an unknown mode falls back to "ask").
 """
 
+import asyncio
 import os
 import uuid
 
@@ -3070,6 +3071,31 @@ def test_confirm_gate_needs_stream():
     assert _confirm_gate_needs_stream(req(permission_mode = "off", enabled_tools = safe)) is False
     assert _confirm_gate_needs_stream(req(permission_mode = "full", enabled_tools = safe)) is False
     assert _confirm_gate_needs_stream(req(enabled_tools = safe, stream = False)) is False
+
+
+@pytest.mark.parametrize(
+    ("request_kwargs", "create_skill_available"),
+    [
+        ({"stream": False}, False),
+        ({"stream": True}, True),
+        ({"stream": False, "permission_mode": "off"}, True),
+        ({"stream": False, "permission_mode": "full"}, True),
+    ],
+)
+def test_legacy_nonstream_tool_selection_withholds_create_skill(
+    request_kwargs, create_skill_available
+):
+    from routes.inference import _select_request_tools
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        enable_tools = True,
+        **request_kwargs,
+    )
+    selected = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+
+    names = {tool["function"]["name"] for tool in selected}
+    assert ("create_skill" in names) is create_skill_available
 
 
 # --------------------------------------------------------------------------
