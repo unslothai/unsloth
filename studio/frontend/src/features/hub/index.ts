@@ -93,6 +93,8 @@ export {
 } from "./stores/hf-token-store";
 export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
+export { scanFolderStatusCopy } from "./lib/scan-folder-status";
+export type { ScanFolderStatus } from "./lib/scan-folder-status";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,

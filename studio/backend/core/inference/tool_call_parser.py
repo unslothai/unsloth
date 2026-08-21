@@ -158,6 +158,10 @@ BUDGET_EXHAUSTED_NUDGE = (
 
 # The exact-args dup guard misses paraphrased re-searches, so also cap KB searches per turn.
 RAG_MAX_SEARCHES_PER_TURN = 3
+# Both retrieval tools share that cap. Their top-K passages land in the current
+# exchange, which the rolling window protects and cannot evict, so an uncapped search
+# only ends the turn in a context-length error. Here so both tool loops agree on it.
+RAG_SEARCH_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 RAG_SEARCH_CAP_NUDGE = (
     "You have already searched the knowledge base several times this turn. "
     "Do not search again. Answer the question using the passages already "
@@ -177,9 +181,12 @@ _ACTION_VERB = (
 # turns, "I'll do my best to help" and "allow me to assist" close a clarification
 # request and never precede a tool call. "help you" keeps its plan reading when an
 # action follows it ("I'll help you search the web").
+# name no work of their own, so they only ever sign off a question to the user (#8907)
+_SIGN_OFF = r"(?:dig\s+in|help\s+analy[sz]e)\b(?=[^\w]*\Z)"  # \Z not $: a later line is still work
 _HELP_OFFER = (
     r"(?:do(?:ing)?\s+my\s+best|try\s+my\s+best|be\s+(?:able|happy|glad)\s+to\b"
-    r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b)"
+    r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b"
+    r"|" + _SIGN_OFF + r")"
 )
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
@@ -189,7 +196,9 @@ INTENT_SIGNAL = re.compile(
     r"(?!\s+(?:not|never)\b)(?!\s+" + _HELP_OFFER + r")"
     r"|"
     # "let me know" hands control back rather than announcing an action.
-    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)(?!\s+to\s+" + _HELP_OFFER + r")"
+    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
+    # bare "assist" still names work here ("let me assist by searching"), so only the sign-offs skip the "to"
+    r"(?!\s+" + _SIGN_OFF + r")(?!\s+to\s+" + _HELP_OFFER + r")"
     r"|"
     # Step/plan framing. "first" must open a sentence and be followed by a plan
     # (pronoun, "my/our plan", or an action verb); otherwise it is prose ("The

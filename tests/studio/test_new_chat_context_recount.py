@@ -110,11 +110,19 @@ def _store_reducers() -> str:
 
 
 def _resident_fast_path() -> str:
-    """loadModel's already-resident branch, verbatim."""
+    """The adoption tail of loadModel's already-resident branch, verbatim.
+
+    The tail, not the whole branch: #8943 grew that branch into the residency decision
+    itself, reaching 17 imported collaborators, and a replay under 17 stubs asserts
+    against a construction rather than the product. This file is about what happens
+    AFTER the model is judged resident, so the slice starts where adoption is confirmed.
+    The decision is `adoptable`, stubbed below and covered by the resident-model-match
+    and resident-config-match suites #8943 added.
+    """
     return slice_between(
         read(RUNTIME),
-        "      // Picking an external provider leaves the local model resident",
-        "      // Every chat decodes on the llama-server this load replaces",
+        "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
+        "      // Block queue materialization before taking the cancellation snapshot.",
     )
 
 
@@ -161,6 +169,10 @@ const state: any = {
   // Deep Research sends a research run instead of this history, so the count would price
   // a request that is never made.
   deepResearchEnabled: false,
+  // Per-model parameter memory, off and empty: the recount is about the window, not
+  // about which model last set the temperature.
+  rememberParamsPerModel: false,
+  paramsByModel: {},
 };
 
 function set(updater: any): void {
@@ -171,6 +183,35 @@ function set(updater: any): void {
 // What the sliced setCheckpoint reducer reads through: nothing is persisted here, and
 // no external provider is configured, so its output-cap clamp is a no-op.
 const CHAT_DEEP_RESEARCH_ENABLED_KEY = "unsloth_deep_research_enabled";
+// The per-model memory, with the toggle off above: nothing is snapshotted, no map is
+// written back, and a switch keeps the params on screen. Only the loaded-context cap
+// is kept real, since that one clamps a value the recount prices.
+function rememberOutgoingModel(_state: any, _outgoing: any): any {
+  return null;
+}
+function getReplayedParams(
+  _enabled: any,
+  _byModel: any,
+  current: any,
+  _modelId: string,
+  _checkpointChanged: boolean,
+  maxTokensCap?: number,
+): any {
+  return maxTokensCap !== undefined && current.maxTokens > maxTokensCap
+    ? { ...current, maxTokens: maxTokensCap }
+    : current;
+}
+function getReplayStatePatch(): any {
+  return {};
+}
+// The open chat's own sampling, laid back over the replay by the sliced
+// setCheckpoint. No thread-scoped snapshot is ever seeded here -- this file is
+// about the context window, not about which chat pinned a temperature -- so
+// nothing is held and the replay passes through untouched. The real restore is
+// covered by studio/frontend/tests/thread-scoped-pairing-invariants.test.ts.
+function restoreThreadScopedParams(params: any): any {
+  return params;
+}
 function saveLastExternalCheckpoint(_id: string | null): void {}
 function saveBool(_key: string, _value: boolean): void {}
 function parseExternalModelId(id: string): any {
@@ -199,6 +240,13 @@ function shouldAdvanceQueuedSettingsEpoch(
 
 const actions: any = {
 __STORE_REDUCERS__
+  // Not the real reducer. The adoption tail calls this only to restore the outgoing
+  // maxSeqLength cap, which this file does not measure, while the real one reaches
+  // preset policy, per-turn counters and loaded-context bookkeeping -- a web of
+  // collaborators that would have to be stubbed to replay a merge. The merge is what
+  // the tail depends on, so the merge is what this does.
+  setParams: (params: any) =>
+    set((current: any) => ({ params: { ...current.params, ...params } })),
 };
 
 export const useChatRuntimeStore: any = {
@@ -232,6 +280,26 @@ function isExternalModelId(id: string): boolean {
 function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
+
+// refresh-context-usage.ts declines to price a prompt carrying video, the same way
+// it declines audio and images. The emulator replays that module's body with its
+// imports stripped, so every name it imports has to exist here or the bail throws
+// a ReferenceError and the recount never runs -- which is what happened: adding
+// this import took `counts` to 0 and read as "the empty New Chat view must be
+// priced exactly once" failing on a pricing bug. See
+// test_the_harness_stubs_every_name_refresh_context_usage_imports.
+function findLatestUserVideoBase64(_messages: any): string | null {
+  return null;
+}
+
+// refresh-context-usage.ts declines to price a prompt carrying video, the same way
+// it declines audio and images. The emulator replays that module's body with its
+// imports stripped, so every name it imports has to exist here or the bail throws
+// a ReferenceError and the recount never runs -- which is what happened: adding
+// this import took `counts` to 0 and read as "the empty New Chat view must be
+// priced exactly once" failing on a pricing bug. See
+// test_the_harness_stubs_every_name_refresh_context_usage_imports.
+
 
 // The real predicate's rule, so a test can put an image on a branch and see it declined.
 function messagesContainImage(messages: any): boolean {
@@ -369,19 +437,26 @@ __EFFECTS__
 
 HARNESS_RESIDENT = """
 
-// Picking the model that never left memory takes loadModel's already-resident branch,
-// sliced verbatim below. It returns early, so it is replayed inside its own function
-// with the surrounding load machinery stubbed.
+// Adopting a model that never left memory returns before the post-load recount, so the
+// tail is sliced verbatim below and replayed with the load machinery stubbed. Each stub
+// is either derived as the source derives it, or a collaborator this file does not
+// measure.
 export async function adoptResidentModel(props: any): Promise<void> {
-  const forceReload = false;
   const selection = "pick";
   const modelId: string = props.modelId;
-  const ggufVariant = props.ggufVariant ?? null;
+  const loadPath: string = props.modelId;
+  const selectedCheckpoint: string | null = state.params?.checkpoint ?? null;
+  const previousGgufVariant: string | null = state.activeGgufVariant ?? null;
+  const pendingConfig: any = undefined;
+  // The residency decision, which this file does not measure: the caller seeds the
+  // status it wants adopted. resident-model-match.test.ts covers the real predicate.
+  const adoptable = (_status: any): boolean => true;
   const bailIfLoadInFlight = (): boolean => false;
-  const applyPerModelConfigToRuntime = (_config: any): void => {};
+  const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
-  const resolveInferenceCheckpointId = (status: any): string | null =>
-    status?.active_model ?? null;
+  const reconcilePersistedGpuIds = (ids: any): any => ids;
+  const sameGpuSelection = (a: any, b: any): boolean =>
+    JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   // The real hydration writes the whole status; the recount only reads the window.
   const applyActiveModelStatusToStore = (status: any, _options: any): void => {
     set({
@@ -389,6 +464,24 @@ export async function adoptResidentModel(props: any): Promise<void> {
     });
   };
   const syncModelCapabilities = (_id: string, _status: any): void => {};
+  const applyPerModelConfigToRuntime = (_config: any, _options?: any): void => {};
+  // Only maxSeqLength is read, and only to decide whether the pick names a cap. The
+  // real normalizer also snaps and clamps; what matters here is null-for-absent.
+  const normalizeMaxSeqLength = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  const defaultInferenceParams: any = { maxSeqLength: null };
+  const forceReload = false;
+  const nativePathToken = undefined;
+  const residentStatus: any = props.residentStatus;
+  const readServerWideReloadHints = async (): Promise<boolean> => false;
+  // The two conditions the tail sits inside, restated so the braces balance and the
+  // entry conditions are visible. Both say the same thing: this pick needs no load.
+  if (!forceReload && !nativePathToken) {
+    if (
+      residentStatus &&
+      adoptable(residentStatus) &&
+      !(await readServerWideReloadHints())
+    ) {
 __FAST_PATH__
 }
 """
@@ -448,6 +541,45 @@ LOADED_MODEL = """
       modelLoading: false,
     });
 """
+
+
+def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
+    """A new import in the real module must not silently zero the recount.
+
+    `_refresh_module_body()` replays that file with its import block stripped, so
+    an imported name that this harness does not define becomes a ReferenceError
+    the moment the replayed code reaches it. The failure does not look like a
+    missing stub: the effect bails, `counts` stays 0, and the assertion reads
+    "the empty New Chat view must be priced exactly once" -- a pricing bug that
+    is not there.
+
+    That is not hypothetical. #9056 added `findLatestUserVideoBase64` to decline
+    pricing a prompt carrying video, and took 41 tests in this file red.
+    """
+    text = read(REFRESH)
+    # The single braced import list this module takes from ../api/chat-adapter.
+    block = re.search(r"import \{(.*?)\} from \"\.\./api/chat-adapter\";", text, re.S)
+    assert block, "could not find the chat-adapter import block in refresh-context-usage.ts"
+    imported = [
+        name.strip()
+        for name in block.group(1).split(",")
+        if name.strip() and not name.strip().startswith("type ")
+    ]
+    assert imported, "parsed an empty import list; this guard would check nothing"
+
+    with open(__file__, encoding = "utf-8") as handle:
+        harness = handle.read()
+    missing = [
+        name
+        for name in imported
+        if f"function {name}(" not in harness and f"const {name} =" not in harness
+    ]
+    assert not missing, (
+        f"refresh-context-usage.ts imports {missing}, which this harness does not "
+        "define. The replayed module body would throw a ReferenceError and the "
+        "recount would silently report 0. Add a stub next to "
+        "findLatestUserAudioBase64."
+    )
 
 
 @pytest.mark.parametrize(

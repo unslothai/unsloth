@@ -651,6 +651,22 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--spec-draft-n-max": "Draft Tokens",
   "--chat-template": "Chat Template",
   "--chat-template-file": "Chat Template",
+  "--load-mode": "Mmap/Mlock",
+  "-lm": "Mmap/Mlock",
+  // Both halves, since the control sets one dtype for the pair, and both
+  // spellings, since which one a build understands is a version question.
+  "--spec-draft-type-k": "Spec Decoding KV Cache Dtype",
+  "-ctkd": "Spec Decoding KV Cache Dtype",
+  "--cache-type-k-draft": "Spec Decoding KV Cache Dtype",
+  "--spec-draft-type-v": "Spec Decoding KV Cache Dtype",
+  "-ctvd": "Spec Decoding KV Cache Dtype",
+  "--cache-type-v-draft": "Spec Decoding KV Cache Dtype",
+  "--ctx-checkpoints": "Checkpoints",
+  "-ctxcp": "Checkpoints",
+  // upstream's older spelling of the same flag
+  "--swa-checkpoints": "Checkpoints",
+  "--cache-ram": "Cache RAM",
+  "-cram": "Cache RAM",
 };
 
 /**
@@ -744,6 +760,14 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "-ctv",
   "--split-mode",
   "-sm",
+  "--load-mode",
+  "-lm",
+  "--spec-draft-type-k",
+  "-ctkd",
+  "--cache-type-k-draft",
+  "--spec-draft-type-v",
+  "-ctvd",
+  "--cache-type-v-draft",
 ]);
 
 /** The pass-through spellings of the batch size the floor above applies to. */
@@ -762,6 +786,12 @@ const INTEGER_VALUE_FLAGS = new Set([
   "-b",
   "--ubatch-size",
   "-ub",
+  "--ctx-checkpoints",
+  "-ctxcp",
+  "--swa-checkpoints",
+  // -1 (no limit) and 0 (disable) are both valid, so only integer-ness is checked
+  "--cache-ram",
+  "-cram",
 ]);
 
 /** Sampling belongs to the conversation, not the launch. */
@@ -1040,7 +1070,7 @@ export function diagnoseExtraArgs(
         level: "error",
         message: control
           ? `${flag} is set by ${control} above and cannot be passed here.`
-          : `${flag} is managed by Unsloth Studio and cannot be passed here.`,
+          : `${flag} is managed by Unsloth and cannot be passed here.`,
       });
       continue;
     }
