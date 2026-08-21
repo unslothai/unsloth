@@ -4951,6 +4951,48 @@ def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, mo
     assert answers == ["text-to-image", "text-to-image"], answers
 
 
+@pytest.mark.parametrize("active_copy", [False, True], ids = ["pinned", "bare-repo-id"])
+def test_cached_gguf_task_comes_from_the_snapshot_the_row_loads(monkeypatch, tmp_path, active_copy):
+    """A historical diffusion GGUF must not hide the selected text snapshot from Chat."""
+    active = tmp_path / "active"
+    cache_root = active if active_copy else tmp_path / "legacy"
+    repo_dir = cache_root / "models--Org--Mixed-History-GGUF"
+    historical = repo_dir / "snapshots" / "historical"
+    selected = repo_dir / "snapshots" / "selected"
+    diffusion = _arch_gguf(historical / "flux1-dev-Q4_K_M.gguf", "flux")
+    text = _arch_gguf(selected / "model-Q4_K_M.gguf", "llama")
+    os.utime(historical, (1_000_000, 1_000_000))
+    os.utime(selected, (2_000_000, 2_000_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("selected")
+
+    repo_info = _repo(
+        "Org/Mixed-History-GGUF",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file(diffusion.name, diffusion.stat().st_size)],
+                snapshot_path = historical,
+            ),
+            SimpleNamespace(
+                files = [_file(text.name, text.stat().st_size)],
+                snapshot_path = selected,
+            ),
+        ],
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    assert models_route._repo_gguf_task(repo_info) == "text-to-image"
+    [row] = models_route.cached_gguf_rows([SimpleNamespace(repos = [repo_info])])
+
+    assert row["task"] == "text-generation"
+    if active_copy:
+        assert "load_id" not in row
+    else:
+        assert row["load_id"] == str(selected)
+
+
 def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
     """The local twin, and the half that made an image model unfindable: with the encoder answering
     first the folder is tagged ``text-generation``, which drops it out of the Images picker

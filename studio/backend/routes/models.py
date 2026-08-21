@@ -4357,14 +4357,14 @@ def _gguf_folder_task(
     return unsupported or fallback
 
 
-def _repo_gguf_task(repo_info) -> Optional[str]:
-    """HF pipeline task of a cached GGUF repo, from its architecture:
+def _repo_gguf_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
+    """HF pipeline task of the GGUF snapshot this row loads, from its architecture:
     'text-to-image' for a loadable diffusion arch, the non-loadable diffusion tag
     for a recognized-but-unsupported image arch, else 'text-generation' (None if
     unreadable)."""
     repo_id = getattr(repo_info, "repo_id", None)
     try:
-        return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
+        return _gguf_folder_task(selected or Path(repo_info.repo_path), (repo_id,))
     except Exception:
         return None
 
@@ -4626,6 +4626,9 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                 existing = seen_lower.get(key)
                 last_modified = _repo_gguf_last_modified(repo_info)
                 load_id = _repo_gguf_load_id(repo_info, active_root)
+                selected = (
+                    Path(load_id) if load_id else _default_ref_snapshot(Path(repo_info.repo_path))
+                )
                 rank = (
                     _gguf_copy_is_usable(repo_info, load_id, active_root),
                     active_root is not None
@@ -4637,7 +4640,7 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "cache_path": str(repo_info.repo_path),
                         "has_vision": _cached_gguf_row_has_vision(repo_info, load_id),
-                        "task": _repo_gguf_task(repo_info),
+                        "task": _repo_gguf_task(repo_info, selected),
                     }
                     if load_id:
                         row["load_id"] = load_id
