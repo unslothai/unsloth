@@ -11604,7 +11604,7 @@ async def openai_audio_transcriptions(
     # UploadFile spools to disk, but an unbounded read materializes the whole upload in
     # memory before the shared size check. One byte past the limit is enough to reject it.
     raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
-    if provider_id is not None:
+    if isinstance(provider_id, str):
         return await _external_stt_transcription(
             provider_id = provider_id,
             raw = raw,
