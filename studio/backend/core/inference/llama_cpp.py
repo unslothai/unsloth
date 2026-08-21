@@ -6092,6 +6092,7 @@ class LlamaCppBackend:
                 "supports_fit_target": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
+                "ctx_checkpoints_flag": None,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
@@ -6138,6 +6139,7 @@ class LlamaCppBackend:
         supports_fit_target = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
+        ctx_checkpoints_flag = None
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
@@ -6340,7 +6342,15 @@ class LlamaCppBackend:
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
-            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            # --swa-checkpoints is the older spelling, kept as an alias on newer
+            # builds. Probing the modern name alone drops the Checkpoints control on
+            # a build carrying only the old one, so record WHICH name this build has,
+            # like the draft-cache pair below.
+            for _alias in ("--ctx-checkpoints", "--swa-checkpoints"):
+                if _is_real(_alias):
+                    ctx_checkpoints_flag = _alias
+                    break
+            supports_ctx_checkpoints = ctx_checkpoints_flag is not None
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
@@ -6423,6 +6433,7 @@ class LlamaCppBackend:
             "supports_fit_target": supports_fit_target,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "ctx_checkpoints_flag": ctx_checkpoints_flag,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
@@ -17869,8 +17880,9 @@ class LlamaCppBackend:
                 # last-wins over the control. Each is gated on the capability
                 # probe, because a build that predates the flag exits on it.
                 if ctx_checkpoints is not None:
-                    if server_caps.get("supports_ctx_checkpoints"):
-                        cmd.extend(["--ctx-checkpoints", str(int(ctx_checkpoints))])
+                    _ctxcp_flag = server_caps.get("ctx_checkpoints_flag")
+                    if _ctxcp_flag:
+                        cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])
                     else:
                         logger.info(
                             "llama-server has no --ctx-checkpoints; skipping the requested %s.",
@@ -18475,8 +18487,8 @@ class LlamaCppBackend:
                         unsupported_cache_flags.append("--cache-ram")
                     if ctx_checkpoints is not None:
                         pass
-                    elif server_caps.get("supports_ctx_checkpoints"):
-                        cmd.extend(["--ctx-checkpoints", "0"])
+                    elif server_caps.get("ctx_checkpoints_flag"):
+                        cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
                     if unsupported_cache_flags:
