@@ -59,3 +59,34 @@ test("a restart drops the samples from the previous run", () => {
   assert.equal(publishedRate(samples, 11, 0), 0);
   assert.equal(samples.length, 1);
 });
+
+test("a delivery gap is not billed as slow transfer time (#9378)", () => {
+  // Bursty delivery: progress events pause for ~8s, then resume at 200 MB/s.
+  // A window that spans the hole bills the post-hole bytes against the hole's
+  // seconds too, so a stable link reads as a fraction of its pace (the "5h
+  // left, then 2m left" flip). The honest early answer is "no trustworthy rate
+  // yet"; the steady answer is the hole-free recent pace.
+  const samples: TransferSample[] = [];
+  for (let t = 0; t <= 5; t++) publishedRate(samples, t, t * 20 * MB);
+  // Reporting hole t=6..12; delivery resumes as 200 MB/s events at t=13+.
+  // Before 3s of gap-free samples: no rate (the old window would already be
+  // billing the resume bytes against the hole here).
+  assert.equal(publishedRate(samples, 13, 5 * 20 * MB + 200 * MB), 0);
+  assert.equal(publishedRate(samples, 14, 5 * 20 * MB + 400 * MB), 0);
+  assert.equal(publishedRate(samples, 15, 5 * 20 * MB + 600 * MB), 0);
+  // Three gap-free seconds accumulated: the window reports the true recent
+  // pace, hole excluded — not bytes/(hole + pace).
+  const rate = publishedRate(samples, 16, 5 * 20 * MB + 800 * MB);
+  assert.ok(Math.abs(rate - 200 * MB) < 1, `rate was ${rate}`);
+  const steady = publishedRate(samples, 17, 5 * 20 * MB + 1000 * MB);
+  assert.ok(Math.abs(steady - 200 * MB) < 1, `rate was ${steady}`);
+});
+
+test("a sparse but gap-free feed still reports its rate", () => {
+  // Change-driven consumers can legitimately sample every 4s; as long as no
+  // pair exceeds the gap tolerance the rate must stay trustworthy.
+  const samples: TransferSample[] = [];
+  let rate = 0;
+  for (let t = 0; t <= 20; t += 4) rate = publishedRate(samples, t, (t / 4) * 100 * MB);
+  assert.ok(Math.abs(rate - 25 * MB) < 1, `rate was ${rate}`);
+});
