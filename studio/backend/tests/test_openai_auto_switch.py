@@ -724,6 +724,60 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
 
 
+def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(monkeypatch):
+    # A chat may register _pending during the off-loop pin read, invalidating prior idleness.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
+    monkeypatch.setattr(kw, "_last_unloaded_model", None)
+
+    # Mark the interval after the first idle check and before the guarded pin read.
+    inside_the_unload_block = {"flag": False}
+    landed = []
+
+    def _keep_kv_marks_the_block():
+        inside_the_unload_block["flag"] = True
+        return False
+
+    def _api_only_while_a_request_lands():
+        if inside_the_unload_block["flag"]:
+            inside_the_unload_block["flag"] = False
+            kw._note_pending()
+            landed.append(1)
+        return False
+
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", _keep_kv_marks_the_block)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", _api_only_while_a_request_lands)
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+            if landed or unloads:
+                break
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert landed, "the tick never reached the guard's pin read, so the window was never hit"
+    assert unloads == [], "the loop freed the model out from under a request on the gate"
+
+
 def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
     import time
     from core.inference import llama_keepwarm as kw

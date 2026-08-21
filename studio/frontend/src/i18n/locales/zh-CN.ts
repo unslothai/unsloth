@@ -191,6 +191,7 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
+      remoteLan: "远程与局域网",
       about: "关于",
       voice: "语音",
       data: "数据",
@@ -277,6 +278,17 @@ export const zhCN = {
         engineModel: "本地转写",
         engineModelDescription:
           "在本地运行语音转文字（STT）模型，可离线使用。下载并加载后，闲置一段时间会自动卸载。",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "将录制的音频发送到“连接”中的 OpenAI 兼容 STT 服务器。",
+        connectionLabel: "连接",
+        connectionDescription:
+          "在“连接”中添加 OpenAI 兼容服务器和可选的 API 密钥。",
+        connectionPlaceholder: "选择连接",
+        connectionEmpty: "没有可用的连接",
+        customModelLabel: "模型",
+        customModelDescription:
+          "发送到 /v1/audio/transcriptions 的模型名称。",
         sttModelLabel: "语音识别模型",
         sttModelDescription: "选择或搜索要在本地运行的 STT 模型。",
         sttModelSearchPlaceholder: "搜索模型",
@@ -333,6 +345,7 @@ export const zhCN = {
         languageLabel: "语音输入语言",
         languageDescription: "要识别的语言",
         languageAuto: "自动（浏览器语言）",
+        languageAutoDetect: "自动（检测语言）",
       },
       dictionary: {
         sectionTitle: "语音输入词典",
@@ -839,6 +852,24 @@ export const zhCN = {
         switchFailed: "无法更改 llama.cpp 后端。",
         switchInterrupted: "切换在完成前中断。",
         envLocked: "已由环境变量 UNSLOTH_LLAMA_CPP_BACKEND 固定为 {backend}，其优先级高于此设置。",
+        customPath: {
+          label: "自定义 llama.cpp 文件夹",
+          description: "使用你自己的 llama-server 构建。",
+          hint: "选择包含 llama-server 的 llama.cpp 文件夹，或 llama-server 位于 build/bin 下的构建。自定义运行时用于 GGUF 聊天、嵌入和受支持的语音模型。环境变量仍然优先。",
+          automatic: "自动（内置）",
+          bundled: "使用 Unsloth 安装的 llama.cpp 运行时。",
+          active: "下次加载模型时将使用你的自定义 llama-server。",
+          environmentManaged: "由 {variable} 环境变量管理。",
+          missingBinary: "此文件夹中的 llama-server 已不可用。请选择其他文件夹或使用内置运行时。",
+          reloadRequired: "请重新加载模型以使用所选 llama-server。",
+          change: "更改",
+          saving: "正在保存...",
+          useBundled: "使用内置版本",
+          chooseTitle: "选择 llama.cpp 文件夹",
+          chooseAction: "使用此文件夹",
+          saved: "llama.cpp 文件夹已更新",
+          saveError: "无法更新 llama.cpp 文件夹",
+        },
         backends: {
           auto: "自动",
           cpu: "CPU",
@@ -851,6 +882,7 @@ export const zhCN = {
           notInstalled: "未找到受管理的 llama.cpp 安装，因此没有可切换的后端。",
           localLink: "llama.cpp 是你自己链接的本地目录，Unsloth 不会替换它。",
           sourceBuild: "此 llama.cpp 由源码编译，无法在这里切换后端。",
+          customPath: "已选择自定义 llama.cpp 文件夹。其构建决定计算后端。",
           unresolved: "无法检查可用的后端。请检查网络连接后重试。",
         },
         // 不显示：用于设置搜索的额外词条。
@@ -1180,6 +1212,11 @@ export const zhCN = {
     connections: {
       title: "连接",
       description: "管理提供方和外部服务的连接。",
+    },
+    remoteLan: {
+      title: "远程与局域网",
+      description:
+        "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
       title: "API",

@@ -163,6 +163,7 @@ export const it = {
       connections: "Connessioni",
       data: "Dati",
       apiKeys: "API",
+      remoteLan: "Remoto e LAN",
       agents: "Agenti",
       debugging: "Log",
       about: "Informazioni",
@@ -248,6 +249,17 @@ export const it = {
         engineModel: "Trascrizione locale",
         engineModelDescription:
           "Esegue un modello speech-to-text (STT) in locale e funziona offline. Puoi scaricare e caricare il modello, che verrà poi rimosso dalla memoria dopo un periodo di inattività.",
+        engineCustom: "Endpoint personalizzato",
+        engineCustomDescription:
+          "Invia l'audio registrato a un server STT compatibile con OpenAI dalle tue connessioni.",
+        connectionLabel: "Connessione",
+        connectionDescription:
+          "Aggiungi un server compatibile con OpenAI e una chiave API facoltativa in Connessioni.",
+        connectionPlaceholder: "Seleziona una connessione",
+        connectionEmpty: "Nessuna connessione disponibile",
+        customModelLabel: "Modello",
+        customModelDescription:
+          "Nome del modello inviato a /v1/audio/transcriptions.",
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
@@ -310,6 +322,7 @@ export const it = {
         languageLabel: "Lingua di dettatura",
         languageDescription: "Lingua da riconoscere",
         languageAuto: "Automatica (lingua del browser)",
+        languageAutoDetect: "Automatica (rileva lingua)",
       },
       dictionary: {
         sectionTitle: "Dizionario di dettatura",
@@ -852,6 +865,24 @@ export const it = {
         switchFailed: "Impossibile cambiare il backend di llama.cpp.",
         switchInterrupted: "Il cambio è stato interrotto prima del completamento.",
         envLocked: "Impostato su {backend} dalla variabile d'ambiente UNSLOTH_LLAMA_CPP_BACKEND, che ha la precedenza su questa opzione.",
+        customPath: {
+          label: "Cartella llama.cpp personalizzata",
+          description: "Usa la tua build di llama-server.",
+          hint: "Scegli la cartella llama.cpp che contiene llama-server o una build in cui si trova sotto build/bin. Il runtime personalizzato viene usato per chat GGUF, embedding e modelli vocali supportati. Le variabili d'ambiente hanno comunque la priorità.",
+          automatic: "Automatico (incluso)",
+          bundled: "Usa il runtime llama.cpp installato da Unsloth.",
+          active: "Il tuo llama-server personalizzato verrà usato al prossimo caricamento del modello.",
+          environmentManaged: "Gestito dalla variabile d'ambiente {variable}.",
+          missingBinary: "llama-server non è più disponibile in questa cartella. Scegli un'altra cartella o usa il runtime incluso.",
+          reloadRequired: "Ricarica il modello per usare il llama-server selezionato.",
+          change: "Cambia",
+          saving: "Salvataggio...",
+          useBundled: "Usa quello incluso",
+          chooseTitle: "Scegli la cartella llama.cpp",
+          chooseAction: "Usa questa cartella",
+          saved: "Cartella llama.cpp aggiornata",
+          saveError: "Impossibile aggiornare la cartella llama.cpp",
+        },
         backends: {
           auto: "Automatico",
           cpu: "CPU",
@@ -864,6 +895,7 @@ export const it = {
           notInstalled: "Nessuna installazione di llama.cpp gestita da Unsloth, quindi non c'è un backend da cambiare.",
           localLink: "llama.cpp è una cartella locale collegata da te, quindi Unsloth non la sostituirà.",
           sourceBuild: "Questo llama.cpp è stato compilato dai sorgenti, quindi il backend non è modificabile da qui.",
+          customPath: "È selezionata una cartella llama.cpp personalizzata. La sua build determina il backend di calcolo.",
           unresolved: "Non è stato possibile controllare i backend disponibili. Verifica la connessione e riprova.",
         },
         // Non visualizzato: termini aggiuntivi per la ricerca nelle impostazioni.
@@ -1217,6 +1249,11 @@ export const it = {
     connections: {
       title: "Connessioni",
       description: "Gestisci provider e connessioni esterne.",
+    },
+    remoteLan: {
+      title: "Remoto e LAN",
+      description:
+        "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     apiKeys: {
       title: "API",

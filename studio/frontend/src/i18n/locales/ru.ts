@@ -195,6 +195,7 @@ export const ru = {
       chat: "Чат",
       connections: "Подключения",
       apiKeys: "API",
+      remoteLan: "Удалённый доступ и LAN",
       about: "О программе",
       data: "Данные",
       agents: "Агенты",
@@ -281,6 +282,17 @@ export const ru = {
         engineModel: "Локальное распознавание",
         engineModelDescription:
           "Запускает модель распознавания речи (STT) локально и работает офлайн. Скачайте модель, затем загрузите её; после простоя она выгружается.",
+        engineCustom: "Пользовательский эндпоинт",
+        engineCustomDescription:
+          "Отправляет записанный звук на OpenAI-совместимый сервер STT из ваших подключений.",
+        connectionLabel: "Подключение",
+        connectionDescription:
+          "Добавьте OpenAI-совместимый сервер и при необходимости ключ API в разделе «Подключения».",
+        connectionPlaceholder: "Выберите подключение",
+        connectionEmpty: "Нет доступных подключений",
+        customModelLabel: "Модель",
+        customModelDescription:
+          "Имя модели, отправляемое в /v1/audio/transcriptions.",
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
@@ -340,6 +352,7 @@ export const ru = {
         languageLabel: "Язык диктовки",
         languageDescription: "Язык для распознавания",
         languageAuto: "Автоматически (язык браузера)",
+        languageAutoDetect: "Автоматически (определить язык)",
       },
       dictionary: {
         sectionTitle: "Словарь диктовки",
@@ -865,6 +878,24 @@ export const ru = {
         switchFailed: "Не удалось изменить бэкенд llama.cpp.",
         switchInterrupted: "Переключение было прервано до завершения.",
         envLocked: "Значение {backend} задано переменной окружения UNSLOTH_LLAMA_CPP_BACKEND, она важнее этой настройки.",
+        customPath: {
+          label: "Пользовательская папка llama.cpp",
+          description: "Используйте собственную сборку llama-server.",
+          hint: "Выберите папку llama.cpp с llama-server или сборку, где он находится в build/bin. Пользовательская среда используется для чата GGUF, эмбеддингов и поддерживаемых голосовых моделей. Переменные окружения по-прежнему имеют приоритет.",
+          automatic: "Автоматически (в комплекте)",
+          bundled: "Используется среда llama.cpp, установленная Unsloth.",
+          active: "Ваш llama-server будет использован при следующей загрузке модели.",
+          environmentManaged: "Управляется переменной окружения {variable}.",
+          missingBinary: "llama-server больше недоступен в этой папке. Выберите другую папку или используйте комплектную среду.",
+          reloadRequired: "Перезагрузите модель, чтобы использовать выбранный llama-server.",
+          change: "Изменить",
+          saving: "Сохранение...",
+          useBundled: "Использовать комплектный",
+          chooseTitle: "Выбрать папку llama.cpp",
+          chooseAction: "Использовать эту папку",
+          saved: "Папка llama.cpp обновлена",
+          saveError: "Не удалось обновить папку llama.cpp",
+        },
         backends: {
           auto: "Автоматически",
           cpu: "CPU",
@@ -877,6 +908,7 @@ export const ru = {
           notInstalled: "Управляемая установка llama.cpp не найдена, поэтому менять нечего.",
           localLink: "llama.cpp, это локальный каталог, который вы подключили сами, и Unsloth его не заменяет.",
           sourceBuild: "Этот llama.cpp собран из исходников, его бэкенд нельзя переключить отсюда.",
+          customPath: "Выбрана пользовательская папка llama.cpp. Её сборка определяет вычислительный бэкенд.",
           unresolved: "Не удалось проверить доступные бэкенды. Проверьте подключение и повторите попытку.",
         },
         // Не отображается: дополнительные слова для поиска по настройкам.
@@ -1224,6 +1256,11 @@ export const ru = {
     connections: {
       title: "Подключения",
       description: "Управление провайдерами и внешними подключениями.",
+    },
+    remoteLan: {
+      title: "Удалённый доступ и LAN",
+      description:
+        "Откройте этот Unsloth с других устройств: через локальную сеть или временный публичный URL.",
     },
     apiKeys: {
       title: "API",

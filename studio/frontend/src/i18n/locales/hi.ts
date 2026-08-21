@@ -196,6 +196,7 @@ export const hi = {
       chat: "चैट",
       connections: "कनेक्शन",
       apiKeys: "API",
+      remoteLan: "रिमोट और LAN",
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
@@ -282,6 +283,17 @@ export const hi = {
         engineModel: "लोकल ट्रांसक्रिप्शन",
         engineModelDescription:
           "स्पीच-टू-टेक्स्ट (STT) मॉडल लोकली चलाता है और ऑफ़लाइन काम करता है। डाउनलोड करें, लोड करें; कुछ देर उपयोग न होने पर यह अनलोड हो जाता है।",
+        engineCustom: "कस्टम एंडपॉइंट",
+        engineCustomDescription:
+          "आपके कनेक्शन से रिकॉर्ड किया गया ऑडियो OpenAI-संगत STT सर्वर को भेजता है।",
+        connectionLabel: "कनेक्शन",
+        connectionDescription:
+          "कनेक्शन में OpenAI-संगत सर्वर और वैकल्पिक API कुंजी जोड़ें।",
+        connectionPlaceholder: "कनेक्शन चुनें",
+        connectionEmpty: "कोई कनेक्शन उपलब्ध नहीं है",
+        customModelLabel: "मॉडल",
+        customModelDescription:
+          "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
@@ -340,6 +352,7 @@ export const hi = {
         languageLabel: "डिक्टेशन की भाषा",
         languageDescription: "पहचानी जाने वाली भाषा",
         languageAuto: "स्वतः (ब्राउज़र की भाषा)",
+        languageAutoDetect: "स्वतः (भाषा पहचानें)",
       },
       dictionary: {
         sectionTitle: "डिक्टेशन शब्दकोश",
@@ -863,6 +876,24 @@ export const hi = {
         switchFailed: "llama.cpp बैकएंड नहीं बदला जा सका।",
         switchInterrupted: "स्विच पूरा होने से पहले बाधित हो गया।",
         envLocked: "पर्यावरण चर UNSLOTH_LLAMA_CPP_BACKEND ने इसे {backend} पर तय किया है, जो इस सेटिंग पर भारी पड़ता है।",
+        customPath: {
+          label: "कस्टम llama.cpp फ़ोल्डर",
+          description: "अपना llama-server बिल्ड इस्तेमाल करें।",
+          hint: "वह llama.cpp फ़ोल्डर चुनें जिसमें llama-server हो, या ऐसा बिल्ड जहाँ यह build/bin में हो। कस्टम रनटाइम GGUF चैट, एम्बेडिंग और समर्थित वॉइस मॉडल के लिए इस्तेमाल होता है। पर्यावरण चर को फिर भी प्राथमिकता मिलती है।",
+          automatic: "स्वचालित (बंडल किया हुआ)",
+          bundled: "Unsloth द्वारा इंस्टॉल किया गया llama.cpp रनटाइम इस्तेमाल करता है।",
+          active: "अगली बार मॉडल लोड होने पर आपका कस्टम llama-server इस्तेमाल होगा।",
+          environmentManaged: "{variable} पर्यावरण चर द्वारा प्रबंधित।",
+          missingBinary: "इस फ़ोल्डर में llama-server अब उपलब्ध नहीं है। दूसरा फ़ोल्डर चुनें या बंडल रनटाइम इस्तेमाल करें।",
+          reloadRequired: "चुने हुए llama-server को इस्तेमाल करने के लिए मॉडल फिर से लोड करें।",
+          change: "बदलें",
+          saving: "सहेजा जा रहा है...",
+          useBundled: "बंडल वाला इस्तेमाल करें",
+          chooseTitle: "llama.cpp फ़ोल्डर चुनें",
+          chooseAction: "यह फ़ोल्डर इस्तेमाल करें",
+          saved: "llama.cpp फ़ोल्डर अपडेट हुआ",
+          saveError: "llama.cpp फ़ोल्डर अपडेट नहीं हो सका",
+        },
         backends: {
           auto: "स्वचालित",
           cpu: "CPU",
@@ -875,6 +906,7 @@ export const hi = {
           notInstalled: "कोई प्रबंधित llama.cpp इंस्टॉल नहीं मिला, इसलिए बदलने के लिए कोई बैकएंड नहीं है।",
           localLink: "llama.cpp आपकी अपनी लिंक की हुई लोकल डायरेक्टरी है, इसलिए Unsloth उसे नहीं बदलेगा।",
           sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
+          customPath: "एक कस्टम llama.cpp फ़ोल्डर चुना गया है। उसका बिल्ड कंप्यूट बैकएंड तय करता है।",
           unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
         },
         // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
@@ -1219,6 +1251,11 @@ export const hi = {
     connections: {
       title: "कनेक्शन",
       description: "प्रदाता और बाहरी कनेक्शन प्रबंधित करें।",
+    },
+    remoteLan: {
+      title: "रिमोट और LAN",
+      description:
+        "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
     },
     apiKeys: {
       title: "API",

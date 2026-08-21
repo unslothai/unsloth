@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
 import { getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -131,6 +136,7 @@ import {
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
+  resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   awaitThreadScopedPairing,
@@ -151,6 +157,7 @@ import type {
   CpuFallbackReason,
   MmprojFallbackReason,
   GgufVariantDetail,
+  OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
   OpenAIMessageContent,
@@ -175,6 +182,7 @@ import {
 } from "../utils/last-local-model-load";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
+import { mergeContextTruncation } from "../utils/context-truncation";
 import {
   createThinkTagTracker,
   extractDeltaText,
@@ -355,6 +363,7 @@ function isServerSideBuiltinToolPart(
 }
 
 const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
+const rollingContextNoticeThreads = new Set<string>();
 
 type ThreadAutosaveHandle = {
   registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
@@ -1729,7 +1738,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -2001,6 +2010,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   ggufContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
@@ -2026,6 +2036,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "supportsReasoningOff",
   "reasoningEffortLevels",
   "supportsPreserveThinking",
+  "preserveThinking",
   "supportsTools",
   "toolsEnabled",
   "codeToolsEnabled",
@@ -2037,8 +2048,19 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedNBatch",
   "nUbatch",
   "loadedNUbatch",
+  "specDraftCacheDtype",
+  "loadedSpecDraftCacheDtype",
+  "loadMode",
+  "loadedLoadMode",
+  "ctxCheckpoints",
+  "loadedCtxCheckpoints",
+  "cacheRam",
+  "loadedCacheRam",
   "tensorParallel",
   "loadedTensorParallel",
+  "loadedDisableVision",
+  "disableVision",
+  "loadedVisionDisabledByUser",
   "gpuMemoryMode",
   "loadedGpuMemoryMode",
   "loadedCpuFallback",
@@ -2132,6 +2154,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
+    preserveThinking: state.preserveThinking,
     ggufContextLength: state.ggufContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
@@ -2202,8 +2225,11 @@ const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
   "image-diffusion-unsupported",
 ]);
 
-// Scan folders the picker exposes. hf_cache is already in the cached lists,
-// and ollama links are not loadable.
+// Scan folders the picker exposes. hf_cache is already in the cached lists.
+// ollama stays out by policy: its rows load through the picker, but the API
+// auto-switch index never resolves them (local_model_resolver.py skips the
+// Ollama scanner), so auto-loading one would promise an API identity that
+// cannot be reached.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
@@ -2730,6 +2756,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    // The projector is part of what the guard has to size: a load that skips
+    // it needs ~1 GB less, and charging for it would refuse loads that fit.
+    disable_vision?: boolean | null;
     // The estimate charges a drafter whose size differs by mode (a DSpark
     // sidecar is ~11 GB, and Auto reaches it), so this preflight has to be told
     // what the load will send or it sizes a different model.
@@ -2913,6 +2942,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveTensorParallel = isDiffusion
       ? false
       : config.tensorParallel;
+    // The diffusion runner has no projector to skip, so the toggle is inert there.
+    const effectiveDisableVision = isDiffusion ? false : config.disableVision;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
@@ -2947,6 +2978,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         gguf_variant: candidate.ggufVariant,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
+        disable_vision: effectiveDisableVision,
         // The same values the load below sends.
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
@@ -2962,6 +2994,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+              // Same omit-when-blank rule, and the same values the load sends:
+              // the draft cache dtype changes what the estimate charges the
+              // drafter, so a preflight without it disagrees with the launch.
+              ...serverTuningLoadPayload(config),
               // Checked with the same arguments the load below sends, or a list
               // the backend refuses would pass this gate and fail the launch.
               ...(resolvedExtraArgs !== undefined
@@ -2998,6 +3034,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
+      disable_vision: effectiveDisableVision,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -3012,6 +3049,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+            // Remembered like the rest of this block, or the auto-load reverts
+            // an override the user asked to be remembered.
+            ...serverTuningLoadPayload(config),
             // Remembered pass-through arguments, for the same reason as the rest of
             // this block: nothing is resident at startup, so the omission path has
             // nothing to inherit them from and the model would come up without the
@@ -3117,6 +3157,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3129,6 +3170,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
           // What this launch is running, for a later rollback. The status applier
           // cannot seed it: the model-loading lease is held for the whole of this
           // load, which is exactly the guard that stops a mid-switch poll writing
@@ -3140,6 +3182,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               : (resolvedExtraArgs ?? null),
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
+          // Repaired from the echo alongside tensorParallel: this load picked its
+          // own model and config, so a stale true would show Vision off over a
+          // loaded projector, and the next Apply would send it.
+          disableVision: loadResp.disable_vision ?? false,
+          loadedVisionDisabledByUser:
+            loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,
           defaultChatTemplate: loadResp.chat_template ?? null,
@@ -3162,6 +3211,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3175,11 +3225,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: null,
           nUbatch: null,
           loadedNUbatch: null,
+          ...clearedServerTuningState(),
           // Same reason, and the baseline has to be cleared rather than left: a
           // rollback to THIS model must not resend a GGUF's arguments.
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
+          // Cleared, not carried, like the GGUF-only knobs above: a safetensors
+          // load has no projector, and a stale true would stage it for the next
+          // model that has one.
+          disableVision: false,
+          loadedVisionDisabledByUser:
+            loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
           // GGUF load left, matching the interactive/status sibling load paths.
           ...loadedGpuMemoryFields(loadResp),
@@ -3484,6 +3542,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3497,8 +3556,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadedNBatch: null,
         nUbatch: null,
         loadedNUbatch: null,
+        ...clearedServerTuningState(),
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        loadedDisableVision: loadResp.disable_vision ?? false,
+        // The request above omits disable_vision, so the echo is what the load
+        // ran with; adopting it stops a previous model's Vision-off carrying over.
+        disableVision: loadResp.disable_vision ?? false,
+        loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
         ...loadedGpuMemoryFields(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
@@ -3583,6 +3648,7 @@ async function resolveQueuedEmptyLocalModel(
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
+            preserveThinking: resolvePreserveThinkingOnLoad(status),
             ggufContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
@@ -3817,6 +3883,9 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
+                preserveThinking:
+                  queuedEmptyModelRuntime?.preserveThinking ??
+                  liveRuntime.preserveThinking,
                 ggufContextLength:
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.ggufContextLength
@@ -4161,6 +4230,9 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
+              preserveThinking:
+                queuedEmptyModelRuntime?.preserveThinking ??
+                liveRuntime.preserveThinking,
               ggufContextLength:
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.ggufContextLength
@@ -4584,6 +4656,7 @@ export function createOpenAIStreamAdapter(
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
           loadError: runtime.lastModelLoadError,
+          visionDisabledByUser: runtime.loadedVisionDisabledByUser,
           mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
@@ -4816,6 +4889,7 @@ export function createOpenAIStreamAdapter(
       // STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
+      let contextTruncation: OpenAIChatChunk["context_truncated"];
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -4825,6 +4899,7 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
+        contextTruncation,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5492,6 +5567,9 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
+            ...(activeModel?.isGguf === true
+              ? { context_overflow: "truncate_oldest" as const }
+              : {}),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -5558,7 +5636,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(codeToolsEnabled
+                      ? ["python", "terminal", "edit_file"]
+                      : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
                       : []),
@@ -5646,6 +5726,41 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.context_truncated) {
+                contextTruncation = mergeContextTruncation(
+                  contextTruncation,
+                  chunk.context_truncated,
+                );
+                const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                // fits:false means the fitter could NOT make the request fit and returned
+                // the original messages. Toasting "older turns were removed" is untrue
+                // there, and burns the once-per-thread flag so a real one is silent.
+                const reallyCompacted =
+                  chunk.context_truncated.fits === true &&
+                  (chunk.context_truncated.dropped_messages ?? 0) > 0;
+                if (
+                  reallyCompacted &&
+                  resolvedThreadId &&
+                  activeThreadId === resolvedThreadId &&
+                  !rollingContextNoticeThreads.has(resolvedThreadId)
+                ) {
+                  rollingContextNoticeThreads.add(resolvedThreadId);
+                  // Once per thread per page load; the persistent record is the notice on
+                  // the assistant turn that compacted.
+                  const archived = contextTruncation?.archived_messages ?? 0;
+                  toast.info("This conversation was compacted", {
+                    description: archived
+                      ? "It got long, so older turns were removed from the model's " +
+                        "context. They are saved and searchable, and relevant parts are " +
+                        "brought back automatically."
+                      : "The full conversation is still visible and saved. " +
+                        "Studio removed complete older turns from this request so the chat can continue.",
+                    duration: 8000,
+                  });
+                }
                 continue;
               }
 
@@ -6783,6 +6898,7 @@ export function createOpenAIStreamAdapter(
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
+              contextTruncation,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
@@ -6826,14 +6942,45 @@ export function createOpenAIStreamAdapter(
               duration: 8000,
             });
           } else if (isContextLimitError(msg)) {
-            // llama-server runs with --no-context-shift, returning a hard
-            // error instead of silently dropping old KV-cache turns. Point
-            // the user at the control that raises the ceiling.
+            // `fits: false` means everything evictable was evicted and the request STILL
+            // does not fit, so the message just sent is the problem and the usual advice
+            // is wrong: the history is already gone. Say which part is too long.
+            const irreducible =
+              contextTruncation?.fits === false ? contextTruncation : null;
+            // Against prompt_target, not context_length: the fit reserves up to a quarter
+            // of the window for the reply, so a 3,500-token message cannot fit a 4,096
+            // context, and comparing with the raw window would blame the conversation and
+            // send the user to a new chat that fails identically.
+            const budget =
+              irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
+            const oneTurnIsTheProblem =
+              irreducible != null && (irreducible.latest_turn_tokens ?? 0) > budget;
+            // Whose turn it is decides the advice: in a tool loop the offending turn is
+            // often output the user never wrote and cannot edit, so "shorten this
+            // message" names the wrong thing and offers no remedy.
+            const userCanShortenIt =
+              (irreducible?.latest_turn_role ?? "user") === "user";
+            const tooLong =
+              `${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
+              `against the ${budget.toLocaleString()} tokens this ` +
+              `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
+              "The earlier turns were already removed and it still does not fit, so " +
+              "shortening the conversation will not help. ";
             toast.error("Context limit reached", {
-              description:
-                "The conversation has filled the model's context window. " +
-                'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
-                "or start a new chat.",
+              description: oneTurnIsTheProblem
+                ? userCanShortenIt
+                  ? `This message is ${tooLong}` +
+                    'Shorten this message, or raise "Context Length" ' +
+                    "in the chat Settings panel (⚙ in the top-right)."
+                  : `The last tool result is ${tooLong}` +
+                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or ask for less output from that tool."
+                : // llama-server runs with --no-context-shift, returning a hard
+                  // error instead of silently dropping old KV-cache turns. Point
+                  // the user at the control that raises the ceiling.
+                  "The conversation has filled the model's context window. " +
+                  'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                  "or start a new chat.",
               duration: 8000,
             });
           } else {
@@ -6861,6 +7008,7 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 custom: {
                   ...reasoningDurationTracker.metadata(),
+                  contextTruncation,
                   // This partial is unfinished too, so it also offers Continue.
                   incomplete: {
                     reason:

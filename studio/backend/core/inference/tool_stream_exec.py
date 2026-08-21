@@ -33,11 +33,11 @@ logger = get_logger(__name__)
 
 
 def accepts_kwarg(func: Callable[..., str], name: str) -> bool:
-    """Whether an injectable ``execute_tool`` accepts keyword ``name``.
+    """Whether an injectable ``execute_tool`` supports the keyword ``name``.
 
     ``execute_tool`` is replaceable (tests inject fakes / the pre-PR signature),
-    so forward a newer kwarg only when the callable declares it or takes
-    ``**kwargs`` (passing it unconditionally would ``TypeError`` on an old signature).
+    so forward a kwarg only when the callable declares it or takes ``**kwargs``
+    (passing it unconditionally would ``TypeError`` on an old signature).
     """
     try:
         params = inspect.signature(func).parameters
