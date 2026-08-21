@@ -8395,6 +8395,35 @@ class LlamaCppBackend:
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
+    def _shared_heap_free_mib(
+        self,
+        gpus: Iterable[tuple],
+        shared_gpu_ids: Collection[int],
+        argv: list[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> int:
+        """How much of a shared Vulkan pool this launch can put the weights in.
+
+        Every shared row reads the same host-backed pool, so the largest row is the
+        pool and summing them would count it twice. It counts at all only when the
+        finished command both sends every weight to a device and can reach that
+        device: a zero layer count leaves the weights in host RAM, and a ``--device``
+        pin naming other devices leaves the heap unreachable, so llama.cpp spills
+        them to host RAM either way. 0 hands the whole remainder back to the host-RAM
+        arm, which is what main charged for a shared device before this existed.
+        """
+        if not shared_gpu_ids or not self._argv_offloads_every_layer(argv, env):
+            return 0
+        pinned = _extra_args_main_device(argv)
+        if pinned is None and env:
+            pinned = env.get("LLAMA_ARG_DEVICE")
+        if pinned is not None:
+            # ggml registry names, the spelling _vulkan_pin_args emits; a shared id
+            # is only ever a Vulkan iGPU, so no other backend prefix can appear.
+            names = {device.strip().lower() for device in str(pinned).split(",")}
+            shared_gpu_ids = {idx for idx in shared_gpu_ids if f"vulkan{idx}" in names}
+        return max((max(0, row[1]) for row in gpus if row[0] in shared_gpu_ids), default = 0)
+
     def _launch_host_shortfall_message(
         self,
         cmd: Iterable[str],
@@ -8459,18 +8488,7 @@ class LlamaCppBackend:
             return None
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
-        # The shared heap counts only for a launch that actually sends the weights
-        # there. A zero layer count and a CPU device pin leave them in host RAM,
-        # where the arm below prices them, so crediting the heap for one of those
-        # would readmit the very paging this refusal exists to prevent.
-        shared_free_mib = (
-            max(
-                (max(0, row[1]) for row in gpus if row[0] in shared),
-                default = 0,
-            )
-            if self._argv_offloads_every_layer(argv, _env)
-            else 0
-        )
+        shared_free_mib = self._shared_heap_free_mib(gpus, shared, argv, _env)
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
         # A carved-out UMA heap may be absent from psutil's host availability even
         # though Vulkan can hold the weights. Count that heap once, never again as RAM.

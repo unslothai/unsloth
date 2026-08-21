@@ -1669,6 +1669,37 @@ def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
         _launch(backend, gguf, **placement)
 
 
+def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, monkeypatch):
+    """Vulkan0 is a small discrete card here and Vulkan1 the carved-out iGPU heap. A
+    pin naming only Vulkan0 cannot place one weight in that heap, yet crediting it
+    admitted a 30 GiB model onto a 13 GiB host. The same launch pinned to the heap
+    reaches it and still loads."""
+
+    def _mixed():
+        backend, gguf = _backend(
+            tmp_path, vulkan = True, memory = [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)]
+        )
+        _restore_host_guard(backend)
+        backend._get_gguf_size_bytes = lambda _path: 30 * 1024**3
+        # the block count the launch reads from the header, so gpu_layers 33 is a
+        # full offload rather than an unknown one
+        backend._n_layers = 32
+        return backend, gguf
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 13 * 1024)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+    manual = {"gpu_memory_mode": "manual", "gpu_layers": 33}
+
+    backend, gguf = _mixed()
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--device", "Vulkan0"], **manual)
+
+    backend, gguf = _mixed()
+    assert _launch(backend, gguf, extra_args = ["--device", "Vulkan1"], **manual)["cmd"]
+
+
 def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
     """A shared Vulkan heap remains host-backed inside a constrained container, so
     its host-wide free reading cannot override the process's cgroup ceiling."""
