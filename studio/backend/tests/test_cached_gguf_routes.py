@@ -5843,9 +5843,7 @@ def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch,
         [],
         repo_dir,
         revisions = [
-            SimpleNamespace(
-                files = [_file("model.safetensors", 5_000)], snapshot_path = complete
-            ),
+            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
             SimpleNamespace(files = [_file("config.json", 100)], snapshot_path = metadata_only),
         ],
     )
