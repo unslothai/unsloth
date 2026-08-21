@@ -539,6 +539,24 @@ def _resolve_from_index(
         return None
 
 
+def local_gguf_variants_for(requested: str) -> Optional[tuple[str, ...]]:
+    """On-disk quant labels an advertised id (``repo`` or ``repo:VARIANT``) can
+    pin, or None when the resolver does not list it.
+
+    Reads only the last published index: callers that must prove freshness warm
+    it first. The order is the entry's own — preferred quant first, matching
+    what a bare id serves — so ``[0]`` agrees with the ``quant`` field
+    /v1/models reports."""
+    try:
+        resolved = _resolve_from_index(requested, _scan[1])
+    except Exception:
+        return None
+    if resolved is None:
+        return None
+    entry = _scan[1].get(resolved[2].lower())
+    return tuple(entry.variants) if entry else None
+
+
 MISS_MODEL_NOT_FOUND = "model_not_found"
 MISS_VARIANT_NOT_FOUND = "variant_not_found"
 
